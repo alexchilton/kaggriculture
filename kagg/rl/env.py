@@ -73,7 +73,14 @@ ACTION_KEYS = tuple(ACTION_BUCKETS)
 
 PRODUCTS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
 BASE_PRICE = heuristic.BASE_PRICE
-TRAIN_OPPONENTS = ("mirror", "wheat_only", "melon_heavy", "strawberry", "cow_heavy", "starter")
+# Train against everything that competes for market prices, plus `starter` so the policy still
+# sees a passive opponent. Derived from COMPETITIVE rather than listed separately: an earlier
+# hand-written copy of this list went stale the moment the pool grew, leaving the policy blind to
+# the three strategies copied from agents that actually beat us on the ladder -- which is exactly
+# the self-similar-pool mistake that cost v5 its ranked matches.
+from kagg.arena.pool import COMPETITIVE  # noqa: E402
+
+TRAIN_OPPONENTS = COMPETITIVE + ("starter",)
 
 
 def _farm_features(farm, tiles_side=10):
