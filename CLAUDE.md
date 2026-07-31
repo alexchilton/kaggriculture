@@ -71,7 +71,18 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
   `scripts/build_submission.py`, which refuses to ship an agent that cannot beat `starter`.
 - **A gate only tests what it exercises.** The parity harness drove one unit per player, so
   "60/60 exact" was a statement about single-unit games and was read as a statement about the
-  simulator. Before trusting a gate, ask what it *cannot* reach.
+  simulator. Before trusting a gate, ask what it *cannot* reach. This has now cost time three
+  times: single-unit scripts, then a JAX suite that passed 14/14 with no atomic-PLANT rule at all,
+  then 300 full-length episodes that never once had both players selling the same product.
+- **After fixing, revert the fix and confirm the test goes red.** Three of the five fixes in the
+  parity work were, at first, covered by nothing: the suite stayed green with them backed out. A
+  green suite after a fix says the fix broke nothing, not that anything checks it. The rare-window
+  ones are the dangerous ones -- atomic PLANT only *discriminates* when `0 < seeds < demand`, a
+  window that opened twice in 2,400 player-turns of random play and never landed a plant.
+- **Check that a harness sends what an agent would send.** The reference's atomic PLANT rule counts
+  the actions *submitted*, not the units that exist, so a harness filling every unit slot produced
+  divergences unreachable in a real game -- and they were written up as a simulator bug in this
+  file. When the gate and the product disagree about the calling convention, suspect the gate.
 - **Unit tests verify components; only end-to-end parity verifies composition.** 136 component
   parity tests passed and a 200-step end-to-end check passed while the sim silently burned seeds on
   failed plants. The 719-step gate failed 40/40. A short parity check is a *different* test from a
@@ -85,25 +96,50 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
 These were agreed before any code was written, specifically so they cannot be rationalised away later.
 
 - Heuristic agent does not clear **$20k** final bank → the economics model is wrong, not the agent.
+- **The simulator models HALF the game. Read this before planning any training run.**
+  It implements 9 of the environment's 18 unit ops and 4 of its 6 market orders:
+
+  | implemented | **missing** |
+  |---|---|
+  | PASS, NORTH, SOUTH, EAST, WEST | **PLACE, BUILD_PASTURE, BUILD_COOP** |
+  | WATER, HARVEST, PLANT, DIG | **FEED, CARE, COLLECT_FERTILIZER, FERTILIZE** |
+  | SELL, BUY_SEED, HIRE, BUY_LAND | **PICKUP, DROP**, **BUY_ANIMAL, BUY_PRODUCT** |
+
+  The missing half is the whole animal economy, and **that is what wins games**. Episode 89197802,
+  the top two agents playing each other, banked $106k and $113k against our `contrarian`'s ~$38k.
+  The winner drew 83% of its revenue from milk and wool, converting bought wheat into animal
+  products; the runner-up drew 81% from trading wheat with `BUY_PRODUCT`. Neither play is
+  expressible here. A policy trained on this simulator can only become a very good crop farmer.
+
+  **Parity does not mean coverage.** `parity.py` builds its scripts from `SCRIPT_OPS`, which lists
+  only the ops the simulator already has, so the gate cannot emit `FEED` and therefore cannot fail
+  on `FEED`. "300/300 full-length episodes exact" is a true statement about the subset. Before
+  quoting that number at anyone, quote this table with it.
+
 - Fast-sim parity harness is not exact over 1000 random action sequences → **do not train on the fast sim**.
-  **Status 2026-07-31: NOT YET EXACT under hiring. Do not train on it.**
-  - Single unit per player: 60/60 full-length episodes exact.
-  - Multiple units, no hiring: 6/6 exact.
-  - **With hiring: 8/12.** Something still diverges once a crew exists.
+  **Status 2026-07-31 (evening): PASSING. 300/300 full-length episodes exact**, across five
+  configurations from a single unit up to twelve-unit crews with land buying. The JAX sim matches
+  the numpy sim field for field, 16/16.
 
-  The "60/60 exact" claim was made and repeated while `parity.py` hard-coded `n_units = 1`, so the
-  harness never drove more than one unit. Two real divergences hid behind that and were found by a
-  search agent, not by the gate: **atomic PLANT** (the reference drops *every* PLANT for a crop when
-  requests exceed seeds; the sim spent them greedily unit by unit -- indistinguishable with one
-  unit) and **hand spawning** (the reference picks the least-occupied shed-access tile; the sim put
-  every hand on NW). Both now ported, which took hiring from 0/12 to 8/12.
+  The route there is worth remembering, because the harness was wrong twice in opposite directions:
 
-  Remaining known suspect: the reference pairs the players' *i-th market order*, while the sim
-  settles per product with players alternating. These agree only when both players put the same
-  product in the same slot.
+  - It first hard-coded `n_units = 1`, so "60/60 exact" was a claim about single-unit games read as
+    a claim about the simulator. **Atomic PLANT** and **hand spawning** hid behind it.
+  - Widened to six unit slots, it then drove six unit *actions* whether or not the farm owned six
+    units. The reference ignores a surplus action for movement and work but still counts it in the
+    atomic PLANT rule, so it blocked plants no agent could ever block. That, not a simulator bug,
+    is what "8/12 under hiring" was. Agents submit one action per unit owned; the harness now does
+    too. Hiring was never involved -- the same failure reproduced at 1/8 with hiring switched off.
 
-  Two divergences remain deliberate: weed spawn sequence and shop unlock order, both RNG-stream
-  artifacts that cannot be ported without destroying the speedup, both neutralised in the gate.
+  The named suspect (the reference pairs the players' *i-th market order*, the sim settles per
+  product) is **real but not reachable by any agent we have**: replaying every pairing of
+  `contrarian`/`heuristic`/`rancher` over three seeds gives $0 of error, because agents emit sells
+  in a canonical product order. Fixing it needs an ordered order book in `Actions`. Left alone
+  deliberately; revisit if an agent's sell ordering ever becomes state-dependent, which a *learned*
+  policy's would.
+
+  Three divergences remain deliberate: weed spawn sequence, shop unlock order and market order
+  slotting.
 - PPO explained variance does not pass **0.5** early → the frame is wrong, not the hyperparameters.
   **Scope note:** this was written for the per-turn, 720-step, full-action-space policy. The
   strategy env clears 0.89 easily, but it is a 30-step problem with 9 discrete heads and hand-built

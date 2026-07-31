@@ -38,6 +38,30 @@ INTERVAL = np.array([kg.CROPS[c]["interval"] for c in CROPS], dtype=np.int64)
 MAX_YIELD = np.array([kg.CROPS[c]["max_yield"] for c in CROPS], dtype=np.int64)
 ONGOING = np.array([kg.CROPS[c]["ongoing"] for c in CROPS], dtype=bool)
 
+# ---- animals -----------------------------------------------------------------------------------
+# An animal occupies a structure tile: a goose needs a COOP, a cow or sheep a PASTURE. The tile
+# keeps `kind` as the structure either way, so "empty pasture" and "pasture with a cow" differ only
+# by `animal`, which is how the reference models it too -- and why DIG can clear the one and not
+# the other.
+ANIMAL_NAMES = list(kg.ANIMALS)
+ANIMAL_INDEX_T = {name: i for i, name in enumerate(ANIMAL_NAMES)}
+N_ANIMAL_KINDS = len(ANIMAL_NAMES)
+NO_ANIMAL = -1
+
+_STRUCTURE_ID = {"COOP": COOP, "PASTURE": PASTURE}
+ANIMAL_STRUCTURE = np.array(
+    [_STRUCTURE_ID[kg.ANIMALS[a]["structure"]] for a in ANIMAL_NAMES], dtype=np.int64
+)
+ANIMAL_FIRST_YIELD_DAY = np.array(
+    [kg.ANIMALS[a]["first_yield_day"] for a in ANIMAL_NAMES], dtype=np.int64
+)
+ANIMAL_INTERVAL = np.array([kg.ANIMALS[a]["interval"] for a in ANIMAL_NAMES], dtype=np.int64)
+ANIMAL_MAX_HELD = np.array([kg.ANIMALS[a]["max_held"] for a in ANIMAL_NAMES], dtype=np.int64)
+# Which market product each animal yields, as a product id (EGG, MILK, WOOL).
+ANIMAL_TO_PRODUCT = np.array(
+    [list(kg.PRODUCTS).index(kg.ANIMALS[a]["product"]) for a in ANIMAL_NAMES], dtype=np.int64
+)
+
 
 class TileState:
     """Struct-of-arrays tile state for a batch of B games (one farm each).
@@ -49,6 +73,8 @@ class TileState:
     __slots__ = (
         "kind", "crop", "planted_day", "watered_today", "consecutive_unwatered",
         "yield_units", "max_lifespan_step", "fertilized_until_day",
+        "animal", "placed_day", "consecutive_unfed", "fed_today", "cared_today",
+        "fertilizer_available", "pending_care_bonus",
     )
 
     def __init__(self, batch):
@@ -58,9 +84,20 @@ class TileState:
         self.planted_day = z()
         self.watered_today = z(bool)
         self.consecutive_unwatered = z()
+        # Shared with animals: `_apply_unit_action`'s HARVEST branch reads `yield_units` off a
+        # plant tile and an animal tile alike, so one array covers both.
         self.yield_units = z()
         self.max_lifespan_step = np.full((batch, TILES), -1, dtype=np.int64)
         self.fertilized_until_day = np.full((batch, TILES), -1, dtype=np.int64)
+
+        # Animal occupancy of a COOP/PASTURE tile. `animal` is NO_ANIMAL for an empty structure.
+        self.animal = np.full((batch, TILES), NO_ANIMAL, dtype=np.int64)
+        self.placed_day = z()
+        self.consecutive_unfed = z()
+        self.fed_today = z(bool)
+        self.cared_today = z(bool)
+        self.fertilizer_available = z(bool)
+        self.pending_care_bonus = z()
 
     @property
     def batch(self):

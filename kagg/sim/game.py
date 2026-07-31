@@ -28,11 +28,23 @@ from kagg.sim.farm import (
     end_of_day,
     hire,
 )
-from kagg.sim.market import I0, N_PRODUCTS, PRODUCT_INDEX, price, price_of
+from kagg.sim.market import (
+    ANIMAL_COST,
+    ANIMAL_ITEM,
+    BUYABLE,
+    I0,
+    N_ANIMALS,
+    N_PRODUCTS,
+    PRODUCT_INDEX,
+    price,
+    price_of,
+)
 from kagg.sim.tiles import (
+    COOP,
     CROP_INDEX,
     CROPS,
     EMPTY,
+    PASTURE,
     WEED,
     LOCKED,
     TILES,
@@ -62,13 +74,22 @@ class Actions:
     - `buy_land` [B, P]           -- unlock the next quadrant
     """
 
-    __slots__ = ("unit_op", "unit_crop", "sell", "buy_seed", "hire", "buy_land")
+    __slots__ = (
+        "unit_op", "unit_crop", "unit_item", "unit_qty",
+        "sell", "buy_seed", "buy_product", "buy_animal", "hire", "buy_land",
+    )
 
     def __init__(self, batch, players=N_PLAYERS):
         self.unit_op = np.zeros((batch, players, MAX_UNITS), dtype=np.int64)
         self.unit_crop = np.zeros((batch, players, MAX_UNITS), dtype=np.int64)
+        # PICKUP and PLACE both take an item and a count; every other op ignores them.
+        self.unit_item = np.zeros((batch, players, MAX_UNITS), dtype=np.int64)
+        self.unit_qty = np.zeros((batch, players, MAX_UNITS), dtype=np.int64)
         self.sell = np.zeros((batch, players, N_PRODUCTS), dtype=np.int64)
         self.buy_seed = np.zeros((batch, players, N_CROPS), dtype=np.int64)
+        # Only WHEAT and FERTILIZER are buyable; the rest of the column is ignored.
+        self.buy_product = np.zeros((batch, players, N_PRODUCTS), dtype=np.int64)
+        self.buy_animal = np.zeros((batch, players, N_ANIMALS), dtype=np.int64)
         self.hire = np.zeros((batch, players), dtype=bool)
         self.buy_land = np.zeros((batch, players), dtype=bool)
 
@@ -153,17 +174,36 @@ class Game:
                     moved = O.move(tiles, pos, np.where(moving, op, O.NOOP))
                     farm.unit_pos[:, u, :] = np.where(moving[:, None], moved, pos)
 
-                O.water(tiles, farm.unit_pos[:, u, :], active & (op == O.WATER), day)
+                unit_pos = farm.unit_pos[:, u, :]
+                carried_u = farm.carried[:, u, :]          # a view, so ops mutate in place
+                item = actions.unit_item[:, p, u]
+                qty = actions.unit_qty[:, p, u]
+
+                O.water(tiles, unit_pos, active & (op == O.WATER), day)
 
                 harvested = np.zeros((self.batch, N_CROPS), dtype=np.int64)
                 harvested = O.harvest(
-                    tiles, farm.unit_pos[:, u, :], active & (op == O.HARVEST), day, harvested
+                    tiles, unit_pos, active & (op == O.HARVEST), day, harvested
                 )
                 if harvested.any():
                     for c in range(N_CROPS):
                         farm.carried[:, u, CROP_TO_PRODUCT[c]] += harvested[:, c]
+                # HARVEST branches on the tile, not the op: the same op takes milk off a cow.
+                O.harvest_animals(tiles, unit_pos, active & (op == O.HARVEST), carried_u)
 
-                O.dig(tiles, farm.unit_pos[:, u, :], active & (op == O.DIG))
+                O.dig(tiles, unit_pos, active & (op == O.DIG))
+
+                # ---- logistics and the animal economy ----------------------------------------
+                O.drop(unit_pos, active & (op == O.DROP), carried_u, farm.shed)
+                O.pickup(unit_pos, active & (op == O.PICKUP), item, qty, carried_u, farm.shed)
+                O.place(tiles, unit_pos, active & (op == O.PLACE), item, qty,
+                        carried_u, farm.shed, day)
+                O.build(tiles, unit_pos, active & (op == O.BUILD_COOP), COOP)
+                O.build(tiles, unit_pos, active & (op == O.BUILD_PASTURE), PASTURE)
+                O.feed(tiles, unit_pos, active & (op == O.FEED), carried_u)
+                O.care(tiles, unit_pos, active & (op == O.CARE))
+                O.collect_fertilizer(tiles, unit_pos, active & (op == O.COLLECT_FERT), carried_u)
+                O.fertilize(tiles, unit_pos, active & (op == O.FERTILIZE), carried_u, day)
 
                 planting = active & (op == O.PLANT_OP)
                 if planting.any():
@@ -192,6 +232,8 @@ class Game:
             for _ in range(int(remaining[:, :, product].max())):
                 if not remaining[:, :, product].any():
                     break
+                # Quoted once per unit step, before either seat commits -- see `settle_sales`.
+                unit_price = price_of(product, self.inventory[:, product])
                 for p in range(N_PLAYERS):
                     farm = self.farms[p]
                     want = remaining[:, p, product] > 0
@@ -199,7 +241,6 @@ class Game:
                     doing = want & have
                     if not doing.any():
                         continue
-                    unit_price = price_of(product, self.inventory[:, product])
                     farm.money = np.where(doing, farm.money + unit_price, farm.money)
                     farm.shed[:, product] -= doing.astype(np.int64)
                     remaining[:, p, product] -= doing.astype(np.int64)
@@ -210,10 +251,43 @@ class Game:
                     )
 
         for p in range(N_PLAYERS):
+            farm = self.farms[p]
             for c in range(N_CROPS):
                 want = actions.buy_seed[:, p, c]
                 if want.any():
-                    buy_seeds(self.farms[p], c, want)
+                    buy_seeds(farm, c, want)
+
+            # BUY_PRODUCT: only WHEAT and FERTILIZER, quoted at the *post-buy* inventory so that a
+            # buy/sell round trip against an unchanged market nets zero, and it drains inventory
+            # rather than feeding it -- which is what makes wheat appreciate all season.
+            for product in range(N_PRODUCTS):
+                if not BUYABLE[product] or not actions.buy_product[:, p, product].any():
+                    continue
+                remaining = actions.buy_product[:, p, product].copy()
+                for _ in range(int(remaining.max())):
+                    unit_price = price_of(product, self.inventory[:, product] - 1)
+                    doing = (remaining > 0) & (farm.money >= unit_price)
+                    if not doing.any():
+                        break
+                    farm.money = np.where(doing, farm.money - unit_price, farm.money)
+                    farm.shed[:, product] += doing.astype(np.int64)
+                    self.inventory[:, product] -= doing.astype(np.int64)
+                    remaining -= doing.astype(np.int64)
+
+            # BUY_ANIMAL: a fixed price, and the animal lands in the shed rather than on a tile.
+            for a in range(N_ANIMALS):
+                want = actions.buy_animal[:, p, a]
+                if not want.any():
+                    continue
+                remaining = want.copy()
+                for _ in range(int(remaining.max())):
+                    doing = (remaining > 0) & (farm.money >= ANIMAL_COST[a])
+                    if not doing.any():
+                        break
+                    farm.money = np.where(doing, farm.money - ANIMAL_COST[a], farm.money)
+                    farm.shed[:, ANIMAL_ITEM[a]] += doing.astype(np.int64)
+                    remaining -= doing.astype(np.int64)
+
             if actions.hire[:, p].any():
                 hire(self.farms[p], actions.hire[:, p])
             if actions.buy_land[:, p].any():
@@ -234,6 +308,8 @@ class Game:
         if (self.step_index + 1) % TURNS_PER_DAY == 0:
             for t in self.tiles:
                 daily_refresh_plants(t, self.day)
+                # `_end_of_day` refreshes plants and then animals, in that order, per farm.
+                O.daily_refresh_animals(t, self.day)
                 self._spawn_weeds(t)
             for f in self.farms:
                 end_of_day(f)

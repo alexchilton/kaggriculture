@@ -15,6 +15,44 @@ import pytest
 from kagg.sim.parity import compare, random_script, run_reference, run_sim
 
 
+def test_the_harness_never_acts_for_a_hand_the_farm_has_not_hired():
+    """The gate must drive the reference the way an agent does: one action per unit it owns.
+
+    Every agent builds its action from `[farmer, *farm["hands"]]`, so it submits exactly as many
+    unit actions as it has units. The reference, given a longer list, ignores the surplus actions
+    for movement and work -- but still counts them in the atomic PLANT rule, which is computed over
+    the *submitted* actions rather than over the units that exist. A harness that always fills six
+    unit slots therefore has the reference block plants that no real game would block, and the
+    simulator, which masks dead unit slots, correctly plants them.
+
+    Two units driven, no hand hired and one wheat seed held: the reference sees two PLANT requests
+    against one seed and drops both.
+    """
+    from kagg.sim import ops as O
+    from kagg.sim.tiles import CROP_INDEX
+
+    wheat = CROP_INDEX["WHEAT"]
+
+    def entry(ops, buy=None):
+        return {
+            "units": [(list(ops), [wheat] * len(ops)), ([O.NOOP] * len(ops), [wheat] * len(ops))],
+            "sell": [{}, {}],
+            "buy_seed": [dict(buy or {}), {}],
+            "hire": [False, False],
+            "buy_land": [False, False],
+        }
+
+    script = [
+        entry([O.NOOP, O.NOOP], buy={"WHEAT": 1}),
+        entry([O.PLANT_OP, O.PLANT_OP]),
+    ]
+
+    reference, unlocks = run_reference(script, seed=900)
+    sim = run_sim([script], unlocks=unlocks)[0]
+
+    assert compare(sim[: len(reference)], reference) == []
+
+
 @pytest.mark.parametrize("seed", [0, 1])
 def test_full_length_episode_is_exact(seed):
     """719 steps, comparing bank, market inventory and both farms' tile composition every step."""
@@ -22,6 +60,24 @@ def test_full_length_episode_is_exact(seed):
     script = random_script(rng, steps=719)
 
     reference, unlocks = run_reference(script, seed=700 + seed)
+    sim = run_sim([script], unlocks=unlocks)[0]
+
+    assert compare(sim[: len(reference)], reference) == []
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_full_length_episode_with_a_hired_crew_is_exact(seed):
+    """The case CLAUDE.md recorded as broken: a full season with several units working at once.
+
+    `hire_rate` is deliberately high. Hands are dismissed nightly and the hire fee is Fibonacci
+    within the day, so at the 0.05 default a farm almost never fields a crew and this becomes a
+    single-unit test wearing a multi-unit name -- which is how the last two divergences survived a
+    gate that was passing. At 0.5 a second unit is live on 16% of player-turns and a sixth on 4.6%.
+    """
+    rng = np.random.default_rng(4242 + seed)
+    script = random_script(rng, steps=719, max_units=6, allow_hire=True, hire_rate=0.5)
+
+    reference, unlocks = run_reference(script, seed=1500 + seed)
     sim = run_sim([script], unlocks=unlocks)[0]
 
     assert compare(sim[: len(reference)], reference) == []

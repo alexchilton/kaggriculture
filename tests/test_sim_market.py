@@ -134,21 +134,84 @@ def test_a_seller_with_nothing_held_sells_nothing():
     assert int(held[0]) == 0
 
 
-def test_two_players_selling_concurrently_alternate_unit_by_unit():
-    """Both seats quote against the same pre-commit inventory, then commit in seat order.
+def _reference_market(orders, shed, money=0.0):
+    """Run the real `kaggriculture._process_market` over hand-built state.
 
-    Seat 0 therefore gets the better price on each contested unit, which is exactly why the arena
-    plays every seed in both seatings.
+    Stronger evidence than a walk written from reading the source, which is how the same-price
+    rule below came to be asserted backwards: the old version of this test claimed seat 0 got the
+    better price on a contested unit, and the reference pays both seats the same.
     """
-    start = np.array([10_000], dtype=np.int64)
+    from types import SimpleNamespace as NS
+
+    inv = {item: kg.MARKET_PARAMS[item]["I0"] for item in kg.PRODUCTS}
+    market = {"inventory": dict(inv), "prices": {}}
+    farms = [{"money": float(money), "hands": [], "farmer": [4, 4],
+              "tiles": [[None] * 10 for _ in range(10)],
+              "unlocked_quadrants": ["NW"], "hires_today": 0} for _ in range(2)]
+    state = [
+        NS(observation=NS(market=market, farms=farms, player=p,
+                          private={"shed": dict(shed[p]), "seeds": {}, "inventories": [{}]}),
+           action={"market": orders[p]})
+        for p in range(2)
+    ]
+    env = NS(configuration={"boardSize": 10, "maxMarketOrdersPerTurn": 10, "farmHandCostMult": 1})
+
+    kg._process_market(state, env)
+    return [farms[p]["money"] for p in range(2)], market["inventory"]
+
+
+def test_two_players_selling_the_same_product_are_paid_the_same_price():
+    """`_process_market` quotes BOTH seats against the same pre-commit inventory for each unit.
+
+    Both quotes are taken before either commit lands, so on a contested unit the two seats are paid
+    identically and the inventory rises by two. Re-quoting between the seats -- which is what this
+    simulator did -- shortchanges seat 1 on every contested unit, and in real play both agents sell
+    the same staples every turn, so 'contested' is the normal case rather than the exotic one.
+    """
+    expected, _ = _reference_market(
+        [[["SELL", "MELON", 10]], [["SELL", "MELON", 10]]],
+        [{"MELON": 10}, {"MELON": 10}],
+    )
+    assert expected[0] == expected[1]           # the rule being pinned, straight from the reference
+
     inv, money, held = settle_sales(
         "MELON",
-        start,
+        np.array([10_000], dtype=np.int64),
         np.array([[10, 10]]),
         np.array([[0.0, 0.0]]),
         np.array([[10, 10]]),
     )
 
-    assert money[0, 0] > money[0, 1]
+    assert [float(money[0, 0]), float(money[0, 1])] == expected
     assert int(held[0, 0]) == 0 and int(held[0, 1]) == 0
     assert int(inv[0]) == 10_020
+
+
+@pytest.mark.parametrize("product,qty", [("MELON", 10), ("WHEAT", 40), ("STRAWBERRY", 25)])
+def test_the_game_loop_settles_a_contested_sale_exactly_like_the_reference(product, qty):
+    """`Game._process_market` keeps its own copy of the settlement, so gate it separately.
+
+    The end-to-end parity gate does not reach this. Its random scripts almost never have both
+    players holding stock of the same product on the same turn, so 300 full-length episodes passed
+    while this branch was wrong -- reverting the fix leaves the entire non-JAX suite green. That is
+    the `CLAUDE.md` lesson about gates testing only what they exercise, landing a third time.
+    """
+    from kagg.sim.game import Actions, Game
+
+    idx = PRODUCTS.index(product)
+    game = Game(1, starting_money=0.0, weed_chance=0.0)
+    for p in range(2):
+        game.farms[p].shed[:, idx] = qty
+
+    actions = Actions(1)
+    actions.sell[:, :, idx] = qty
+    game._process_market(actions)
+
+    expected, inventory = _reference_market(
+        [[["SELL", product, qty]], [["SELL", product, qty]]],
+        [{product: qty}, {product: qty}],
+    )
+
+    assert [float(game.farms[p].money[0]) for p in range(2)] == expected
+    assert int(game.inventory[0, idx]) == inventory[product]
+    assert expected[0] == expected[1] > 0        # the case is contested, not vacuous

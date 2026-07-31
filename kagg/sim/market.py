@@ -28,6 +28,31 @@ PRODUCT_INDEX = {name: i for i, name in enumerate(PRODUCTS)}
 N_PRODUCTS = len(PRODUCTS)
 PRICE_FLOOR = kg.PRICE_FLOOR
 
+# Animals are not products -- they are never priced by the market curve and never held as market
+# inventory -- but they *are* held in the shed and carried by units, because `BUY_ANIMAL` deposits
+# one in the shed and `PLACE` consumes it from a unit's inventory. `_new_private` builds the shed as
+# `PRODUCTS + list(ANIMALS)`, so animals also count against the 100-item shed cap.
+#
+# Item ids extend product ids rather than replacing them: items 0..N_PRODUCTS-1 *are* the products,
+# in the same order, so every existing `shed[:, product_index]` stays correct.
+ANIMALS = list(kg.ANIMALS)
+ANIMAL_INDEX = {name: i for i, name in enumerate(ANIMALS)}
+N_ANIMALS = len(ANIMALS)
+
+ITEMS = PRODUCTS + ANIMALS
+ITEM_INDEX = {name: i for i, name in enumerate(ITEMS)}
+N_ITEMS = len(ITEMS)
+
+# Cost and item id live here with the rest of the market vocabulary; everything about what an
+# animal *does* once placed is a tile concern and lives in `tiles.py`.
+ANIMAL_COST = np.array([kg.ANIMALS[a]["cost"] for a in ANIMALS], dtype=np.float64)
+ANIMAL_ITEM = np.array([ITEM_INDEX[a] for a in ANIMALS], dtype=np.int64)
+
+# Only WHEAT and FERTILIZER can be bought back off the market; `_process_market` hard-codes it.
+BUYABLE = np.zeros(N_PRODUCTS, dtype=bool)
+for _name in ("WHEAT", "FERTILIZER"):
+    BUYABLE[PRODUCT_INDEX[_name]] = True
+
 # Per-product curve parameters as arrays, so price() is one vector expression.
 _P = [kg.MARKET_PARAMS[name] for name in PRODUCTS]
 BASE = np.array([p["base"] for p in _P], dtype=np.float64)
@@ -110,11 +135,15 @@ def settle_sales(product, inventory, orders, money, held):
     for _ in range(int(remaining.max()) if remaining.size else 0):
         if not (remaining > 0).any():
             break
+        # One quote per unit step, taken before any seat commits. `_process_market` builds both
+        # seats' `quoted` entries from the same inventory and only then calls `_commit_unit` on
+        # each, so a contested unit pays both seats the same and lifts inventory twice. Quoting
+        # inside the seat loop instead shortchanges seat 1 on every contested unit.
+        unit_price = price_of(product, inventory)
         for seat in range(n_players):
             active = (remaining[:, seat] > 0) & (held[:, seat] > 0)
             if not active.any():
                 continue
-            unit_price = price_of(product, inventory)
             money[:, seat] = np.where(active, money[:, seat] + unit_price, money[:, seat])
             held[:, seat] = np.where(active, held[:, seat] - 1, held[:, seat])
             remaining[:, seat] = np.where(active, remaining[:, seat] - 1, remaining[:, seat])

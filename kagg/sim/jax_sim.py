@@ -139,6 +139,8 @@ for _y in range(BOARD):
             _locked0[_y * BOARD + _x] = True
 INITIAL_LOCKED = jnp.asarray(_locked0, dtype=bool)
 
+SHED_ACCESS = jnp.asarray(F.shed_access_tiles(), dtype=_I)      # [4, 2], NWSE order
+
 _ARANGE_UNITS = jnp.arange(MAX_UNITS, dtype=_I)
 _ARANGE_CROPS = jnp.arange(N_CROPS, dtype=_I)
 _ARANGE_PRODUCTS = jnp.arange(N_PRODUCTS, dtype=_I)
@@ -368,6 +370,23 @@ def _apply_unit_actions(tiles, farm, actions, day):
     """
     live = _ARANGE_UNITS[None, None, :] < farm.n_units[:, :, None]
 
+    # PLANT is validated atomically per crop across all of a player's units: if the turn's requests
+    # for a crop exceed the seeds held, `interpreter` drops **every** one of them rather than the
+    # excess. Spending greedily unit by unit -- which is what this port did, and what the numpy sim
+    # did until it was caught -- plants some where the reference plants none. Computed once for the
+    # turn, before any seed is spent, because the reference tests the requests against the seeds
+    # held at the *start* of the turn.
+    asking = live & (actions.unit_op == O.PLANT_OP)                          # [B, P, U]
+    demand = jnp.sum(
+        jnp.where(
+            asking[..., None],
+            jnp.clip(actions.unit_crop, 0, N_CROPS - 1)[..., None] == _ARANGE_CROPS,
+            False,
+        ),
+        axis=2,
+    ).astype(_I)                                                             # [B, P, N_CROPS]
+    blocked = demand > farm.seeds                                            # [B, P, N_CROPS]
+
     def body(u, carry):
         tl, seeds, unit_pos, carried = carry
         active = lax.dynamic_index_in_dim(live, u, axis=2, keepdims=False)
@@ -440,8 +459,10 @@ def _apply_unit_actions(tiles, farm, actions, day):
         # seed is spent from `doable` (the plant landed) and never from `planting` (it was tried).
         c = jnp.clip(want_crop, 0, N_CROPS - 1)
         held = jnp.take_along_axis(seeds, c[..., None], axis=-1)[..., 0]
+        barred = jnp.take_along_axis(blocked, c[..., None], axis=-1)[..., 0]
         planting = (
-            active & (op == O.PLANT_OP) & (want_crop >= 0) & (want_crop < N_CROPS) & (held > 0)
+            active & (op == O.PLANT_OP) & (want_crop >= 0) & (want_crop < N_CROPS)
+            & (held > 0) & ~barred
         )
         doable = planting & (kind == EMPTY)
         ongoing = ONGOING[c]
@@ -502,9 +523,12 @@ def _settle_sales(farm, inventory, sell):
 
     def body(carry):
         rem, shed, money, inv = carry
+        # One quote per unit step, taken before either seat commits: `_process_market` fills both
+        # seats' `quoted` entries from the same inventory and only then calls `_commit_unit` on
+        # each, so a contested unit pays both seats the same price and lifts inventory twice.
+        unit_price = price(inv)
         for seat in range(rem.shape[1]):
             doing = (rem[:, seat] > 0) & (shed[:, seat] > 0)     # [B, N_PRODUCTS]
-            unit_price = price(inv)
             gain = jnp.sum(jnp.where(doing, unit_price, 0), axis=-1).astype(_F)
             money = money.at[:, seat].add(gain)
             shed = shed.at[:, seat].add(-doing.astype(_I))
@@ -552,12 +576,26 @@ def _hire_impl(farm, want):
 
     slot = jnp.minimum(farm.n_units, MAX_UNITS - 1)
     sel = (_ARANGE_UNITS == slot[..., None]) & doable[..., None]    # [B, P, MAX_UNITS]
-    spawn = jnp.asarray([SPAWN_X, SPAWN_Y], dtype=_I)
+
+    # A new hand takes the least-occupied shed-access tile, ties broken in NWSE order -- a port of
+    # `_spawn_hand`, matching `farm.hire`. Spawning every hand on NW instead is not a harmless
+    # approximation: a hand standing elsewhere works different tiles, so the banks part company
+    # within a few hundred steps of the first hire.
+    live = _ARANGE_UNITS[None, None, :] < farm.n_units[:, :, None]          # [B, P, U]
+    on_tile = (
+        (farm.unit_pos[:, :, :, None, 0] == SHED_ACCESS[None, None, None, :, 0])
+        & (farm.unit_pos[:, :, :, None, 1] == SHED_ACCESS[None, None, None, :, 1])
+        & live[..., None]
+    )                                                                       # [B, P, U, 4]
+    occupancy = on_tile.sum(axis=2)                                         # [B, P, 4]
+    choice = jnp.argmin(occupancy, axis=-1)                                 # first min, so NWSE
+    spawn = SHED_ACCESS[choice]                                             # [B, P, 2]
+
     return farm._replace(
         money=jnp.where(doable, farm.money - cost, farm.money),
         hires_today=farm.hires_today + doable.astype(_I),
         n_units=farm.n_units + doable.astype(_I),
-        unit_pos=jnp.where(sel[..., None], spawn, farm.unit_pos),
+        unit_pos=jnp.where(sel[..., None], spawn[:, :, None, :], farm.unit_pos),
         carried=jnp.where(sel[..., None], 0, farm.carried),
     )
 

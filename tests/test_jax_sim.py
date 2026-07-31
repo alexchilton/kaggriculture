@@ -262,6 +262,85 @@ def test_hiring_actually_fills_unit_slots_during_the_day():
     assert reached > 5, f"hiring never grew the crew past {reached}"
 
 
+def test_atomic_plant_blocks_every_request_for_a_crop_the_seed_store_cannot_cover():
+    """Two units, one seed, both asking for it: the reference plants neither, so neither may.
+
+    This needs its own test because the random streams above cannot be trusted to reach it. The
+    rule only *discriminates* when `0 < seeds < demand` -- with no seeds both rules plant nothing,
+    and with enough seeds both plant everything. Across 2,400 player-turns of the dense stream that
+    window opened twice, and neither time did the plant land on an empty tile. The JAX port shipped
+    with no atomic-PLANT rule at all and this file still passed 14/14.
+    """
+    from kagg.sim.tiles import CROP_INDEX, EMPTY, PLANT
+
+    wheat = CROP_INDEX["WHEAT"]
+    game = Game(1, weed_chance=0.0)
+    state = jax_sim.reset(1)
+
+    def turn(fill):
+        actions = Actions(1)
+        fill(actions)
+        game.step(actions)
+        return jax_sim.step(state, jax_sim.from_numpy_actions(actions))
+
+    # Turn 0: hire a hand and buy exactly one wheat seed.
+    def setup(a):
+        a.hire[0, 0] = True
+        a.buy_seed[0, 0, wheat] = 1
+    state = turn(setup)
+    assert int(game.farms[0].n_units[0]) == 2, "the crew never grew, so nothing is being tested"
+    assert int(game.farms[0].seeds[0, wheat]) == 1
+
+    # Turn 1: put the two units on different empty tiles inside the unlocked quadrant.
+    state = turn(lambda a: a.unit_op.__setitem__((0, 0, slice(0, 2)), [O.NORTH, O.WEST]))
+    positions = {tuple(game.farms[0].unit_pos[0, u]) for u in range(2)}
+    assert len(positions) == 2, f"units share a tile, so only one plant could land anyway: {positions}"
+    for x, y in positions:
+        assert game.tiles[0].kind[0, y * 10 + x] == EMPTY
+
+    # Turn 2: both ask for wheat. Demand is 2 against 1 seed, so the reference drops both.
+    def both_plant(a):
+        a.unit_op[0, 0, :2] = O.PLANT_OP
+        a.unit_crop[0, 0, :2] = wheat
+    state = turn(both_plant)
+
+    assert _mismatches(game, state) == []
+    assert int(game.farms[0].seeds[0, wheat]) == 1, "a blocked PLANT must not spend the seed"
+    assert int((game.tiles[0].kind[0] == PLANT).sum()) == 0, "the blocked PLANT landed anyway"
+
+
+def test_both_seats_are_paid_the_same_price_on_a_contested_unit():
+    """`_process_market` quotes both seats before either commits, so a contested unit pays equally.
+
+    Like the atomic PLANT rule above, this needs its own test: the random streams almost never have
+    both players holding stock of the same product on the same turn, so re-quoting between the
+    seats -- which is what this port did -- costs seat 1 a dollar a unit without any test noticing.
+    In real play both agents sell the same staples every turn, so it is the normal case.
+
+    The shed is written directly rather than farmed up to, because reaching a contested sale
+    through harvest and the nightly drop takes most of a season and proves nothing extra.
+    """
+    melon = PRODUCT_INDEX["MELON"]
+    batch = 1
+    game = Game(batch, weed_chance=0.0)
+    state = jax_sim.reset(batch)
+
+    for p in range(2):
+        game.farms[p].shed[:, melon] = 20
+    state = state._replace(farm=state.farm._replace(shed=state.farm.shed.at[:, :, melon].set(20)))
+
+    actions = Actions(batch)
+    actions.sell[:, :, melon] = 20
+    game.step(actions)
+    state = jax_sim.step(state, jax_sim.from_numpy_actions(actions))
+
+    assert _mismatches(game, state) == []
+
+    banks = game.money()[0]
+    assert int(game.farms[0].shed[0, melon]) == 0, "nothing was actually sold"
+    assert banks[0] == banks[1], f"contested units must pay both seats alike, got {banks}"
+
+
 def test_a_batch_of_different_scripts_stays_independent():
     """Games in a batch must not contaminate each other -- the whole point of batching."""
     rng = np.random.default_rng(5)

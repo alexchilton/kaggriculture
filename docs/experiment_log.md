@@ -629,3 +629,121 @@ is not**.
 - **Nothing was searched against `contrarian`**, the only pool member that is not our own heuristic
   wearing a hat, and the only one that beats both agents 100% of the time. That is the obvious next
   target.
+
+## 14. Parity closed — and the harness was the thing that was broken
+
+`CLAUDE.md` recorded the simulator as **8/12 under hiring** and blocked training on it.
+It is now **300/300 full-length episodes exact** across five configurations, and the whole suite is
+256/256 green.
+Five things were wrong. Only three of them were in the simulator, and the first one was not a
+simulator bug at all.
+
+### The headline: hiring was a red herring
+
+Isolating before theorising took ten minutes and pointed somewhere completely different from the
+recorded suspect.
+Three variants of the same script, eight cases each:
+
+| configuration | result |
+|---|---|
+| one unit driven, hiring **and** market on | 8/8 exact |
+| six units driven, **no hiring**, no market at all | **1/8** |
+| six units driven, no hiring, market on | 5/8 |
+
+The failure had nothing to do with hiring and everything to do with driving more than one unit
+*slot*.
+Every failing case was a tile divergence in the same direction: the simulator planted where the
+reference did not.
+
+`parity.py` filled six unit actions per player whether or not the farm owned six units.
+The reference ignores a surplus action for movement and work — `_farmer_position` returns `None`
+and `_apply_unit_action` returns early — but `interpreter` computes the atomic PLANT block over the
+actions **submitted**, before any of that:
+
+```python
+unit_actions = [farmer_action, *hands_actions]     # all six, existing or not
+plant_demand = {}                                  # ...counted here
+blocked = {crop for crop, n in plant_demand.items() if n > seeds.get(crop, 0)}
+```
+
+So a PLANT request from a hand that does not exist still cancels the farmer's plant.
+No real game can reach that: `heuristic`, `contrarian`, `rancher` and `search/agent.py` all build
+their action from `[farmer, *farm["hands"]]`, so they submit exactly one action per unit owned.
+The harness now truncates the same way.
+A two-step deterministic test pins it: one wheat seed, farmer and one phantom hand both asking for
+wheat, reference plants nothing and the simulator planted one.
+
+**`hire_rate` had to be raised to keep the gate honest.** Truncation means unit slots past the first
+only act once hands exist, and hands are dismissed nightly against a Fibonacci fee, so at the old
+0.05 only 14.6% of player-turns had a second unit and *none* reached six. At 0.5 a sixth unit is
+live on 4.6% of them. Without that, the fix would have quietly restored the single-unit gate whose
+blind spot started all of this.
+
+### Both seats are paid the same price on a contested unit
+
+`_process_market` builds both players' quotes from the same inventory and only then commits them:
+
+```python
+quoted[player_id] = ("SELL", item, market_price(item, market["inventory"][item], ...), ostate)
+# ...both quotes taken, then both committed
+```
+
+The simulator re-quoted after seat 0 committed, docking seat 1 a dollar a unit.
+Ten melons each: reference pays `[2489, 2489]`, the simulator paid `[2489, 2487]`.
+`test_two_players_selling_concurrently_alternate_unit_by_unit` had asserted `money[0,0] >
+money[0,1]` — the wrong behaviour, written into a green test, under a docstring whose own premise
+contradicted its conclusion.
+Fixed in `game.py`, `market.py` and `jax_sim.py`.
+
+### The JAX sim was broken on `main` before any of this
+
+It was 3 tests red on a clean checkout.
+It predates the commit that fixed atomic PLANT and hand spawning in numpy and was never re-gated,
+so it carried **no atomic-PLANT rule at all** and spawned every hand on NW.
+The handoff's "parity passes 14/14 on the 3080" was stale.
+All three ported; 16/16 now.
+
+### Three of the five fixes were covered by nothing
+
+The most useful thing done all session was, after each fix, to **back it out and check the suite
+went red**. Three did not:
+
+| fix | suite with it backed out |
+|---|---|
+| JAX atomic PLANT | 14/14 green |
+| JAX same-price quoting | 15/15 green |
+| numpy `Game._process_market` same-price quoting | 237/237 green (non-JAX suite) |
+
+The reason is the same each time: these rules only *discriminate* in a narrow window that random
+play almost never enters.
+Atomic PLANT differs from greedy spending only when `0 < seeds < demand` — with no seeds both plant
+nothing, with enough seeds both plant everything.
+That window opened **twice in 2,400 player-turns** of the dense stream, and neither time did the
+plant land on an empty tile.
+Contested pricing needs *both* players holding stock of the same product on the same turn, which
+300 full-length random episodes never produced once.
+Each now has a test that fails without the fix.
+
+### Left alone deliberately: market order slotting
+
+The suspect named in the previous handoff is real.
+The reference pairs the players' *i-th order*; the simulator settles product by product.
+A hand-built case — `p0 [WHEAT, MELON]` against `p1 [MELON, WHEAT]`, 20 units each — swings $129 in
+a single turn.
+
+It is also **unreachable by any agent we have**. Replaying every real episode's order lists through
+both rules:
+
+| pairing | turns both sold | turns diverging | total error |
+|---|---|---|---|
+| contrarian vs heuristic | 15 | 0 | $0 |
+| rancher vs heuristic | 18 | 0 | $0 |
+| contrarian vs rancher | 36 | 0 | $0 |
+| heuristic vs heuristic | 21 | 0 | $0 |
+
+Agents emit sells in a canonical product order, so a shared product only lands in a different slot
+when the products *before* it differ, which needs the two sold sets to diverge in a specific way.
+Fixing it means replacing `Actions.sell` — a quantity per product — with an ordered order book,
+touching `game.py`, `executor.py`, `jax_sim.py` and `parity.py`.
+**Do it before training a policy that sells**, because a learned policy's ordering is
+state-dependent and has no reason to stay canonical. Not before.

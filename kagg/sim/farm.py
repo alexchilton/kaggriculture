@@ -17,7 +17,7 @@ import numpy as np
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as kg
 
-from kagg.sim.market import N_PRODUCTS, PRODUCT_INDEX
+from kagg.sim.market import N_ITEMS, N_PRODUCTS, PRODUCT_INDEX
 from kagg.sim.tiles import BOARD, CROPS, EMPTY, LOCKED, TILES
 
 N_CROPS = len(CROPS)
@@ -59,9 +59,12 @@ class FarmState:
     def __init__(self, batch, starting_money=3000.0):
         self.money = np.full(batch, starting_money, dtype=np.float64)
         self.seeds = np.zeros((batch, N_CROPS), dtype=np.int64)
-        self.shed = np.zeros((batch, N_PRODUCTS), dtype=np.int64)
+        # Twelve items wide, not nine: `_new_private` builds the shed as `PRODUCTS + list(ANIMALS)`
+        # because `BUY_ANIMAL` deposits a live animal in it. Animals therefore also count against
+        # the 100-item shed cap, which is easy to miss and changes when overflow starts biting.
+        self.shed = np.zeros((batch, N_ITEMS), dtype=np.int64)
         # Per-unit carried inventory. Uncapped during the day, emptied every night.
-        self.carried = np.zeros((batch, MAX_UNITS, N_PRODUCTS), dtype=np.int64)
+        self.carried = np.zeros((batch, MAX_UNITS, N_ITEMS), dtype=np.int64)
         self.unit_pos = np.zeros((batch, MAX_UNITS, 2), dtype=np.int64)
         self.unit_pos[:, :, 0] = default_spawn()[0]
         self.unit_pos[:, :, 1] = default_spawn()[1]
@@ -171,11 +174,16 @@ def drop_to_shed(state, unit_indices=None):
     The reference walks units in order and items in insertion order, filling until the shed is
     full and **destroying** the remainder. Order matters when the cap binds, so this walks the
     same way rather than distributing proportionally.
+
+    Known approximation: "insertion order" is the order a unit first picked each item up, which a
+    dense array cannot represent, so this walks fixed item order instead. The two agree unless the
+    cap binds mid-unit, and the cap is 100. Animals are included -- they sit in the shed between
+    `BUY_ANIMAL` and `PLACE`, and they count against the cap.
     """
     games = np.arange(state.batch)
     for u in range(MAX_UNITS if unit_indices is None else len(unit_indices)):
         unit = u if unit_indices is None else unit_indices[u]
-        for p in range(N_PRODUCTS):
+        for p in range(N_ITEMS):
             have = state.carried[games, unit, p]
             if not have.any():
                 continue
