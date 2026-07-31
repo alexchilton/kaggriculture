@@ -34,6 +34,12 @@ BASE_PRICE = {
     "EGG": 50, "MILK": 160, "WOOL": 200, "FERTILIZER": 100,
 }
 
+# Fertilizer doubles an ongoing crop's lifetime output, because the cap counts production
+# *events* and a fertilized event grants 2 units instead of 1. Non-ongoing crops fill their
+# watering window faster. Melon gains nothing -- its window already reaches max_yield unaided.
+# Measured season yields, plain -> fertilized: wheat 28->42, strawberry 6->12, tomato 8->16.
+FERTILIZER_HELPS = ("WHEAT", "CARROT", "STRAWBERRY", "TOMATO")
+
 CROPS = {
     "WHEAT":      {"seed": 10, "first_yield": 2, "ripe_day": 4,  "ongoing": False},
     "CARROT":     {"seed": 20, "first_yield": 2, "ripe_day": 3,  "ongoing": False},
@@ -81,8 +87,15 @@ PARAMS = {
     # wheat, and walk back. That is 4-6 actions plus travel per cow per day against wheat's ~1.5
     # per tile. Per-tile revenue rankings that ignore action cost are not decision-ready.
     #
-    # Worth revisiting with animals placed *on* the shed-access tiles, which would remove the
-    # fetch entirely. The machinery is all here and tested; only the tile count is zero.
+    # Two implementation bugs were found and fixed before accepting this: pastures were built
+    # without checking a $400 cow was affordable (leaving tiles empty while the bank hit $76), and
+    # collected fertilizer piled up unused because FERTILIZE always lost the priority contest.
+    # Fixing both moved cows=8 from 23% to 37% win rate -- still far below 73% with none.
+    #
+    # Worth revisiting with animals placed *on* the shed-access tiles, which removes the feed walk
+    # entirely, and with a wheat-funded ramp so cows are bought after cashflow exists rather than
+    # out of starting capital. The machinery is all here and works; only the count is zero, and the
+    # RL action space includes it so a policy can rediscover the tradeoff.
     "cow_tiles": 0,
     "strawberry_tiles": 0,
     # 25, and the route to that number is a lesson. Against `starter` 25 looked best; in mirror
@@ -98,6 +111,9 @@ PARAMS = {
     "plant_floor_frac": 0.45,
     # From this day on, sell everything regardless of price -- unsold stock scores nothing.
     "endgame_day": 28,
+    # Apply fertilizer only when it is free (collected from animals). Buying at $100 does not pay:
+    # one application covers 3 days of one tile, worth about +$30 of wheat.
+    "use_fertilizer": True,
 }
 
 LAND_PRICES = [1000, 2000, 4000]
@@ -163,10 +179,15 @@ def _crop_for_index(index, p, prices=None):
     return intended
 
 
-def _animal_job(tile, carried, shed):
+COW_COST = 400
+
+
+def _animal_job(tile, carried, shed, can_afford_cow=True):
     """What an animal tile needs. Returns (op, needs) where `needs` is an item to be carrying."""
     if tile is None:
-        return ("BUILD_PASTURE", None)
+        # Only claim the tile if a cow to put on it is actually affordable; an empty pasture is a
+        # tile removed from production for nothing.
+        return ("BUILD_PASTURE", None) if can_afford_cow else None
     if not isinstance(tile, dict):
         return None
     if tile.get("kind") == "WEED":
@@ -191,7 +212,7 @@ def _animal_job(tile, carried, shed):
     return None
 
 
-def _job_for_tile(tile, day, crop, has_seed, phase_ok):
+def _job_for_tile(tile, day, crop, has_seed, phase_ok, fertilizer_available=False):
     """What this tile needs, or None. Ordered by value: harvest, then water, then plant."""
     if tile is None:
         return "PLANT" if (has_seed and phase_ok) else None
@@ -214,6 +235,11 @@ def _job_for_tile(tile, day, crop, has_seed, phase_ok):
         return "HARVEST"
     if not tile.get("watered_today"):
         return "WATER"
+    # Fertilizer only pays on a watered day, so it comes after WATER, and only for crops that
+    # actually respond. `fertilized_until_day` is inclusive of today.
+    if fertilizer_available and tile["crop"] in FERTILIZER_HELPS:
+        if tile.get("fertilized_until_day", -1) < day:
+            return "FERTILIZE"
     return None
 
 
@@ -254,8 +280,10 @@ def _play(obs, p):
     shed_pressed = held >= SHED_CAP * 0.8
     endgame = day >= p["endgame_day"]
     for item, n in sorted(shed.items()):
-        if n <= 0 or item == "FERTILIZER":
+        if n <= 0:
             continue
+        if item == "FERTILIZER" and p["use_fertilizer"] and not endgame:
+            continue  # worth more applied to wheat than sold
         # Hold back feed: an unfed cow escapes after two days and the pasture is wasted.
         sellable = n
         if item == "WHEAT" and not endgame:
@@ -306,6 +334,12 @@ def _play(obs, p):
     # ---- unit assignment -----------------------------------------------------------------
     positions = [tuple(farm["farmer"])] + [tuple(p) for p in farm.get("hands", [])]
 
+    # Only ever spend fertilizer we were given for free by animals.
+    fert_available = p["use_fertilizer"] and (
+        shed.get("FERTILIZER", 0) > 0
+        or any(inv.get("FERTILIZER", 0) > 0 for inv in inventories)
+    )
+
     jobs = {}
     want_crop = {}
     needs_item = {}   # tile -> item the acting unit must be carrying
@@ -314,7 +348,7 @@ def _play(obs, p):
         if _is_animal_index(i, p):
             # Any unit could be asked to fetch feed, so judge the job against an empty hand and
             # let the carrier check below decide who can actually do it.
-            found = _animal_job(tile, {}, shed)
+            found = _animal_job(tile, {}, shed, can_afford_cow=money > COW_COST * 2)
             if found:
                 jobs[(x, y)] = found[0]
                 if found[1]:
@@ -325,10 +359,13 @@ def _play(obs, p):
             tile, day, crop,
             has_seed=seeds.get(crop, 0) > 0,
             phase_ok=_phase_ok(i, day, p),
+            fertilizer_available=fert_available,
         )
         if job:
             jobs[(x, y)] = job
             want_crop[(x, y)] = crop
+            if job == "FERTILIZE":
+                needs_item[(x, y)] = "FERTILIZER"
 
     actions = []
     claimed = set()
@@ -354,6 +391,15 @@ def _play(obs, p):
         target = min(candidates, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
         op = jobs[target]
 
+        # A unit already carrying fertilizer should spend it rather than walk past tiles that want
+        # it: fertilizer left in the shed overnight is wasted capital, and it was measured piling
+        # up to 7 units unused because FERTILIZE always lost the priority contest.
+        if carried.get("FERTILIZER", 0) > 0:
+            fert_targets = [t for t in candidates if jobs[t] == "FERTILIZE"]
+            if fert_targets:
+                target = min(fert_targets, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
+                op = jobs[target]
+
         # FEED and PLACE draw from the unit's own inventory, not the shed, and that inventory is
         # emptied every night. So a unit assigned one of those must first collect the item from a
         # shed-access tile.
@@ -362,7 +408,8 @@ def _play(obs, p):
             if pos in shed_tiles:
                 if shed.get(required, 0) >= 1:
                     claimed.add(target)
-                    actions.append(["PICKUP", required, 6 if required == "WHEAT" else 1])
+                    take = {"WHEAT": 6, "FERTILIZER": 4}.get(required, 1)
+                    actions.append(["PICKUP", required, take])
                     continue
                 actions.append(["PASS"])
                 continue
