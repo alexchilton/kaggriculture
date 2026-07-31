@@ -480,3 +480,152 @@ Two things need checking before relying on any of this for training. Money is `f
 but that needs testing rather than assuming. And the unit-slot loop is a data-dependent
 `while_loop`, which on GPU serialises up to 24 kernel launches; a fixed 24-iteration `scan` may
 invert the tradeoff there.
+
+
+## 10. Offline plan search on the fast simulator — a tie, from a worse starting point
+
+First use of the batched simulator for anything. Code in `kagg/search/`, driver
+`scripts/search_plans.py`, tests in `tests/test_search_{plan,executor,transfer}.py`.
+
+### What was searched, and what was rejected
+
+A **closed-loop farm plan** of 277 categorical genes: crop and planting phase for each of the 100
+tiles, target headcount for each of the 30 days, sell quantity per product per five-day block, a
+price floor per product, a harvest-ripeness dial per crop, the three land-purchase days, the day
+planting stops and the day everything is dumped. A deliberately mechanical interpreter
+(`kagg/search/executor.py`) carries the plan out and owns no strategy of its own: it splits the
+farmed tiles into one contiguous block per live unit and walks each unit to the nearest outstanding
+job in its own block. There is no crop priority, no filler crop, no sell cadence and no hiring
+formula to inherit.
+
+Raw per-turn action sequences were rejected on **transferability**, not size. An open-loop script
+assumes it knows where every unit is standing, and the simulator's documented hand-spawn divergence
+desynchronises it on the first hire. Beam search over per-day decisions was rejected because there
+is no partial score worth pruning on: the measured economics say money banked early is money not
+invested, so pruning on partial return prunes exactly the late-maturing, slow-ramp strategies the
+economics identify as the prize.
+
+CEM over a factored categorical distribution was chosen partly because the fitted distribution is
+itself the readable answer -- after the run, `p(tile i = MELON)` is a direct statement about that
+tile.
+
+### Two silent divergences the parity gate could not have caught
+
+Both found while building the interpreter, both invisible when broken:
+
+1. **Atomic PLANT.** The reference drops *every* PLANT for a crop when a turn's requests exceed the
+   seeds held; the simulator instead spends seeds greedily unit by unit. The parity harness never
+   exposed this because its random scripts drive **one** unit per player. Neutralised by never
+   requesting more plants than seeds held.
+2. **Market order slots.** The simulator settles each product with both players alternating; the
+   reference pairs the players' *i-th order*. They agree only if both players put the same product
+   in the same slot, so the agent emits a **fixed 8-slot order list** padded with
+   `["SELL", crop, 0]`, which `_parse_order` rejects while the slot still lines up. This also keeps
+   the list inside `maxMarketOrdersPerTurn`, which the simulator does not model at all.
+
+### Transfer, measured before trusting any search result
+
+Same plans, both implementations, weeds off, the reference's own unlock draw
+(`tests/test_search_transfer.py`):
+
+| seed | real | simulator | drift |
+|---|---|---|---|
+| 101 | $29,593 / $5,684 | $31,284 / $5,651 | +5.7% / -0.6% |
+| 202 | $29,377 / $4,304 | $31,061 / $4,181 | +5.7% / -2.9% |
+
+The residual is hand spawning. The simulator is optimistic by about 6% for the stronger side.
+
+### Opposition, and why it was calibrated first
+
+Round 1 searched against three hand-written plans; round 2 added round 1's winner. The three were
+checked in the **real** environment against `kagg.arena.pool.COMPETITIVE` first, because a weak
+field inflates everything:
+
+| opposition plan | win rate | mean bank |
+|---|---|---|
+| `melon_wheat` (the heuristic's shape in the plan language) | 72.2% | $28,567 |
+| `wheat_only` | 13.0% | $3,978 |
+| `carrot_small` | 11.1% | $4,939 |
+
+So the field was one genuinely strong opponent and two weak ones. Adding the round-1 winner in
+round 2 is what re-opened the discrimination: the population's best fell from a saturated 1.00
+against three opponents to 0.50 against four, and climbed back to 1.00 over sixteen generations.
+
+### Result — real environment, `COMPETITIVE` pool, both seatings
+
+| agent | seeds 400-411 | seeds 500-511 | ex-mirror (400 / 500) |
+|---|---|---|---|
+| heuristic (`kagg/agents/heuristic.py`) | 81.5% / $36,227 | 82.9% / $36,247 | 87.5% / 87.0% |
+| **searched plan** | **80.1% / $45,583** | **78.2% / $45,562** | **87.5% / 87.5%** |
+| `melon_wheat`, the search's starting point | 69.9% / $28,498 | — | 75.0% / — |
+
+216 games per cell (12 seeds x 2 seats x 9 opponents). Both agents are stable across the two seed
+sets to within $30 of mean bank, so the ~15% seed variance seen elsewhere is not in play at this
+sample size.
+
+**Read it as a tie, not a win and not a loss.** Against the eight opponents that are not the
+candidate itself, the searched plan and the heuristic are identical: both beat every pool member
+100% of the time and both lose to `contrarian` 100% of the time. The whole headline gap is the
+`mirror` column, where the searched plan draws against itself far more often (mirror 21% and 4%
+win, against the heuristic's 33% and 50%) -- and `CLAUDE.md` already records that a mirror match is
+not a best response and points the wrong way. Money is 26% higher, which counts for nothing on an
+Elo ladder and is recorded only because it is a large, stable difference.
+
+The thing that makes it interesting is the starting point: the same interpreter running the
+heuristic's own strategy scores 69.9%. Search closed a 10-point gap and produced a plan that
+contradicts the heuristic on almost every choice it makes.
+
+### What the search found, and where it disagrees with the heuristic
+
+The chosen plan owns 50 tiles (NW plus NE). On those 50:
+
+| crop | searched | heuristic |
+|---|---|---|
+| MELON | 20 | 25 |
+| CARROT | 6 | 0 |
+| STRAWBERRY | 5 | 0 (set to 0 "against theory") |
+| TOMATO | 5 | 0 |
+| WHEAT | 5 | 25 |
+| FALLOW | 9 | 0 |
+
+- **Wheat is nearly abandoned.** Five tiles of fifty, against the heuristic's "wheat fills every
+  tile not claimed". The economics doc's case for wheat was units per tile-season and market depth;
+  the search prefers three crops the heuristic sets to zero.
+- **Nine of fifty owned tiles are left fallow on purpose.** The heuristic farms everything it owns.
+- **NE is bought on day 0**, spending a third of the $3,000 start before any revenue exists, and
+  **SW and SE are never bought**. The heuristic gates land on 3x its price plus 80% of tiles
+  planted, which delays the first purchase to roughly day 6-12 and eventually buys all four
+  quadrants. Both halves of that are contradicted.
+- **Tomato is never sold before the dump day** -- its price floor came out at 1.1x base, which the
+  market cannot reach, so the floor is a hold. Deferred selling was rediscovered, per product,
+  rather than as the heuristic's single global `hold_days` window.
+- **Melon's floor came out at 0.0** -- sell at any price. The heuristic's 0.55 floor exists
+  specifically to stop melon being dumped at $7, and the search says that insurance costs more than
+  it saves when melon is only 40% of the farm rather than 100% of a quadrant.
+- **Strawberry is left to accumulate to its 4-unit cap before cutting**, where the heuristic
+  harvests ongoing crops eagerly so the cap never blocks production.
+- **Planting stops on day 20 and everything is dumped from day 24**, both earlier than the
+  heuristic's 28.
+- **Headcount averages about 8** across the season under the fitted distribution, which is the
+  number `scripts/tune_heuristic.py` independently converged on, and is markedly lower on days 0-2
+  and 26-29.
+
+Only the melon gene carries a strong signal in the fitted distribution: `p(MELON) = 0.33` per tile
+against a uniform 0.167, while every other crop and FALLOW sit near 0.13. Sixteen generations of
+192 is not enough to resolve 100 tile genes individually, so the specific scatter above is one
+sample from a distribution that is still mostly flat -- **the crop mix is the finding, the tile map
+is not**.
+
+### Honest limitations
+
+- **Selection degenerates to money once win rate saturates.** With three or four opponents the
+  elite set hits 1.00 win and the tie-break -- mean bank -- takes over. Round 2 delayed it; it did
+  not remove it. More opponents, or a rating rather than a win count, is the fix.
+- **The plan language cannot express DROP or PICKUP**, because the parity-gated simulator has no
+  such op. So a searched plan can only get produce into the shed at the nightly drop, capped at 100
+  items, while the heuristic drops mid-day and sells the same day. That is a structural handicap in
+  the substrate, not a choice of the search.
+- **Animals are absent** for the same reason.
+- **Nothing was searched against `contrarian`**, the only pool member that is not our own heuristic
+  wearing a hat, and the only one that beats both agents 100% of the time. That is the obvious next
+  target.
