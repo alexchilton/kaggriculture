@@ -7,10 +7,12 @@ Two-player farming sim, 720 turns, most money in the bank wins.
 
 ## Status
 
-**2026-07-31 — first agent submitted. Local score $43.5k against a $3.5k baseline.**
+**2026-07-31 — v5 submitted. 72% win rate against a five-strategy opponent pool.**
 
-Heuristic v4 (melon quadrant plus wheat) wins 100% seat-swapped against both built-in agents and
-clears the $20k kill criterion, so the economics model is vindicated. Submitted as ref 55143831.
+v4 scored $43.5k locally and then **lost on the ladder at 429.9**, because it had been tuned
+against `starter`, which does not compete for market prices. v5 is tuned against an opponent pool
+and selected on win rate. See `docs/experiment_log.md` — that failure is the most useful thing
+this project has learned so far.
 
 `kagg/arena/` runs seat-swapped matches, `kagg/economics/` models the market and per-tile
 production with exact live-env parity, `kagg/agents/` holds the playable agent. 42 tests pass.
@@ -76,11 +78,13 @@ data/             git-ignored scratch for replays and checkpoints
 3. ~~Charge routing cost against each crop~~ **dropped** — it falls out of the heuristic agent
    running in the arena, so a standalone model was redundant.
 4. ~~Heuristic agent, then a first leaderboard submission~~ **done** — v4, submitted.
-5. **Add animals and fertilizer to the agent.** The uncapped producer and the 2x yield multiplier
-   are both untouched, and they combine: animals emit free fertilizer daily.
-6. **Build the numpy-batched sim and its parity harness.** Required for search, IL and PPO.
-   JAX after parity is green, not before.
-7. **Pull the episode datasets for an opponent pool**, so tuning stops overfitting to `starter`.
+5. ~~Add animals and fertilizer~~ **built and switched off** — measured net negative because of
+   routing cost. Revisit with animals placed on shed-access tiles, which removes the feed walk.
+6. **Beat `melon_heavy`.** The one matchup v5 still loses (30%). Likely needs deferred selling so
+   melon is not dumped into a market the opponent has already flooded.
+7. ~~Opponent pool~~ **done** — `kagg.arena.evaluate`, five frozen competing strategies.
+8. **Build the numpy-batched sim and its parity harness.** Not started beyond a package skeleton.
+   Required for offline search, IL and PPO. JAX after parity is green, not before.
 
 ## Setup
 

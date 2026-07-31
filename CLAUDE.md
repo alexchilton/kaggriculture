@@ -37,6 +37,36 @@ That must not repeat.
 - `ret=0.00±0.00` means the reward is not reaching the algorithm. Treat it as a stop-everything signal.
 - Read the logs before theorising. The tidy narrative is usually wrong.
 
+## Lessons learned the hard way — do not repeat these
+
+Each of these cost real time or a wasted submission. Full detail in `docs/experiment_log.md`.
+
+- **Never tune or evaluate against `starter` alone.** It sells almost nothing, so the market is
+  never contested and every number is roughly **2x reality**. v4 scored $43.6k against `starter`,
+  $21.2k against a copy of itself, and then lost its ranked matches at a rating of 429.9.
+  Use `kagg.arena.evaluate` and the opponent pool.
+- **Select on win rate, not money.** The leaderboard is an Elo-style rating. A $43k win and a $4k
+  win score identically. Money is a fine dense training signal; it is the wrong selection criterion.
+- **A mirror match is not a best response.** Mirror answers "what is best if both sides play it",
+  which is a symmetric equilibrium. An Elo ladder rewards beating a *field*. Melon went 25 -> 12
+  -> 25 because a mirror sweep pointed the wrong way.
+- **Freeze the opponents.** Building pool opponents from the candidate's own parameters makes the
+  opposition move with the candidate. That produced a confounded result that fully reversed.
+- **Per-tile revenue rankings that ignore action cost are not decision-ready.** Cows measured
+  $725/tile against wheat's $452 and are still net negative, because they need 4-6 actions a day
+  plus a walk to the shed for feed. Routing was dropped as a standalone question; it came back.
+- **Tuning needs held-out seeds and resampling.** A fixed 3-seed objective reported +40% where
+  held-out seeds said +12.8%. And confirm a search winner on a fresh draw, or the winner's curse
+  makes it wander: 11 accepted moves in 14 generations for +1.6%.
+- **Seed variance is ~15%.** Identical parameters score $11.5k on one 8-seed set and $13.3k on
+  another. Always quote the seed range.
+- **Verify built artifacts actually run.** A hand-rolled `submission/main.py` spliced a docstring
+  over line 1, failed to import, and banked exactly the $3000 start. Use
+  `scripts/build_submission.py`, which refuses to ship an agent that cannot beat `starter`.
+- **Check whether a doc already answers the question.** The Elo scoring rule was already recorded
+  in `competition_brief.md` while `rl_feasibility.md` contradicted it. Two hours of "discovery"
+  was really an unresolved internal inconsistency.
+
 ## Kill criteria — committed up front
 
 These were agreed before any code was written, specifically so they cannot be rationalised away later.
