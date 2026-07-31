@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+replays/
+logs/
+*.pkl
+*.npz
+runs/
+wandb/
