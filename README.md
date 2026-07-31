@@ -15,7 +15,8 @@ opponent pool — three of them copied from agents that actually beat us — and
 rate**, since the ladder is Elo. See `docs/experiment_log.md`; that failure is the most useful
 thing this project has learned so far.
 
-Current: **81% win rate** against the pool. Ladder 555 (v4 was 526), against a field top of ~1400.
+Ladder: **v5 at 613.5**, against a 600 start and a field top of ~1400. v4, tuned against
+`starter`, scored 526.4 -- below the start. v6 is submitted and still converging.
 
 `kagg/arena/` runs seat-swapped matches, `kagg/economics/` models the market and per-tile
 production with exact live-env parity, `kagg/agents/` holds the playable agent. 42 tests pass.

@@ -52,7 +52,9 @@ random vs random    ->     0 / 0
 **The bar is on the floor.**
 The built-in `starter` baseline that most competitors will fork makes **$512 in 30 days**.
 Nobody had found the money as of day 1.
-Leaderboard is an Elo-style skill rating starting near 1000; top was 1406.8 on day 1.
+Leaderboard is an Elo-style skill rating. **New submissions start at 600**, not 1000 -- an
+earlier note here said "near 1000" and every judgement built on it read our results ~400 points
+too harshly. Top of the field was 1406.8 on day 1.
 
 **What the rating implies, spelled out** — because this was recorded here and then contradicted
 elsewhere in our own docs, which claimed money and win rate were "near-equivalent":

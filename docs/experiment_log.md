@@ -18,8 +18,12 @@ If you measure something, put it here.
 | 2 | v2 — fixed hiring and land timing | $11,296 | 3.2x |
 | 3 | v3 — ES-tuned parameters | $13,486 | 3.8x |
 | 4 | v4 — melon quadrant + wheat (**submitted, scored 429.9, lost**) | $43,540 | 12.4x |
-| 5 | v5 — opponent-pool tuned, price-aware (**submitted, 555**) | 72% win vs 5-strategy pool | |
-| 6 | **v6 — deferred selling, 8-strategy pool** | **90.6% win vs pool** | |
+| 5 | v5 — opponent-pool tuned, price-aware | **ladder 613.5** | first score above the 600 start |
+| 6 | v6 — deferred selling, 8-strategy pool | ladder 550.6 (unconverged) | 90.6% local |
+
+**Ladder submissions start at 600.** v4 at 526.4 was genuinely losing; v5 at 613.5 is genuinely
+winning, if only modestly. v6 is newest and its rating has settled least -- v5 itself read 555
+before rising to 613.5 with more games -- so it is not yet comparable.
 
 From v5 on, the headline number is **win rate against a fixed opponent pool**, not money, because
 the leaderboard is Elo and margin does not count.
@@ -225,3 +229,28 @@ Pool widened to eight, three copied from agents that actually beat us (`carrot_2
 `straw_small`), and a `max_tiles` parameter added to make small-farm play expressible. Carrot as a
 filler crop was tested directly: 68.3% against wheat's 73.3%, so it is not our answer, but it is
 now in the pool as an opponent.
+
+
+## 8. Deferred selling is a dominant strategy, not a pool artifact
+
+The worry was that `hold_days` only helps because every pool opponent dumps continuously -- i.e.
+that it exploits a blind spot we share with our own opponents. Tested head-to-head against the
+`melon_heavy` profile, varying **both** sides (12 seeds x 2 seats):
+
+| | opponent holds 0 | opponent holds 10 |
+|---|---|---|
+| **we hold 0** | 20.8% win (58% draws) | **0.0% win** |
+| **we hold 10** | **100.0% win** | 20.8% win (58% draws) |
+
+Whoever holds beats whoever does not, 100% to 0%. When both hold, it returns to the symmetric
+baseline. So it is a genuine **best response**, not an artifact -- and it is worth the most while
+the field does not hold, which the day-1 median average score of 670 suggests is the case.
+
+The corollary is that the edge decays if the field adopts it. It is worth banking now.
+
+**A methodological note.** The first version of this test reported *identical* numbers for both
+opponent settings, which is what exposed it as broken: `evaluate` runs matches in worker
+processes, and those re-import the module fresh, so mutating `pool.BASELINE` in the parent never
+reached them. Rerun in-process. That is the third test this session that looked green while
+proving nothing -- after the vacuous season-parity test and the `starter`-only tuning. **Ask what
+a passing test would look like if the mechanism were broken.**

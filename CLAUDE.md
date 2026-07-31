@@ -41,6 +41,12 @@ That must not repeat.
 
 Each of these cost real time or a wasted submission. Full detail in `docs/experiment_log.md`.
 
+- **The ladder starts at 600, not 1000.** Anything scored against the wrong baseline reads ~400
+  points too harshly. v4 at 526 was genuinely losing; v5 at 613 is genuinely winning.
+- **The opponent pool is diverse in crop allocation, not in play style.** Every member is
+  `heuristic.make_agent` with different dials -- same routing, hiring and sell cadence. It tests
+  robustness to crop mix and nothing else. Calling it "8 competing strategies" oversells it, and
+  the real opponents that beat us differed in *how* they played, not just what they planted.
 - **Never tune or evaluate against `starter` alone.** It sells almost nothing, so the market is
   never contested and every number is roughly **2x reality**. v4 scored $43.6k against `starter`,
   $21.2k against a copy of itself, and then lost its ranked matches at a rating of 429.9.
@@ -74,9 +80,19 @@ These were agreed before any code was written, specifically so they cannot be ra
 - Heuristic agent does not clear **$20k** final bank → the economics model is wrong, not the agent.
 - Fast-sim parity harness is not exact over 1000 random action sequences → **do not train on the fast sim**.
 - PPO explained variance does not pass **0.5** early → the frame is wrong, not the hyperparameters.
+  **Scope note:** this was written for the per-turn, 720-step, full-action-space policy. The
+  strategy env clears 0.89 easily, but it is a 30-step problem with 9 discrete heads and hand-built
+  features -- a far easier target. Clearing it there is *not* evidence the hard frame works.
 
 ## Things that are settled — do not relitigate without evidence
 
+- **SUPERSEDED 2026-07-31 for the strategy env — read this before the bullet below.**
+  `kagg/rl/env.py` makes one decision per *day*, so episodes are 30 steps, not 720. At that
+  length the credit-assignment argument for per-step decomposition no longer applies, and the
+  true objective is available directly: the ladder is an Elo rating, so **terminal win/loss
+  (+1/-1/0) with gamma 1.0 is what `scripts/train_rl.py` actually trains on.**
+  Money is logged but never rewarded. The bullet below still stands for any *per-turn* policy,
+  where 720-step credit assignment is the problem it was written about.
 - **Per-step bank delta is the reward, with gamma ≈ 1.0.** This is not reward shaping.
   See `docs/rl_feasibility.md` for the full argument.
   A future session will be tempted to "fix" this back to terminal-only because the Orbit Wars
