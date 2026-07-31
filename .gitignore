@@ -13,3 +13,4 @@ runs/
 wandb/
 .pytest_cache/
 data/
+!data/README.md

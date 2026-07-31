@@ -54,6 +54,23 @@ The built-in `starter` baseline that most competitors will fork makes **$512 in 
 Nobody had found the money as of day 1.
 Leaderboard is an Elo-style skill rating starting near 1000; top was 1406.8 on day 1.
 
+**What the rating implies, spelled out** — because this was recorded here and then contradicted
+elsewhere in our own docs, which claimed money and win rate were "near-equivalent":
+
+- The environment hands the framework **money** as the episode reward
+  (`kaggriculture.py` sets `s.reward` to the farm's bank), but the competition ranks by a rating
+  updated from **match outcomes**.
+- **Winning matters, margin does not.** A $43k win and a $4k win score the same.
+- Rank is **relative to whoever you are paired against**, so it drifts as the field improves even
+  if the agent does not change.
+- Therefore money is a good *training* signal — dense, and exactly decomposable into per-step bank
+  deltas — but the wrong **selection and evaluation** criterion. An endgame policy should maximise
+  win probability, which near a narrow lead means accepting variance a money-maximiser refuses.
+
+Re-measured 2026-07-31: top 1398, twentieth 1093, and the official episode index reports a
+**median average score of 670** for 864 archived episodes — essentially the starting rating, so
+most of the field is running near-baseline agents.
+
 ## Measured performance
 
 | Metric | Value | Note |
