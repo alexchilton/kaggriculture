@@ -87,7 +87,19 @@ def main():
 
             # Index 0 is the incumbent, re-scored on this generation's seeds so the comparison
             # is like-for-like rather than against a stale lucky draw.
-            top = max(range(len(candidates)), key=lambda i: scores[i])
+            # Confirm the winner on a *fresh* draw before accepting it. Without this, taking
+            # the best of POPULATION noisy estimates against an incumbent scored once biases
+            # every comparison upward -- the winner's curse -- and the search wanders without
+            # improving. Measured: 11 accepted moves in 14 generations for +1.6% total.
+            ranked = sorted(range(len(candidates)), key=lambda i: -scores[i])
+            top = ranked[0]
+            if top != 0:
+                confirm_seeds = tuple(rng.sample(SEED_POOL, SEEDS_PER_EVAL))
+                challenger, holder = pool.map(
+                    _evaluate, [(candidates[top], confirm_seeds), (incumbent, confirm_seeds)]
+                )
+                if challenger <= holder:
+                    top = 0
             if top == 0:
                 print(f"gen {gen:2d}  held  incumbent {scores[0]:9.0f}  (best child {max(scores[1:]):9.0f})")
             else:
