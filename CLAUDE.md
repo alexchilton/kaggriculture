@@ -96,25 +96,19 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
 These were agreed before any code was written, specifically so they cannot be rationalised away later.
 
 - Heuristic agent does not clear **$20k** final bank → the economics model is wrong, not the agent.
-- **The simulator models HALF the game. Read this before planning any training run.**
-  It implements 9 of the environment's 18 unit ops and 4 of its 6 market orders:
+- **The simulator now models the whole game: all 18 unit ops and all 6 market orders.**
+  It modelled 9 and 4 of them until 2026-08-01, and the missing half was the animal economy --
+  which is what actually wins games. Episode 89197802, the top two agents playing each other,
+  banked $106k and $113k against our `contrarian`'s ~$38k; the winner drew ~83% of its revenue from
+  milk and wool by converting bought wheat into animal products, and the runner-up traded wheat
+  with `BUY_PRODUCT`. Neither play was expressible, so anything trained then could only have become
+  a very good crop farmer.
 
-  | implemented | **missing** |
-  |---|---|
-  | PASS, NORTH, SOUTH, EAST, WEST | **PLACE, BUILD_PASTURE, BUILD_COOP** |
-  | WATER, HARVEST, PLANT, DIG | **FEED, CARE, COLLECT_FERTILIZER, FERTILIZE** |
-  | SELL, BUY_SEED, HIRE, BUY_LAND | **PICKUP, DROP**, **BUY_ANIMAL, BUY_PRODUCT** |
-
-  The missing half is the whole animal economy, and **that is what wins games**. Episode 89197802,
-  the top two agents playing each other, banked $106k and $113k against our `contrarian`'s ~$38k.
-  The winner drew 83% of its revenue from milk and wool, converting bought wheat into animal
-  products; the runner-up drew 81% from trading wheat with `BUY_PRODUCT`. Neither play is
-  expressible here. A policy trained on this simulator can only become a very good crop farmer.
-
-  **Parity does not mean coverage.** `parity.py` builds its scripts from `SCRIPT_OPS`, which lists
-  only the ops the simulator already has, so the gate cannot emit `FEED` and therefore cannot fail
-  on `FEED`. "300/300 full-length episodes exact" is a true statement about the subset. Before
-  quoting that number at anyone, quote this table with it.
+  **Parity does not imply coverage, and that is how this hid.** `parity.py` built its scripts from
+  `SCRIPT_OPS`, which listed only the ops the simulator already had, so the gate could not emit
+  `FEED` and therefore could not fail on `FEED`. "300/300 exact" was a true statement about a
+  subset. When adding an op, add it to `SCRIPT_OPS` and to `_dense_actions` in `tests/test_jax_sim.py`
+  in the same commit, or it is untested by construction.
 
 - Fast-sim parity harness is not exact over 1000 random action sequences → **do not train on the fast sim**.
   **Status 2026-07-31 (evening): PASSING. 300/300 full-length episodes exact**, across five
@@ -131,15 +125,15 @@ These were agreed before any code was written, specifically so they cannot be ra
     is what "8/12 under hiring" was. Agents submit one action per unit owned; the harness now does
     too. Hiring was never involved -- the same failure reproduced at 1/8 with hiring switched off.
 
-  The named suspect (the reference pairs the players' *i-th market order*, the sim settles per
-  product) is **real but not reachable by any agent we have**: replaying every pairing of
-  `contrarian`/`heuristic`/`rancher` over three seeds gives $0 of error, because agents emit sells
-  in a canonical product order. Fixing it needs an ordered order book in `Actions`. Left alone
-  deliberately; revisit if an agent's sell ordering ever becomes state-dependent, which a *learned*
-  policy's would.
+  **Update 2026-08-01: order slotting is fixed too.** It had been left alone as unreachable -- every
+  pairing of `contrarian`/`heuristic`/`rancher` gave $0 of error, because agents emit sells in a
+  canonical product order. Adding `BUY_PRODUCT` made it reachable on ordinary turns, since a buy
+  quotes at `inventory - 1` against a book the sells have already lifted. `Game._order_book` now
+  compacts a turn's orders into ten slots and `_process_market` walks them in lockstep, verified by
+  a 400-turn randomised differential test of the market phase alone against `kg._process_market`.
 
-  Three divergences remain deliberate: weed spawn sequence, shop unlock order and market order
-  slotting.
+  Two divergences remain deliberate, both RNG-stream artifacts neutralised in the gate: the weed
+  spawn sequence and the shop unlock order.
 - PPO explained variance does not pass **0.5** early → the frame is wrong, not the hyperparameters.
   **Scope note:** this was written for the per-turn, 720-step, full-action-space policy. The
   strategy env clears 0.89 easily, but it is a 30-step problem with 9 discrete heads and hand-built

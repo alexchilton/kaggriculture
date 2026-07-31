@@ -22,6 +22,7 @@ from kagg.sim import ops as O
 from kagg.sim.farm import (
     MAX_UNITS,
     N_CROPS,
+    SEED_COST,
     FarmState,
     buy_land,
     buy_seeds,
@@ -35,6 +36,7 @@ from kagg.sim.market import (
     I0,
     N_ANIMALS,
     N_PRODUCTS,
+    PRICE_FLOOR,
     PRODUCT_INDEX,
     price,
     price_of,
@@ -61,6 +63,17 @@ EPISODE_STEPS = 720
 LAST_STEP = EPISODE_STEPS - 2   # the last step the interpreter actually processes
 
 CROP_TO_PRODUCT = np.array([PRODUCT_INDEX[c] for c in CROPS], dtype=np.int64)
+
+# `maxMarketOrdersPerTurn`. The reference truncates each player's list to this before pairing them.
+MAX_ORDERS = 10
+
+# Order kinds, in the order an agent writes them. `_order_book` compacts a turn's orders into slots
+# using exactly this order, because the reference pairs the two players' i-th *orders* rather than
+# matching them up by product.
+(
+    ORDER_NONE, ORDER_SELL, ORDER_BUY_SEED, ORDER_BUY_PRODUCT, ORDER_BUY_ANIMAL,
+    ORDER_HIRE, ORDER_BUY_LAND,
+) = range(7)
 
 
 class Actions:
@@ -194,8 +207,8 @@ class Game:
                 O.dig(tiles, unit_pos, active & (op == O.DIG))
 
                 # ---- logistics and the animal economy ----------------------------------------
-                O.drop(unit_pos, active & (op == O.DROP), carried_u, farm.shed)
-                O.pickup(unit_pos, active & (op == O.PICKUP), item, qty, carried_u, farm.shed)
+                O.drop(tiles, unit_pos, active & (op == O.DROP), carried_u, farm.shed)
+                O.pickup(tiles, unit_pos, active & (op == O.PICKUP), item, qty, carried_u, farm.shed)
                 O.place(tiles, unit_pos, active & (op == O.PLACE), item, qty,
                         carried_u, farm.shed, day)
                 O.build(tiles, unit_pos, active & (op == O.BUILD_COOP), COOP)
@@ -218,80 +231,169 @@ class Game:
                         planted = O.plant(tiles, farm.unit_pos[:, u, :], want, c, day)
                         farm.seeds[:, c] -= planted.astype(np.int64)
 
-    def _process_market(self, actions):
-        """Settle sells one unit at a time with both players alternating, then buys.
+    def _order_book(self, actions):
+        """Compact this turn's orders into `[B, P, MAX_ORDERS]` op / item / qty arrays.
 
-        Mirrors `_process_market`: both players are quoted against the same pre-commit inventory
-        and commit in seat order, so seat 0 gets the better price on each contested unit.
+        `_process_market` walks the two players' order *lists* in lockstep, pairing their i-th
+        orders, so the simulator needs the same notion of a slot. Callers still supply the
+        convenient per-product arrays; this lays them out in the order an agent writes them --
+        sells, then seeds, then products, then animals, then HIRE, then BUY_LAND -- which is the
+        order `heuristic`, `contrarian`, `rancher` and `search/agent` all emit, and the order the
+        parity harness builds its market list in.
+
+        Anything past the tenth slot is dropped, exactly as `maxMarketOrdersPerTurn` does.
         """
-        remaining = actions.sell.copy()
+        b, p = self.batch, N_PLAYERS
+        cand_op, cand_item, cand_qty = [], [], []
 
-        for product in range(N_PRODUCTS):
-            if not remaining[:, :, product].any():
+        def add(op, item, qty):
+            cand_op.append(np.full((b, p), op, dtype=np.int64))
+            cand_item.append(np.full((b, p), item, dtype=np.int64))
+            cand_qty.append(qty)
+
+        for i in range(N_PRODUCTS):
+            add(ORDER_SELL, i, actions.sell[:, :, i])
+        for c in range(N_CROPS):
+            add(ORDER_BUY_SEED, c, actions.buy_seed[:, :, c])
+        for i in range(N_PRODUCTS):
+            add(ORDER_BUY_PRODUCT, i, actions.buy_product[:, :, i])
+        for a in range(N_ANIMALS):
+            add(ORDER_BUY_ANIMAL, a, actions.buy_animal[:, :, a])
+        add(ORDER_HIRE, 0, actions.hire.astype(np.int64))
+        add(ORDER_BUY_LAND, 0, actions.buy_land.astype(np.int64))
+
+        c_op = np.stack(cand_op, axis=2)
+        c_item = np.stack(cand_item, axis=2)
+        c_qty = np.stack(cand_qty, axis=2).astype(np.int64)
+
+        present = c_qty > 0
+        slot = np.cumsum(present, axis=2) - 1
+        keep = present & (slot < MAX_ORDERS)
+
+        op = np.zeros((b, p, MAX_ORDERS), dtype=np.int64)
+        item = np.zeros((b, p, MAX_ORDERS), dtype=np.int64)
+        qty = np.zeros((b, p, MAX_ORDERS), dtype=np.int64)
+        gi, pi, ki = np.nonzero(keep)
+        si = slot[gi, pi, ki]
+        op[gi, pi, si] = c_op[gi, pi, ki]
+        item[gi, pi, si] = c_item[gi, pi, ki]
+        qty[gi, pi, si] = c_qty[gi, pi, ki]
+        return op, item, qty
+
+    def _quote(self, op, item):
+        """[B] price each player would pay or receive for the next unit of its current order.
+
+        Every seat is quoted from the *same* pre-commit inventory: `_process_market` fills both
+        `quoted` entries before calling `_commit_unit` on either, which is why a contested unit
+        pays both seats alike, and why a same-slot buy is priced against the pre-sale book.
+        """
+        safe_product = np.clip(item, 0, N_PRODUCTS - 1)
+        sell_grid = price(self.inventory)                       # [B, N_PRODUCTS]
+        # BUY_PRODUCT quotes at the post-buy inventory, so a buy/sell round trip nets zero.
+        buy_grid = price(self.inventory - 1)
+        rows = np.arange(self.batch)
+
+        out = np.zeros(self.batch, dtype=np.float64)
+        out = np.where(op == ORDER_SELL, sell_grid[rows, safe_product], out)
+        out = np.where(op == ORDER_BUY_PRODUCT, buy_grid[rows, safe_product], out)
+        out = np.where(op == ORDER_BUY_SEED, SEED_COST[np.clip(item, 0, N_CROPS - 1)], out)
+        out = np.where(op == ORDER_BUY_ANIMAL, ANIMAL_COST[np.clip(item, 0, N_ANIMALS - 1)], out)
+        return out
+
+    def _commit(self, p, op, item, unit_price, live):
+        """Commit one unit of each live order for seat `p`. Returns [B] bool: did it go through?
+
+        Mirrors `_commit_unit`, including its failure semantics -- a sale with an empty shed or a
+        purchase that cannot be afforded returns False, and the caller then abandons the whole
+        remaining order rather than retrying it.
+        """
+        farm = self.farms[p]
+        rows = np.arange(self.batch)
+        safe_product = np.clip(item, 0, N_PRODUCTS - 1)
+
+        selling = live & (op == ORDER_SELL) & (farm.shed[rows, safe_product] > 0)
+        buying = live & (op == ORDER_BUY_PRODUCT) & (farm.money >= unit_price)
+        seeding = live & (op == ORDER_BUY_SEED) & (farm.money >= unit_price)
+        animaling = live & (op == ORDER_BUY_ANIMAL) & (farm.money >= unit_price)
+
+        if selling.any():
+            farm.money = np.where(selling, farm.money + unit_price, farm.money)
+            np.add.at(farm.shed, (rows[selling], safe_product[selling]), -1)
+            # A unit clearing at the floor pays out but does not deepen the glut.
+            deepens = selling & (unit_price > PRICE_FLOOR)
+            np.add.at(self.inventory, (rows[deepens], safe_product[deepens]), 1)
+
+        if buying.any():
+            farm.money = np.where(buying, farm.money - unit_price, farm.money)
+            np.add.at(farm.shed, (rows[buying], safe_product[buying]), 1)
+            np.add.at(self.inventory, (rows[buying], safe_product[buying]), -1)
+
+        if seeding.any():
+            farm.money = np.where(seeding, farm.money - unit_price, farm.money)
+            np.add.at(farm.seeds, (rows[seeding], np.clip(item, 0, N_CROPS - 1)[seeding]), 1)
+
+        if animaling.any():
+            farm.money = np.where(animaling, farm.money - unit_price, farm.money)
+            item_id = ANIMAL_ITEM[np.clip(item, 0, N_ANIMALS - 1)]
+            np.add.at(farm.shed, (rows[animaling], item_id[animaling]), 1)
+
+        return selling | buying | seeding | animaling
+
+    def _process_market(self, actions):
+        """Settle the turn's orders slot by slot, both players in lockstep.
+
+        This is a port of `_process_market`'s shape, not just its arithmetic. It walks the players'
+        order lists **by slot**, because that is what the reference pairs: the two players' i-th
+        orders trade against each other and against the same inventory. Settling all sells and then
+        all buys -- which this did until `BUY_PRODUCT` existed to expose it -- prices a same-slot
+        buy against a book that the sells have already lifted.
+
+        Within a slot, HIRE and BUY_LAND resolve once in seat order, then SELL and the BUY_* orders
+        settle one unit at a time until neither side can trade.
+        """
+        op, item, qty = self._order_book(actions)
+        remaining = qty.copy()
+
+        for slot in range(MAX_ORDERS):
+            sop = op[:, :, slot]
+            if not (sop != ORDER_NONE).any():
                 continue
-            for _ in range(int(remaining[:, :, product].max())):
-                if not remaining[:, :, product].any():
+            sitem = item[:, :, slot]
+            srem = remaining[:, :, slot].copy()
+
+            # Atomic orders resolve once, in seat order, and then the slot is spent.
+            for p in range(N_PLAYERS):
+                hiring = sop[:, p] == ORDER_HIRE
+                if hiring.any():
+                    hire(self.farms[p], hiring)
+                landing = sop[:, p] == ORDER_BUY_LAND
+                if landing.any():
+                    buy_land(self.farms[p], self.tiles[p], landing)
+            atomic = (sop == ORDER_HIRE) | (sop == ORDER_BUY_LAND)
+            srem = np.where(atomic, 0, srem)
+
+            # A malformed sub-op is dropped rather than retried: BUY_PRODUCT only accepts the two
+            # products the reference lists, and everything else in the slot is already valid.
+            bad = (sop == ORDER_BUY_PRODUCT) & ~BUYABLE[np.clip(sitem, 0, N_PRODUCTS - 1)]
+            srem = np.where(bad, 0, srem)
+
+            while True:
+                live = (srem > 0) & (sop != ORDER_NONE)
+                if not live.any():
                     break
-                # Quoted once per unit step, before either seat commits -- see `settle_sales`.
-                unit_price = price_of(product, self.inventory[:, product])
+                # Both seats quoted before either commits.
+                quoted = [self._quote(sop[:, p], sitem[:, p]) for p in range(N_PLAYERS)]
+                committed = np.zeros(self.batch, dtype=bool)
                 for p in range(N_PLAYERS):
-                    farm = self.farms[p]
-                    want = remaining[:, p, product] > 0
-                    have = farm.shed[:, product] > 0
-                    doing = want & have
-                    if not doing.any():
-                        continue
-                    farm.money = np.where(doing, farm.money + unit_price, farm.money)
-                    farm.shed[:, product] -= doing.astype(np.int64)
-                    remaining[:, p, product] -= doing.astype(np.int64)
-                    # A unit clearing at the floor pays out but does not deepen the glut.
-                    self.inventory[:, product] = np.where(
-                        doing & (unit_price > 1), self.inventory[:, product] + 1,
-                        self.inventory[:, product],
-                    )
+                    ok = self._commit(p, sop[:, p], sitem[:, p], quoted[p], live[:, p])
+                    srem[:, p] -= ok.astype(np.int64)
+                    # A failed commit abandons the rest of that order, as the reference does.
+                    srem[:, p] = np.where(live[:, p] & ~ok, 0, srem[:, p])
+                    committed |= ok
+                if not committed.any():
+                    break
 
-        for p in range(N_PLAYERS):
-            farm = self.farms[p]
-            for c in range(N_CROPS):
-                want = actions.buy_seed[:, p, c]
-                if want.any():
-                    buy_seeds(farm, c, want)
-
-            # BUY_PRODUCT: only WHEAT and FERTILIZER, quoted at the *post-buy* inventory so that a
-            # buy/sell round trip against an unchanged market nets zero, and it drains inventory
-            # rather than feeding it -- which is what makes wheat appreciate all season.
-            for product in range(N_PRODUCTS):
-                if not BUYABLE[product] or not actions.buy_product[:, p, product].any():
-                    continue
-                remaining = actions.buy_product[:, p, product].copy()
-                for _ in range(int(remaining.max())):
-                    unit_price = price_of(product, self.inventory[:, product] - 1)
-                    doing = (remaining > 0) & (farm.money >= unit_price)
-                    if not doing.any():
-                        break
-                    farm.money = np.where(doing, farm.money - unit_price, farm.money)
-                    farm.shed[:, product] += doing.astype(np.int64)
-                    self.inventory[:, product] -= doing.astype(np.int64)
-                    remaining -= doing.astype(np.int64)
-
-            # BUY_ANIMAL: a fixed price, and the animal lands in the shed rather than on a tile.
-            for a in range(N_ANIMALS):
-                want = actions.buy_animal[:, p, a]
-                if not want.any():
-                    continue
-                remaining = want.copy()
-                for _ in range(int(remaining.max())):
-                    doing = (remaining > 0) & (farm.money >= ANIMAL_COST[a])
-                    if not doing.any():
-                        break
-                    farm.money = np.where(doing, farm.money - ANIMAL_COST[a], farm.money)
-                    farm.shed[:, ANIMAL_ITEM[a]] += doing.astype(np.int64)
-                    remaining -= doing.astype(np.int64)
-
-            if actions.hire[:, p].any():
-                hire(self.farms[p], actions.hire[:, p])
-            if actions.buy_land[:, p].any():
-                buy_land(self.farms[p], self.tiles[p], actions.buy_land[:, p])
+            remaining[:, :, slot] = srem
 
     # ---- the loop -------------------------------------------------------------------------
 

@@ -33,11 +33,17 @@ def test_the_harness_never_acts_for_a_hand_the_farm_has_not_hired():
 
     wheat = CROP_INDEX["WHEAT"]
 
+    def unit(ops):
+        n = len(ops)
+        return (list(ops), [wheat] * n, [0] * n, [1] * n)
+
     def entry(ops, buy=None):
         return {
-            "units": [(list(ops), [wheat] * len(ops)), ([O.NOOP] * len(ops), [wheat] * len(ops))],
+            "units": [unit(ops), unit([O.NOOP] * len(ops))],
             "sell": [{}, {}],
             "buy_seed": [dict(buy or {}), {}],
+            "buy_product": [{}, {}],
+            "buy_animal": [{}, {}],
             "hire": [False, False],
             "buy_land": [False, False],
         }

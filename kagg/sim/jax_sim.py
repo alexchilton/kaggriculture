@@ -76,7 +76,18 @@ from kagg.sim import market as M  # noqa: E402
 from kagg.sim import ops as O  # noqa: E402
 from kagg.sim import tiles as T  # noqa: E402
 from kagg.sim import town as W  # noqa: E402
-from kagg.sim.game import LAST_STEP, N_PLAYERS  # noqa: E402
+from kagg.sim.game import (  # noqa: E402
+    LAST_STEP,
+    MAX_ORDERS,
+    N_PLAYERS,
+    ORDER_BUY_ANIMAL,
+    ORDER_BUY_LAND,
+    ORDER_BUY_PRODUCT,
+    ORDER_BUY_SEED,
+    ORDER_HIRE,
+    ORDER_NONE,
+    ORDER_SELL,
+)
 
 # ---- shapes and constants, all lifted straight from the numpy sim -------------------------------
 
@@ -140,10 +151,30 @@ for _y in range(BOARD):
 INITIAL_LOCKED = jnp.asarray(_locked0, dtype=bool)
 
 SHED_ACCESS = jnp.asarray(F.shed_access_tiles(), dtype=_I)      # [4, 2], NWSE order
+# The same four tiles as flat indices, for the shed-adjacency test that gates DROP/PICKUP/PLACE.
+SHED_TILES = jnp.asarray(O.SHED_TILES, dtype=_I)
+
+# ---- the animal economy ------------------------------------------------------------------------
+COOP, PASTURE = T.COOP, T.PASTURE
+NO_ANIMAL = T.NO_ANIMAL
+N_ITEMS = M.N_ITEMS
+N_ANIMALS = M.N_ANIMALS
+WHEAT_ITEM = O.WHEAT_ITEM
+FERT_ITEM = O.FERT_ITEM
+
+ANIMAL_STRUCTURE = jnp.asarray(T.ANIMAL_STRUCTURE, dtype=_I)
+ANIMAL_FIRST_YIELD_DAY = jnp.asarray(T.ANIMAL_FIRST_YIELD_DAY, dtype=_I)
+ANIMAL_INTERVAL = jnp.asarray(T.ANIMAL_INTERVAL, dtype=_I)
+ANIMAL_MAX_HELD = jnp.asarray(T.ANIMAL_MAX_HELD, dtype=_I)
+ANIMAL_TO_PRODUCT = jnp.asarray(T.ANIMAL_TO_PRODUCT, dtype=_I)
+ANIMAL_COST = jnp.asarray(M.ANIMAL_COST, dtype=_F)
+ANIMAL_ITEM = jnp.asarray(M.ANIMAL_ITEM, dtype=_I)
+BUYABLE = jnp.asarray(M.BUYABLE, dtype=bool)
 
 _ARANGE_UNITS = jnp.arange(MAX_UNITS, dtype=_I)
 _ARANGE_CROPS = jnp.arange(N_CROPS, dtype=_I)
 _ARANGE_PRODUCTS = jnp.arange(N_PRODUCTS, dtype=_I)
+_ARANGE_ITEMS = jnp.arange(N_ITEMS, dtype=_I)
 
 
 # ---- state ---------------------------------------------------------------------------------
@@ -165,6 +196,14 @@ class Tiles(NamedTuple):
     yield_units: jnp.ndarray
     max_lifespan_step: jnp.ndarray
     fertilized_until_day: jnp.ndarray
+    # Animal occupancy of a COOP/PASTURE tile; NO_ANIMAL means the structure stands empty.
+    animal: jnp.ndarray
+    placed_day: jnp.ndarray
+    consecutive_unfed: jnp.ndarray
+    fed_today: jnp.ndarray
+    cared_today: jnp.ndarray
+    fertilizer_available: jnp.ndarray
+    pending_care_bonus: jnp.ndarray
 
 
 class Farm(NamedTuple):
@@ -172,8 +211,8 @@ class Farm(NamedTuple):
 
     money: jnp.ndarray            # [B, P]                    float64
     seeds: jnp.ndarray            # [B, P, N_CROPS]
-    shed: jnp.ndarray             # [B, P, N_PRODUCTS]
-    carried: jnp.ndarray          # [B, P, MAX_UNITS, N_PRODUCTS]
+    shed: jnp.ndarray             # [B, P, N_ITEMS]  -- products *and* animals
+    carried: jnp.ndarray          # [B, P, MAX_UNITS, N_ITEMS]
     unit_pos: jnp.ndarray         # [B, P, MAX_UNITS, 2]      as (x, y)
     n_units: jnp.ndarray          # [B, P]
     hires_today: jnp.ndarray      # [B, P]
@@ -212,8 +251,12 @@ class Actions(NamedTuple):
 
     unit_op: jnp.ndarray
     unit_crop: jnp.ndarray
+    unit_item: jnp.ndarray
+    unit_qty: jnp.ndarray
     sell: jnp.ndarray
     buy_seed: jnp.ndarray
+    buy_product: jnp.ndarray
+    buy_animal: jnp.ndarray
     hire: jnp.ndarray
     buy_land: jnp.ndarray
 
@@ -223,8 +266,12 @@ def zero_actions(batch, players=N_PLAYERS):
     return Actions(
         unit_op=jnp.zeros((batch, players, MAX_UNITS), dtype=_I),
         unit_crop=jnp.zeros((batch, players, MAX_UNITS), dtype=_I),
+        unit_item=jnp.zeros((batch, players, MAX_UNITS), dtype=_I),
+        unit_qty=jnp.zeros((batch, players, MAX_UNITS), dtype=_I),
         sell=jnp.zeros((batch, players, N_PRODUCTS), dtype=_I),
         buy_seed=jnp.zeros((batch, players, N_CROPS), dtype=_I),
+        buy_product=jnp.zeros((batch, players, N_PRODUCTS), dtype=_I),
+        buy_animal=jnp.zeros((batch, players, N_ANIMALS), dtype=_I),
         hire=jnp.zeros((batch, players), dtype=bool),
         buy_land=jnp.zeros((batch, players), dtype=bool),
     )
@@ -235,8 +282,12 @@ def from_numpy_actions(actions, players=N_PLAYERS):
     return Actions(
         unit_op=jnp.asarray(actions.unit_op, dtype=_I),
         unit_crop=jnp.asarray(actions.unit_crop, dtype=_I),
+        unit_item=jnp.asarray(actions.unit_item, dtype=_I),
+        unit_qty=jnp.asarray(actions.unit_qty, dtype=_I),
         sell=jnp.asarray(actions.sell, dtype=_I),
         buy_seed=jnp.asarray(actions.buy_seed, dtype=_I),
+        buy_product=jnp.asarray(actions.buy_product, dtype=_I),
+        buy_animal=jnp.asarray(actions.buy_animal, dtype=_I),
         hire=jnp.asarray(actions.hire, dtype=bool),
         buy_land=jnp.asarray(actions.buy_land, dtype=bool),
     )
@@ -247,8 +298,12 @@ def _canonical(actions):
     return Actions(
         unit_op=actions.unit_op.astype(_I),
         unit_crop=actions.unit_crop.astype(_I),
+        unit_item=actions.unit_item.astype(_I),
+        unit_qty=actions.unit_qty.astype(_I),
         sell=actions.sell.astype(_I),
         buy_seed=actions.buy_seed.astype(_I),
+        buy_product=actions.buy_product.astype(_I),
+        buy_animal=actions.buy_animal.astype(_I),
         hire=actions.hire.astype(bool),
         buy_land=actions.buy_land.astype(bool),
     )
@@ -283,6 +338,13 @@ def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_
         yield_units=jnp.zeros(shape, dtype=_I),
         max_lifespan_step=jnp.full(shape, -1, dtype=_I),
         fertilized_until_day=jnp.full(shape, -1, dtype=_I),
+        animal=jnp.full(shape, NO_ANIMAL, dtype=_I),
+        placed_day=jnp.zeros(shape, dtype=_I),
+        consecutive_unfed=jnp.zeros(shape, dtype=_I),
+        fed_today=jnp.zeros(shape, dtype=bool),
+        cared_today=jnp.zeros(shape, dtype=bool),
+        fertilizer_available=jnp.zeros(shape, dtype=bool),
+        pending_care_bonus=jnp.zeros(shape, dtype=_I),
     )
     pos = jnp.stack(
         [
@@ -294,8 +356,8 @@ def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_
     farm = Farm(
         money=jnp.full((batch, players), starting_money, dtype=_F),
         seeds=jnp.zeros((batch, players, N_CROPS), dtype=_I),
-        shed=jnp.zeros((batch, players, N_PRODUCTS), dtype=_I),
-        carried=jnp.zeros((batch, players, MAX_UNITS, N_PRODUCTS), dtype=_I),
+        shed=jnp.zeros((batch, players, N_ITEMS), dtype=_I),
+        carried=jnp.zeros((batch, players, MAX_UNITS, N_ITEMS), dtype=_I),
         unit_pos=pos,
         n_units=jnp.ones((batch, players), dtype=_I),
         hires_today=jnp.zeros((batch, players), dtype=_I),
@@ -388,10 +450,12 @@ def _apply_unit_actions(tiles, farm, actions, day):
     blocked = demand > farm.seeds                                            # [B, P, N_CROPS]
 
     def body(u, carry):
-        tl, seeds, unit_pos, carried = carry
+        tl, seeds, unit_pos, carried, shed = carry
         active = lax.dynamic_index_in_dim(live, u, axis=2, keepdims=False)
         op = lax.dynamic_index_in_dim(actions.unit_op, u, axis=2, keepdims=False)
         want_crop = lax.dynamic_index_in_dim(actions.unit_crop, u, axis=2, keepdims=False)
+        want_item = lax.dynamic_index_in_dim(actions.unit_item, u, axis=2, keepdims=False)
+        want_qty = lax.dynamic_index_in_dim(actions.unit_qty, u, axis=2, keepdims=False)
         pos = lax.dynamic_index_in_dim(unit_pos, u, axis=2, keepdims=False)   # [B, P, 2]
 
         # --- movement: blocked by the board edge and by LOCKED tiles, otherwise silent -----
@@ -416,6 +480,17 @@ def _apply_unit_actions(tiles, farm, actions, day):
         units = _gather(tl.yield_units, idx)
         lifespan = _gather(tl.max_lifespan_step, idx)
         fert = _gather(tl.fertilized_until_day, idx)
+        animal = _gather(tl.animal, idx)
+        placed = _gather(tl.placed_day, idx)
+        unfed = _gather(tl.consecutive_unfed, idx)
+        fed = _gather(tl.fed_today, idx)
+        cared = _gather(tl.cared_today, idx)
+        fert_avail = _gather(tl.fertilizer_available, idx)
+        care_bonus = _gather(tl.pending_care_bonus, idx)
+        has_animal = animal != NO_ANIMAL
+        # Shed access is gated on an *unlocked* access tile: three of the four sit in quadrants
+        # that stay locked until bought, and hands spawn on exactly those.
+        on_shed = (idx[..., None] == SHED_TILES).any(axis=-1) & (kind != LOCKED)
 
         # --- WATER: the non-ongoing yield bonus lands only inside the window, once a day ----
         doable = active & (op == O.WATER) & (kind == PLANT) & (watered == 0)
@@ -428,6 +503,8 @@ def _apply_unit_actions(tiles, farm, actions, day):
         bonus = jnp.where(fert >= day, 2, 1)
         units = jnp.where(gains, jnp.minimum(MAX_YIELD[c], units + bonus), units)
 
+        carried_u = lax.dynamic_index_in_dim(carried, u, axis=2, keepdims=False)
+
         # --- HARVEST: non-ongoing crops come up with the harvest, ongoing ones stay --------
         c = jnp.where(kind == PLANT, jnp.clip(crop, 0, N_CROPS - 1), 0)
         age = day - planted_day
@@ -437,21 +514,57 @@ def _apply_unit_actions(tiles, farm, actions, day):
         )
         got = jnp.where(doable, units, 0)
         prod = CROP_TO_PRODUCT[c]
-        carried_u = lax.dynamic_index_in_dim(carried, u, axis=2, keepdims=False)
-        carried_u = carried_u + (_ARANGE_PRODUCTS == prod[..., None]).astype(_I) * got[..., None]
-        carried = lax.dynamic_update_slice_in_dim(carried, carried_u[:, :, None, :], u, axis=2)
+        carried_u = carried_u + (_ARANGE_ITEMS == prod[..., None]).astype(_I) * got[..., None]
         units = jnp.where(doable, 0, units)
         cleared = doable & ~ONGOING[c]
         kind = jnp.where(cleared, EMPTY, kind)
         crop = jnp.where(cleared, NO_CROP, crop)
         lifespan = jnp.where(cleared, -1, lifespan)
 
-        # --- DIG: clears weeds and plants alike ---------------------------------------------
-        doable = active & (op == O.DIG) & ((kind == WEED) | (kind == PLANT))
+        # --- HARVEST on an animal: the reference branches on the tile, not on the op --------
+        a_safe = jnp.where(has_animal, jnp.clip(animal, 0, len(ANIMAL_STRUCTURE) - 1), 0)
+        doable = active & (op == O.HARVEST) & has_animal & (units > 0)
+        got = jnp.where(doable, units, 0)
+        a_prod = ANIMAL_TO_PRODUCT[a_safe]
+        carried_u = carried_u + (_ARANGE_ITEMS == a_prod[..., None]).astype(_I) * got[..., None]
+        units = jnp.where(doable, 0, units)
+
+        # --- DIG: weeds, plants, and *empty* structures. A placed animal is untouchable -----
+        empty_structure = ((kind == COOP) | (kind == PASTURE)) & ~has_animal
+        doable = active & (op == O.DIG) & ((kind == WEED) | (kind == PLANT) | empty_structure)
         kind = jnp.where(doable, EMPTY, kind)
         crop = jnp.where(doable, NO_CROP, crop)
         units = jnp.where(doable, 0, units)
         lifespan = jnp.where(doable, -1, lifespan)
+
+        # --- BUILD_COOP / BUILD_PASTURE: free, instant, empty tiles only --------------------
+        for op_code, structure in ((O.BUILD_COOP, COOP), (O.BUILD_PASTURE, PASTURE)):
+            doable = active & (op == op_code) & (kind == EMPTY)
+            kind = jnp.where(doable, structure, kind)
+            animal = jnp.where(doable, NO_ANIMAL, animal)
+            units = jnp.where(doable, 0, units)
+            has_animal = animal != NO_ANIMAL
+
+        # --- FEED: one carried WHEAT, once per animal per day -------------------------------
+        held_wheat = carried_u[..., WHEAT_ITEM]
+        doable = active & (op == O.FEED) & has_animal & ~fed & (held_wheat > 0)
+        carried_u = carried_u - (_ARANGE_ITEMS == WHEAT_ITEM).astype(_I) * doable[..., None]
+        fed = fed | doable
+
+        # --- CARE: banks a bonus that only pays out on a fed production day -----------------
+        doable = active & (op == O.CARE) & has_animal & ~cared
+        cared = cared | doable
+
+        # --- COLLECT_FERTILIZER: one per animal per day, refreshed nightly ------------------
+        doable = active & (op == O.COLLECT_FERT) & has_animal & fert_avail
+        carried_u = carried_u + (_ARANGE_ITEMS == FERT_ITEM).astype(_I) * doable[..., None]
+        fert_avail = fert_avail & ~doable
+
+        # --- FERTILIZE: spend a carried FERTILIZER, active for day..day+2 -------------------
+        held_fert = carried_u[..., FERT_ITEM]
+        doable = active & (op == O.FERTILIZE) & (kind == PLANT) & (held_fert > 0)
+        carried_u = carried_u - (_ARANGE_ITEMS == FERT_ITEM).astype(_I) * doable[..., None]
+        fert = jnp.where(doable, jnp.maximum(fert, day + 2), fert)
 
         # --- PLANT: only on an empty tile, and only if a seed is actually in store ----------
         # A PLANT onto an occupied tile is a free no-op in the reference. Charging a seed for it
@@ -478,6 +591,62 @@ def _apply_unit_actions(tiles, farm, actions, day):
         spent = ((_ARANGE_CROPS == c[..., None]) & doable[..., None]).astype(_I)
         seeds = seeds - spent
 
+        # --- PLACE: an animal into a matching empty structure, else a partial shed drop -----
+        # The reference returns from the animal branch whenever the unit stands on a matching
+        # empty structure, even when the placement fails for want of the animal in hand, so the
+        # fall-through is gated on the structure and not on the placement succeeding.
+        animal_id = want_item - N_PRODUCTS
+        is_animal = active & (animal_id >= 0) & (animal_id < len(ANIMAL_STRUCTURE))
+        safe_animal = jnp.where(is_animal, jnp.clip(animal_id, 0, len(ANIMAL_STRUCTURE) - 1), 0)
+        structure_match = (
+            (op == O.PLACE) & is_animal & (kind == ANIMAL_STRUCTURE[safe_animal]) & ~has_animal
+        )
+        held_item = jnp.take_along_axis(
+            carried_u, jnp.clip(want_item, 0, N_ITEMS - 1)[..., None], axis=-1)[..., 0]
+        placing = structure_match & (held_item > 0)
+        carried_u = carried_u - (
+            (_ARANGE_ITEMS == jnp.clip(want_item, 0, N_ITEMS - 1)[..., None])
+            & placing[..., None]
+        ).astype(_I)
+        animal = jnp.where(placing, safe_animal, animal)
+        placed = jnp.where(placing, day, placed)
+        units = jnp.where(placing, 0, units)
+        unfed = jnp.where(placing, 0, unfed)
+        fed = fed & ~placing
+        cared = cared & ~placing
+        fert_avail = fert_avail & ~placing
+        care_bonus = jnp.where(placing, 0, care_bonus)
+        has_animal = animal != NO_ANIMAL
+
+        # --- PICKUP / DROP / PLACE-to-shed: everything that moves goods to or from the shed --
+        room = jnp.maximum(0, SHED_CAP - shed.sum(axis=-1, dtype=_I))
+        item_hot = (_ARANGE_ITEMS == jnp.clip(want_item, 0, N_ITEMS - 1)[..., None])
+
+        taking = active & (op == O.PICKUP) & on_shed & (want_qty > 0)
+        in_shed = jnp.take_along_axis(
+            shed, jnp.clip(want_item, 0, N_ITEMS - 1)[..., None], axis=-1)[..., 0]
+        take = jnp.where(taking, jnp.minimum(want_qty, in_shed), 0)
+        shed = shed - item_hot.astype(_I) * take[..., None]
+        carried_u = carried_u + item_hot.astype(_I) * take[..., None]
+
+        dropping = active & (op == O.PLACE) & ~structure_match & on_shed & (want_qty > 0)
+        held_item = jnp.take_along_axis(
+            carried_u, jnp.clip(want_item, 0, N_ITEMS - 1)[..., None], axis=-1)[..., 0]
+        give = jnp.where(dropping, jnp.minimum(jnp.minimum(want_qty, held_item), room), 0)
+        shed = shed + item_hot.astype(_I) * give[..., None]
+        carried_u = carried_u - item_hot.astype(_I) * give[..., None]
+
+        # DROP empties the whole load, item by item, and destroys whatever will not fit.
+        emptying = active & (op == O.DROP) & on_shed
+        for it in range(N_ITEMS):
+            have = jnp.where(emptying, carried_u[..., it], 0)
+            room = jnp.maximum(0, SHED_CAP - shed.sum(axis=-1, dtype=_I))
+            hot = (_ARANGE_ITEMS == it).astype(_I)
+            shed = shed + hot * jnp.minimum(have, room)[..., None]
+            carried_u = carried_u - hot * have[..., None]
+
+        carried = lax.dynamic_update_slice_in_dim(carried, carried_u[:, :, None, :], u, axis=2)
+
         tl = Tiles(
             kind=_scatter(tl.kind, idx, kind),
             crop=_scatter(tl.crop, idx, crop),
@@ -487,60 +656,161 @@ def _apply_unit_actions(tiles, farm, actions, day):
             yield_units=_scatter(tl.yield_units, idx, units),
             max_lifespan_step=_scatter(tl.max_lifespan_step, idx, lifespan),
             fertilized_until_day=_scatter(tl.fertilized_until_day, idx, fert),
+            animal=_scatter(tl.animal, idx, animal),
+            placed_day=_scatter(tl.placed_day, idx, placed),
+            consecutive_unfed=_scatter(tl.consecutive_unfed, idx, unfed),
+            fed_today=_scatter(tl.fed_today, idx, fed),
+            cared_today=_scatter(tl.cared_today, idx, cared),
+            fertilizer_available=_scatter(tl.fertilizer_available, idx, fert_avail),
+            pending_care_bonus=_scatter(tl.pending_care_bonus, idx, care_bonus),
         )
-        return tl, seeds, unit_pos, carried
+        return tl, seeds, unit_pos, carried, shed
 
     n_slots = jnp.max(farm.n_units)
-    tl, seeds, unit_pos, carried = lax.fori_loop(
-        0, n_slots, body, (tiles, farm.seeds, farm.unit_pos, farm.carried)
+    tl, seeds, unit_pos, carried, shed = lax.fori_loop(
+        0, n_slots, body, (tiles, farm.seeds, farm.unit_pos, farm.carried, farm.shed)
     )
-    return tl, farm._replace(seeds=seeds, unit_pos=unit_pos, carried=carried)
+    return tl, farm._replace(seeds=seeds, unit_pos=unit_pos, carried=carried, shed=shed)
 
 
 # ---- market ---------------------------------------------------------------------------------
 
 
-def _settle_sales(farm, inventory, sell):
-    """Settle sells one unit at a time, both players alternating, re-quoting after every unit.
+def _order_book(actions):
+    """Compact the turn's orders into `[B, P, MAX_ORDERS]` op/item/qty. Mirrors `Game._order_book`.
 
-    Both seats are quoted against the same pre-commit inventory and commit in seat order, so seat
-    0 takes the better price on each contested unit -- that asymmetry is in the reference and is
-    load-bearing, so the seat loop is unrolled rather than vectorized.
-
-    All nine products settle concurrently, which the numpy sim cannot do because it iterates
-    products in Python. They are independent: each has its own inventory column, shed column and
-    order book, and the only shared quantity is money, which only ever accumulates by addition.
-
-    The loop is a `while`, not a bounded `for`. The numpy sim runs `max(remaining)` iterations and
-    breaks early; a game that orders more than it holds simply spins. Terminating on
-    "nobody can still trade" reaches the identical fixed point and cannot be made to spin.
+    The reference pairs the two players' i-th *orders*, so the simulator needs the same notion of
+    a slot. Candidates are laid out in the order agents write them -- sells, seeds, products,
+    animals, HIRE, BUY_LAND -- and a running count gives each present order its slot. Orders past
+    the tenth are dropped, as `maxMarketOrdersPerTurn` does.
     """
-    remaining = jnp.maximum(sell, 0)
+    b, p = actions.hire.shape
+    ops, items, qtys = [], [], []
 
-    def cond(carry):
-        rem, shed, _money, _inv = carry
-        return jnp.any((rem > 0) & (shed > 0))
+    def add(kind, item_ids, qty):
+        ops.append(jnp.full(qty.shape, kind, dtype=_I))
+        items.append(jnp.broadcast_to(jnp.asarray(item_ids, dtype=_I), qty.shape))
+        qtys.append(qty.astype(_I))
 
-    def body(carry):
-        rem, shed, money, inv = carry
-        # One quote per unit step, taken before either seat commits: `_process_market` fills both
-        # seats' `quoted` entries from the same inventory and only then calls `_commit_unit` on
-        # each, so a contested unit pays both seats the same price and lifts inventory twice.
-        unit_price = price(inv)
-        for seat in range(rem.shape[1]):
-            doing = (rem[:, seat] > 0) & (shed[:, seat] > 0)     # [B, N_PRODUCTS]
-            gain = jnp.sum(jnp.where(doing, unit_price, 0), axis=-1).astype(_F)
-            money = money.at[:, seat].add(gain)
-            shed = shed.at[:, seat].add(-doing.astype(_I))
-            rem = rem.at[:, seat].add(-doing.astype(_I))
-            # A unit clearing at the floor pays out but does not deepen the glut.
-            inv = inv + (doing & (unit_price > PRICE_FLOOR)).astype(_I)
-        return rem, shed, money, inv
+    for i in range(N_PRODUCTS):
+        add(ORDER_SELL, i, actions.sell[:, :, i])
+    for c in range(N_CROPS):
+        add(ORDER_BUY_SEED, c, actions.buy_seed[:, :, c])
+    for i in range(N_PRODUCTS):
+        add(ORDER_BUY_PRODUCT, i, actions.buy_product[:, :, i])
+    for a in range(N_ANIMALS):
+        add(ORDER_BUY_ANIMAL, a, actions.buy_animal[:, :, a])
+    add(ORDER_HIRE, 0, actions.hire.astype(_I))
+    add(ORDER_BUY_LAND, 0, actions.buy_land.astype(_I))
 
-    _rem, shed, money, inventory = lax.while_loop(
-        cond, body, (remaining, farm.shed, farm.money, inventory)
-    )
-    return farm._replace(shed=shed, money=money), inventory
+    c_op = jnp.stack(ops, axis=2)
+    c_item = jnp.stack(items, axis=2)
+    c_qty = jnp.stack(qtys, axis=2)
+
+    present = c_qty > 0
+    slot = jnp.cumsum(present, axis=2) - 1
+    # Everything that does not earn a slot is scattered into a scratch column and dropped.
+    target = jnp.where(present & (slot < MAX_ORDERS), slot, MAX_ORDERS)
+    bi = jnp.arange(b)[:, None, None]
+    pi = jnp.arange(p)[None, :, None]
+
+    zeros = jnp.zeros((b, p, MAX_ORDERS + 1), dtype=_I)
+    op = zeros.at[bi, pi, target].set(c_op)[:, :, :MAX_ORDERS]
+    item = zeros.at[bi, pi, target].set(c_item)[:, :, :MAX_ORDERS]
+    qty = zeros.at[bi, pi, target].set(c_qty)[:, :, :MAX_ORDERS]
+    return op, item, qty
+
+
+def _process_market(farm, tiles, inventory, actions):
+    """Settle the turn's orders slot by slot, both players in lockstep.
+
+    A port of `_process_market`'s shape, not just its arithmetic: the reference walks the players'
+    order lists **by slot**, so the two players' i-th orders trade against each other and against
+    the same inventory. Settling all sells and then all buys prices a same-slot buy against a book
+    the sells have already lifted, which `BUY_PRODUCT` makes visible on ordinary turns.
+
+    The unit loop is a `while`, not a bounded `for`: it terminates on "nobody committed", which is
+    exactly the reference's `if not committed_any: break` and cannot be made to spin.
+    """
+    op_all, item_all, qty_all = _order_book(actions)
+
+    for slot in range(MAX_ORDERS):
+        sop = op_all[:, :, slot]
+        sitem = item_all[:, :, slot]
+        srem = qty_all[:, :, slot]
+
+        # Atomic orders resolve once, in seat order, and then the slot is spent.
+        farm = _hire(farm, sop == ORDER_HIRE)
+        farm, tiles = _buy_land(farm, tiles, sop == ORDER_BUY_LAND)
+        atomic = (sop == ORDER_HIRE) | (sop == ORDER_BUY_LAND)
+        # A malformed sub-op is dropped rather than retried: only two products are buyable.
+        bad = (sop == ORDER_BUY_PRODUCT) & ~BUYABLE[jnp.clip(sitem, 0, N_PRODUCTS - 1)]
+        srem = jnp.where(atomic | bad, 0, srem)
+
+        prod_idx = jnp.clip(sitem, 0, N_PRODUCTS - 1)
+
+        def cond(carry):
+            rem, _m, _s, _sd, _inv, progress = carry
+            return progress & jnp.any(rem > 0)
+
+        def body(carry):
+            rem, money, shed, seeds, inv, _p = carry
+            live = (rem > 0) & (sop != ORDER_NONE)
+
+            # Both seats quoted from the same pre-commit inventory, before either commits.
+            sell_q = jnp.take_along_axis(price(inv), prod_idx, axis=1).astype(_F)
+            buy_q = jnp.take_along_axis(price(inv - 1), prod_idx, axis=1).astype(_F)
+            quote = jnp.where(
+                sop == ORDER_SELL, sell_q,
+                jnp.where(
+                    sop == ORDER_BUY_PRODUCT, buy_q,
+                    jnp.where(
+                        sop == ORDER_BUY_SEED, SEED_COST[jnp.clip(sitem, 0, N_CROPS - 1)],
+                        jnp.where(
+                            sop == ORDER_BUY_ANIMAL,
+                            ANIMAL_COST[jnp.clip(sitem, 0, N_ANIMALS - 1)], 0.0))))
+
+            committed = jnp.zeros(rem.shape[0], dtype=bool)
+            for seat in range(N_PLAYERS):
+                op_s, item_s = sop[:, seat], sitem[:, seat]
+                live_s, q_s = live[:, seat], quote[:, seat]
+                prod_hot = (_ARANGE_PRODUCTS == prod_idx[:, seat][:, None])
+                item_hot = (_ARANGE_ITEMS == prod_idx[:, seat][:, None])
+                crop_hot = (_ARANGE_CROPS == jnp.clip(item_s, 0, N_CROPS - 1)[:, None])
+                animal_hot = (
+                    _ARANGE_ITEMS == ANIMAL_ITEM[jnp.clip(item_s, 0, N_ANIMALS - 1)][:, None])
+
+                have = jnp.sum(jnp.where(item_hot, shed[:, seat, :], 0), axis=-1)
+                afford = money[:, seat] >= q_s
+                selling = live_s & (op_s == ORDER_SELL) & (have > 0)
+                buying = live_s & (op_s == ORDER_BUY_PRODUCT) & afford
+                seeding = live_s & (op_s == ORDER_BUY_SEED) & afford
+                animaling = live_s & (op_s == ORDER_BUY_ANIMAL) & afford
+
+                spend = (buying | seeding | animaling).astype(_F) * q_s
+                money = money.at[:, seat].add(selling.astype(_F) * q_s - spend)
+                shed = shed.at[:, seat].add(
+                    item_hot.astype(_I) * (buying.astype(_I) - selling.astype(_I))[:, None]
+                    + animal_hot.astype(_I) * animaling.astype(_I)[:, None])
+                seeds = seeds.at[:, seat].add(crop_hot.astype(_I) * seeding.astype(_I)[:, None])
+                # A unit clearing at the floor pays out but does not deepen the glut.
+                inv = inv + prod_hot.astype(_I) * (
+                    (selling & (q_s > PRICE_FLOOR)).astype(_I) - buying.astype(_I))[:, None]
+
+                ok = selling | buying | seeding | animaling
+                committed = committed | ok
+                # A failed commit abandons the rest of that order, as the reference does.
+                rem = rem.at[:, seat].set(
+                    jnp.where(live_s & ~ok, 0, rem[:, seat] - ok.astype(_I)))
+            return rem, money, shed, seeds, inv, jnp.any(committed)
+
+        _rem, money, shed, seeds, inventory, _prog = lax.while_loop(
+            cond, body,
+            (srem, farm.money, farm.shed, farm.seeds, inventory, jnp.asarray(True)),
+        )
+        farm = farm._replace(money=money, shed=shed, seeds=seeds)
+
+    return farm, tiles, inventory
 
 
 def _buy_seeds(farm, buy_seed):
@@ -720,12 +990,12 @@ def _drop_to_shed(farm):
     clamped prefixes. 288 sequential Python steps collapse to one `cumsum`.
     """
     b, p = farm.money.shape
-    flat = farm.carried.reshape(b, p, MAX_UNITS * N_PRODUCTS)
+    flat = farm.carried.reshape(b, p, MAX_UNITS * N_ITEMS)
     start = jnp.sum(farm.shed, axis=-1, dtype=_I)[..., None]
     inclusive = jnp.cumsum(flat, axis=-1, dtype=_I)
     exclusive = inclusive - flat
     take = jnp.minimum(SHED_CAP, start + inclusive) - jnp.minimum(SHED_CAP, start + exclusive)
-    shed = farm.shed + take.reshape(b, p, MAX_UNITS, N_PRODUCTS).sum(axis=2, dtype=_I)
+    shed = farm.shed + take.reshape(b, p, MAX_UNITS, N_ITEMS).sum(axis=2, dtype=_I)
     return farm._replace(shed=shed)
 
 
@@ -741,8 +1011,56 @@ def _end_of_day(farm):
     )
 
 
+def _daily_refresh_animals(tiles, current_day):
+    """Port of `_daily_refresh_animals`. Order is load-bearing; see the numpy twin in `ops.py`.
+
+    Unfed twice and the animal escapes, leaving the bare structure. Production lands on the
+    interval from `first_yield_day`, capped at `max_held`. The care bonus is consumed only on a day
+    that both fed and produced, and a fresh one is banked only when the animal was cared for *and*
+    fed.
+    """
+    next_day = current_day + 1
+    has_animal = tiles.animal != NO_ANIMAL
+    fed = tiles.fed_today & has_animal
+
+    unfed = jnp.where(has_animal, jnp.where(fed, 0, tiles.consecutive_unfed + 1),
+                      tiles.consecutive_unfed)
+    escaped = has_animal & (unfed >= 2)
+
+    animal = jnp.where(escaped, NO_ANIMAL, tiles.animal)
+    units = jnp.where(escaped, 0, tiles.yield_units)
+    bonus_held = jnp.where(escaped, 0, tiles.pending_care_bonus)
+    unfed = jnp.where(escaped, 0, unfed)
+
+    live = has_animal & ~escaped
+    a = jnp.where(live, jnp.clip(animal, 0, len(ANIMAL_STRUCTURE) - 1), 0)
+
+    days_since = next_day - tiles.placed_day - ANIMAL_FIRST_YIELD_DAY[a]
+    interval = jnp.maximum(ANIMAL_INTERVAL[a], 1)
+    produces = live & (days_since >= 0) & ((days_since % interval) == 0)
+
+    bonus = jnp.where(produces & fed, bonus_held, 0)
+    units = jnp.where(produces, jnp.minimum(ANIMAL_MAX_HELD[a], units + 1 + bonus), units)
+    bonus_held = jnp.where(produces, 0, bonus_held)
+
+    banked = live & tiles.cared_today & fed
+    bonus_held = jnp.where(banked, bonus_held + 1, bonus_held)
+
+    return tiles._replace(
+        animal=animal,
+        yield_units=units,
+        consecutive_unfed=unfed,
+        pending_care_bonus=bonus_held,
+        fertilizer_available=jnp.where(live, True, tiles.fertilizer_available),
+        fed_today=jnp.where(live, False, tiles.fed_today),
+        cared_today=jnp.where(live, False, tiles.cared_today),
+    )
+
+
 def _night(tiles, farm, key, day, weed_chance):
     tiles = _daily_refresh_plants(tiles, day)
+    # `_end_of_day` refreshes plants and then animals, in that order, per farm.
+    tiles = _daily_refresh_animals(tiles, day)
     if weed_chance:
         key, sub = jax.random.split(key)
         roll = jax.random.uniform(sub, tiles.kind.shape)
@@ -768,10 +1086,9 @@ def step(state, actions, weed_chance=0.0):
 
     tiles, farm = _apply_unit_actions(state.tiles, state.farm, actions, day)
 
-    farm, inventory = _settle_sales(farm, state.inventory, actions.sell)
-    farm = _buy_seeds(farm, actions.buy_seed)
-    farm = _hire(farm, actions.hire)
-    farm, tiles = _buy_land(farm, tiles, actions.buy_land)
+    # One slot-paired pass now covers sells, seeds, products, animals, hiring and land, because
+    # the reference settles them together and their order relative to one another is observable.
+    farm, tiles, inventory = _process_market(farm, tiles, state.inventory, actions)
 
     inventory = inventory - _drain(state.step_index, day, state.unlock_day)
     tiles = _decay_plants(tiles, state.step_index)

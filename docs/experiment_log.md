@@ -747,3 +747,71 @@ Fixing it means replacing `Actions.sell` — a quantity per product — with an 
 touching `game.py`, `executor.py`, `jax_sim.py` and `parity.py`.
 **Do it before training a policy that sells**, because a learned policy's ordering is
 state-dependent and has no reason to stay canonical. Not before.
+
+## 15. The simulator was half a game — the animal economy, ported
+
+Reading a real ladder replay (episode 89197802, the top two agents head to head) exposed something
+the parity work had not: the simulator implemented **9 of the environment's 18 unit ops and 4 of
+its 6 market orders**, and the missing half was the entire animal economy.
+
+Both agents banked around $110k against `contrarian`'s $38k, and neither strategy was expressible:
+
+| | smlcr, $106,091 | yjhv buddies, $113,478 |
+|---|---|---|
+| shape | wheat trader | livestock converter |
+| animals | 7 cows, 4 sheep, 1 goose | 12 cows, 8 sheep |
+| wheat | buys 818 at median $37, offers 968 at median $44 | buys 849 at median $58, purely as feed |
+| revenue | ~81% wheat, ~17% fertilizer | ~83% animal products (milk 45%, wool 38%) |
+| selling | 425 turns, spread evenly across all 24 hours | 99 turns, concentrated at hour 1 |
+| idle | -- | **32% of all unit-actions are PASS** |
+
+Both ramp to 12 hands a day and hold, buy two extra quadrants by day 12, open melon-heavy and move
+to strawberry, and place their animals by day 14 and never touch them again.
+The macro fact underneath all of it: **the town drains wheat all season**, so inventory falls
+10,000 -> 9,009 and the price climbs $25 -> $56 monotonically. Wheat is an appreciating asset and
+the input to a $160 milk and $200 wool conversion. Neither agent farms it seriously.
+
+### Why the gate could never have caught it
+
+`parity.py` built its random scripts from `SCRIPT_OPS`, which listed exactly the ops the simulator
+already implemented. **A harness that cannot emit `FEED` cannot fail on `FEED`.** "300/300
+full-length episodes exact" was a true statement about a subset of the game, and it read as a
+statement about the game. Same shape as the single-unit harness, and the third time this pattern
+has cost real time.
+
+### What was added
+
+The 12-item shed vocabulary (animals live in the shed between `BUY_ANIMAL` and `PLACE`, and count
+against the 100-item cap), animal tile state, `PICKUP`/`DROP`/`PLACE`, `BUILD_COOP`/
+`BUILD_PASTURE`, `FEED`/`CARE`/`COLLECT_FERTILIZER`/`FERTILIZE`, the nightly animal refresh,
+`BUY_ANIMAL`, `BUY_PRODUCT` -- in both the numpy and the JAX simulator.
+
+**160/160 full-length episodes exact**, one unit through twelve-unit crews, with every op firing
+hard: PICKUP 59k, DROP 40k, PLACE 59k, FEED 70k, CARE 40k, COLLECT_FERTILIZER 40k, FERTILIZE 30k,
+BUILD 89k. JAX matches numpy field for field, 16/16. Whole suite 256/256.
+
+### Three bugs, and how each was found
+
+- **Order slotting, deferred as unreachable, became reachable.** `BUY_PRODUCT` quotes at
+  `inventory - 1`, so a buy and a sell of the same product in one turn interact and the reference's
+  pairing of the players' *i-th order* starts to matter. The first full-op run diverged at step 10
+  with `[1630, 1758]` against `[1629, 1759]` -- same total, one dollar moved between the seats.
+  `_order_book` now compacts a turn's orders into ten slots and `_process_market` walks them in
+  lockstep. A 400-turn randomised differential test of the market phase alone against
+  `kg._process_market` passes 400/400.
+- **DROP/PICKUP/PLACE ignored LOCKED tiles.** `_apply_unit_action` bails on a locked tile *before*
+  reaching those branches, and three of the four shed-access tiles sit in quadrants that stay
+  locked until bought -- and hands spawn on exactly those tiles. A whole crew could trade through
+  the shed from ground it did not own.
+- **PLACE fell through when it should have returned.** The reference returns from the animal branch
+  whenever the unit stands on a matching empty structure, even when the placement fails for want of
+  the animal in hand. Falling through banked the item instead.
+
+The last two were found by **bisecting op groups against the reference** rather than by reading:
+base 3/3, + structures 3/3, + PICKUP/DROP/PLACE **0/3**, + FEED/CARE/COLLECT 3/3, + FERTILIZE 3/3.
+Ten minutes, and it pointed at three ops instead of eighteen.
+
+### The rule this leaves behind
+
+Adding an op means adding it to `SCRIPT_OPS` **and** to `_dense_actions` in `tests/test_jax_sim.py`
+in the same commit. Otherwise it is untested by construction, and the suite will say so in green.

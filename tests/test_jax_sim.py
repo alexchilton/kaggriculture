@@ -16,7 +16,7 @@ import pytest
 from kagg.sim import ops as O
 from kagg.sim.farm import MAX_UNITS, N_CROPS, N_LAND, SHED_CAP
 from kagg.sim.game import Actions, Game
-from kagg.sim.market import N_PRODUCTS, PRODUCT_INDEX
+from kagg.sim.market import ANIMALS, ITEMS, N_ANIMALS, N_ITEMS, N_PRODUCTS, PRODUCT_INDEX
 from kagg.sim.parity import random_script
 from kagg.sim.tiles import CROPS
 
@@ -95,13 +95,19 @@ def _script_actions(scripts):
         for b, script in enumerate(scripts):
             entry = script[step]
             for p in range(2):
-                ops, crops = entry["units"][p]
+                ops, crops, items, qtys = entry["units"][p]
                 actions.unit_op[b, p, 0] = ops[0]
                 actions.unit_crop[b, p, 0] = crops[0]
+                actions.unit_item[b, p, 0] = items[0]
+                actions.unit_qty[b, p, 0] = qtys[0]
                 for item, n in entry["sell"][p].items():
                     actions.sell[b, p, PRODUCT_INDEX[item]] = n
                 for crop, n in entry["buy_seed"][p].items():
                     actions.buy_seed[b, p, CROPS.index(crop)] = n
+                for item, n in entry["buy_product"][p].items():
+                    actions.buy_product[b, p, PRODUCT_INDEX[item]] = n
+                for animal, n in entry["buy_animal"][p].items():
+                    actions.buy_animal[b, p, ANIMALS.index(animal)] = n
                 actions.hire[b, p] = entry["hire"][p]
                 actions.buy_land[b, p] = entry["buy_land"][p]
         return actions
@@ -117,22 +123,37 @@ def _dense_actions(rng, batch, steps, hire_rate=0.06, land_rate=0.004):
     the slot loop and the shed-overflow walk are exactly the two places where the JAX port
     restructures the numpy sim's control flow.
     """
-    weights = np.array([0.10, 0.06, 0.06, 0.06, 0.06, 0.28, 0.16, 0.14, 0.08])
+    # All eighteen ops, not just the nine crop ones. Restricting this pool to the ops the port
+    # already had is what let the JAX sim ship with no atomic-PLANT rule and pass 14/14.
+    weights = np.array([
+        0.06, 0.04, 0.04, 0.04, 0.04, 0.14, 0.10, 0.09, 0.05,   # crop game
+        0.06, 0.04, 0.06, 0.07, 0.04, 0.04, 0.03, 0.03, 0.03,   # logistics and animals
+    ])
     weights = weights / weights.sum()
-    ops_pool = np.array(
-        [O.NOOP, O.NORTH, O.SOUTH, O.EAST, O.WEST, O.WATER, O.HARVEST, O.PLANT_OP, O.DIG]
-    )
+    ops_pool = np.array([
+        O.NOOP, O.NORTH, O.SOUTH, O.EAST, O.WEST, O.WATER, O.HARVEST, O.PLANT_OP, O.DIG,
+        O.PICKUP, O.DROP, O.PLACE, O.FEED, O.CARE, O.COLLECT_FERT, O.FERTILIZE,
+        O.BUILD_COOP, O.BUILD_PASTURE,
+    ])
 
     frames = []
     for t in range(steps):
         a = Actions(batch)
         a.unit_op[:] = rng.choice(ops_pool, size=(batch, 2, MAX_UNITS), p=weights)
         a.unit_crop[:] = rng.integers(0, N_CROPS, size=(batch, 2, MAX_UNITS))
+        a.unit_item[:] = rng.integers(0, N_ITEMS, size=(batch, 2, MAX_UNITS))
+        a.unit_qty[:] = rng.integers(1, 4, size=(batch, 2, MAX_UNITS))
         a.sell[:] = np.where(
             rng.random((batch, 2, N_PRODUCTS)) < 0.12, rng.integers(0, 6, (batch, 2, N_PRODUCTS)), 0
         )
         a.buy_seed[:] = np.where(
             rng.random((batch, 2, N_CROPS)) < 0.25, rng.integers(1, 4, (batch, 2, N_CROPS)), 0
+        )
+        a.buy_product[:] = np.where(
+            rng.random((batch, 2, N_PRODUCTS)) < 0.10, rng.integers(1, 4, (batch, 2, N_PRODUCTS)), 0
+        )
+        a.buy_animal[:] = np.where(
+            rng.random((batch, 2, N_ANIMALS)) < 0.05, 1, 0
         )
         a.hire[:] = rng.random((batch, 2)) < hire_rate
         a.buy_land[:] = rng.random((batch, 2)) < land_rate
@@ -218,8 +239,8 @@ def test_shed_overflow_destroys_the_same_haul_as_the_numpy_sim(seed):
     game = Game(batch, weed_chance=0.0)
     state = jax_sim.reset(batch)
 
-    carried = rng.integers(0, 7, size=(batch, 2, MAX_UNITS, N_PRODUCTS))
-    shed = rng.integers(0, 12, size=(batch, 2, N_PRODUCTS))
+    carried = rng.integers(0, 7, size=(batch, 2, MAX_UNITS, N_ITEMS))
+    shed = rng.integers(0, 12, size=(batch, 2, N_ITEMS))
     assert carried.sum(axis=(2, 3)).min() > SHED_CAP, "the cap must actually bite"
 
     for p in range(2):

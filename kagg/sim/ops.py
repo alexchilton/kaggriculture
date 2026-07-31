@@ -199,24 +199,31 @@ def plant(state, pos, active, crop_id, day, turns_per_day=24):
 # ---- logistics: the shed, and what units carry -------------------------------------------------
 
 
-def shed_adjacent(pos):
-    """[B] bool: is the unit standing on one of the four shed-access tiles?
+def shed_adjacent(state, pos):
+    """[B] bool: is the unit on an *unlocked* shed-access tile?
 
-    `_is_shed_adjacent` gates DROP, PICKUP and PLACE's shed-drop branch. Note it tests the tile the
-    unit is *on*, not adjacency to a separate shed tile -- the shed is the 2x2 block's centre and
+    `_is_shed_adjacent` gates DROP, PICKUP and PLACE's shed-drop branch. It tests the tile the unit
+    is standing on, not adjacency to a separate shed tile -- the shed is the 2x2 block's centre and
     these four tiles are its access points.
+
+    The LOCKED test is not incidental. `_apply_unit_action` bails on a locked tile *before* it ever
+    reaches the DROP/PICKUP branches, and three of the four shed-access tiles sit in the NE, SW and
+    SE quadrants, which stay locked until the land is bought. Hands spawn on those tiles, so
+    omitting this lets a whole crew trade through the shed from ground it does not own.
     """
-    return np.isin(_tile_index(pos), SHED_TILES)
+    games = np.arange(state.batch)
+    idx = _tile_index(pos)
+    return np.isin(idx, SHED_TILES) & (state.kind[games, idx] != LOCKED)
 
 
-def drop(pos, active, carried_u, shed):
+def drop(state, pos, active, carried_u, shed):
     """DROP: empty this unit's whole inventory into the shed, under the 100-item cap.
 
     Overflow is **destroyed, not kept**: the reference deletes the inventory entry whether or not
     the whole stack fitted. Items are walked in a fixed order here rather than insertion order,
     which only differs if the cap binds part-way through one unit's load.
     """
-    doable = active & shed_adjacent(pos)
+    doable = active & shed_adjacent(state, pos)
     if not doable.any():
         return
     for item in range(N_ITEMS):
@@ -228,13 +235,13 @@ def drop(pos, active, carried_u, shed):
         carried_u[:, item] = np.where(doable, 0, carried_u[:, item])
 
 
-def pickup(pos, active, item, qty, carried_u, shed):
+def pickup(state, pos, active, item, qty, carried_u, shed):
     """PICKUP: take up to `qty` of one item out of the shed and into the unit's inventory.
 
     Unlike DROP this is not capped -- a unit's own inventory is uncapped during the day. Seeds
     never pass through here; PLANT consumes them straight from the farm's seed store.
     """
-    doable = active & shed_adjacent(pos) & (qty > 0)
+    doable = active & shed_adjacent(state, pos) & (qty > 0)
     if not doable.any():
         return
     games = np.arange(len(item))
@@ -264,12 +271,16 @@ def place(state, pos, active, item, qty, carried_u, shed, day):
     is_animal = active & (animal_id >= 0) & (animal_id < len(ANIMAL_STRUCTURE))
     safe_animal = np.where(is_animal, animal_id, 0)
 
-    on_match = (
+    # The reference returns from the animal branch whenever the unit is standing on a matching
+    # empty structure -- *even if the placement fails for want of the animal in hand*. So the
+    # fall-through to the shed drop is gated on the structure, not on the placement succeeding.
+    # Getting that wrong lets a unit standing on its own empty pasture bank the item instead.
+    structure_match = (
         is_animal
         & (kind == ANIMAL_STRUCTURE[safe_animal])
         & (state.animal[games, idx] == NO_ANIMAL)
-        & (carried_u[games, item] > 0)
     )
+    on_match = structure_match & (carried_u[games, item] > 0)
     if on_match.any():
         np.add.at(carried_u, (games[on_match], item[on_match]), -1)
         state.animal[games, idx] = np.where(on_match, safe_animal, state.animal[games, idx])
@@ -285,7 +296,7 @@ def place(state, pos, active, item, qty, carried_u, shed, day):
             on_match, 0, state.pending_care_bonus[games, idx])
 
     # Everything that did not become an animal placement falls through to the shed drop.
-    dropping = active & ~on_match & shed_adjacent(pos) & (qty > 0)
+    dropping = active & ~structure_match & shed_adjacent(state, pos) & (qty > 0)
     if not dropping.any():
         return
     have = carried_u[games, item]
