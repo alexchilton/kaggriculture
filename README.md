@@ -65,7 +65,7 @@ kagg/arena/       match running, and the opponent pool -- the measurement tools
 kagg/economics/   offline market and production models, parity-tested
 kagg/agents/      playable agents (heuristic.py is the current submission)
 kagg/rl/          Gymnasium env: one strategy decision per day, terminal win/loss reward
-kagg/sim/         numpy-batched simulator -- 1,032x, end-to-end parity exact
+kagg/sim/         batched simulator (numpy + JAX), 30-200x, end-to-end parity exact
 scripts/          benchmarks, analyses, tuner, RL training, submission builder
 submission/       generated; build with scripts/build_submission.py
 docs/             findings and decisions -- experiment_log.md first
@@ -113,8 +113,10 @@ not the hyperparameters. `ret=0.00 +/- 0.00` means reward is not reaching the al
 6. **Beat `melon_heavy`.** The one matchup v5 still loses (30%). Likely needs deferred selling so
    melon is not dumped into a market the opponent has already flooded.
 7. ~~Opponent pool~~ **done** — `kagg.arena.evaluate`, five frozen competing strategies.
-8. ~~Build the numpy-batched sim and its parity harness~~ **done** — 499k steps/sec (1,032x),
-   60/60 full-length episodes exact. Unlocks offline search, IL, and a per-turn PPO policy.
+8. ~~Build the numpy-batched sim and its parity harness~~ **done** — 60/60 full-length episodes
+   exact, 30-200x the reference on realistic workloads (an earlier "1,032x" was an idle-profile
+   measurement; see `docs/throughput_measurements.md`). A JAX port adds 3-10x on top at working
+   batch sizes and 26-42x at B=16384.
 9. **Use it**: offline search over action schedules, then imitation from the resulting teacher.
    This is the path past the heuristic's ceiling. JAX only if profiling says the env is still the
    bottleneck with a policy in the loop.

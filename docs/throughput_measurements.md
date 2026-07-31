@@ -57,3 +57,36 @@ enough to be competitive even with a fast sim.
 What multiprocessing *does* buy is a **proof-of-life run**: 100M steps in ~6.6 hours on the
 training box, enough to test the RL frame against the explained-variance kill criterion in
 `CLAUDE.md` before committing to the sim build.
+
+
+## Correction: the "1,032x" sim figure was an idle-profile measurement
+
+**Recorded 2026-07-31, after a JAX port measured the same code and could not reproduce it.**
+
+The 499,543 steps/sec (and a later 752k) quoted for the numpy sim were measured with **one live
+unit per player on an empty board**, issuing WATER against nothing. Almost every masked update hit
+its `if not active.any(): continue` shortcut. That is the sim's best case, not its working case.
+
+Measured again on the same machine, at B=512, with units actually planting:
+
+| live units per player | steps/sec |
+|---|---|
+| 1 (the original figure's shape) | 818,000 |
+| 8 | 571,000 |
+| 24 | 356,000 |
+
+And even that 24-unit figure is optimistic, because the units all start stacked on the spawn tile,
+so after the first one plants the rest hit the occupied-tile early exit. An independent measurement
+with units genuinely spread out and hiring each turn put the numpy sim at **~15,000 steps/sec** at
+B=512 -- though that run was taken while the machine was at load 200, which the same benchmark
+showed can move absolute numbers by up to 2x.
+
+**What to trust:** ratios, not absolutes. Absolute throughput on this Mac varies with machine load
+by up to 2x, so any single figure is only meaningful next to a control measured at the same time.
+The speedup over the reference environment is somewhere between **30x and 200x on realistic
+workloads**, not the 1,032x first recorded. That is still transformative -- a 1B-step run goes from
+66 hours to somewhere between 20 minutes and 2 hours -- but the headline number was wrong and was
+repeated in several places before being caught.
+
+**The lesson:** a benchmark whose workload does nothing measures the shortcut, not the code. State
+the workload alongside the number, always.
