@@ -342,3 +342,93 @@ Worth recording because each looked like a strategy result and was not:
 
 Each produced a flat, plausible-looking score curve across herd sizes. "Changing the parameter does
 nothing" is a bug signature, not a finding.
+
+## 11. The pool was still one strategy in eight hats — `contrarian`, and what it exposed
+
+Section 7 widened the pool from five members to eight and called it "eight competing strategies".
+It was not.
+Every member was `heuristic.make_agent()` with different dials: identical tile ordering, identical
+hiring curve, identical job priorities, identical sell cadence.
+The pool tested robustness to **crop mix** and to nothing else, which is precisely the axis the
+ladder losses were *not* on.
+
+`kagg/agents/contrarian.py` is one genuinely different agent, sharing no code and no decision rule
+with the heuristic.
+Four differences, each taken from a measurement rather than invented:
+
+- **It reads the opponent's board.** Both farms are fully visible; nothing else in the pool looks.
+  Melon is winner-take-all — only 158 units fit above `I0` before its `sq` glut curve puts the
+  price on the floor — so it takes melon while the opponent leaves it alone and switches to
+  strawberry once they commit.
+- **Compact routing.** Tiles are worked in order of distance to the nearest shed-access tile and
+  capped at 34, and land is bought for shed access rather than area (one extra quadrant only).
+- **It waters before it harvests** on the last day of the watering window, which the heuristic
+  does the other way round and which costs a unit per cycle.
+- **Per-product sell floors from the curve shape**, not a global `hold_days` window: melon is
+  dumped at 0.55 of base, strawberry is *held* above 1.85 of base.
+
+`kagg/arena/pool.py` grew a third spec form, `("module", "kagg.agents.contrarian")`, so a pool
+member can be any importable agent rather than only a dict of heuristic overrides.
+It stays picklable, which a closure would not.
+
+### What it measures
+
+12 seeds x 2 seatings, held out, and the whole table was then re-run on a second independent draw.
+
+| | seeds 300-311 | seeds 500-511 |
+|---|---|---|
+| heuristic vs the old 8-member pool | 92.2% | 93.2% |
+| **heuristic vs the pool with `contrarian` in it** | **81.9%** | **82.9%** |
+| `contrarian` vs the 8 heuristic-based members | 92.2%, $45,769 | 90.1%, $45,920 |
+| `contrarian` head to head vs the heuristic | **100.0%**, $37,401 vs $30,115 | **100.0%**, $36,840 vs $30,129 |
+
+**Adding one opponent costs the heuristic 10.3 points of measured win rate**, and it loses to that
+opponent 48 games out of 48.
+The pool was hiding a weakness, exactly as the ladder results implied it was: local win rate said
+92% while ranked matches said otherwise.
+
+`contrarian` also banks more against the same eight opponents than the heuristic does — $45.8k
+against $37.1k — while winning at the same rate, which is a reminder that the two are not the same
+question.
+
+### The bug that made the first version look hopeless, and the one that made it look clever
+
+Both are the same failure mode as section 10's: a plausible score that was really a defect.
+
+1. **Buying land silently abandoned ten growing tiles.** Unlocking a quadrant makes tiles *closer*
+   to the shed available, so a plain nearest-N set drops crops already in the ground; they go
+   unwatered and `_daily_refresh_plants` turns them into weeds two days later. Measured in a live
+   episode: land bought on day 7, ten weeds on day 9, and the agent scored **$9,052**. Keeping any
+   tile that is already growing took the same agent to **$42,460** against the same opponent.
+2. **The agent quit melon because it had successfully sold melon.** The contested test also read
+   market inventory, on the theory that inventory is a durable record of a rival's sales. It is
+   not: melon's `max_yield_day` is 12, so nobody can sell melon before day 12, while the last
+   melon planting that can ripen goes in around day 17. Inside the window where the decision is
+   live, an above-`I0` melon inventory is **always our own**. Cost: identical 92.2% win rate,
+   $39,885 mean bank against $45,769 without the clause.
+
+### The ablation, which is the actual case for reading the opponent
+
+Same 8 opponents, seeds 300-311:
+
+| variant | win rate | mean bank |
+|---|---|---|
+| reads the opponent's board | **92.2%** | $45,769 |
+| hard-wired to melon | 90.1% | $41,087 |
+| hard-wired to strawberry | 74.5% | $26,306 |
+
+Neither fixed choice is as good as the branch, and the gap is largest exactly where it should be:
+hard-wired melon collapses to $23.5k against `melon_heavy` and 29% against its own mirror, while
+the branch holds 100% and $37.3k against `melon_heavy`.
+
+Worth noting *why* the branch beats hard-wired strawberry by 17.7 points: the opponent's board is
+empty on day 0, so melon always goes in first and the plan moves to strawberry as their commitment
+becomes visible. The early melon cycle is what funds the season. A latched decision would lose it.
+
+### What this does not show
+
+`contrarian` has had no parameter search at all — every number in its `PARAMS` was reasoned from
+the market curves or copied from a measurement, and none was tuned.
+It has not been submitted, so there is no ladder evidence either way.
+And its 100% head-to-head record is against **one** opponent that it was, unavoidably, developed
+while looking at; the pool result is the less flattering and more trustworthy number.

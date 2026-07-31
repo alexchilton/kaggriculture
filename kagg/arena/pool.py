@@ -9,9 +9,16 @@ So: **never tune against `starter` alone.** Tune against opponents that actually
 prices, and select on **win rate**, because the leaderboard is an Elo-style rating where margin
 does not count.
 
-Pool members are `(name, spec)` where a spec is either a built-in agent name or a dict of
-parameter overrides for the heuristic agent. Dicts rather than closures so jobs stay picklable
-for worker processes.
+Pool members are `(name, spec)` where a spec is one of:
+
+- a built-in agent name, e.g. ``"starter"``;
+- a dict of parameter overrides for the heuristic agent;
+- ``("module", "kagg.agents.contrarian")``, imported and its ``agent`` used as-is.
+
+All three are picklable, which closures are not, and jobs have to survive the trip to a
+``ProcessPoolExecutor`` worker. The module form exists because a pool built only from heuristic
+dicts is a pool of one strategy: same routing, same hiring curve, same sell cadence, differing
+only in crop mix. See `docs/experiment_log.md` section 7.
 """
 
 from concurrent.futures import ProcessPoolExecutor
@@ -54,6 +61,11 @@ OPPONENTS = {
     "carrot_25": {"filler_crop": "CARROT", "melon_tiles": 0, "strawberry_tiles": 0, "max_tiles": 25},
     "small_farm": {"melon_tiles": 12, "strawberry_tiles": 0, "max_tiles": 25},
     "straw_small": {"strawberry_tiles": 10, "melon_tiles": 0, "max_tiles": 25},
+    # The one member that is not our own heuristic wearing a hat. Different routing (compact disc
+    # around the shed), different hiring curve, different job priorities (waters before it
+    # harvests), different sell rule (per-product floors from the market curve shape), and it is
+    # the only opponent whose crop choice depends on what the candidate is growing.
+    "contrarian": ("module", "kagg.agents.contrarian"),
     "starter": "starter",
     "pass": "pass",
 }
@@ -61,7 +73,7 @@ OPPONENTS = {
 # The pool worth optimising against: everything that actually competes for market prices.
 COMPETITIVE = (
     "mirror", "wheat_only", "melon_heavy", "strawberry", "cow_heavy",
-    "carrot_25", "small_farm", "straw_small",
+    "carrot_25", "small_farm", "straw_small", "contrarian",
 )
 
 
@@ -81,16 +93,32 @@ class PoolResult:
         return f"win {self.win_rate:.1%} (draw {self.draw_rate:.1%}) mean ${self.mean_money:.0f} | {rows}"
 
 
+def _build_candidate(candidate):
+    """The agent under test: heuristic overrides, or any other pool spec.
+
+    Callables are only ever created inside a worker, never sent to one.
+    """
+    from kagg.agents import heuristic
+
+    if isinstance(candidate, dict):
+        return heuristic.make_agent(candidate)
+    return _build(candidate, candidate)
+
+
 def _build(spec, candidate_params):
     """Turn a pool spec into something `env.run` accepts.
 
     Named strategies are built from the frozen BASELINE so they do not drift when the candidate
     changes; only MIRROR follows the candidate.
     """
+    from importlib import import_module
+
     from kagg.agents import heuristic
 
     if spec == MIRROR:
-        return heuristic.make_agent(candidate_params)
+        return _build_candidate(candidate_params)
+    if isinstance(spec, tuple) and spec and spec[0] == "module":
+        return import_module(spec[1]).agent
     if isinstance(spec, str):
         return spec
     return heuristic.make_agent({**BASELINE, **spec})
@@ -101,9 +129,7 @@ def _play(job):
     candidate_params, spec, seed, swapped = job
     from kaggle_environments import make
 
-    from kagg.agents import heuristic
-
-    me = heuristic.make_agent(candidate_params)
+    me = _build_candidate(candidate_params)
     them = _build(spec, candidate_params)
     pair = (them, me) if swapped else (me, them)
 
