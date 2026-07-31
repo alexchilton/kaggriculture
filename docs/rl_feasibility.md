@@ -69,8 +69,18 @@ Practical notes:
 - Use gamma slightly below 1 (0.999) only if variance demands it, and log the difference.
 - Selling early at a high price versus holding for a better one is handled correctly by the
   decomposition — a later sale simply produces its reward later.
-- Evaluate on **win rate**, train on **own money**. They are near-equivalent because the
-  opponent coupling is weak, but the leaderboard scores the former.
+- Evaluate on **win rate**, train on **own money**.
+
+> **Sharpened 2026-07-31 by looking at the actual leaderboard.**
+> Leaderboard scores are **Elo ratings around 1100-1400, not dollars**. The environment hands the
+> framework money as the episode reward, but the competition converts results into a relative
+> skill rating.
+> So money and win rate are **not** near-equivalent in the situations that decide close games:
+> once safely ahead, extra money buys nothing; near the end with a narrow gap, a risk-neutral
+> money-maximiser will decline the variance-increasing bet that flips a loss into a win.
+> Money remains the right *training* signal — it is dense and exactly decomposable — but
+> **selection, evaluation and any endgame policy must be driven by win probability.**
+> This is an open design question, not a settled one.
 
 ## Compute: VRAM is not the constraint
 

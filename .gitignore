@@ -11,3 +11,5 @@ logs/
 *.npz
 runs/
 wandb/
+.pytest_cache/
+data/

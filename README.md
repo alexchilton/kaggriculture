@@ -7,10 +7,16 @@ Two-player farming sim, 720 turns, most money in the bank wins.
 
 ## Status
 
-**2026-07-31 — arena built, economics question 5 answered, no agent yet.**
+**2026-07-31 — first agent submitted. Local score $43.5k against a $3.5k baseline.**
 
-`kagg/arena/` runs seat-swapped matches. `kagg/economics/` models the market and per-tile
-production, validated step-for-step against live episodes. 32 tests pass.
+Heuristic v4 (melon quadrant plus wheat) wins 100% seat-swapped against both built-in agents and
+clears the $20k kill criterion, so the economics model is vindicated. Submitted as ref 55143831.
+
+`kagg/arena/` runs seat-swapped matches, `kagg/economics/` models the market and per-tile
+production with exact live-env parity, `kagg/agents/` holds the playable agent. 42 tests pass.
+Full history of what was tried and what it scored: `docs/experiment_log.md`.
+
+**Leaderboard scoring is Elo (~1100-1400), not money.** Winning matters; margin does not.
 
 ## Start here
 
@@ -22,6 +28,7 @@ Read in this order:
 | `docs/competition_brief.md` | The competition, measured facts, deadlines, API |
 | `docs/rl_feasibility.md` | Why MaskablePPO + entity transformer, and the reward argument |
 | `docs/lessons_carried_over.md` | Orbit Wars post-mortem, distilled |
+| `docs/experiment_log.md` | **Every experiment, its score, and what it taught. Start here.** |
 | `docs/economics_q5_findings.md` | **Measured** economics: yields, drain, sell timing |
 | `docs/throughput_measurements.md` | **Measured** env throughput, and why the vectorized sim is mandatory |
 | `docs/economics_analysis.md` | Day-1 hypotheses. Its revenue-per-tile table is **wrong** — see above |
@@ -35,8 +42,9 @@ guessing, and trust it over the README where they disagree.
 
 1. **The bar is on the floor.** The built-in `starter` baseline, which most competitors will
    fork, finishes on **$3512 from a $3000 start** — $512 profit over a whole season.
-2. **No online search is possible.** `actTimeout` is 1 second per turn with only 12 seconds
-   banked for the entire episode. Everything expensive must happen offline.
+2. **No *per-turn* online search.** `actTimeout` is 1 second per turn, with **60 seconds** banked
+   for the whole episode (the source says 60; an earlier note said 12). Not enough for MCTS at
+   every one of 720 turns, but enough for a planning burst at turn 0.
 3. **Env throughput is the bottleneck, and worse than first recorded.**
    The training box does **484 steps/sec** single-threaded and **4,221** across 16 workers —
    the earlier 1163 figure was a dev-Mac rate and is 2.4x optimistic.
@@ -44,17 +52,35 @@ guessing, and trust it over the README where they disagree.
    would take **27 days**. The vectorized sim is required, not optional.
    See `docs/throughput_measurements.md`.
 
+## Layout
+
+```
+kagg/arena/       seat-swapped match running -- the measurement tool
+kagg/economics/   offline market and production models, parity-tested
+kagg/agents/      playable agents
+kagg/sim/         vectorized simulator (skeleton only)
+scripts/          benchmarks, analyses, the tuner, the submission builder
+submission/       generated; build with scripts/build_submission.py
+docs/             findings and decisions
+reference/        competition docs and the full env source (ground truth)
+data/             git-ignored scratch for replays and checkpoints
+```
+
 ## Next actions
 
 1. ~~Build `kagg/arena/`~~ **done** — fixed seeds, multiprocess, absolute money delta.
 2. ~~Answer verification question 5~~ **done** — `docs/economics_q5_findings.md`.
-   Neither "wheat volume" nor "premium timing": sell *late* (worth 1.16x-1.75x on every crop)
-   and pick crops on measured yields, which are ~10x below what the day-1 table claimed.
-3. **Charge routing cost against each crop** (old question 3). Every revenue figure in the
-   findings doc assumes the harvest gets harvested; movement is an action and units only act on
-   the tile they stand on. This is now the highest-value unknown.
-4. Heuristic agent, then a first leaderboard submission.
-5. Build the vectorized sim and its parity harness.
+   Neither "wheat volume" nor "premium timing": pick crops on measured yields, which are ~10x
+   below what the day-1 table claimed, and sell late where storage allows (worth 1.14x-1.26x --
+   an earlier 1.75x figure assumed storage the shed does not have).
+3. ~~Charge routing cost against each crop~~ **dropped** — it falls out of the heuristic agent
+   running in the arena, so a standalone model was redundant.
+4. ~~Heuristic agent, then a first leaderboard submission~~ **done** — v4, submitted.
+5. **Add animals and fertilizer to the agent.** The uncapped producer and the 2x yield multiplier
+   are both untouched, and they combine: animals emit free fertilizer daily.
+6. **Build the numpy-batched sim and its parity harness.** Required for search, IL and PPO.
+   JAX after parity is green, not before.
+7. **Pull the episode datasets for an opponent pool**, so tuning stops overfitting to `starter`.
 
 ## Setup
 
