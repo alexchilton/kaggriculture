@@ -13,6 +13,8 @@ Strategy comes from the measured economics in `docs/economics_q5_findings.md`:
   is $54/day, about $1.6k a season. Fourteen hands is $986/day -- roughly $29.6k a season, which
   exceeds what the extra labour earns. Parameter search moved this from 17 hands down to 8 and
   gained 40%; "labour is nearly free" is only true up to about ten hands.
+- **Melon alongside wheat.** Melon measured the best revenue per tile, but its market absorbs
+  only ~113 units at half base against a season drain of 140, so only a dozen tiles of it.
 - **Stagger the plantings.** The shed holds 100 items overnight and destroys the overflow, so a
   synchronised harvest across many tiles throws most of itself away. Each tile gets a phase and
   only plants on its phase day, which spreads the harvest evenly across the cycle.
@@ -21,13 +23,18 @@ Known gaps, all deliberate for a first version: no animals, no fertilizer, no pr
 sell-timing (it sells continuously rather than deferring), and no market denial.
 """
 
-CROP = "WHEAT"
-CYCLE_DAYS = 4          # wheat: plant, water through the window, harvest on day 4
-MAX_YIELD_DAY = 4
-FIRST_YIELD_DAY = 2
-SEED_COST = 10
 TURNS_PER_DAY = 24
 SHED_CAP = 100
+
+# Copied rather than imported so this file stays submittable on its own.
+# `ongoing` crops accumulate on the tile and survive harvest; the others clear the tile.
+CROPS = {
+    "WHEAT":      {"seed": 10, "first_yield": 2, "ripe_day": 4,  "ongoing": False},
+    "CARROT":     {"seed": 20, "first_yield": 2, "ripe_day": 3,  "ongoing": False},
+    "MELON":      {"seed": 80, "first_yield": 10, "ripe_day": 12, "ongoing": False},
+    "TOMATO":     {"seed": 50, "first_yield": 8, "ripe_day": 11, "ongoing": True},
+    "STRAWBERRY": {"seed": 100, "first_yield": 10, "ripe_day": 16, "ongoing": True},
+}
 
 # Everything worth tuning lives here so a search can optimise it without touching the policy.
 # See `scripts/tune_heuristic.py`; the values below are the best found so far.
@@ -42,6 +49,10 @@ PARAMS = {
     "productive_gate": 0.8,
     # Stagger plantings across the cycle to spread the harvest. 1 disables staggering.
     "phase_mod": 5,
+    # Tiles given to melon before the rest go to wheat. Melon measured the best revenue per
+    # tile ($2.9k/tile against wheat's ~$650) but its market is shallow -- 113 units at half
+    # base, against a season drain of only 140 -- so the count has to stay small.
+    "melon_tiles": 25,
 }
 
 LAND_PRICES = [1000, 2000, 4000]
@@ -84,24 +95,34 @@ def _phase_ok(tile_index, day):
     return mod <= 1 or tile_index % mod == day % mod
 
 
-def _job_for_tile(tile, day, has_seed, phase_ok):
+def _crop_for_index(index):
+    """Melon on the first block of tiles, wheat on the rest."""
+    return "MELON" if index < PARAMS["melon_tiles"] else "WHEAT"
+
+
+def _job_for_tile(tile, day, crop, has_seed, phase_ok):
     """What this tile needs, or None. Ordered by value: harvest, then water, then plant."""
     if tile is None:
-        return ("PLANT", None) if (has_seed and phase_ok) else None
+        return "PLANT" if (has_seed and phase_ok) else None
     if not isinstance(tile, dict):
         return None
     kind = tile.get("kind")
     if kind == "WEED":
-        return ("DIG", None)
+        return "DIG"
     if kind != "PLANT":
         return None
 
+    spec = CROPS[tile["crop"]]
     age = day - tile["planted_day"]
     units = tile.get("yield_units", 0)
-    if units > 0 and age >= MAX_YIELD_DAY:
-        return ("HARVEST", None)
+    # Ongoing crops are taken eagerly -- yield_units is a holding cap, so leaving units on the
+    # tile forfeits the next production event. Others are held until the watering window closes,
+    # because harvesting clears the tile and ends the cycle.
+    ripe = age >= spec["first_yield"] if spec["ongoing"] else age >= spec["ripe_day"]
+    if units > 0 and ripe:
+        return "HARVEST"
     if not tile.get("watered_today"):
-        return ("WATER", None)
+        return "WATER"
     return None
 
 
@@ -140,14 +161,16 @@ def agent(obs, config=None):
         if n > 0 and item != "FERTILIZER":
             market.append(["SELL", item, n])
 
-    # Seeds for the plantings that are actually due, plus a small buffer.
-    due = sum(
-        1 for i, (x, y) in enumerate(tiles)
-        if farm["tiles"][y][x] is None and _phase_ok(i, day)
-    )
-    want_seed = max(0, due + PARAMS["seed_buffer"] - seeds.get(CROP, 0))
-    if want_seed and money > SEED_COST * want_seed:
-        market.append(["BUY_SEED", CROP, want_seed])
+    # Seeds for the plantings that are actually due, per crop, plus a buffer.
+    due = {}
+    for i, (x, y) in enumerate(tiles):
+        if farm["tiles"][y][x] is None and _phase_ok(i, day):
+            crop = _crop_for_index(i)
+            due[crop] = due.get(crop, 0) + 1
+    for crop, n in sorted(due.items()):
+        want = max(0, n + PARAMS["seed_buffer"] - seeds.get(crop, 0))
+        if want and money > CROPS[crop]["seed"] * want * 2:
+            market.append(["BUY_SEED", crop, want])
 
     # Only expand once the current land is genuinely productive. Buying early starves seed
     # and wage spending, which was measured leaving 18 tiles idle all season.
@@ -166,21 +189,23 @@ def agent(obs, config=None):
 
     # ---- unit assignment -----------------------------------------------------------------
     positions = [tuple(farm["farmer"])] + [tuple(p) for p in farm.get("hands", [])]
-    seed_budget = seeds.get(CROP, 0)
 
     jobs = {}
+    want_crop = {}
     for i, (x, y) in enumerate(tiles):
+        crop = _crop_for_index(i)
         job = _job_for_tile(
-            farm["tiles"][y][x], day,
-            has_seed=seed_budget > 0,
+            farm["tiles"][y][x], day, crop,
+            has_seed=seeds.get(crop, 0) > 0,
             phase_ok=_phase_ok(i, day),
         )
         if job:
-            jobs[(x, y)] = job[0]
+            jobs[(x, y)] = job
+            want_crop[(x, y)] = crop
 
     actions = []
     claimed = set()
-    planned_plants = 0
+    planned = {}   # crop -> plants already requested this turn
     for unit_idx, pos in enumerate(positions):
         carried = inventories[unit_idx] if unit_idx < len(inventories) else {}
         carrying = sum(carried.values())
@@ -202,17 +227,18 @@ def agent(obs, config=None):
         target = min(candidates, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
         op = jobs[target]
 
-        # PLANT is atomically validated: if requests exceed seeds, ALL plant requests for the
-        # crop are dropped. So never ask for more than we hold.
-        if op == "PLANT" and planned_plants >= seed_budget:
+        # PLANT is atomically validated per crop: if requests exceed seeds held, ALL plant
+        # requests for that crop are dropped. So never ask for more than we hold.
+        crop = want_crop[target]
+        if op == "PLANT" and planned.get(crop, 0) >= seeds.get(crop, 0):
             actions.append(["PASS"])
             continue
 
         claimed.add(target)
         if pos == target:
-            actions.append(["PLANT", CROP] if op == "PLANT" else [op])
+            actions.append(["PLANT", crop] if op == "PLANT" else [op])
             if op == "PLANT":
-                planned_plants += 1
+                planned[crop] = planned.get(crop, 0) + 1
         else:
             actions.append([_step_toward(pos, target)])
 
