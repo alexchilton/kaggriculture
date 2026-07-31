@@ -7,7 +7,8 @@ Before doing anything substantive, read in this order:
 1. `docs/competition_brief.md` — what the competition is, measured facts, deadlines.
 2. `docs/rl_feasibility.md` — the agreed position on RL vs planning, and why.
 3. `docs/lessons_carried_over.md` — what went wrong in Orbit Wars and which lessons transfer.
-4. `docs/superpowers/specs/2026-07-31-kaggriculture-agent-design.md` — the design.
+4. `docs/economics_q5_findings.md` — the measured economics. Overrides the day-1 analysis.
+5. `docs/superpowers/specs/2026-07-31-kaggriculture-agent-design.md` — the design.
 
 `reference/` holds the competition docs and the full environment source (`kaggriculture.py`).
 The env source is the ground truth for every rule question.
@@ -53,6 +54,12 @@ These were agreed before any code was written, specifically so they cannot be ra
 - **Legality masking is fine and expected.** MaskablePPO is the intended trainer.
   The Orbit Wars warning was about masking no-op to *force* action, which is a quality judgment.
   Masking illegal ops is a legality fact and is explicitly blessed by our own post-mortem.
+- **Ongoing crops yield `max_yield` once per lifetime, not per day.** Tomato is 8 units per tile
+  per *season*, strawberry 6 — not 4.0 and 2.0 per day as the Object Types table reads.
+  Animals are the reverse: no lifetime cap, so a goose gives 26 eggs a season against
+  `max_held` of 4.
+  Pinned by `tests/test_production.py`. Do not re-derive these from the published tables;
+  the tables are misleading and cost this project a day-1 wrong turn.
 - **A heuristic agent is a teacher and a sparring partner, never the final policy.**
   This is the correction to the Orbit Wars failure where heuristics became the policy and capped the ceiling.
 
@@ -64,7 +71,10 @@ These were agreed before any code was written, specifically so they cannot be ra
   vLLM 0.23.0 compiled extension and must not be upgraded. Create a separate venv for this project.
 - Make sure vLLM is not running during training runs or it will hold the VRAM.
 - VRAM is not the bottleneck (see `docs/rl_feasibility.md`). Env throughput is.
-- **Unmeasured:** CPU core count and system RAM on that box. Measure both when it is next powered on.
+- **Measured 2026-07-31:** 16 CPU cores and 13 GB RAM visible to WSL2 (the RAM figure is WSL2's
+  default cap, raisable via `.wslconfig` if the host has more).
+  Direct WSL2 SSH on port 2222 was timing out; the PowerShell fallback with `wsl bash -c "..."`
+  worked, as the global CLAUDE.md warns.
 
 ## Kaggle
 

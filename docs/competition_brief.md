@@ -72,11 +72,17 @@ From `reference/kaggriculture.json` and `kaggle_environments/schemas.json`:
 | Setting | Value |
 |---|---|
 | `actTimeout` | **1 second per turn** |
-| `remainingOverageTime` | **12 seconds banked for the entire episode** |
+| `remainingOverageTime` | **60 seconds banked for the entire episode** |
 | `runTimeout` | 1200 seconds for the whole episode |
 
-**There is no room for online search.**
-Deep MCTS or per-turn planning is structurally impossible.
+> **Corrected 2026-07-31.** This table previously recorded 12 seconds of overage.
+> `reference/kaggriculture.json:128` says **60**, and CLAUDE.md's rule is that the source wins.
+> Five times the banked budget assumed. Still no per-turn MCTS across 720 turns, but 60 seconds
+> is enough for a **several-second planning burst at turn 0, or a shorter one every few days** —
+> which reopens offline-style search as a legal inference-time tool rather than ruling it out.
+
+**There is no room for *per-turn* online search.**
+Deep MCTS at every one of 720 turns is structurally impossible.
 A neural network forward pass (~1-5 ms) fits trivially.
 Any expensive computation must happen offline and be compiled into either a
 static schedule or network weights.

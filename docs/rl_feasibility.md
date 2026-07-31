@@ -76,6 +76,10 @@ Practical notes:
 
 The training box is an RTX 3080 Laptop with **16GB VRAM**, which is ample.
 
+> **But VRAM being ample is not the same as the box being adequate.** With the Python env the
+> CPU caps throughput at 4,221 steps/sec, which is 27 days for a 10B-step run. Whether a single
+> 3080 is competitive at all is an open question, and renting GPU time should stay on the table.
+
 | Item | Estimate |
 |---|---|
 | Entity transformer, d_model 256, 6 layers, ~120 tokens | ~10M params |
@@ -98,8 +102,12 @@ The post-mortem's own compute section states it plainly:
 
 These are different from last time, and these are what to watch.
 
-1. **Env throughput.** 1163 steps/sec of pure Python is the real constraint.
-   This is why the design ports the simulator to a vectorized implementation.
+1. **Env throughput.** Measured 2026-07-31 on the training box: **484 steps/sec**
+   single-threaded, **4,221 steps/sec** across 16 workers. The earlier 1163 figure was a
+   dev-Mac rate. 10B steps — what competitive runs in the comparable competition used — is
+   **27 days** at that rate, so the vectorized sim is **required, not merely desirable**, and
+   its target is ~100k steps/sec. `env.run()` also cannot batch policy inference across envs,
+   so the current harness cannot feed the GPU at all. See `docs/throughput_measurements.md`.
    The post-mortem: *"A fast env is the biggest multiplier and is a code problem, not a hardware problem."*
 2. **Long-horizon credit assignment.** 720 steps, with planting decisions paying out 2-10 days later.
    Mitigated by the exact reward decomposition above, but watch explained variance.
@@ -108,7 +116,10 @@ These are different from last time, and these are what to watch.
    See the design doc for the proposed factorization.
 4. **Parity drift** between the fast sim and the reference env. A divergent sim makes every
    downstream result fiction. Hence the hard gate in `CLAUDE.md`.
-5. **Unmeasured CPU core count and RAM** on the training box.
+5. ~~Unmeasured CPU core count and RAM on the training box.~~ **Measured:** AMD Ryzen 9
+   5900HX (8 cores / 16 threads), 13 GB RAM in WSL2, RTX 3080 Laptop 16GB.
+   The CPU is 2.2x slower per core than the dev Mac, so it is a weaker training box than
+   assumed when this document was written.
 
 ## What the friend is doing
 

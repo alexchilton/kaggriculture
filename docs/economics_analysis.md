@@ -1,5 +1,19 @@
 # Kaggriculture — Economics Analysis
 
+> [!WARNING]
+> **Superseded in part on 2026-07-31 by `docs/economics_q5_findings.md`.**
+>
+> The "Revenue per tile-day" table below is **wrong**.
+> It reads the Object Types "Max yield / tile / DAY" column as a daily rate, but for ongoing
+> crops that column is a *lifetime* total: `_daily_refresh_plants` stops producing once
+> `production_count > max_yield`.
+> Tomato is overstated 15x and strawberry 10x.
+> Measured per-tile yields are in the findings document, and pinned by
+> `tests/test_production.py`.
+>
+> Question 5 is **answered**. The rest of this document is kept as the day-1 reasoning, since
+> its four-constraints framing and its PvP section still stand.
+
 **Status: day-1 desk analysis. Arithmetic off the published tables, not yet simulated.**
 
 Everything marked `[HYPOTHESIS]` needs confirming against the simulator before any of it is
@@ -37,6 +51,15 @@ resetting each morning. With the default multiplier:
 Twelve hands cost **$376 per day** and buy **288 extra actions per day**.
 That is roughly **$1.30 per action**, against actions that move $20+ of product.
 
+> **PARTLY REFUTED 2026-07-31 by measurement.**
+> The per-day arithmetic above is right, but "close to free" ignores that you pay it **every one
+> of the 30 days**. Twelve hands is $376/day = **$11,280 a season**; fourteen is $986/day =
+> **$29,580**, which is more than the extra labour earns.
+> Parameter search on the heuristic agent moved hiring *down* from 17 hands to 8 and gained
+> ~13% on held-out seeds.
+> Eight hands ($54/day, ~$1.6k a season) is close to free. Fourteen is ruinous.
+> The cliff is steep because the cost is Fibonacci: hires 13 and 14 alone cost $610/day.
+
 `[HYPOTHESIS]` Aggressive hiring is close to free money and most competitors will underhire.
 The real cost of a hand is not the fee, it is that you must **route** it.
 Movement is an action, and WATER / HARVEST / FEED / CARE only apply to the tile the unit occupies.
@@ -49,6 +72,13 @@ Affordable. The hard part is the routing, which makes this a
 `[HYPOTHESIS]` Routing quality, not crop choice, is where the leaderboard is won.
 
 ## Revenue per tile-day
+
+> [!CAUTION]
+> **This table is wrong — see the warning at the top.**
+> The `Units/tile/day` column below is a misreading for ongoing crops.
+> Measured values: wheat 0.93, carrot 0.97, tomato **0.27** (not 4.0), strawberry **0.20**
+> (not 2.0), melon 0.40, egg 0.87, milk 0.37, wool 0.27.
+> Kept here only so the error is visible rather than quietly deleted.
 
 From the Object Types table (`Max yield / tile / DAY`) times price:
 
@@ -95,6 +125,13 @@ and Farmers Market:
 `[HYPOTHESIS]` **Supply and demand are roughly balanced at full commitment**, which means
 premium prices do not inevitably collapse — they collapse only if you sell *faster than the
 town drinks*, and the town drinks far more late than early.
+
+> **RESOLVED 2026-07-31 — conclusion right, arithmetic wrong.**
+> Premium prices do not collapse, but not because supply and demand balance.
+> Measured drain is 536 strawberry a season against **6 units per tile**, so saturating
+> strawberry demand needs 89 tiles and $8,933 of seed from a $3,000 start.
+> Supply cannot reach demand, so the price is safe by impossibility rather than by balance.
+> The `T = 100` reading above was right; the "~4/day" and "16/day" figures were not.
 
 The strategic consequence, if this holds:
 
@@ -150,7 +187,12 @@ Deliberately scoped **out of v1** — it is worthless until the base economy is 
 4. Does the opponent's selling measurably change your bank at all?
    Run two identical agents against each other, then one solo against `pass`, and diff.
    This tells us how much the two-player framing matters and whether self-play is needed at all.
-5. Does the town drain genuinely exceed player supply for premium goods, as hypothesised above?
-   This single question decides whether the strategy is "wheat volume" or "premium timing".
+5. ~~Does the town drain genuinely exceed player supply for premium goods, as hypothesised
+   above?~~ **ANSWERED — see `docs/economics_q5_findings.md`.**
+   Yes for every premium good except melon, because tile yield is the binding constraint and it
+   is ~10x lower than this document assumed.
+   Selling late beats selling early for *every* crop by 1.16x-1.75x.
 
-Question 5 is the highest-value unknown in this document.
+Question 3 — the action-budget share consumed by movement — is now the highest-value unknown,
+because every revenue figure in the findings document assumes the harvest actually gets
+harvested.
