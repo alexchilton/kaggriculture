@@ -304,3 +304,41 @@ Two lessons worth carrying:
 - **Shop unlock order is supplied by the caller**, for the same reason: the choice consumes the
   same RNG stream after the weed draws, so it depends on board occupancy. Observed from a real
   episode for parity, sampled for training.
+
+
+## 10. Animals are viable after all -- our conclusion was an artifact of our own routing
+
+`docs/ladder_analysis.md` found that the three largest losses on the ladder -- $104k, $93k and
+$84k -- were all **small 8-15 tile farms built almost entirely on pasture animals, two with zero
+hired hands**. That contradicted experiment 5, which measured animals as clearly net negative.
+
+The contradiction resolves cleanly: experiment 5 measured animals **inside our heuristic**, which
+spreads over 50-100 tiles and hires 8-14 hands. In that layout an animal costs a walk to the shed
+for feed every day, and the routing swamps the return. It was never a fact about animals.
+
+`kagg/agents/rancher.py` inverts every choice the heuristic makes: **six animals, zero hired hands,
+about six tiles, all adjacent to the shed** so feed pickup costs no movement.
+
+| | rancher | heuristic |
+|---|---|---|
+| vs `starter` | $44,614 | $43,575 |
+| head to head, 12 games | **$42,362, 41.7% win** | $43,575 |
+
+An untuned agent with a completely different structure essentially matches our most-tuned one.
+Herd size has a sharp optimum -- 4 gives $31.6k, **6 gives $45.7k**, 10 gives $15.9k -- and the
+binding constraint is the **action budget**, not money: one farmer has 24 actions a day and each
+animal needs feed, care and a harvest.
+
+### Three bugs, each of which pinned the herd at exactly one animal
+
+Worth recording because each looked like a strategy result and was not:
+
+1. **Three of the four shed-access tiles start locked.** They sit in NE, SW and SE. The plot list
+   handed back all four, so only one was ever usable.
+2. **An occupied pasture keeps `kind == "PASTURE"`.** The "needs work" check matched the farmer's
+   own tile at distance zero, so it selected itself every turn and never moved to build a second.
+3. **PLACE draws from carried inventory, not the shed.** An empty pasture is rarely a shed tile, so
+   a bought animal sat in the shed forever while the farmer walked back and forth.
+
+Each produced a flat, plausible-looking score curve across herd sizes. "Changing the parameter does
+nothing" is a bug signature, not a finding.
