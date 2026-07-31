@@ -254,3 +254,53 @@ processes, and those re-import the module fresh, so mutating `pool.BASELINE` in 
 reached them. Rerun in-process. That is the third test this session that looked green while
 proving nothing -- after the vacuous season-parity test and the `starter`-only tuning. **Ask what
 a passing test would look like if the mechanism were broken.**
+
+
+## 9. The vectorized simulator, and the bug only the parity gate caught
+
+Built numpy-batched rather than JAX, on the grounds that the hard part is the one-unit-at-a-time
+market settlement and that is far easier to make exact with ordinary control flow. Measured
+**499,543 env steps/sec at B=512**, against **484** on the training box: a **1,032x** speedup, well
+past the ~100k target that a 10B-step run implies.
+
+| Component | Parity tests |
+|---|---|
+| Market pricing and settlement | 27 |
+| Tile state and nightly transitions | 16 |
+| Unit operations | 77 |
+| Town drain and shop schedule | 5 |
+| Farm bookkeeping (money, seeds, shed, hiring, land) | 11 |
+| **End-to-end episodes** | **4 in-suite, 60 in the full gate** |
+
+**End-to-end parity: 60/60 full-length episodes exact**, including 30 with hiring and 15 with land
+purchases.
+
+### The bug, and why it matters more than the speedup
+
+The first run of the gate scored **0 out of 40**. Every one of those 136 component tests passed,
+and a 200-step end-to-end check passed. The composition was still wrong.
+
+`ops.plant` only plants on an empty tile, but the game loop spent a seed regardless. A PLANT onto
+an occupied tile is a free no-op in the reference; in the sim it silently burned a seed. The farm
+starved gradually, so the divergence did not surface until step 130-320 -- past the length of the
+short check. Fixed by returning which games actually planted and spending only those seeds.
+
+Two lessons worth carrying:
+
+1. **Unit tests verify components; only the gate verifies composition.** Every piece was correct
+   and the assembly was not. `CLAUDE.md` demanding end-to-end parity before training is what caught
+   this, and had it not, a policy would have trained in a world where seeds randomly vanish --
+   with nothing crashing and no number looking obviously wrong.
+2. **A short parity check is not a weak version of a long one, it is a different test.** Slow drift
+   is invisible until it accumulates.
+
+### Two deliberate divergences, stated rather than buried
+
+- **Weed spawning is statistically faithful, not sequence-identical.** The reference draws from a
+  per-day Python RNG shared by both farms, consuming one draw per empty tile. An exact port costs
+  ~6000 Python-level RNG calls per game, over 3 million per batch at B=512, which would destroy the
+  speedup entirely. The parity gate therefore runs with `weedSpawnChance=0` on both sides, making
+  every deterministic mechanic exactly comparable, and weed behaviour is checked separately by rate.
+- **Shop unlock order is supplied by the caller**, for the same reason: the choice consumes the
+  same RNG stream after the weed draws, so it depends on board occupancy. Observed from a real
+  episode for parity, sampled for training.

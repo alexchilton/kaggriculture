@@ -152,8 +152,13 @@ def plant(state, pos, active, crop_id, day, turns_per_day=24):
 
     doable = active & (state.kind[games, idx] == EMPTY)
     if not doable.any():
-        return
+        return doable
 
     mask = np.zeros_like(state.kind, dtype=bool)
     mask[games[doable], idx[doable]] = True
     state.plant(mask, crop_id, day, turns_per_day)
+    # Returned so the caller can spend a seed only where the plant actually landed. Spending it
+    # regardless silently starves the farm over a long episode: a PLANT onto an occupied tile is a
+    # no-op in the reference and costs nothing, and getting this wrong cost 0/40 on the parity gate
+    # while every unit test still passed.
+    return doable
