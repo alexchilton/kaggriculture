@@ -89,14 +89,24 @@ def hire(state, want):
     state.money = np.where(doable, state.money - cost, state.money)
     state.hires_today = np.where(doable, state.hires_today + 1, state.hires_today)
 
-    # New hands spawn on a shed-access tile; the reference balances across the four, but a hand's
-    # first action is almost always a move, so the NW tile is used for all of them here. This is
-    # the one place the simulator is deliberately approximate -- see `docs/` and the parity notes.
-    spawn = default_spawn()
-    idx = np.minimum(state.n_units, MAX_UNITS - 1)
+    # New hands spawn on the least-occupied shed-access tile, ties broken in NWSE order -- a port
+    # of `_spawn_hand`, not an approximation. This was previously simplified to "always the NW
+    # tile", and that was wrong in a way that mattered: a hand standing somewhere else takes
+    # different actions, so money diverged within a few hundred steps of the first hire. The
+    # single-unit parity harness could not see it, because a game with no hands has no hands to
+    # misplace.
+    access = np.array(shed_access_tiles(), dtype=np.int64)          # [4, 2] in NWSE order
     games = np.arange(state.batch)
-    state.unit_pos[games[doable], idx[doable], 0] = spawn[0]
-    state.unit_pos[games[doable], idx[doable], 1] = spawn[1]
+    live = state.unit_mask()
+    occupancy = np.zeros((state.batch, len(access)), dtype=np.int64)
+    for k, (ax, ay) in enumerate(access):
+        on_tile = (state.unit_pos[:, :, 0] == ax) & (state.unit_pos[:, :, 1] == ay) & live
+        occupancy[:, k] = on_tile.sum(axis=1)
+    choice = np.argmin(occupancy, axis=1)                           # argmin takes the first min
+
+    idx = np.minimum(state.n_units, MAX_UNITS - 1)
+    state.unit_pos[games[doable], idx[doable], 0] = access[choice[doable], 0]
+    state.unit_pos[games[doable], idx[doable], 1] = access[choice[doable], 1]
     state.carried[games[doable], idx[doable]] = 0
     state.n_units = np.where(doable, state.n_units + 1, state.n_units)
     return doable

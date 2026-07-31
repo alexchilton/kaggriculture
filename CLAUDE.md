@@ -69,6 +69,9 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
 - **Verify built artifacts actually run.** A hand-rolled `submission/main.py` spliced a docstring
   over line 1, failed to import, and banked exactly the $3000 start. Use
   `scripts/build_submission.py`, which refuses to ship an agent that cannot beat `starter`.
+- **A gate only tests what it exercises.** The parity harness drove one unit per player, so
+  "60/60 exact" was a statement about single-unit games and was read as a statement about the
+  simulator. Before trusting a gate, ask what it *cannot* reach.
 - **Unit tests verify components; only end-to-end parity verifies composition.** 136 component
   parity tests passed and a 200-step end-to-end check passed while the sim silently burned seeds on
   failed plants. The 719-step gate failed 40/40. A short parity check is a *different* test from a
@@ -83,10 +86,24 @@ These were agreed before any code was written, specifically so they cannot be ra
 
 - Heuristic agent does not clear **$20k** final bank → the economics model is wrong, not the agent.
 - Fast-sim parity harness is not exact over 1000 random action sequences → **do not train on the fast sim**.
-  **Status 2026-07-31: 60/60 full-length episodes exact** (`tests/test_sim_parity.py`, and the
-  longer run in `docs/experiment_log.md`). Two documented divergences: weed spawn sequence and
-  shop unlock order, both RNG-stream artifacts that cannot be ported without destroying the
-  speedup, both neutralised in the gate rather than papered over.
+  **Status 2026-07-31: NOT YET EXACT under hiring. Do not train on it.**
+  - Single unit per player: 60/60 full-length episodes exact.
+  - Multiple units, no hiring: 6/6 exact.
+  - **With hiring: 8/12.** Something still diverges once a crew exists.
+
+  The "60/60 exact" claim was made and repeated while `parity.py` hard-coded `n_units = 1`, so the
+  harness never drove more than one unit. Two real divergences hid behind that and were found by a
+  search agent, not by the gate: **atomic PLANT** (the reference drops *every* PLANT for a crop when
+  requests exceed seeds; the sim spent them greedily unit by unit -- indistinguishable with one
+  unit) and **hand spawning** (the reference picks the least-occupied shed-access tile; the sim put
+  every hand on NW). Both now ported, which took hiring from 0/12 to 8/12.
+
+  Remaining known suspect: the reference pairs the players' *i-th market order*, while the sim
+  settles per product with players alternating. These agree only when both players put the same
+  product in the same slot.
+
+  Two divergences remain deliberate: weed spawn sequence and shop unlock order, both RNG-stream
+  artifacts that cannot be ported without destroying the speedup, both neutralised in the gate.
 - PPO explained variance does not pass **0.5** early → the frame is wrong, not the hyperparameters.
   **Scope note:** this was written for the per-turn, 720-step, full-action-space policy. The
   strategy env clears 0.89 easily, but it is a 30-step problem with 9 discrete heads and hand-built

@@ -115,11 +115,31 @@ class Game:
 
     # ---- phases ---------------------------------------------------------------------------
 
+    def _plant_blocked(self, actions, p):
+        """[B, N_CROPS] bool: crops whose PLANT requests must ALL be dropped this turn.
+
+        The reference validates PLANT atomically per crop across every one of a player's units:
+        if the total requests for a crop exceed the seeds held, it drops **all** of them, not the
+        excess. Spending greedily unit by unit -- which is what this simulator did until it was
+        caught -- plants some where the reference plants none.
+
+        The parity harness could not have found this: it drove exactly one unit per player, and
+        with one unit the two rules agree. Fixed alongside a harness that drives a full crew.
+        """
+        farm = self.farms[p]
+        live = farm.unit_mask()
+        demand = np.zeros((self.batch, N_CROPS), dtype=np.int64)
+        for c in range(N_CROPS):
+            asking = live & (actions.unit_op[:, p, :] == O.PLANT_OP) & (actions.unit_crop[:, p, :] == c)
+            demand[:, c] = asking.sum(axis=1)
+        return demand > farm.seeds
+
     def _apply_unit_actions(self, actions):
         day = self.day
         for p in range(N_PLAYERS):
             tiles, farm = self.tiles[p], self.farms[p]
             live = farm.unit_mask()
+            blocked = self._plant_blocked(actions, p)
 
             for u in range(MAX_UNITS):
                 active = live[:, u]
@@ -151,7 +171,8 @@ class Game:
                     # exceed the seeds held, the reference drops *all* of them. Enforced here by
                     # spending a seed per plant and refusing once the store is empty.
                     for c in range(N_CROPS):
-                        want = planting & (actions.unit_crop[:, p, u] == c) & (farm.seeds[:, c] > 0)
+                        want = (planting & (actions.unit_crop[:, p, u] == c)
+                                & (farm.seeds[:, c] > 0) & ~blocked[:, c])
                         if not want.any():
                             continue
                         planted = O.plant(tiles, farm.unit_pos[:, u, :], want, c, day)

@@ -32,7 +32,7 @@ OP_NAMES = {
 }
 
 
-def random_script(rng, steps, allow_hire=False, allow_land=False):
+def random_script(rng, steps, allow_hire=False, allow_land=False, max_units=1):
     """One game's worth of actions: a list of per-step dicts, both players.
 
     Deliberately biased toward ops that change state -- a uniform draw over 9 ops spends most of
@@ -42,7 +42,11 @@ def random_script(rng, steps, allow_hire=False, allow_land=False):
     for step in range(steps):
         entry = {"units": [], "sell": [], "buy_seed": [], "hire": [], "buy_land": []}
         for _ in range(2):
-            n_units = 1
+            # Driving more than one unit is what exposes the atomic-PLANT rule: with a single unit
+            # per player, "drop the excess" and "drop them all" are the same thing, so a
+            # single-unit harness cannot see the difference. It missed a real divergence for
+            # exactly this reason.
+            n_units = max_units
             ops, crops = [], []
             for _ in range(n_units):
                 roll = rng.random()
@@ -90,7 +94,11 @@ def run_reference(script, seed):
         actions = []
         for p in range(2):
             ops, crops = entry["units"][p]
-            farmer = ["PLANT", CROPS[crops[0]]] if ops[0] == O.PLANT_OP else [OP_NAMES[ops[0]]]
+            def _as_action(op, crop):
+                return ["PLANT", CROPS[crop]] if op == O.PLANT_OP else [OP_NAMES[op]]
+
+            farmer = _as_action(ops[0], crops[0])
+            hands = [_as_action(o, c) for o, c in zip(ops[1:], crops[1:])]
             market = []
             for item, n in entry["sell"][p].items():
                 if n:
@@ -102,7 +110,7 @@ def run_reference(script, seed):
                 market.append(["HIRE"])
             if entry["buy_land"][p]:
                 market.append(["BUY_LAND"])
-            actions.append({"farmer": farmer, "hands": [], "market": market[:10]})
+            actions.append({"farmer": farmer, "hands": hands, "market": market[:10]})
 
         env.step(actions)
         obs = env.state[0].observation
@@ -163,8 +171,9 @@ def run_sim(scripts, seed=None, weed_chance=0.0, unlocks=None):
             entry = script[step]
             for p in range(2):
                 ops, crops = entry["units"][p]
-                actions.unit_op[b, p, 0] = ops[0]
-                actions.unit_crop[b, p, 0] = crops[0]
+                for u, (op, crop) in enumerate(zip(ops, crops)):
+                    actions.unit_op[b, p, u] = op
+                    actions.unit_crop[b, p, u] = crop
                 for item, n in entry["sell"][p].items():
                     actions.sell[b, p, PRODUCT_INDEX[item]] = n
                 for crop, n in entry["buy_seed"][p].items():
