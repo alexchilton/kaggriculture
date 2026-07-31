@@ -26,7 +26,10 @@ Full history of what was tried and what it scored: `docs/experiment_log.md`.
 
 ## Start here
 
-Read in this order:
+**Resuming after a break? Read `docs/HANDOFF.md` first** — current state, open tasks, and the
+traps that have already cost time.
+
+Then, in this order:
 
 | File | What it is |
 |---|---|
