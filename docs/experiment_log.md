@@ -19,7 +19,8 @@ If you measure something, put it here.
 | 3 | v3 — ES-tuned parameters | $13,486 | 3.8x |
 | 4 | v4 — melon quadrant + wheat (**submitted, scored 429.9, lost**) | $43,540 | 12.4x |
 | 5 | v5 — opponent-pool tuned, price-aware | **ladder 613.5** | first score above the 600 start |
-| 6 | v6 — deferred selling, 8-strategy pool | ladder 550.6 (unconverged) | 90.6% local |
+| 6 | v6 — deferred selling, 8-strategy pool | ladder ~546-622 (unsettled) | 90.6% local |
+| 7 | **v7 — contrarian: opponent-reading crop choice** | **beats v6 100% head-to-head** | submitted |
 
 **Ladder submissions start at 600.** v4 at 526.4 was genuinely losing; v5 at 613.5 is genuinely
 winning, if only modestly. v6 is newest and its rating has settled least -- v5 itself read 555
@@ -432,3 +433,50 @@ the market curves or copied from a measurement, and none was tuned.
 It has not been submitted, so there is no ladder evidence either way.
 And its 100% head-to-head record is against **one** opponent that it was, unavoidably, developed
 while looking at; the pool result is the less flattering and more trustworthy number.
+
+
+## 12. The JAX port, and a throughput figure that was wrong
+
+`kagg/sim/jax_sim.py`: one jitted graph per step, scanned for rollouts, parity-checked against the
+numpy sim over full 719-step episodes comparing **all 22 state arrays after every step** -- not the
+final bank. Prices are bit-identical over a 150,000-wide inventory range.
+
+| Workload, B=512 | numpy | JAX (scan) |
+|---|---|---|
+| farmer (1 live unit) | 95k | 434k (4.6x) |
+| full crew (24 units) | 15k | 151k (10.0x) |
+| full crew, B=16384 | 11k | 470k (**42x**) |
+
+JAX loses in exactly one place: an all-NOOP empty board at B=512-1024, where it is 0.7-0.8x. Under
+`lax.scan` it never loses.
+
+**The scaling direction matters more than the ratio.** numpy peaks around B=512-1024 and then
+declines; JAX keeps climbing. If the policy dominates the loop -- which an entity transformer
+will -- the right response is the largest batch that fits, and that is precisely where numpy is
+worst and JAX is best. JAX also keeps state on-device, removing the per-turn host/device
+marshalling a numpy env forces on a GPU policy.
+
+### The correction it forced
+
+The port could not reproduce the numpy sim's recorded 499k steps/sec. It was right not to.
+
+That figure, and a later 752k, were measured with **one live unit on an empty board issuing WATER
+against nothing**, so nearly every masked update hit its `if not active.any(): continue` shortcut.
+It benchmarked the shortcut. Re-measured at B=512 with units actually planting: 818k at one unit,
+571k at eight, 356k at twenty-four -- and even that is optimistic, since the units start stacked on
+the spawn tile and the later ones hit the occupied-tile early exit.
+
+**The real speedup over the reference is 30-200x on realistic workloads, not 1,032x.** Still
+decisive -- a 1B-step run drops from 66 hours to between 20 minutes and 2 hours -- but the headline
+was repeated in commit messages, the README and two docs before being caught.
+
+Absolute throughput on this Mac moves by up to 2x with machine load, so **only ratios measured
+against a same-time control are trustworthy**. State the workload next to the number, always.
+
+### Not yet measured on the 3080
+
+Two things need checking before relying on any of this for training. Money is `float64`, which the
+3080 runs at 1/32 rate -- it is provably integral and well under 2^24, so float32 should be exact,
+but that needs testing rather than assuming. And the unit-slot loop is a data-dependent
+`while_loop`, which on GPU serialises up to 24 kernel launches; a fixed 24-iteration `scan` may
+invert the tradeoff there.
