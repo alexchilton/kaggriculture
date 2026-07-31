@@ -17,7 +17,11 @@ If you measure something, put it here.
 | 1 | Heuristic v1 — wheat only, timid hiring | $8,641 | 2.5x |
 | 2 | v2 — fixed hiring and land timing | $11,296 | 3.2x |
 | 3 | v3 — ES-tuned parameters | $13,486 | 3.8x |
-| 4 | **v4 — melon quadrant + wheat** | **$43,540** | **12.4x** |
+| 4 | v4 — melon quadrant + wheat (**submitted, scored 429.9, lost**) | $43,540 | 12.4x |
+| 5 | **v5 — opponent-pool tuned, price-aware** | **72% win vs pool** | see below |
+
+From v5 on, the headline number is **win rate against a fixed opponent pool**, not money, because
+the leaderboard is Elo and margin does not count.
 
 Kill criterion in `CLAUDE.md` was $20k. **Cleared at v4**, so the economics model is vindicated
 rather than falsified.
@@ -134,3 +138,55 @@ leaderboard scores exceed our own.
   a docstring over the first line, the module failed to import, the env fell back to no-ops, and
   the agent banked exactly its $3,000 start. `scripts/build_submission.py` now rebuilds verbatim
   and refuses to pass anything that does not beat `starter` from both seats.
+
+
+## 5. The submission that lost, and what it cost us to learn — v4 → v5
+
+v4 scored **$43,540** locally and **429.9** on the ladder, below the ~1000 starting rating. Both
+downloaded replays were losses: **$27,119 vs $33,520** and **$27,640 vs $41,595**.
+
+Not a crash and not a timeout — measured max turn latency was **18.9 ms** against a 1000 ms limit,
+and no exceptions. The agent worked. **The measurement was wrong.**
+
+| Opponent | v4 bank |
+|---|---|
+| `starter`, which we tuned against | $43,636 |
+| a copy of itself | $21,200 |
+
+`starter` sells almost nothing, so the market was never contested and every number we had was
+roughly **twice reality**. This was economics question 4 — "does the opponent's selling measurably
+change your bank?" — listed on day 1 and never answered. It halves it.
+
+### What the replays showed
+
+- The winner farmed **strawberry at $310/unit** against a $120 base, while we crashed **melon to
+  $7**. They left **54 tiles as weeds** and still won: the win came from crop choice, not execution.
+- We owned only **50 tiles**; they had all 100. Our land gate was too strict.
+- Our bank *fell* from day 18 onward — buying $80 melon seed while melon sold for $25.
+
+### Fixes, and three reversals worth remembering
+
+1. **Opponent pool** (`kagg/arena/pool.py`): five competing strategies, judged on win rate.
+   Opponents are built from a **frozen** BASELINE. The first version built them from the
+   candidate's own parameters, so changing the candidate changed the opposition — which produced a
+   confounded result (cows appeared to lift win rate from 62% to 81%) that reversed once fixed.
+2. **Price-aware selling and planting**: hold below 55% of base, refuse seed below 45% of base,
+   dump everything from day 28. Roughly neutral on score — the shed fills and forces the sale
+   anyway — but it removes the $7 dumping, so it is kept as insurance.
+3. **Animals: measured, and switched off.** Per-tile arithmetic said cows were the best tile in the
+   game ($725, or $2116 with CARE, against wheat's $452). Against the frozen pool they are net
+   negative: **70% win / $33.3k with none, 62% / $23.0k with ten, and total collapse to $467 at
+   sixteen** — a capital death spiral at $400 a cow from a $3000 start. The gap is **routing**: a
+   cow needs 4-6 actions a day plus a walk to the shed for feed, against wheat's ~1.5 per tile.
+   Per-tile revenue rankings that ignore action cost are not decision-ready. The machinery is
+   built and tested; only the count is zero.
+4. **Melon: 25 → 12 → 25.** Against `starter`, 25 looked best. In mirror matches 12 looked best.
+   Against the frozen pool on win rate, 25 is best again (77% vs 67%). **Mirror optimises the
+   symmetric case** — what is best if both sides play it — **which is not what an Elo ladder
+   rewards.** The thing to measure is a best response to a field.
+
+### v5 result
+
+**72% win rate, 16% draws, $35,544 mean** over 100 games (10 seeds x 2 seats x 5 opponents).
+Beats wheat-only, strawberry and cow-heavy 100%; 30% against melon-heavy and its own mirror.
+Melon-heavy remains the unsolved matchup.

@@ -28,6 +28,12 @@ SHED_CAP = 100
 
 # Copied rather than imported so this file stays submittable on its own.
 # `ongoing` crops accumulate on the tile and survive harvest; the others clear the tile.
+# Base market prices, for judging whether a current price is good or bad.
+BASE_PRICE = {
+    "WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120, "MELON": 250,
+    "EGG": 50, "MILK": 160, "WOOL": 200, "FERTILIZER": 100,
+}
+
 CROPS = {
     "WHEAT":      {"seed": 10, "first_yield": 2, "ripe_day": 4,  "ongoing": False},
     "CARROT":     {"seed": 20, "first_yield": 2, "ripe_day": 3,  "ongoing": False},
@@ -49,10 +55,49 @@ PARAMS = {
     "productive_gate": 0.8,
     # Stagger plantings across the cycle to spread the harvest. 1 disables staggering.
     "phase_mod": 5,
-    # Tiles given to melon before the rest go to wheat. Melon measured the best revenue per
-    # tile ($2.9k/tile against wheat's ~$650) but its market is shallow -- 113 units at half
-    # base, against a season drain of only 140 -- so the count has to stay small.
+    # Tile budget per crop, in priority order; whatever is left goes to wheat.
+    #
+    # Strawberry is the premium position: a tile yields only 6 units a season, so supply
+    # physically cannot reach the town's ~536-unit drain, and the price therefore stays far
+    # above base -- observed at $310 against a $120 base in a real ranked match.
+    # Melon is the opposite trap. It yields 12 units a tile but its glut curve is `sq`, the
+    # harshest in the game, and its market absorbs only ~113 units at half base. Overcommitting
+    # crashed it to $7 in that same match.
+    # Set to 0 deliberately, against theory. Strawberry *should* be the premium position and a
+    # real opponent beat us with it at $310/unit. But measured in mirror matches, every tile
+    # given to strawberry made us worse ($31.6k at 0 tiles down to $18.4k at 25). The reason is
+    # that this agent cannot exploit it: $100/tile of seed with no revenue for 16 days starves
+    # the early game, and the agent sells everything the turn it is harvested, so it dumps
+    # strawberry into an unaccumulated market instead of holding for the late scarcity premium.
+    # Revisit once deferred selling and a wheat-funded capital ramp exist.
+    # Cows: OFF, against the per-tile arithmetic, which said $725/tile and $2116 with CARE
+    # versus wheat's $452. Measured against a fixed opponent pool they are net negative --
+    # 70% win rate and $33.3k with none, 62% and $23.0k with ten -- and at 16 tiles the agent
+    # collapses to $467, a capital death spiral: cows cost $400 each against a $3000 start.
+    #
+    # The gap between arithmetic and outcome is **routing**, the cost this project dropped as a
+    # standalone question. A cow needs HARVEST, FEED, CARE and COLLECT_FERTILIZER each day, and
+    # FEED draws from the unit's own inventory, so a keeper must walk to a shed tile, PICKUP
+    # wheat, and walk back. That is 4-6 actions plus travel per cow per day against wheat's ~1.5
+    # per tile. Per-tile revenue rankings that ignore action cost are not decision-ready.
+    #
+    # Worth revisiting with animals placed *on* the shed-access tiles, which would remove the
+    # fetch entirely. The machinery is all here and tested; only the tile count is zero.
+    "cow_tiles": 0,
+    "strawberry_tiles": 0,
+    # 25, and the route to that number is a lesson. Against `starter` 25 looked best; in mirror
+    # matches 12 looked best; against a fixed pool judged on win rate 25 is best again (77% vs
+    # 67%). Mirror optimises the symmetric case -- what is best if *both* play it -- which is not
+    # what an Elo ladder rewards. A best response to a field is the thing to measure.
     "melon_tiles": 25,
+    # Do not sell below this fraction of base price -- hold and let town drain lift it back.
+    # A ranked replay showed the agent dumping melon at $7 against a $250 base.
+    "sell_floor_frac": 0.55,
+    # Do not spend seed on a crop whose price has collapsed; plant wheat instead. The same
+    # replay showed $80 melon seeds being bought while melon sold for $25.
+    "plant_floor_frac": 0.45,
+    # From this day on, sell everything regardless of price -- unsold stock scores nothing.
+    "endgame_day": 28,
 }
 
 LAND_PRICES = [1000, 2000, 4000]
@@ -89,15 +134,61 @@ def _owned_tiles(farm, size):
     return out
 
 
-def _phase_ok(tile_index, day):
+def _phase_ok(tile_index, day, p):
     """Whether this tile is allowed to be planted today, for harvest staggering."""
-    mod = PARAMS["phase_mod"]
+    mod = p["phase_mod"]
     return mod <= 1 or tile_index % mod == day % mod
 
 
-def _crop_for_index(index):
-    """Melon on the first block of tiles, wheat on the rest."""
-    return "MELON" if index < PARAMS["melon_tiles"] else "WHEAT"
+def _is_animal_index(index, p):
+    return index < p["cow_tiles"]
+
+
+def _crop_for_index(index, p, prices=None):
+    """Cows first, then strawberry, then melon, then wheat fills the remainder.
+
+    A crop whose price has collapsed is replaced by wheat: paying $80 for melon seed while melon
+    sells for $25 is how the first submitted agent bled money through the back half of the season.
+    """
+    cows = p["cow_tiles"]
+    straw = p["strawberry_tiles"]
+    intended = "WHEAT"
+    if index < cows + straw and index >= cows:
+        intended = "STRAWBERRY"
+    elif index < cows + straw + p["melon_tiles"] and index >= cows + straw:
+        intended = "MELON"
+    if intended != "WHEAT" and prices:
+        if prices.get(intended, 0) < p["plant_floor_frac"] * BASE_PRICE[intended]:
+            return "WHEAT"
+    return intended
+
+
+def _animal_job(tile, carried, shed):
+    """What an animal tile needs. Returns (op, needs) where `needs` is an item to be carrying."""
+    if tile is None:
+        return ("BUILD_PASTURE", None)
+    if not isinstance(tile, dict):
+        return None
+    if tile.get("kind") == "WEED":
+        return ("DIG", None)
+    if "animal" not in tile:
+        if tile.get("kind") != "PASTURE":
+            return None
+        if carried.get("COW", 0) >= 1:
+            return ("PLACE", None)
+        return ("PLACE", "COW") if shed.get("COW", 0) >= 1 else None
+
+    # Order matters: harvest first so max_held never blocks production, then feed to keep the
+    # animal alive, then CARE (which doubles the next yield), then take the free fertilizer.
+    if tile.get("yield_units", 0) > 0:
+        return ("HARVEST", None)
+    if not tile.get("fed_today"):
+        return ("FEED", None) if carried.get("WHEAT", 0) >= 1 else ("FEED", "WHEAT")
+    if not tile.get("cared_today"):
+        return ("CARE", None)
+    if tile.get("fertilizer_available"):
+        return ("COLLECT_FERTILIZER", None)
+    return None
 
 
 def _job_for_tile(tile, day, crop, has_seed, phase_ok):
@@ -126,7 +217,7 @@ def _job_for_tile(tile, day, crop, has_seed, phase_ok):
     return None
 
 
-def agent(obs, config=None):
+def _play(obs, p):
     size = len(obs["farms"][obs.get("player", 0)]["tiles"])
     me = obs.get("player", 0)
     farm = obs["farms"][me]
@@ -142,6 +233,8 @@ def agent(obs, config=None):
     shed_tiles = _shed_tiles(size)
     unlocked = len(farm.get("unlocked_quadrants", ["NW"]))
 
+    prices = (obs.get("market", {}) or {}).get("prices", {}) or {}
+
     # ---- market orders -------------------------------------------------------------------
     market = []
 
@@ -149,28 +242,51 @@ def agent(obs, config=None):
     # Labour is nearly free: 14 hands cost about $1000 for the day and buy 336 actions, against
     # actions that move $20+ of wheat. The binding cost is routing, not the wage.
     if hour in (0, 1):
-        target = min(PARAMS["max_hands"],
-                     max(2, -(-len(tiles) // PARAMS["tiles_per_hand"])))
+        target = min(p["max_hands"],
+                     max(2, -(-len(tiles) // p["tiles_per_hand"])))
         already = len(farm.get("hands", []))
         for _ in range(max(0, min(5, target - already))):
             market.append(["HIRE"])
 
-    # Sell everything sellable. Wheat's curve is shallow enough that holding is not worth the
-    # shed pressure, and selling keeps room for the next drop.
+    # Price-aware selling. Holding is only free while the shed has room, so once it is nearly
+    # full sell anyway -- losing goods to the nightly overflow is worse than a poor price.
+    held = sum(shed.values())
+    shed_pressed = held >= SHED_CAP * 0.8
+    endgame = day >= p["endgame_day"]
     for item, n in sorted(shed.items()):
-        if n > 0 and item != "FERTILIZER":
-            market.append(["SELL", item, n])
+        if n <= 0 or item == "FERTILIZER":
+            continue
+        # Hold back feed: an unfed cow escapes after two days and the pasture is wasted.
+        sellable = n
+        if item == "WHEAT" and not endgame:
+            sellable = max(0, n - 3 * p["cow_tiles"])
+        if sellable <= 0:
+            continue
+        good_price = prices.get(item, 0) >= p["sell_floor_frac"] * BASE_PRICE.get(item, 0)
+        if good_price or shed_pressed or endgame:
+            market.append(["SELL", item, sellable])
 
     # Seeds for the plantings that are actually due, per crop, plus a buffer.
     due = {}
     for i, (x, y) in enumerate(tiles):
-        if farm["tiles"][y][x] is None and _phase_ok(i, day):
-            crop = _crop_for_index(i)
+        if farm["tiles"][y][x] is None and _phase_ok(i, day, p):
+            crop = _crop_for_index(i, p, prices)
             due[crop] = due.get(crop, 0) + 1
     for crop, n in sorted(due.items()):
-        want = max(0, n + PARAMS["seed_buffer"] - seeds.get(crop, 0))
+        want = max(0, n + p["seed_buffer"] - seeds.get(crop, 0))
         if want and money > CROPS[crop]["seed"] * want * 2:
             market.append(["BUY_SEED", crop, want])
+
+    # Cows, one at a time, only when a pasture is standing empty and there is real slack.
+    empty_pastures = sum(
+        1 for i, (x, y) in enumerate(tiles)
+        if _is_animal_index(i, p)
+        and isinstance(farm["tiles"][y][x], dict)
+        and farm["tiles"][y][x].get("kind") == "PASTURE"
+        and "animal" not in farm["tiles"][y][x]
+    )
+    if empty_pastures > shed.get("COW", 0) and money > 900:
+        market.append(["BUY_ANIMAL", "COW", 1])
 
     # Only expand once the current land is genuinely productive. Buying early starves seed
     # and wage spending, which was measured leaving 18 tiles idle all season.
@@ -180,8 +296,8 @@ def agent(obs, config=None):
     )
     productive = planted / max(1, len(tiles))
     if (unlocked <= len(LAND_PRICES)
-            and money >= LAND_PRICES[unlocked - 1] * PARAMS["land_slack"]
-            and productive > PARAMS["productive_gate"]):
+            and money >= LAND_PRICES[unlocked - 1] * p["land_slack"]
+            and productive > p["productive_gate"]):
         market.append(["BUY_LAND"])
 
     # maxMarketOrdersPerTurn is 10 and extras are silently dropped, so sells come first.
@@ -192,12 +308,23 @@ def agent(obs, config=None):
 
     jobs = {}
     want_crop = {}
+    needs_item = {}   # tile -> item the acting unit must be carrying
     for i, (x, y) in enumerate(tiles):
-        crop = _crop_for_index(i)
+        tile = farm["tiles"][y][x]
+        if _is_animal_index(i, p):
+            # Any unit could be asked to fetch feed, so judge the job against an empty hand and
+            # let the carrier check below decide who can actually do it.
+            found = _animal_job(tile, {}, shed)
+            if found:
+                jobs[(x, y)] = found[0]
+                if found[1]:
+                    needs_item[(x, y)] = found[1]
+            continue
+        crop = _crop_for_index(i, p, prices)
         job = _job_for_tile(
-            farm["tiles"][y][x], day, crop,
+            tile, day, crop,
             has_seed=seeds.get(crop, 0) > 0,
-            phase_ok=_phase_ok(i, day),
+            phase_ok=_phase_ok(i, day, p),
         )
         if job:
             jobs[(x, y)] = job
@@ -211,7 +338,7 @@ def agent(obs, config=None):
         carrying = sum(carried.values())
 
         # Full hands go to the shed, otherwise the nightly drop destroys the overflow.
-        if carrying >= PARAMS["carry_before_drop"]:
+        if carrying >= p["carry_before_drop"]:
             if pos in shed_tiles:
                 actions.append(["DROP"])
                 continue
@@ -227,19 +354,59 @@ def agent(obs, config=None):
         target = min(candidates, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
         op = jobs[target]
 
+        # FEED and PLACE draw from the unit's own inventory, not the shed, and that inventory is
+        # emptied every night. So a unit assigned one of those must first collect the item from a
+        # shed-access tile.
+        required = needs_item.get(target)
+        if required and carried.get(required, 0) < 1:
+            if pos in shed_tiles:
+                if shed.get(required, 0) >= 1:
+                    claimed.add(target)
+                    actions.append(["PICKUP", required, 6 if required == "WHEAT" else 1])
+                    continue
+                actions.append(["PASS"])
+                continue
+            nearest = min(shed_tiles, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
+            actions.append([_step_toward(pos, nearest)])
+            continue
+
         # PLANT is atomically validated per crop: if requests exceed seeds held, ALL plant
         # requests for that crop are dropped. So never ask for more than we hold.
-        crop = want_crop[target]
+        crop = want_crop.get(target)
         if op == "PLANT" and planned.get(crop, 0) >= seeds.get(crop, 0):
             actions.append(["PASS"])
             continue
 
         claimed.add(target)
         if pos == target:
-            actions.append(["PLANT", crop] if op == "PLANT" else [op])
             if op == "PLANT":
+                actions.append(["PLANT", crop])
                 planned[crop] = planned.get(crop, 0) + 1
+            elif op == "PLACE":
+                actions.append(["PLACE", "COW"])
+            else:
+                actions.append([op])
         else:
             actions.append([_step_toward(pos, target)])
 
     return {"farmer": actions[0], "hands": actions[1:], "market": market}
+
+
+def make_agent(overrides=None):
+    """An agent closure bound to its own parameters.
+
+    Lets several parameter sets play each other in one process, which is what an opponent pool
+    and mirror-match tuning both need. `PARAMS` is captured by reference when no overrides are
+    given, so the tuner can still mutate it in place.
+    """
+    params = PARAMS if not overrides else {**PARAMS, **overrides}
+
+    def _agent(obs, config=None):
+        return _play(obs, params)
+
+    return _agent
+
+
+def agent(obs, config=None):
+    """Module-level entry point, as `kaggle_environments` and the Kaggle runtime expect."""
+    return _play(obs, PARAMS)
