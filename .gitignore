@@ -12,5 +12,5 @@ logs/
 runs/
 wandb/
 .pytest_cache/
-data/
+data/*
 !data/README.md
