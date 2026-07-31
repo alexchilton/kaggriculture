@@ -114,6 +114,24 @@ PARAMS = {
     # Apply fertilizer only when it is free (collected from animals). Buying at $100 does not pay:
     # one application covers 3 days of one tile, worth about +$30 of wheat.
     "use_fertilizer": True,
+    # Crop that fills every tile not claimed above. Wheat has the deepest market, but carrot
+    # yields 29 units/tile/season against wheat's 28 at a $35 base against $25, and a real
+    # opponent beat us using 16 carrot tiles and nothing else. Its season drain is 410, so
+    # roughly 14 tiles saturates it -- past that the sqrt glut curve bites.
+    "filler_crop": "WHEAT",
+    # Cap on how many tiles we actually farm, regardless of how many are unlocked. A real opponent
+    # beat us $24,984 to $18,997 using 25 tiles against our 50: spreading thin costs labour and
+    # seed capital without adding output. 100 means no cap.
+    "max_tiles": 100,
+    # Deferred selling. Town drain runs all season whether or not we sell, so an untouched market
+    # drifts into scarcity and price climbs well above base -- strawberry was observed at $310
+    # against a $120 base. Selling early spends that premium; holding banks it.
+    #
+    # The catch, measured: there is no long-term storage. Overnight carry is 100 items and the
+    # overflow is destroyed, and a ripe plant decays about a day after maturing. So the only
+    # holdable quantity is roughly one shed. This window stops selling for the last few days
+    # before the endgame dump, letting drain lift the price on what we are holding.
+    "hold_days": 10,
 }
 
 LAND_PRICES = [1000, 2000, 4000]
@@ -168,14 +186,14 @@ def _crop_for_index(index, p, prices=None):
     """
     cows = p["cow_tiles"]
     straw = p["strawberry_tiles"]
-    intended = "WHEAT"
+    intended = p["filler_crop"]
     if index < cows + straw and index >= cows:
         intended = "STRAWBERRY"
     elif index < cows + straw + p["melon_tiles"] and index >= cows + straw:
         intended = "MELON"
-    if intended != "WHEAT" and prices:
+    if intended in ("MELON", "STRAWBERRY", "TOMATO") and prices:
         if prices.get(intended, 0) < p["plant_floor_frac"] * BASE_PRICE[intended]:
-            return "WHEAT"
+            return p["filler_crop"]
     return intended
 
 
@@ -255,7 +273,7 @@ def _play(obs, p):
     inventories = private.get("inventories", [{}]) or [{}]
     money = farm["money"]
 
-    tiles = _owned_tiles(farm, size)
+    tiles = _owned_tiles(farm, size)[: p["max_tiles"]]
     shed_tiles = _shed_tiles(size)
     unlocked = len(farm.get("unlocked_quadrants", ["NW"]))
 
@@ -279,6 +297,9 @@ def _play(obs, p):
     held = sum(shed.values())
     shed_pressed = held >= SHED_CAP * 0.8
     endgame = day >= p["endgame_day"]
+    # Inside the hold window we sit on stock and let town drain lift the price, unless the shed is
+    # nearly full -- losing goods to the nightly overflow is worse than a mediocre price.
+    holding = (not endgame) and day >= p["endgame_day"] - p["hold_days"]
     for item, n in sorted(shed.items()):
         if n <= 0:
             continue
@@ -286,9 +307,11 @@ def _play(obs, p):
             continue  # worth more applied to wheat than sold
         # Hold back feed: an unfed cow escapes after two days and the pasture is wasted.
         sellable = n
-        if item == "WHEAT" and not endgame:
+        if item == "WHEAT" and not endgame and p["cow_tiles"]:
             sellable = max(0, n - 3 * p["cow_tiles"])
         if sellable <= 0:
+            continue
+        if holding and not shed_pressed:
             continue
         good_price = prices.get(item, 0) >= p["sell_floor_frac"] * BASE_PRICE.get(item, 0)
         if good_price or shed_pressed or endgame:

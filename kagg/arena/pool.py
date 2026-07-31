@@ -30,10 +30,14 @@ BASELINE = {
     "phase_mod": 5,
     "cow_tiles": 0,
     "strawberry_tiles": 0,
-    "melon_tiles": 12,
+    "melon_tiles": 25,
+    "filler_crop": "WHEAT",
+    "max_tiles": 100,
     "sell_floor_frac": 0.55,
     "plant_floor_frac": 0.45,
     "endgame_day": 28,
+    "use_fertilizer": True,
+    "hold_days": 0,
 }
 
 # Strategy profiles rather than near-duplicates, so a candidate cannot win by exploiting one
@@ -45,12 +49,20 @@ OPPONENTS = {
     "melon_heavy": {"strawberry_tiles": 0, "melon_tiles": 25, "cow_tiles": 0},
     "strawberry": {"strawberry_tiles": 25, "melon_tiles": 0, "cow_tiles": 0},
     "cow_heavy": {"cow_tiles": 20, "melon_tiles": 8, "strawberry_tiles": 0},
+    # Copied from agents that actually beat us on the ladder, so the pool stops being a family of
+    # our own blind spots. Local win rate said 72% while we lost three ranked matches in a row.
+    "carrot_25": {"filler_crop": "CARROT", "melon_tiles": 0, "strawberry_tiles": 0, "max_tiles": 25},
+    "small_farm": {"melon_tiles": 12, "strawberry_tiles": 0, "max_tiles": 25},
+    "straw_small": {"strawberry_tiles": 10, "melon_tiles": 0, "max_tiles": 25},
     "starter": "starter",
     "pass": "pass",
 }
 
 # The pool worth optimising against: everything that actually competes for market prices.
-COMPETITIVE = ("mirror", "wheat_only", "melon_heavy", "strawberry", "cow_heavy")
+COMPETITIVE = (
+    "mirror", "wheat_only", "melon_heavy", "strawberry", "cow_heavy",
+    "carrot_25", "small_farm", "straw_small",
+)
 
 
 @dataclass(frozen=True)

@@ -7,12 +7,15 @@ Two-player farming sim, 720 turns, most money in the bank wins.
 
 ## Status
 
-**2026-07-31 — v5 submitted. 72% win rate against a five-strategy opponent pool.**
+**2026-07-31 — v5 on the ladder at 555. PPO training overnight on the real env.**
 
 v4 scored $43.5k locally and then **lost on the ladder at 429.9**, because it had been tuned
-against `starter`, which does not compete for market prices. v5 is tuned against an opponent pool
-and selected on win rate. See `docs/experiment_log.md` — that failure is the most useful thing
-this project has learned so far.
+against `starter`, which does not compete for market prices. v5 is tuned against an eight-strategy
+opponent pool — three of them copied from agents that actually beat us — and selected on **win
+rate**, since the ladder is Elo. See `docs/experiment_log.md`; that failure is the most useful
+thing this project has learned so far.
+
+Current: **81% win rate** against the pool. Ladder 555 (v4 was 526), against a field top of ~1400.
 
 `kagg/arena/` runs seat-swapped matches, `kagg/economics/` models the market and per-tile
 production with exact live-env parity, `kagg/agents/` holds the playable agent. 42 tests pass.
@@ -57,16 +60,42 @@ guessing, and trust it over the README where they disagree.
 ## Layout
 
 ```
-kagg/arena/       seat-swapped match running -- the measurement tool
+kagg/arena/       match running, and the opponent pool -- the measurement tools
 kagg/economics/   offline market and production models, parity-tested
-kagg/agents/      playable agents
-kagg/sim/         vectorized simulator (skeleton only)
-scripts/          benchmarks, analyses, the tuner, the submission builder
+kagg/agents/      playable agents (heuristic.py is the current submission)
+kagg/rl/          Gymnasium env: one strategy decision per day, terminal win/loss reward
+kagg/sim/         numpy-batched simulator (in progress)
+scripts/          benchmarks, analyses, tuner, RL training, submission builder
 submission/       generated; build with scripts/build_submission.py
-docs/             findings and decisions
+docs/             findings and decisions -- experiment_log.md first
 reference/        competition docs and the full env source (ground truth)
-data/             git-ignored scratch for replays and checkpoints
+data/             git-ignored scratch for replays, RL runs, checkpoints
 ```
+
+## Measuring an agent
+
+**Never evaluate against `starter` alone** — it does not sell, so the market is never contested and
+every number comes out about 2x reality. That mistake cost a submission.
+
+```python
+from kagg.arena import evaluate
+from kagg.agents import heuristic
+print(evaluate(dict(heuristic.PARAMS), seeds=range(20)))   # 8 competing strategies, win rate
+```
+
+## Training
+
+```bash
+.venv/bin/python scripts/train_rl.py --steps 6000000 --envs 10 --tag overnight
+tail -f data/rl_runs/overnight.log
+tail -5 data/rl_runs/overnight-*/progress.csv
+.venv/bin/tensorboard --logdir data/rl_runs
+```
+
+The policy sets strategy once a day, so episodes are 30 steps rather than 720. That is what makes
+a **terminal win/loss reward** practical, and it is why RL can train on the real environment before
+the fast simulator exists. Watch `train/explained_variance` — below 0.5 means the frame is wrong,
+not the hyperparameters. `ret=0.00 +/- 0.00` means reward is not reaching the algorithm at all.
 
 ## Next actions
 

@@ -18,7 +18,8 @@ If you measure something, put it here.
 | 2 | v2 — fixed hiring and land timing | $11,296 | 3.2x |
 | 3 | v3 — ES-tuned parameters | $13,486 | 3.8x |
 | 4 | v4 — melon quadrant + wheat (**submitted, scored 429.9, lost**) | $43,540 | 12.4x |
-| 5 | **v5 — opponent-pool tuned, price-aware** | **72% win vs pool** | see below |
+| 5 | v5 — opponent-pool tuned, price-aware (**submitted, 555**) | 72% win vs 5-strategy pool | |
+| 6 | **v6 — deferred selling, 8-strategy pool** | **90.6% win vs pool** | |
 
 From v5 on, the headline number is **win rate against a fixed opponent pool**, not money, because
 the leaderboard is Elo and margin does not count.
@@ -190,3 +191,37 @@ change your bank?" — listed on day 1 and never answered. It halves it.
 **72% win rate, 16% draws, $35,544 mean** over 100 games (10 seeds x 2 seats x 5 opponents).
 Beats wheat-only, strawberry and cow-heavy 100%; 30% against melon-heavy and its own mirror.
 Melon-heavy remains the unsolved matchup.
+
+
+## 6. Deferred selling — the money-versus-winning result
+
+Holding produce for the last stretch of the season, then dumping at the endgame. Measured over
+192 games (12 seeds x 2 seats x 8 opponents):
+
+| hold_days | win rate | draws | mean money |
+|---|---|---|---|
+| 0 | 81.2% | 12.5% | $36,996 |
+| **10** | **90.6%** | 6.2% | $37,060 |
+| 14 | 77.6% | 7.3% | $37,505 |
+
+**Money barely moves; win rate moves 9 points.** Holding converts narrow losses into wins without
+changing what an average season banks — and `hold_days=14` banks the *most* money ($37,505) while
+winning the *least* (77.6%). That is the Elo-versus-money distinction made concrete: had we
+selected on mean bank, as v1-v4 did, we would have picked the worst of the three.
+
+The mechanism is that town drain runs whether or not anyone sells, so an untouched market drifts
+into scarcity. Holding banks that premium; selling early spends it. 14 days overshoots because the
+shed (100 items, overflow destroyed) forces sales anyway and the endgame dump crashes the price.
+
+## 7. The pool was too self-similar
+
+v5 measured 72% locally and then lost ranked matches at 555. The pool was five strategies, all
+variants of **our own agent**, so it shared our blind spots.
+
+Replay evidence: one opponent won $24,984 to $18,997 farming **25 tiles of carrots** against our 50
+tiles of wheat and melon. Another won with strawberry at $310/unit while our melon sat at $25.
+
+Pool widened to eight, three copied from agents that actually beat us (`carrot_25`, `small_farm`,
+`straw_small`), and a `max_tiles` parameter added to make small-farm play expressible. Carrot as a
+filler crop was tested directly: 68.3% against wheat's 73.3%, so it is not our answer, but it is
+now in the pool as an opponent.

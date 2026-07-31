@@ -42,16 +42,32 @@ from kagg.arena.pool import BASELINE, OPPONENTS
 TURNS_PER_DAY = 24
 SEASON_DAYS = 30
 
-# Each head picks from a short list. Buckets rather than continuous values because the underlying
-# quantities are tile counts and thresholds where fine distinctions are below measurement noise
-# (identical parameters vary ~15% across seed sets).
+# Each head is a parameter that a measurement showed matters, with the measurement named. Buckets
+# rather than continuous values because these are tile counts and thresholds where fine
+# distinctions sit below noise -- identical parameters vary ~15% across seed sets. Tile counts
+# anchor on quadrant boundaries (25 = one quadrant, 50 = two) because land is bought per quadrant.
 ACTION_BUCKETS = {
+    # Biggest single lever found: 0 -> 25 tiles moved the agent $13k -> $43k.
     "melon_tiles": (0, 8, 16, 25, 40),
+    # Theory says premium (observed at $310/unit on the ladder); measured negative for us because
+    # we sold on harvest. Now that `hold_days` exists, worth re-testing rather than assuming.
     "strawberry_tiles": (0, 8, 16, 25),
+    # Measured net negative, but that conclusion was reached with two bugs in the animal code.
+    # Exposed so a policy can retest it rather than inherit my conclusion.
     "cow_tiles": (0, 4, 10),
+    # Deferred selling: +9 points of win rate at 10 days. The largest recent finding.
+    "hold_days": (0, 4, 10, 14),
+    # From watching a ranked replay dump melon at $7 against a $250 base.
     "sell_floor_frac": (0.0, 0.4, 0.55, 0.7, 0.9),
+    # Hiring is Fibonacci and resets daily; ES moved this from 17 hands to 8 for +13%.
     "tiles_per_hand": (4, 7, 10, 14),
+    # Buying land before the current land is productive starved seed capital; fixing it was +30%.
     "land_slack": (1.0, 3.0, 6.0),
+    # An opponent beat us $24,984 to $18,997 farming 25 tiles against our 50.
+    "max_tiles": (25, 50, 100),
+    # Carrot yields 29/tile/season against wheat's 28 at a higher base, and a real opponent won
+    # with nothing but carrots. Loses to wheat in our pool, so let the policy decide.
+    "filler_crop": ("WHEAT", "CARROT"),
 }
 ACTION_KEYS = tuple(ACTION_BUCKETS)
 
