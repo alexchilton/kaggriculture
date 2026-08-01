@@ -15,10 +15,17 @@ precisely what DAgger is for.
 
 So: roll the current checkpoint out in the real environment, and at every turn ask a competent agent
 what it would have done there. Those corrective pairs are exactly the supervision that is missing.
-`contrarian` is the labeller -- `CLAUDE.md` blesses the heuristics as sparring partners and teachers
-while forbidding them as the final policy, which is this use exactly. It banks $51k against the
-replay teachers' $128k, so it is a worse *ceiling*; for the question "you are standing on the shed
-tile doing nothing, what now" it is entirely adequate.
+
+**The labeller is the ES-tuned `converter`, the agent submitted as v8** -- not `contrarian`, which
+was v7 and is measurably weaker: converter beats it 87.5% over sixteen seat-swapped fresh seeds at
++$15,010 a game, and scores 0.963 against 0.825 on the ladder. Labelling with the weaker of two
+available agents caps the corrective data at the worse teacher for nothing. `CLAUDE.md` blesses the
+heuristics as teachers and sparring partners while forbidding them as the final policy, which is
+this use exactly.
+
+The labeller is still a worse *ceiling* than the replay teachers, who bank $128k. That is why the
+corrective set is deliberately small beside the 90,720 replay pairs: it exists to cover states the
+replays cannot contain, not to become the bulk of the signal.
 
 Run:  .venv/bin/python -u scripts/dagger.py 40 2>&1 | tee data/logs/dagger.log
 """
@@ -30,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from kaggle_environments import make
 
-from kagg.agents import contrarian, converter, neural
+from kagg.agents import converter, neural
 from kagg.il.replays import encode_action
 from kagg.rl import adapter, jax_obs
 
@@ -38,14 +45,14 @@ OUT = Path("data/il")
 
 
 def collect(n_games=40, start_seed=7000, mix_expert=0.0):
-    """Play the checkpoint, record what `contrarian` would have done at each state it reached.
+    """Play the checkpoint, record what the expert would have done at each state it reached.
 
     `mix_expert` occasionally hands a turn to the expert, so the rollout is not confined entirely to
     the failure state -- the standard DAgger beta. At 0 it is pure on-policy, which is what we want
     first, because the stuck states are the whole point.
     """
     learner = neural.make_agent()
-    expert = contrarian.agent
+    expert = converter.agent
     tiles_b, units_b, glob_b, labels_b = [], [], [], {}
     rng = np.random.default_rng(0)
     started = time.time()

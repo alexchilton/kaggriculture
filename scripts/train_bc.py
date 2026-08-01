@@ -50,24 +50,37 @@ HEAD_WEIGHTS = {
 }
 
 
-def load(limit_shards=None):
+def load(limit_shards=None, with_dagger=True):
+    """Replay shards first, then any DAgger corrective shards.
+
+    The two prefixes are kept apart on disk so the mixture stays visible, and the *order* matters
+    here: the validation split is a trailing block, so loading corrective data last would make
+    validation entirely corrective and the reported accuracy would stop describing the teachers at
+    all. `n_replay` is returned so the split can be taken from the replay rows only.
+    """
     shards = sorted(DATA.glob("shard_*.npz"))
     if limit_shards:
         shards = shards[:limit_shards]
     if not shards:
         raise SystemExit(f"no shards in {DATA}; run scripts/build_il_dataset.py first")
+    extra = sorted(DATA.glob("dagger_*.npz")) if with_dagger else []
 
     tiles, units, glob, labels = [], [], [], {}
-    for s in shards:
+    n_replay = 0
+    for i, s in enumerate(shards + extra):
         z = np.load(s)
+        if i < len(shards):
+            n_replay += len(z["tiles"])
         tiles.append(z["tiles"])
         units.append(z["units"])
         glob.append(z["glob"])
         for k in z.files:
             if k.startswith("y_"):
                 labels.setdefault(k[2:], []).append(z[k])
+    if extra:
+        print(f"loaded {len(shards)} replay shards + {len(extra)} DAgger shards")
     return (np.concatenate(tiles), np.concatenate(units), np.concatenate(glob),
-            {k: np.concatenate(v) for k, v in labels.items()})
+            {k: np.concatenate(v) for k, v in labels.items()}, n_replay)
 
 
 UNIT_HEADS = ("op", "crop", "item", "qty")
@@ -126,16 +139,19 @@ def main():
                          "discovering the one behaviour it needs. 0 disables.")
     args = ap.parse_args()
 
-    tiles, units, glob, labels = load(args.shards)
+    tiles, units, glob, labels, n_replay = load(args.shards)
     n = len(tiles)
     print(f"{n:,} rows  tiles{tiles.shape[1:]} units{units.shape[1:]} glob{glob.shape[1:]}")
 
     # Held out by *index block* rather than at random: consecutive rows are consecutive turns of the
     # same game, so a random split leaks a turn's near-duplicate neighbours into validation and the
     # score comes back flattering.
-    n_val = int(n * args.holdout)
-    idx_val = np.arange(n - n_val, n)
-    idx_tr = np.arange(0, n - n_val)
+    # Taken from the *replay* rows only. The corrective shards are appended after them, so a plain
+    # trailing block would make validation entirely corrective and the reported accuracy would stop
+    # describing the teachers at all.
+    n_val = int(n_replay * args.holdout)
+    idx_val = np.arange(n_replay - n_val, n_replay)
+    idx_tr = np.concatenate([np.arange(0, n_replay - n_val), np.arange(n_replay, n)])
     print(f"train {len(idx_tr):,}  val {len(idx_val):,} (held out as a trailing block, not at random)")
 
     model = P.Policy()
