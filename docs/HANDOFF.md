@@ -357,3 +357,137 @@ every unit re-decide between the two economies every turn.
 - Host-device syncs removed from the training loop: four full-array transfers per update, plus
   **256 host-to-device index transfers** (numpy shuffle, one dispatch per minibatch). Speedup not yet
   measured on GPU.
+
+---
+
+## Session 3 — 2026-08-01, afternoon
+
+Three things landed: two real bugs out of `converter`, a graded fitness so the search has
+something to climb, and two more blind metrics out of the RL loop.
+Both jobs are running as this is written.
+
+### The correction that matters most
+
+**The previous entry's "critic is fixed, sitting near 0.50" is not what the log shows, and the
+log column it was read from does not describe the network being trained.**
+`traj["value"]` comes from `value_params`, which under `--target-ema` is the slow EMA copy.
+An EMA of parameters is not a network any gradient has touched: at decay 0.99 it still carries
+`0.99^n` of the random initialisation, which is 53% at update 63.
+That run printed `V 0.606 sum 1.212` -- the exact signature of a seat-blind critic -- while
+`seat_loss` on the live network read 0.0006, i.e. a seat sum of 1.02 and entirely healthy.
+I spent a chunk of this session treating that as a live bug before checking which network produced
+the number.
+The columns now carry a `t` prefix when they describe the target net, and `seat_loss` is the one
+to trust.
+Measured after restarting without the EMA: `sum` 1.147 -> 1.021 -> 1.005 over three updates.
+
+**`--target-ema 0.99` was on the command line at all**, against this file's own note that it is
+off by default because changing two things about one mechanism at once breaks one-delta-at-a-time.
+It is off again.
+
+### `converter`: two bugs, both structural, neither found by reading the code
+
+`tests/test_converter.py` plays a season and prints a day-by-day table of op mix against board
+state.
+It found both of these in one run, after eight rounds of hand-tuning had not.
+
+1. **`yield_units > 0` is not the test for a harvestable crop.**
+   `_new_plant` sets it to 1 at once for every crop with `ongoing=False`, while the environment's
+   HARVEST silently returns until `first_yield_day` -- 10 days for melon.
+   A unit picking HARVEST on that basis issues a **legal no-op that cannot clear its own
+   precondition**, so it picks it again next turn: 89 in the first two days, all three units stood
+   on their own melon, and nothing below the harvest branch ever reached.
+2. **Planting outranked watering, and a seed planted today is dead by morning.**
+   `_new_plant` opens at `consecutive_unwatered = 1` and two dry days turns the tile to WEED, so
+   planting incurs a debt due within hours rather than deferring revenue.
+   With planting first, `seeds > 0` kept every unit planting for the whole of day 0: the
+   fourteenth seed went in at hour 23, nothing was watered, all fourteen were weeds at midnight.
+   **Zero WATER actions in a 720-turn season.**
+
+Measured on seed 4000: WATER 0 -> 128, melon standing on day 6 0 -> 13, and the second watering
+step at the bottom of the priority list turned out to have been dead code all along.
+
+**It still does not win a game.**
+0/16 against `contrarian` both before and after, and mean money *fell* $4,458 -> $2,402: the
+repaired crop funds an earlier collapse into the livestock phase.
+That half is a separate bug and is left red as a strict xfail -- 562 PICKUP against 197 FEED.
+
+### The reason eight tunings could not converge
+
+**The fitness was saturated.** 0/16 before the fixes and 0/16 after.
+Every candidate scored the same, so there was nothing to rank -- and no evolutionary method,
+plain ES or CMA-ES or memetic or island, can select among candidates that all score identically.
+Search cannot find a missing precondition, because a missing precondition is not in the space
+being searched.
+
+`kagg/arena/ladder.py` scores against opponents ordered by strength and takes the mean win rate
+across all of them.
+Measured on one seed it separates where a single opponent did not:
+
+| candidate | score | pass | starter | rancher | heuristic | contrarian |
+|---|---|---|---|---|---|---|
+| `converter` | 0.100 | 0% | 50% | 0% | 0% | 0% |
+| `rancher` | 0.600 | 100% | 100% | 0% | 100% | 0% |
+| `contrarian` | 0.800 | 100% | 100% | 100% | 100% | 0% |
+
+It also said something no previous measurement did: **`converter` loses to `pass`**, an agent that
+takes no action and banks its $3,000 start.
+It is below the do-nothing floor.
+The problem is not that it farms badly, it is that it spends itself to $1,352.
+
+`ladder.census` counts actions that changed nothing, by applying each through the environment's own
+`_apply_unit_action` against a copy of the farm rather than re-deriving eighteen preconditions --
+which is exactly how the no-op HARVEST loop was missed, since any check written from the same
+misreading as the agent agrees with the agent.
+Validated by reintroducing that bug and confirming the count jumps.
+After the two fixes `converter`'s waste is 127 of 4,917 actions.
+
+### Islands, and the axis that actually matters
+
+`scripts/tune_converter.py` is an island ES over converter's dials where **the islands differ by
+opponent, not by population**.
+Demes facing the same opposition converge to the same place; this file already records a pool that
+varied crop mix and nothing else, against which a candidate scored 72% locally and then lost three
+ranked matches.
+Migration carries a genome that survived one opposition into a population facing another, and it
+becomes incumbent only by beating the resident on the resident's own rungs.
+Seeds resample every generation and challengers re-confirm on a fresh draw, both because the
+experiment log says so.
+
+On memetic search specifically: it has effectively been tried here and the log records the result
+-- 11 accepted moves in 14 generations for +1.6%, which is local search hill-climbing the ~15% seed
+noise.
+Local refinement is the phase that overfits a noisy objective, so it pays only once evaluation is
+both cheap and low-variance.
+
+### RL: a second pinned metric, and the bug it was hiding
+
+**`wr` read 0.500 to three decimals for a whole run, and restricting it to `trainable` rows -- the
+previous fix for exactly this -- does not unpin it.**
+In a self-play group *both* seats are trainable, so both are counted and the pair sums to 1 whatever
+either side did.
+At `--opponent-frac 0.25` that is two pinned rows per self-play game against one free row per
+cross-play game: 86% of the measurement fixed by arithmetic, and a policy winning *every* cross-play
+game would have read 0.571.
+`tests/test_train_metrics.py` pins that ceiling.
+
+Restricting to cross-play rows then read `nan/0x` -- no qualifying rows at all -- which exposed a
+real bug the pinned metric had been hiding.
+**A game's index is its phase group, and a phase group is a fixed season position, so index order is
+season order.**
+`use_opp` took a *contiguous* block, and since episodes only end at the season boundary the games
+that terminate are their own contiguous band.
+Two blocks rotating at different rates mostly miss: the frozen opponent never played the endgame.
+Strided, `wr` populates and moves for the first time -- 0.000/2x, 0.300/5x, 0.312/8x.
+
+### Where to pick up
+
+1. **The livestock phase**, which is where `converter`'s remaining loss lives: animals accumulate
+   unplaced in the shed (`COW:6, SHEE:2` on day 25) and 562 PICKUP against 197 FEED.
+   The xfail test is already there and strict.
+2. **Read the island ES result** in `data/logs/tune_converter.log` and
+   `data/tune_converter/best.json` before tuning anything by hand.
+3. **Watch `ev_signal` against the committed 0.5 kill criterion.** It is now measurable every
+   update and was reading around 0 early.
+4. The `contrarian` rung gives 0% to a mirror match, so it cannot distinguish "draws" from "loses
+   badly". Other rungs carry the signal, but a margin-aware tiebreak there would sharpen it.
