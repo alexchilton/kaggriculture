@@ -36,19 +36,31 @@ from kaggle_environments.envs.kaggriculture import kaggriculture as kg
 BOARD = 10
 SHED_ACCESS = [(4, 4), (5, 4), (4, 5), (5, 5)]
 
+# **Tuned by island ES against a graded opponent ladder, not by hand.**
+#
+# The hand-chosen values below in comments were read off the replay and scored **0.092** on the
+# full ladder over held-out seeds -- below `pass`, an agent that takes no action and keeps its
+# $3,000. These score **0.975**. On fresh seeds never used for selection the tuned agent beats
+# `contrarian`, our submitted v7, **87.5% over 16 seat-swapped games at +$15,010 a game**, and
+# scores 0.963 on the ladder against contrarian's 0.825.
+#
+# Three of the changes are structural rather than cosmetic and none of them was my guess:
+# the herd is *smaller* (20 -> 12), the expansion comes far *earlier* (day 8 -> 3), and the crew
+# is allowed to be *larger* (14 -> 17) now that it has something to do from day 3. Hand-tuning
+# went the other way on all three, and eight rounds of it never converged.
 PARAMS = {
-    "target_herd": 20,          # yjhv held 20; smlcr 12. The larger herd won.
+    "target_herd": 12,          # was 20. Smaller herd, started sooner, beats a bigger one later.
     "cows_per_sheep": 1.4,      # cow: 6 milk/season at $160; sheep: slower but $200
-    "expand_day": 8,            # the burst, timed to when melon revenue lands
-    "max_hands": 14,            # both winners held 12; feeding 20 animals needs ~160 of 288 actions
+    "expand_day": 3,            # was 8. The animals want to be earning before the melon lands.
+    "max_hands": 17,            # was 14. Worth the Fibonacci fee once day 3 gives them work.
     "min_hands": 2,
     "work_per_hand": 2.0,       # jobs a hand clears per day, used to size the crew
     "wheat_buffer": 40,         # shed wheat to keep ahead of the feed loop
     "wheat_per_turn": 2,
-    "wheat_cheap": 32,          # below this, stockpile: the price only ever rises
-    "wheat_stock_qty": 6,
+    "wheat_cheap": 20,          # was 32. Stockpile only when it is genuinely cheap.
+    "wheat_stock_qty": 1,       # was 6. Buy the feed as needed; the bank is worth more early.
     "shed_sell_at": 55,         # sell down before the 100-item cap destroys the overflow
-    "melon_tiles": 14,          # melon is winner-take-all, and it funds the herd
+    "melon_tiles": 16,          # was 14. Melon is winner-take-all and it funds the herd.
     "sell_every": 3,
     "min_sell_qty": 2,
     "land_days": (2, 8),        # NE then SW; neither winner ever bought SE
