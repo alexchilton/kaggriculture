@@ -67,6 +67,11 @@ O_NAMES = ("noop", "N", "S", "E", "W", "water", "harv", "plant", "dig", "pick", 
 TRADER_BUY_UNTIL = 12
 TRADER_SELL_FROM = 20
 TRADER_LOT = 5
+
+# League priority, ported from Ender's `_select_league_opponent`.
+POOL_PRIORITY_FLOOR = 0.1
+POOL_PRIORITY_TEMP = 1.0
+POOL_PRIORITY_ALPHA = 0.2
 TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
@@ -783,8 +788,22 @@ def main():
               f"ent_coef {args.ent_coef})", flush=True)
 
     pool = [jax.device_get(params)]
+    # **Opponents are sampled by how well they do against us, not round-robin.**
+    #
+    # Ender: "prioritised based on recent winrate, with more difficult checkpoints being played
+    # more often. This seems especially important for the 4-player game mode." Ours was
+    # `pool[it % len(pool)]`, which plays the random initialisation exactly as often as the best
+    # checkpoint in the pool -- a lottery rather than a curriculum.
+    #
+    # `pool_wr[i]` is an EMA of the *opponent's* win rate, so a checkpoint that beats us has a high
+    # value and gets picked more. His weights, ported directly:
+    #     weight = floor + winrate ** temperature,  plus 0.25 while a member is unplayed
+    pool_wr = [0.5]
+    pool_games = [0]
     if prior_params is not None:
         pool.append(jax.device_get(prior_params))
+        pool_wr.append(0.5)
+        pool_games.append(0)
 
     start_update = 0
     best_wr = -1.0
@@ -863,7 +882,11 @@ def main():
             stride = max(1, args.batch // n_idle)
             picks = [(j * stride + it + stride // 2) % args.batch for j in range(n_idle)]
             use_idle[[p for p in picks if not use_opp[p] and not use_trade[p]]] = True
-        opp_params = pool[it % len(pool)]
+        w = np.array([POOL_PRIORITY_FLOOR + max(wr, 1e-6) ** POOL_PRIORITY_TEMP
+                      + (0.25 if g <= 0 else 0.0)
+                      for wr, g in zip(pool_wr, pool_games)], dtype=np.float64)
+        opp_idx = int(np.random.default_rng(it).choice(len(pool), p=w / w.sum()))
+        opp_params = pool[opp_idx]
 
         state, key, traj, advantages, returns = rollout(
             params, target_params, opp_params, jnp.asarray(use_opp),
@@ -1001,6 +1024,20 @@ def main():
         })
         wins += float(stats["reward_sum"])
         games += float(stats["done_count"])
+
+        # **Record how this opponent did, or the priority weights never change.**
+        #
+        # `reward_sum / done_count` is the *live policy's* win rate on cross-play rows this update,
+        # so the opponent's is one minus that. Only updated when this update actually finished games
+        # against it -- terminal rows are ~0.14% of rows, so an update can legitimately see none,
+        # and folding a zero-sample estimate into the EMA would drag every member toward 0.5 and
+        # flatten the curriculum back into the round-robin this replaces.
+        n_done = float(stats["done_count"])
+        if n_done > 0:
+            opp_wr = 1.0 - float(stats["reward_sum"]) / n_done
+            a = POOL_PRIORITY_ALPHA
+            pool_wr[opp_idx] = (1 - a) * pool_wr[opp_idx] + a * opp_wr
+            pool_games[opp_idx] += int(n_done)
         ev = float(stats["ev"])
         ev_signal = float(stats["ev_signal"])
 
@@ -1057,6 +1094,8 @@ def main():
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
             pool.append(jax.device_get(params))
+            pool_wr.append(0.5)
+            pool_games.append(0)
             if len(pool) > args.pool_size:
                 # Drop from the *middle*, never the ends. Evicting the oldest would leave a pool of
                 # near-identical recent snapshots -- which is how self-play starts cycling: the
