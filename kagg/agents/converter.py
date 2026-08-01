@@ -60,6 +60,27 @@ def _quadrant(x, y):
     return ("N" if y < 5 else "S") + ("W" if x < 5 else "E")
 
 
+def _ripe(cell, day):
+    """Is this crop actually harvestable today?
+
+    **`yield_units > 0` is not the test, and using it cost the entire season.** `_new_plant` sets
+    `yield_units = 1` at once for every crop with `ongoing=False`, while the environment's HARVEST
+    silently returns until `first_yield_day`. Melon's is 10, so a freshly planted melon advertises a
+    crop for ten days and refuses to give it up.
+
+    A unit that picks HARVEST on that basis issues a *legal no-op* which cannot clear its own
+    precondition, so it picks it again the next turn, and the next -- 89 times in the first two days
+    of a measured season, with all three units standing on their own melon. Nothing below the
+    harvest branch is ever reached, so the crop is never watered, `consecutive_unwatered` reaches 2,
+    and it turns to WEED on day 2. Every symptom in the handoff -- no WATER in 720 turns, melon gone
+    by day 6, three tiles planted of fourteen, the bank at $25 -- is downstream of this one line.
+    """
+    if cell.get("yield_units", 0) <= 0:
+        return False
+    crop = kg.CROPS[cell["crop"]]
+    return day - cell.get("planted_day", 0) >= crop["first_yield_day"]
+
+
 def _shed_ring():
     """Tiles ordered by walking distance from the shed -- where the herd goes.
 
@@ -283,6 +304,22 @@ def make_agent(overrides=None):
             def nearest_shed():
                 return min(SHED_ACCESS, key=lambda s: abs(s[0] - pos[0]) + abs(s[1] - pos[1]))
 
+            def water_job():
+                """Pick a dry plant to water, nearest first -- and the tile underfoot is nearest.
+
+                Scanning `plants` in board order sent a unit that had *just planted* off across the
+                farm to water someone else's tile, leaving its own to die overnight. Standing on a
+                dry plant is a zero-walk job, so it always wins: plant, then water where you stand.
+                Measured, that alone was two of the five melon lost on day 0.
+                """
+                dry = [(tx, ty) for tx, ty, c in plants
+                       if (tx, ty) not in claimed and not c.get("watered_today")]
+                if not dry:
+                    return None
+                tx, ty = min(dry, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
+                claimed.add((tx, ty))
+                return ["WATER"] if pos == (tx, ty) else go((tx, ty))
+
             # 1. Harvest anything ready -- **animals and crops both**.
             #
             # Rewriting this loop for stable per-unit animal ownership quietly dropped crop
@@ -297,7 +334,7 @@ def make_agent(overrides=None):
                     break
             if act is None and carrying < 12:
                 for tx, ty, c in plants:
-                    if (tx, ty) in claimed or c.get("yield_units", 0) <= 0:
+                    if (tx, ty) in claimed or not _ripe(c, day):
                         continue
                     claimed.add((tx, ty))
                     act = ["HARVEST"] if pos == (tx, ty) else go((tx, ty))
@@ -313,19 +350,27 @@ def make_agent(overrides=None):
             #     plant. Ordering these below the feed loop is what let fourteen seeds become three
             #     plants and then none.
             if act is None and not livestock_phase:
-                if seeds.get("MELON", 0) > 0:
+                # **Watering outranks planting, and the reverse killed every crop we ever grew.**
+                #
+                # `_new_plant` opens at `consecutive_unwatered = 1` -- the planting day already
+                # counts against the crop -- and two dry days turns the tile to WEED. So a seed put
+                # in today is dead by morning unless the same day waters it: planting does not
+                # merely defer revenue, it incurs a debt due within hours.
+                #
+                # With planting first, `seeds > 0` kept every unit planting for the whole of day 0;
+                # measured, the fourteenth seed went in at hour 23, nothing was watered, and all
+                # fourteen tiles were weeds at midnight. Zero WATER actions in a 720-turn season.
+                #
+                # Ordered this way the shared `claimed` set does the allocation for free: the units
+                # take one watering job each until every dry plant is spoken for, and only the
+                # surplus goes planting. The crew waters what it has before it takes on more.
+                act = water_job()
+                if act is None and seeds.get("MELON", 0) > 0:
                     far = [t for t in reversed(RING) if t in free and t not in claimed]
                     if far:
                         tx, ty = far[0]
                         claimed.add((tx, ty))
                         act = ["PLANT", "MELON"] if pos == (tx, ty) else go((tx, ty))
-                if act is None:
-                    for tx, ty, c in plants:
-                        if (tx, ty) in claimed or c.get("watered_today"):
-                            continue
-                        claimed.add((tx, ty))
-                        act = ["WATER"] if pos == (tx, ty) else go((tx, ty))
-                        break
 
             # 3. Place first, feed second. Placing was below feeding, and feeding always has work
             #    -- an animal needs it daily -- so units never reached the placement step and bought
@@ -358,12 +403,7 @@ def make_agent(overrides=None):
             # have work once a herd exists -- so the agent bought melon seed, planted it, and then
             # let it die while tending cows. Crops fund the herd; they cannot be the leftover.
             if act is None:
-                for tx, ty, c in plants:
-                    if (tx, ty) in claimed or c.get("watered_today"):
-                        continue
-                    claimed.add((tx, ty))
-                    act = ["WATER"] if pos == (tx, ty) else go((tx, ty))
-                    break
+                act = water_job()
 
             # 6. Build the pens the herd will need, nearest the shed first.
             if act is None and idx < len(build_spots):
@@ -386,24 +426,17 @@ def make_agent(overrides=None):
                         break
 
             # 8. Plant the melon we bought seed for, on tiles *away* from the shed so the herd keeps
-            #    the short-walk ring it needs for feeding. This sits above watering because seed in
-            #    the store earns nothing and the yield window starts from the day it goes in.
+            #    the short-walk ring it needs for feeding. It sits *below* watering, here and in the
+            #    opening block: a seed put in today dies tonight unless the same day waters it, so
+            #    taking on a new tile before the standing crop is watered trades $250 for $250 and
+            #    loses the walk. A second watering step used to sit below this one; it was dead, as
+            #    step 5 has already claimed every dry plant by the time control reaches here.
             if act is None and seeds.get("MELON", 0) > 0:
                 far = [t for t in reversed(RING) if t in free and t not in claimed]
                 if far:
                     tx, ty = far[0]
                     claimed.add((tx, ty))
                     act = ["PLANT", "MELON"] if pos == (tx, ty) else go((tx, ty))
-
-            # 9. Watering. An unwatered plant dies after two dry days and takes its $250 with it,
-            #    so melon is watered like the economy it is.
-            if act is None:
-                for tx, ty, c in plants:
-                    if (tx, ty) in claimed or c.get("watered_today"):
-                        continue
-                    claimed.add((tx, ty))
-                    act = ["WATER"] if pos == (tx, ty) else go((tx, ty))
-                    break
 
             if act is None and carrying > 0:
                 act = ["DROP"] if on_shed else go(nearest_shed())
