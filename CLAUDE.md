@@ -90,6 +90,25 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
 - **Check whether a doc already answers the question.** The Elo scoring rule was already recorded
   in `competition_brief.md` while `rl_feasibility.md` contradicted it. Two hours of "discovery"
   was really an unresolved internal inconsistency.
+- **Evaluate a technique against the problem it was BUILT for, not the problem in front of you.**
+  Ender's autoregressive micro-steps were assessed here by asking "will this fix the spawn
+  deadlock?" -- correctly answered *no*, twice, and the technique was struck off. But he built it
+  for **action-space explosion**, which we independently have and had already measured three times:
+  greedy argmax over per-head marginals emits zero market orders because nine independent "probably
+  not sell" decisions compose into "never sell"; independent sampling from the same marginals banks
+  $1; and the marginals are *good* (12:1 discrimination on `buy_product`), so it is the joint decode
+  destroying the information, not the network. `jax_policy.py` states the assumption plainly --
+  "conditionally independent given the state, so the joint log-prob is the sum -- exact, not an
+  approximation" -- which is true for scoring a log-prob and false for producing an action.
+
+  So before ruling a technique out, write down two things separately: (1) what problem its author
+  built it for, and (2) whether we have that problem. Asking only "does it fix today's bug" gets a
+  correct answer to the wrong question, and a correct *no* is indistinguishable from a real
+  dead end.
+
+  This applies with double force when delegating the assessment, because a reviewer answers the
+  question asked. Both times a review here reached a wrong conclusion it was because the framing
+  handed to it was wrong, not the reasoning inside it.
 
 ## Kill criteria — committed up front
 
