@@ -4,11 +4,15 @@ Kept apart from the network so that "what the policy predicts" and "what the sim
 have exactly one bridge between them. When those two drift apart the symptom is a policy that
 trains happily and plays nothing like its rollouts, which is very hard to see from a loss curve.
 
-The joint log-prob is the sum over heads, and the sum runs over **every head, every turn**, even
-heads the chosen op ignores -- a crop head is sampled whether or not the op is PLANT. That is not
-waste, it is what keeps the density correct: the behaviour policy sampled those heads, so the
-update has to score them. Dropping the unused ones would make the ratio in the PPO objective the
-ratio of two different distributions.
+Every head is **sampled** every turn, because the simulator reads a value from every slot. Only the
+heads the chosen op actually consults are **scored** -- see `active_unit_heads`.
+
+That distinction was originally the other way round here, on the argument that scoring every head
+keeps the PPO ratio a ratio of the same distribution. The argument is technically sound and the
+conclusion was still wrong: the unscored draws never touch the environment, so the effective policy
+is the marginal over the fields that matter, and scoring the rest adds a zero-mean gradient over
+roughly four times more parameters than the decision involved. Removing it dropped measured entropy
+from ~100 nats to ~15, which is the size of the noise that was being carried.
 """
 
 import jax
@@ -16,6 +20,7 @@ import jax.numpy as jnp
 
 from kagg.rl import jax_masks, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
+from kagg.sim import ops as O
 
 UNIT_HEADS = ("op", "crop", "item", "qty")
 MARKET_HEADS = ("sell", "buy_product", "buy_seed", "buy_animal", "hire", "buy_land")
@@ -50,27 +55,73 @@ def forward(params, model, state):
     return heads, value, masks_for(state)
 
 
+def active_unit_heads(op):
+    """[B, U] bool per conditional head: does the chosen op actually read this field?
+
+    **Heads the op ignores must not contribute to the density or the entropy.** They are still
+    sampled -- the simulator wants a value in every slot -- but scoring them is pure variance: the
+    gradient `advantage * grad log pi(sampled)` lands on a head whose sampled value had no causal
+    effect on the outcome. It is zero-mean, so unbiased, but it dilutes a fixed advantage budget
+    across roughly four times more parameters than the decision needed, and in a finite batch it
+    can push irrelevant heads toward confident nonsense purely from sampling noise -- which then
+    shows up as "entropy fell" and reads as learning.
+
+    Masking them out is the standard hierarchical-policy treatment (AlphaStar does exactly this)
+    and loses nothing: the effective policy is the marginal over the fields that matter, and the
+    ignored draws are auxiliary randomness that never touches the environment.
+    """
+    is_plant = op == O.PLANT_OP
+    takes_item = (op == O.PICKUP) | (op == O.PLACE)
+    return {
+        "op": jnp.ones_like(is_plant),      # the op head always decides something
+        "crop": is_plant,                   # only PLANT reads a crop
+        "item": takes_item,                 # only PICKUP and PLACE read an item
+        "qty": takes_item,                  # ...and a quantity
+    }
+
+
+def _reduce(x, active=None):
+    """Sum a head's per-element contribution to one scalar per seat, zeroing inactive elements."""
+    if active is not None:
+        x = jnp.where(active, x, 0.0)
+    return x.reshape(x.shape[0], -1).sum(axis=-1)
+
+
 def sample(key, heads, masks):
-    """Sample every head. Returns `(actions, log_prob, entropy)` with log_prob summed per seat."""
+    """Sample every head. Returns `(actions, log_prob, entropy)` with log_prob summed per seat.
+
+    Every head is sampled, because the simulator reads a value from every slot. Only the heads the
+    chosen op actually consults are *scored* -- see `active_unit_heads`.
+    """
     keys = jax.random.split(key, len(ALL_HEADS))
-    actions, logps, entropies = {}, [], []
+    actions = {}
     for k, sub in zip(ALL_HEADS, keys):
-        a, lp, ent = P.sample_head(sub, heads[k], masks[k])
-        actions[k] = a
-        # Per-unit and per-product heads carry an extra axis; sum it so every head contributes one
-        # scalar per seat, and the joint density is the sum over all of them.
-        logps.append(lp.reshape(lp.shape[0], -1).sum(axis=-1))
-        entropies.append(ent.reshape(ent.shape[0], -1).sum(axis=-1))
+        actions[k] = P.sample_head(sub, heads[k], masks[k])[0]
+
+    active = active_unit_heads(actions["op"])
+    logps, entropies = [], []
+    for k in ALL_HEADS:
+        lp, ent = P.eval_head(heads[k], masks[k], actions[k])
+        a = active.get(k)
+        logps.append(_reduce(lp, a))
+        entropies.append(_reduce(ent, a))
     return actions, sum(logps), sum(entropies)
 
 
 def evaluate(heads, masks, actions):
-    """Score stored actions under current params, for the ratio in the PPO objective."""
+    """Score stored actions under current params, for the ratio in the PPO objective.
+
+    The active set is derived from the *stored* op, so behaviour and update agree on exactly which
+    heads were part of the decision. Deriving it from anything else would make the ratio a ratio of
+    two different distributions.
+    """
+    active = active_unit_heads(actions["op"])
     logps, entropies = [], []
     for k in ALL_HEADS:
         lp, ent = P.eval_head(heads[k], masks[k], actions[k])
-        logps.append(lp.reshape(lp.shape[0], -1).sum(axis=-1))
-        entropies.append(ent.reshape(ent.shape[0], -1).sum(axis=-1))
+        a = active.get(k)
+        logps.append(_reduce(lp, a))
+        entropies.append(_reduce(ent, a))
     return sum(logps), sum(entropies)
 
 

@@ -38,6 +38,7 @@ the seating or the reward assignment.
 """
 
 import argparse
+import functools
 import json
 import pathlib
 import pickle
@@ -105,6 +106,21 @@ def _pack_flat(x):
     return x.reshape(-1, *x.shape[2:])
 
 
+def ema_update(target, params, decay):
+    """Slow-moving copy of the parameters, for bootstrap targets.
+
+    The critic regresses onto targets built from its own predictions at the truncation boundary, so
+    any bias there is baked into the next round of targets -- a feedback loop with no anchor. Phase
+    staggering is the real fix, because it puts a genuine terminal reward in every update; an EMA
+    target is the belt to that pair of braces, decoupling "the thing being regressed toward" from
+    "the thing being updated". `decay = 0` disables it, which is the default: it is a second change
+    to the same mechanism, and this project's own rule is one delta at a time.
+    """
+    if not decay:
+        return params
+    return jax.tree_util.tree_map(lambda t, p: decay * t + (1.0 - decay) * p, target, params)
+
+
 def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     """Build the jitted rollout: `horizon` turns of self-play across all phase groups, plus GAE.
 
@@ -122,8 +138,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     v_masks = jax.vmap(A.masks_for)
     v_step = jax.vmap(J.step)
 
-    @jax.jit
-    def rollout(params, state, key):
+    @functools.partial(jax.jit, static_argnums=())
+    def rollout(params, value_params, opp_params, use_opp, state, key):
         def one_turn(carry, _):
             state, key = carry
             key, sub = jax.random.split(key)
@@ -133,9 +149,31 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # actions against the wrong observation.
             tiles, units, glob = v_encode(state)              # [K, b, P, ...]
             obs = (_pack(tiles), _pack(units), _pack(glob))
-            heads, value = model.apply(params, *obs)
+            heads, _v_self = model.apply(params, *obs)
+            # Values for the bootstrap come from `value_params`, which is either the live params
+            # (default) or a slow EMA copy. Actions always come from the live policy.
+            _h_t, value = model.apply(value_params, *obs)
             masks = jax.tree_util.tree_map(_pack_flat, v_masks(state))
             actions, logp, _ent = A.sample(sub, heads, masks)
+
+            # **Opponent pool.** In pure self-play both seats share parameters, so a mutual draw is
+            # a stable outcome that no gradient pushes against: 0.5 is a perfectly good return when
+            # the opponent is a mirror, and it can be reached by both sides simply declining to
+            # take risk. Seating a frozen past self opposite the live policy in some groups removes
+            # that fixed point -- the frozen side does not co-operate in standing still.
+            key, kopp = jax.random.split(key)
+            opp_heads, _ = model.apply(opp_params, *obs)
+            opp_actions, _olp, _oent = A.sample(kopp, opp_heads, masks)
+
+            # `use_opp` is per phase group. Seat 0 is always the live policy; seat 1 is the frozen
+            # opponent wherever the flag is set, so those groups produce genuine cross-play.
+            seat = jnp.arange(2)[None, None, :]
+            take_opp = (use_opp[:, None, None] & (seat == 1))
+            take_opp = jnp.broadcast_to(take_opp, (n_phases, per_group, 2)).reshape(-1)
+            actions = jax.tree_util.tree_map(
+                lambda mine, theirs: jnp.where(
+                    take_opp.reshape((-1,) + (1,) * (mine.ndim - 1)), theirs, mine),
+                actions, opp_actions)
 
             # Back to [K, b*P, ...] for the simulator, which knows nothing about the phase axis.
             # `to_sim_actions` expects the seat axis already folded in, matching `masks_for`.
@@ -177,6 +215,10 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             out = dict(
                 logp=logp, value=value, reward=reward.reshape(-1),
                 done=done_flat, actions=actions, masks=masks, obs=obs,
+                # Rows the frozen opponent chose are not ours to learn from: their log-probs come
+                # from different parameters, so including them would make the PPO ratio a ratio of
+                # two unrelated policies.
+                trainable=~take_opp,
             )
             return (nxt, key), out
 
@@ -185,7 +227,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
 
         # Bootstrap from the value of the state we stopped in, across all phase groups.
         t, u, g = v_encode(final_state)
-        _h, last_value = model.apply(params, _pack(t), _pack(u), _pack(g))
+        _h, last_value = model.apply(value_params, _pack(t), _pack(u), _pack(g))
 
         def gae(carry, x):
             adv, next_value = carry
@@ -216,21 +258,41 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser):
         heads, value = model.apply(params, tiles, units, glob)
         logp, entropy = A.evaluate(heads, batch_data["masks"], batch_data["actions"])
 
+        # Rows chosen by a frozen opponent carry log-probs from other parameters; including them
+        # would make the ratio a comparison of two unrelated policies. Weight them out rather than
+        # index them out, so every minibatch keeps a static shape and the graph stays jittable.
+        w = batch_data["trainable"].astype(jnp.float32)
+        w_sum = jnp.maximum(w.sum(), 1.0)
+
         ratio = jnp.exp(logp - batch_data["old_logp"])
         adv = batch_data["adv"]
         # Normalising per minibatch is standard and matters here: terminal-only rewards make raw
-        # advantages tiny for most of an episode and large at the end.
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        # advantages tiny for most of an episode and large at the end. Statistics are taken over
+        # the trainable rows only, or the opponent's rows would shift the mean.
+        adv_mean = (adv * w).sum() / w_sum
+        adv_var = ((adv - adv_mean) ** 2 * w).sum() / w_sum
+        adv = (adv - adv_mean) / (jnp.sqrt(adv_var) + 1e-8)
 
         unclipped = ratio * adv
         clipped = jnp.clip(ratio, 1 - clip, 1 + clip) * adv
-        policy_loss = -jnp.minimum(unclipped, clipped).mean()
-        value_loss = jnp.square(value - batch_data["returns"]).mean()
-        entropy_loss = -entropy.mean()
+        policy_loss = -(jnp.minimum(unclipped, clipped) * w).sum() / w_sum
+
+        # Value clipping, the same trust region the policy gets. The critic here regresses onto
+        # targets that are mostly built from its own past predictions, so an unconstrained value
+        # step can move a long way on one minibatch and take the next round of bootstrap targets
+        # with it -- the feedback loop that let the value drift to 1.315 before phases were
+        # staggered. Taking the max of the clipped and unclipped errors is pessimistic on purpose.
+        old_value = batch_data["old_value"]
+        v_clipped = old_value + jnp.clip(value - old_value, -clip, clip)
+        value_loss = (jnp.maximum(
+            jnp.square(value - batch_data["returns"]),
+            jnp.square(v_clipped - batch_data["returns"]),
+        ) * w).sum() / w_sum
+        entropy_loss = -(entropy * w).sum() / w_sum
 
         loss = policy_loss + vf_coef * value_loss + ent_coef * entropy_loss
-        approx_kl = jnp.mean(batch_data["old_logp"] - logp)
-        clip_frac = jnp.mean((jnp.abs(ratio - 1.0) > clip).astype(jnp.float32))
+        approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
+        clip_frac = ((jnp.abs(ratio - 1.0) > clip).astype(jnp.float32) * w).sum() / w_sum
         return loss, dict(policy_loss=policy_loss, value_loss=value_loss,
                           entropy=entropy.mean(), approx_kl=approx_kl, clip_frac=clip_frac)
 
@@ -307,6 +369,19 @@ def main():
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--opponent-frac", type=float, default=0.25,
+                    help="fraction of phase groups whose seat 1 is played by a frozen past self. "
+                         "Pure self-play shares parameters between both seats, so a mutual draw is "
+                         "a stable outcome nothing pushes against; a frozen opponent does not "
+                         "co-operate in standing still. 0 disables.")
+    ap.add_argument("--pool-every", type=int, default=50,
+                    help="updates between snapshots added to the opponent pool")
+    ap.add_argument("--pool-size", type=int, default=5)
+    ap.add_argument("--target-ema", type=float, default=0.0,
+                    help="decay for a slow EMA copy of the params used for bootstrap value "
+                         "targets. 0 disables. Phase staggering already anchors the critic with a "
+                         "real reward every update; this is the second line of defence and is off "
+                         "by default so the two are not changed together.")
     ap.add_argument("--n-phases", type=int, default=12,
                     help="independent sim states, started at evenly spread points in the season. "
                          "jax_sim keeps one scalar step_index per state, so all games in a state "
@@ -382,6 +457,10 @@ def main():
 
     optimiser = optax.adam(args.lr)
     opt_state = optimiser.init(params)
+    target_params = params
+    # The pool starts holding the initial policy: an untrained opponent is still a real opponent,
+    # and beating it is the first thing worth being able to measure.
+    pool = [jax.device_get(params)]
 
     start_update = 0
     best_wr = -1.0
@@ -426,7 +505,17 @@ def main():
 
     for it in range(start_update, args.updates):
         key, sub = jax.random.split(key)
-        state, key, traj, advantages, returns = rollout(params, state, sub)
+        # Which phase groups face a frozen opponent this update. Rotating the choice means every
+        # group spends most of its time in self-play and some of it under cross-play, rather than
+        # permanently splitting the batch into two populations that never meet.
+        n_opp = int(round(args.opponent_frac * args.n_phases))
+        use_opp = np.zeros(args.n_phases, dtype=bool)
+        if n_opp:
+            use_opp[[(it * n_opp + j) % args.n_phases for j in range(n_opp)]] = True
+        opp_params = pool[it % len(pool)]
+
+        state, key, traj, advantages, returns = rollout(
+            params, target_params, opp_params, jnp.asarray(use_opp), state, sub)
 
         # Episodes restart inside the scan now, so there is no Python-level reset here. Doing both
         # would reset a second time one turn into the new episode and silently discard it.
@@ -442,6 +531,8 @@ def main():
 
         batch_data_full = dict(
             old_logp=flatten(traj["logp"]),
+            old_value=flatten(traj["value"]),
+            trainable=flatten(traj["trainable"]),
             adv=flatten(advantages),
             returns=flatten(returns),
             actions={k: flatten(v) for k, v in traj["actions"].items()},
@@ -458,6 +549,8 @@ def main():
                 chunk = jnp.asarray(chunk)
                 mb = dict(
                     old_logp=batch_data_full["old_logp"][chunk],
+                    old_value=batch_data_full["old_value"][chunk],
+                    trainable=batch_data_full["trainable"][chunk],
                     adv=batch_data_full["adv"][chunk],
                     returns=batch_data_full["returns"][chunk],
                     actions={k: v[chunk] for k, v in batch_data_full["actions"].items()},
@@ -465,6 +558,7 @@ def main():
                     obs=tuple(x[chunk] for x in batch_data_full["obs"]),
                 )
                 params, opt_state, metrics = update(params, opt_state, mb)
+                target_params = ema_update(target_params, params, args.target_ema)
 
         ret = np.asarray(batch_data_full["returns"])
         val = np.asarray(traj["value"]).reshape(-1)
@@ -498,6 +592,8 @@ def main():
             "explained_variance": ev,
             "ev_signal": ev_signal,
             "rewarded_frac": float(rewarded.mean()),
+            "trainable_frac": float(np.asarray(traj["trainable"]).mean()),
+            "pool": len(pool),
             "win_rate": float(wins / games) if games else float("nan"),
             "episodes": int(games),
             "sps": float((it + 1) * args.horizon * args.batch / (time.time() - t_start)),
@@ -518,6 +614,11 @@ def main():
                 f"wr {row['win_rate']:.3f}  ep {int(games)}  {row['sps']:,.0f} turns/s",
                 flush=True,
             )
+        if args.opponent_frac and it and it % args.pool_every == 0:
+            pool.append(jax.device_get(params))
+            if len(pool) > args.pool_size:
+                pool.pop(0)          # drop the oldest; the pool should track the recent frontier
+
         if it % args.ckpt_every == 0:
             save_checkpoint(latest_ckpt, params, opt_state, it, args, best=best_wr)
         # "Best" is win rate against the running self-play population, which is the only score we
