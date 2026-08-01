@@ -55,6 +55,27 @@ flagged as risky. Ender reached 8th place with no imitation learning at all.
 Let the retrain and gate finish, since they are sunk. If the gate passes, keep the checkpoint as a
 cheap frozen opponent. Do not start DAgger round 2 or build loss-reweighting on spec.
 
+**If the gate fails, the order is fixed** -- written down now so it is not re-argued under time
+pressure:
+
+1. **DAgger round 2 with `mix_expert > 0`.** The parameter already exists in `dagger.py`; round 1
+   used 0.0 deliberately. Letting the expert occasionally take a turn carries the rollout *past* the
+   stuck point, so the labels stop being 21,570 near-identical "walk toward the field" examples and
+   start containing WATER, PLANT and HARVEST. This is the fix for both the coverage problem and the
+   directional-bias risk at once.
+2. **Only then** build per-row loss weighting. It is a real code change -- `loss_fn` threads a
+   `live` mask and nothing else -- so it should not be built speculatively.
+3. **Hand prior as the fallback**, not the first move, because DAgger stays diagnostically
+   informative even when it is slower.
+
+**And on the runtime kick, which is a different question with a clean answer: kick the data
+collection, never the deployed checkpoint.** A scripted override inside `dagger.py`'s rollout is the
+same category as using `converter` as the expert at all, which `CLAUDE.md` blesses, and it directly
+produces the richer corrective set point 1 is after. Baked into the artifact used as a prior it is
+something else -- a heuristic wearing a BC label, with a new hand-tuned dial for when the kick fires
+-- and at that point row 1's hand-specified prior is strictly cleaner: the same non-adversarial
+guarantee, no pretence of encoding skill it does not have.
+
 
 Code exists. Currently unsafe.
 
