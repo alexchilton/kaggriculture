@@ -52,16 +52,23 @@ ANIMALS = {
 BASE_PRICE = {"MILK": 160, "EGG": 50, "WOOL": 200, "WHEAT": 25, "FERTILIZER": 100}
 
 PARAMS = {
+    # Values below are the ES incumbent from the "top" island (scripts/tune_shepherd.py),
+    # confirmed on held-out seeds 10-14: full-ladder score 1.000 and mean $58,959, against
+    # converter v8's 0.940 and $50,300. `land_day` was pinned and never searched.
     # Sheep and cow only: both are PASTURE animals, and BUILD_PASTURE correlates with money at
     # +0.376 against BUILD_COOP's +0.022. Geese are 1.8% of the winners' purchases.
     "herd": 11,
-    "sheep_share": 0.55,        # measured 55/43 sheep/cow among the top 25
+    # The measured winner mix is 55% sheep, but the ES chose 0.29 on held-out seeds and it is worth
+    # not overriding that: wool sells at a higher base than milk, and a sheep yields on a 3-day
+    # interval against a cow's 2, so a cow-leaning herd trades unit price for throughput. The
+    # measurement said what the winners do; the search said what beats this ladder.
+    "sheep_share": 0.29,
     # The crew is the whole point. Scaled to the herd rather than fixed, because an idle hand is
     # pure cost and hands are dismissed nightly, so the size is a free choice every morning.
-    "hands_per_animal": 1.0,
+    "hands_per_animal": 0.79,
     "max_hands": 12,
     "hire_reserve": 400.0,      # never hire down to nothing; feed comes first
-    "sell_floor_frac": 0.70,
+    "sell_floor_frac": 0.68,
     "sell_batch": 3,
     "endgame_day": 27,
     "feed_carry": 4,
@@ -72,7 +79,7 @@ PARAMS = {
     # bought three quadrants from turn 1 banked $9,443 against the leaders' $130k. A fact this well
     # measured is a constant, not a dial: see the note in `scripts/tune_shepherd.py`.
     "land_day": 10,
-    "land_reserve": 4000.0,
+    "land_reserve": 1520.62,
 }
 
 
@@ -171,11 +178,21 @@ def make_agent(overrides=None):
                     and "animal" not in tile_at(xy))
         want_more = n_placed + held_animals + n_shed_animals < p["herd"]
         if want_more and ready > held_animals + n_shed_animals and day <= 11:
-            # Alternate to land near the measured 55/43 split without needing an RNG.
-            n_sheep = owned_kinds.get("SHEEP", 0)
-            n_cow = owned_kinds.get("COW", 0)
-            pick = "SHEEP" if n_sheep <= n_cow * (p["sheep_share"] / (1 - p["sheep_share"])) \
-                else "COW"
+            # **Count every sheep and cow the farm owns, not just the placed ones.** The first
+            # version tested the ratio against `owned_kinds`, which counts animals standing on a
+            # pasture -- so an animal bought and not yet carried out of the shed was invisible, the
+            # counter ran stale, and the test overshot. Asked for 55% sheep, it bought 5 sheep to
+            # 10 cows: 33%, the inverse of the measured winner mix.
+            n_sheep = (owned_kinds.get("SHEEP", 0) + shed.get("SHEEP", 0)
+                       + sum(inv.get("SHEEP", 0) for inv in inventories))
+            n_cow = (owned_kinds.get("COW", 0) + shed.get("COW", 0)
+                     + sum(inv.get("COW", 0) for inv in inventories))
+            # Buy whichever species is furthest below its target share. At share s the herd should
+            # hold `s * total` sheep, so compare each against its own quota rather than against the
+            # other -- a ratio test has no fixed point when both counts are zero.
+            total = n_sheep + n_cow
+            want_sheep = p["sheep_share"] * (total + 1)
+            pick = "SHEEP" if n_sheep < want_sheep else "COW"
             if money > ANIMALS[pick]["cost"] + 500:
                 market.append(["BUY_ANIMAL", pick, 1])
 
