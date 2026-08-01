@@ -55,6 +55,11 @@ from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
+# TF32 tensor cores for matmuls. Ender runs `--matmul-precision high` by default; JAX's own default
+# on this card is the slowest, most precise setting, which buys nothing for a 643k-parameter policy
+# whose inputs are already normalised counts.
+jax.config.update("jax_default_matmul_precision", "tensorfloat32")
+
 RUN_DIR = pathlib.Path("data/jax_rl_runs")
 
 # Short names for the op census printed each update, in `kagg.sim.ops` code order.
@@ -154,10 +159,12 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     gamma = jnp.asarray(gamma, dtype=jnp.float32)
     gae_lambda = jnp.asarray(gae_lambda, dtype=jnp.float32)
     per_group = batch // n_phases
+    # Even-numbered envs are the early-game ones, matching Ender's split exactly.
+    is_early = (jnp.arange(batch) % 2) == 0
 
     @functools.partial(jax.jit, static_argnums=())
     def rollout(params, value_params, opp_params, use_opp, use_idle, use_trade, use_farm,
-                state, key):
+                early_limit, state, key):
         def one_turn(carry, _):
             state, key = carry
             key, sub = jax.random.split(key)
@@ -279,6 +286,25 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             now_over = nxt.step_index > J.LAST_STEP
             just_done = now_over & ~was_over
 
+            # **Early-game envs: replay the opening over and over instead of once a season.**
+            #
+            # Ender dedicates half his rollout envs to this -- "when they reach this many env
+            # turns, they truncate, bootstrap from the pre-reset state, and immediately reset into
+            # a fresh game". Our phase staggering spreads *terminations* so they do not arrive in a
+            # burst, which is a different problem: it does nothing to concentrate gradient on the
+            # opening, which is diluted one-turn-in-720 across a season.
+            #
+            # The opening is exactly where our chain breaks -- buy seed, walk out, plant, water it
+            # for days. Training on it constantly is the cheapest way to make that sequence common
+            # enough to learn.
+            #
+            # **A truncation is not a termination and must not be treated as one.** There is no
+            # terminal reward, and the trace is cut while the *bootstrap survives*: the value of
+            # the state we stopped in is a real estimate of what the rest of that season was worth,
+            # and zeroing it would teach the policy that the season ends at turn 150 with nothing.
+            early = jnp.asarray(early_limit) > 0
+            truncate = early & is_early & (nxt.step_index >= early_limit) & ~just_done
+
             money = nxt.farm.money                                    # [B, 2]
             won = (money > money[:, ::-1]).astype(jnp.float32)
             tie = (money == money[:, ::-1]).astype(jnp.float32)
@@ -293,8 +319,9 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # the PRNG key is a single [2] array for the whole state -- so a blanket tree_map over
             # the State tries to broadcast a [B] mask against it and fails.
             fresh = J.reset(batch)
+            restart = just_done | truncate
             pick = lambda new, old: jnp.where(                       # noqa: E731
-                just_done.reshape((-1,) + (1,) * (old.ndim - 1)), new, old)
+                restart.reshape((-1,) + (1,) * (old.ndim - 1)), new, old)
             nxt = nxt._replace(
                 step_index=pick(fresh.step_index, nxt.step_index),
                 tiles=jax.tree_util.tree_map(pick, fresh.tiles, nxt.tiles),
@@ -306,6 +333,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             out = dict(
                 logp=logp, value=value, reward=reward.reshape(-1),
                 done=done_flat, actions=actions, masks=masks, obs=obs,
+                trunc=jnp.broadcast_to(truncate[:, None], (batch, 2)).reshape(-1),
                 # Rows the frozen opponent chose are not ours to learn from: their log-probs come
                 # from different parameters, so including them would make the PPO ratio a ratio of
                 # two unrelated policies.
@@ -335,14 +363,17 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             reward, value, done = x["reward"], x["value"], x["done"]
             # A finished episode has no successor, so the bootstrap is cut there.
             next_value = jnp.where(done, 0.0, next_value)
-            adv = jnp.where(done, 0.0, adv)
+            # A *truncated* one does have a successor we simply stopped looking at, so its
+            # bootstrap stands and only the advantage trace is cut. Zeroing the bootstrap here
+            # instead would teach the policy that the world ends at the truncation point.
+            adv = jnp.where(done | x["trunc"], 0.0, adv)
             delta = reward + gamma * next_value - value
             adv = delta + gamma * gae_lambda * adv
             return (adv, value), adv
 
         _carry, advantages = jax.lax.scan(
             gae, (jnp.zeros_like(last_value), last_value),
-            {k: traj[k] for k in ("reward", "value", "done")},
+            {k: traj[k] for k in ("reward", "value", "done", "trunc")},
             reverse=True,
         )
         returns = advantages + traj["value"]
@@ -687,6 +718,13 @@ def main():
                          "--ent-coef, which they share, matching Ender's structure.")
     ap.add_argument("--kl-anneal", type=int, default=0,
                     help="updates over which --kl-coef decays linearly to zero. 0 keeps it flat.")
+    ap.add_argument("--early-limit", type=int, default=0,
+                    help="if >0, even-numbered envs truncate at this many turns and restart, so "
+                         "the opening is trained on constantly instead of once a season. Ender's "
+                         "`--earlygame-env-turn-limit`. Our chain breaks in the opening -- buy "
+                         "seed, walk out, plant, water for days -- and at 720 turns a season that "
+                         "sequence is one turn in 720 of the gradient. 150 covers melon's first "
+                         "harvest at day 10; 80 covers wheat's at day 2 with room to spare.")
     ap.add_argument("--farm-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 is the JAX-native farmer, which banks "
                          "$23,783 a season against the trader's $3,368 and the idle seat's $3,000. "
@@ -924,7 +962,8 @@ def main():
 
         state, key, traj, advantages, returns = rollout(
             params, target_params, opp_params, jnp.asarray(use_opp),
-            jnp.asarray(use_idle), jnp.asarray(use_trade), jnp.asarray(use_farm), state, sub)
+            jnp.asarray(use_idle), jnp.asarray(use_trade), jnp.asarray(use_farm),
+            jnp.asarray(args.early_limit, dtype=jnp.int32), state, sub)
 
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
         # and `reward` arrays back to the host, as this did, forces a synchronisation on every
