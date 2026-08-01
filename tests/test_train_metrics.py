@@ -238,3 +238,153 @@ def test_the_hand_prior_cannot_punish_exploration():
 
     assert worst > 1e-3, f"floor {worst:.2e} is too thin to be safe as a prior"
     assert worst > 500 * 6e-5, "must be far above the collapsed clone's 6e-5 at spawn"
+
+
+def _roles_per_update(batch, updates, sticky, seed=0):
+    """Seat-1 role for every game on every update, under both schemes.
+
+    Returns `[updates, batch]` of role ids. `sticky` holds a role until the game restarts; the old
+    scheme re-drew every role every update from a strided partition.
+    """
+    rng = np.random.default_rng(seed)
+    fr = [("pool", 0.15), ("farm", 0.30), ("trade", 0.15), ("idle", 0.05)]
+    # A game spans a season: 720 turns at horizon 32 is 22.5 updates, so restarts are rare.
+    turns_per_update, season = 32, 720
+    phase = (np.arange(batch) * (season + 1)) // batch
+    out = np.empty((updates, batch), dtype=object)
+
+    if sticky:
+        names = ["self"] + [n for n, _ in fr]
+        p = np.array([1.0 - sum(f for _, f in fr)] + [f for _, f in fr])
+        role = rng.choice(names, size=batch, p=p)
+        for it in range(updates):
+            out[it] = role
+            # Games whose season ends inside this update restart, and only they re-draw.
+            step = phase + turns_per_update * (it + 1)
+            restart = step > season - 1
+            phase = np.where(restart, -turns_per_update * (it + 1), phase)
+            role = np.where(restart, rng.choice(names, size=batch, p=p), role)
+    else:
+        stride = max(1, int(batch * 0.6180339887)) | 1
+        while np.gcd(stride, batch) != 1:
+            stride += 2
+        for it in range(updates):
+            order = (np.arange(batch) * stride + it) % batch
+            role = np.full(batch, "self", dtype=object)
+            cut = 0
+            for name, f in fr:
+                n = int(round(f * batch))
+                role[order[cut:cut + n]] = name
+                cut += n
+            out[it] = role
+    return out
+
+
+@pytest.mark.parametrize("sticky,expect_at_most", [(False, 5), (True, 2)])
+def test_a_games_opponent_must_not_change_mid_season(sticky, expect_at_most):
+    """**The bug this pins.** The role assignment was recomputed every update while the game state
+    persisted across updates, so a game spanning ~22.5 updates had its seat-1 opponent re-drawn on
+    every one of them -- a mean of 4.9 distinct opponents per season.
+
+    Everything downstream broke quietly. The per-opponent win rate attributed a game's outcome to
+    whichever label happened to be set on its final update; all four columns collapsed to ~0.5
+    because 35% of updates put the live policy on seat 1, where it spent its stake to $0 and the tie
+    paid half; and the scripted ladder never existed at all, because the farmer cannot bank $23,783
+    while holding the seat for 30% of updates with the policy dismantling the farm in between.
+
+    A game that never restarts must see exactly one opponent. Allowing 2 covers the one restart a
+    22-update window can contain.
+    """
+    roles = _roles_per_update(batch=256, updates=20, sticky=sticky)
+    distinct = [len(set(roles[:, j])) for j in range(roles.shape[1])]
+
+    assert max(distinct) <= expect_at_most, (
+        f"a single game saw up to {max(distinct)} opponents in one season "
+        f"(mean {np.mean(distinct):.1f}); sticky={sticky}")
+
+
+def _gae_one_step(reward, value, next_value, done, trunc, gamma=0.998732):
+    """The single-step body of `make_rollout`'s `gae`, extracted verbatim."""
+    nv = 0.0 if done else next_value
+    adv = 0.0 if (done or trunc) else 1.0        # incoming trace, cut on either flag
+    delta = reward + gamma * nv - value
+    return delta + gamma * 0.95 * adv
+
+
+def test_a_phase_seeded_first_ending_keeps_its_bootstrap():
+    """**Why a virgin ending must be a truncation and not a termination.**
+
+    `staggered_states` seeds each slot mid-season on an EMPTY board, so a slot starting at turn 700
+    "ends" twenty turns later having played twenty turns. That is not a result: the scripted farmer
+    reads `day = step_index // TURNS_PER_DAY`, sees day 29 on a board where nothing has happened,
+    and declines to plant or hire at all -- so both sides stand still and it scores as an exact tie
+    worth 0.5. This fires on every run start, not only on a resume.
+
+    Suppressing the reward is necessary but not sufficient. `gae` zeroes the bootstrap on `done`, so
+    a suppressed reward flagged `done` teaches the critic that a mid-season state is worth exactly
+    zero -- trading a wrong reward for a wrong value target. Flagging it `trunc` cuts the advantage
+    trace and keeps the bootstrap, which is what truncation already does.
+    """
+    value, next_value = 0.5, 0.5
+
+    as_done = _gae_one_step(0.0, value, next_value, done=True, trunc=False)
+    as_trunc = _gae_one_step(0.0, value, next_value, done=False, trunc=True)
+
+    assert as_done == pytest.approx(-0.5, abs=1e-3), (
+        "flagged done, the target collapses to zero and the critic learns the state is worthless")
+    assert as_trunc == pytest.approx(0.0, abs=1e-3), (
+        "flagged trunc, the bootstrap stands and the critic learns nothing false")
+    assert as_trunc > as_done
+
+
+def test_a_virgin_slot_still_restarts_even_though_it_pays_nothing():
+    """The reward and the reset are separate decisions and only the reward is suppressed.
+
+    `restart = just_done | truncate` must keep firing on a virgin ending, or the slot would run past
+    turn 719 into a season that does not exist -- bug #2 from the original handoff, reintroduced.
+    """
+    just_done = np.array([True, True, False, False])
+    virgin = np.array([True, False, True, False])
+    truncate = np.array([False, False, False, True])
+
+    real_done = just_done & ~virgin
+    pseudo_trunc = truncate | (just_done & virgin)
+    restart = just_done | truncate
+
+    assert list(real_done) == [False, True, False, False], "only the non-virgin ending is a result"
+    assert list(pseudo_trunc) == [True, False, False, True], "the virgin ending becomes a trunc"
+    assert list(restart) == [True, True, False, True], "both endings still reset the slot"
+    assert not (real_done & pseudo_trunc).any(), "a row is never both at once"
+
+
+def test_the_price_of_the_next_purchase_is_visible():
+    """**Why the policy needs the price and not just the balance.**
+
+    `money`, `n_land` and `hires_today` were all in the observation and no price was, so the policy
+    had to learn `n_land -> {1000, 2000, 4000}` from a terminal reward 700 turns later.
+
+    The case that matters: `LAND_PRICES[0] + LAND_PRICES[1]` is exactly the $3,000 opening bank and
+    both purchases are affordability-legal, so buying two quadrants on day 0 is legal and leaves
+    nothing for the remaining twenty-five days. Across 312 real replay seats the median first land
+    purchase is turn 242 (day 10); the seat that bought three from turn 1 banked $9,443 against the
+    leaders' $130k. The quadrant is not a bad buy, it is a bad buy *now*.
+
+    This asserts the fact is present and correctly scaled, not that any action is preferred.
+    """
+    jax = pytest.importorskip("jax")
+    from kagg.rl import jax_obs
+    from kagg.sim import jax_sim as J
+
+    glob = np.asarray(jax_obs.encode(J.reset(2))[2])[0, 0]
+
+    # The two quadrants that together cost the whole opening bank.
+    assert float(J.LAND_PRICES[0] + J.LAND_PRICES[1]) == 3000.0, (
+        "if the price table changed, the motivating case in this test needs rechecking")
+
+    land = float(J.LAND_PRICES[0]) / 3000.0
+    hire = float(J.HIRE_COST[0]) / 3000.0
+    assert any(abs(v - land) < 1e-4 for v in glob), (
+        f"next-land cost as a share of the bank ({land:.4f}) is not in the global token")
+    assert any(abs(v - hire) < 1e-6 for v in glob), (
+        f"next-hire cost as a share of the bank ({hire:.6f}) is not in the global token")
+    assert not np.isnan(glob).any() and not np.isinf(glob).any()

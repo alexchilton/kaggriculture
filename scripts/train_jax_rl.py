@@ -149,6 +149,40 @@ def ema_update(target, params, decay):
     return jax.tree_util.tree_map(lambda t, p: decay * t + (1.0 - decay) * p, target, params)
 
 
+# **Who holds seat 1, as a property of the episode rather than of the update.**
+#
+# This used to be four boolean arrays recomputed in the Python loop every update. The game state,
+# however, persists across updates: a season is 720 turns and `--horizon` is 32, so a game spans
+# ~22.5 updates and its seat-1 role was re-drawn on every one of them. Measured over one season's
+# worth of updates, a single game faced a mean of **4.9 distinct opponents**, e.g.
+#
+#   opp idle farm self trade opp self farm opp self farm self trade farm self farm opp self ...
+#
+# Three things followed, and the third is the one that matters:
+#
+#  - The per-opponent win rate was measuring nothing. `farm:0.445/91x` meant "games that happened to
+#    carry the farm label on their *final* update", and those games spent 30% of their season
+#    against the farmer.
+#  - It is why all four columns read ~0.5. For 35% of updates seat 1 is driven by the live policy,
+#    which spends its stake down to $0, so both seats finish near zero, `money == money` holds, and
+#    the tie pays 0.5. Four labels, one number: the draw rate of two starved farms.
+#  - **The opponent ladder did not exist.** The farmer cannot bank its $23,783 while holding the
+#    seat for 30% of updates with the policy dismantling the farm in between, so the policy had
+#    never played a full game against *any* coherent opponent. Verified against a replay of the
+#    update-250 checkpoint: played properly to completion it loses 32/32 and banks $0 against the
+#    farmer's $30,292, while the log claimed 0.445.
+#
+# So the role is drawn when a game resets and held until it terminates. It has to live in the scan
+# carry rather than in the Python loop, because restarts happen inside the scan.
+#
+# Shares are now sampled rather than partitioned exactly, which gives up the exactness the strided
+# permutation was written for -- at batch 256 the realised share of a p=0.30 role has an s.d. of
+# ~2.9%, and `role_counts` logs what actually happened so this is checked rather than assumed.
+ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE = range(5)
+N_ROLES = 5
+ROLE_NAMES = ("self", "pool", "farm", "trade", "idle")
+
+
 def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     """Build the jitted rollout: `horizon` turns of self-play across all phase groups, plus GAE.
 
@@ -164,11 +198,18 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     _EARLY_ROWS = jnp.repeat(is_early, 2)         # [B*2], for splitting per-seat statistics
 
     @functools.partial(jax.jit, static_argnums=())
-    def rollout(params, value_params, opp_params, use_opp, use_idle, use_trade, use_farm,
+    def rollout(params, value_params, opp_params, roles, role_logp, virgin,
                 early_limit, state, key):
         def one_turn(carry, _):
-            state, key = carry
+            state, roles, virgin, key = carry
             key, sub = jax.random.split(key)
+
+            # Seat-1 role, held for the life of the episode. Derived here rather than passed in, so
+            # every use below reads the same per-game value the reward will later be attributed to.
+            use_opp = roles == ROLE_POOL
+            use_farm = roles == ROLE_FARM
+            use_trade = roles == ROLE_TRADE
+            use_idle = roles == ROLE_IDLE
 
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
@@ -309,8 +350,28 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             money = nxt.farm.money                                    # [B, 2]
             won = (money > money[:, ::-1]).astype(jnp.float32)
             tie = (money == money[:, ::-1]).astype(jnp.float32)
+
+            # **A phase-seeded episode's first ending is not a result, and must not be paid.**
+            #
+            # `staggered_states` starts game `i` at turn `phase(i)` on an EMPTY board with $3,000 a
+            # side (`jax_sim.py:329-341` moves `step_index` and nothing else), so a slot seeded at
+            # turn 700 terminates twenty turns later having played twenty turns, and
+            # `won = money > money[::-1]` is then decided by an artifact of the day/board mismatch
+            # rather than by play. The scripted farmer makes it worse in a way that is easy to miss:
+            # its own logic reads `day = step_index // TURNS_PER_DAY` and gates planting on
+            # `day <= LAST_PLANT_DAY` (`jax_heuristic.py:179`), so on a fresh board that claims to be
+            # day 29 it declines to plant or hire at all. Both sides therefore stand still and the
+            # game is scored as an exact tie -- which pays 0.5.
+            #
+            # This fires on **every** run start, not only on a resume: `staggered_states` runs
+            # unconditionally at startup, before the `--resume` branch. One illegitimate terminal
+            # reward per game slot, every time the process starts.
+            #
+            # A truncation is already handled correctly a few lines down -- no reward, bootstrap
+            # kept. This is the same treatment for the same reason, so `virgin` tracks whether a
+            # slot has yet completed a genuine reset-to-turn-0 episode.
             reward = jnp.where(
-                just_done[:, None], won + 0.5 * tie, 0.0).astype(jnp.float32)
+                (just_done & ~virgin)[:, None], won + 0.5 * tie, 0.0).astype(jnp.float32)
 
             # Restart inside the scan, per group. Resetting only in Python after the rollout lets
             # the simulator keep stepping past turn 719 into a season that does not exist, and
@@ -330,11 +391,22 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 inventory=pick(fresh.inventory, nxt.inventory),
             )
 
-            done_flat = jnp.broadcast_to(just_done[:, None], (batch, 2)).reshape(-1)
+            # **A virgin ending is a truncation, not a termination**, and the distinction is load
+            # bearing: `gae` zeroes the bootstrap on `done` and keeps it on `trunc`. Marking one
+            # `done` with a suppressed reward would teach the critic that a state twenty turns into
+            # a phase-seeded board is worth exactly zero -- replacing a wrong reward with a wrong
+            # value target. Cutting only the advantage trace is the treatment truncation already
+            # gets, for the same reason.
+            #
+            # It also drops these games from `n_terminal` and from every win rate, which is right:
+            # they are not results and should not be counted as any opponent's.
+            real_done = just_done & ~virgin
+            pseudo_trunc = truncate | (just_done & virgin)
+            done_flat = jnp.broadcast_to(real_done[:, None], (batch, 2)).reshape(-1)
             out = dict(
                 logp=logp, value=value, reward=reward.reshape(-1),
                 done=done_flat, actions=actions, masks=masks, obs=obs,
-                trunc=jnp.broadcast_to(truncate[:, None], (batch, 2)).reshape(-1),
+                trunc=jnp.broadcast_to(pseudo_trunc[:, None], (batch, 2)).reshape(-1),
                 # Rows the frozen opponent chose are not ours to learn from: their log-probs come
                 # from different parameters, so including them would make the PPO ratio a ratio of
                 # two unrelated policies.
@@ -349,11 +421,29 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # seat too, which is right for the win-rate metric and wrong for deciding how hard
                 # a given checkpoint is -- see where the priority EMA is updated.
                 vs_pool=jnp.broadcast_to(use_opp[:, None], (batch, 2)).reshape(-1),
+                # The same split, per scripted seat. One blended win rate cannot distinguish
+                # "loses to everything" from "beats the floor and is shut out by the farmer", and
+                # those two readings point at opposite fixes -- the first is exploration, the
+                # second is opponent difficulty. The flags already exist to route the pool EMA;
+                # carrying them through costs three broadcasts and makes the scoreboard readable.
+                vs_idle=jnp.broadcast_to(use_idle[:, None], (batch, 2)).reshape(-1),
+                vs_trade=jnp.broadcast_to(use_trade[:, None], (batch, 2)).reshape(-1),
+                vs_farm=jnp.broadcast_to(use_farm[:, None], (batch, 2)).reshape(-1),
+                roles=roles,
             )
-            return (nxt, key), out
 
-        (final_state, key), traj = jax.lax.scan(
-            one_turn, (state, key), None, length=horizon)
+            # **Re-draw the role only for games that just ended.** A surviving game keeps the
+            # opponent it has been playing all season, which is the entire point of this change.
+            key, krole = jax.random.split(key)
+            drawn = jax.random.categorical(krole, role_logp, shape=(batch,))
+            nxt_roles = jnp.where(restart, drawn, roles)
+            # Once a slot restarts it has been reset to turn 0 on an empty board, so from here its
+            # episodes are genuine and their terminal rewards count.
+            nxt_virgin = virgin & ~restart
+            return (nxt, nxt_roles, nxt_virgin, key), out
+
+        (final_state, final_roles, final_virgin, key), traj = jax.lax.scan(
+            one_turn, (state, roles, virgin, key), None, length=horizon)
 
         # Bootstrap from the value of the state we stopped in, across all phase groups.
         t, u, g = jax_obs.encode(final_state)
@@ -378,12 +468,25 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             reverse=True,
         )
         returns = advantages + traj["value"]
-        return final_state, key, traj, advantages, returns
+        return final_state, final_roles, final_virgin, key, traj, advantages, returns
 
     return rollout
 
 
-def hand_prior_heads(heads, masks, noop_p):
+def _norm(counts):
+    """Counts -> shares. All-zero stays all-zero rather than becoming NaN, because "this head was
+    never exercised" is a reading worth seeing rather than a blank."""
+    total = float(sum(counts))
+    return [c / total for c in counts] if total > 0 else [0.0 for _ in counts]
+
+
+# The heads that spend money. Shaped toward "do not transact" at init, for the reason argued in
+# `hand_prior_heads` -- and deliberately *not* including `sell`, which brings money in, or `trade`,
+# whose near-uniform spread is healthy and is the coordinating latent the product heads read.
+SPEND_HEADS = ("buy_seed", "buy_animal", "buy_land", "hire")
+
+
+def hand_prior_heads(heads, masks, noop_p, spend_p=0.0):
     """A prior that is a *shape*, not a policy: `noop_p` on doing nothing, the rest spread evenly.
 
     **This is what Ender actually did, and the distinction matters.** He used no imitation learning
@@ -409,9 +512,43 @@ def hand_prior_heads(heads, masks, noop_p):
     represent. A flat prior over each market head would not fix a missing correlation and might
     blunt marginals that are already good, so the fix there is an autoregressive decode over order
     slots, not a shaped prior. Shaping `op` alone also keeps this to one delta.
+
+    **`spend_p` revisits exactly that decision, because the problem it reasoned about has changed.**
+    The paragraph above declined to shape the market heads on the grounds that their failure was
+    *under*-firing from a broken joint decode. That decode landed, and the failure is now the
+    opposite: measured on a trained checkpoint, `buy_seed` fires on 29.1% of turns and `hire` on
+    24.8%, the bank reaches $0 within five game-days and stays there for twenty-five, and the policy
+    consequently loses to an opponent that takes no action at all and finishes on its untouched
+    $3,000. Every rung of the ladder then reads flat -- `farm` and `trade` 0.000, `pool` 0.500 --
+    because a loss and a draw are both gradient-free once the critic predicts them.
+
+    So the shape is "transacting is rare", applied only to the heads that *spend*: `buy_seed`,
+    `buy_animal`, `buy_land`, `hire`. Not `sell`, which brings money in, and not `trade`, whose
+    near-uniform spread is healthy and which the product heads condition on.
+
+    **Why this is a shape and not a policy, which is the whole question.** It says purchases are rare
+    at initialisation. It says nothing about *which* purchase, or *when*: no day-10 land rule, no crop
+    preference, no herd size -- all of which are readable off the replays and all of which would be
+    strategy the policy inherits rather than discovers. Ender's own prior was of exactly this form,
+    one number meaning "mostly halt". And unlike a legality mask it is annealable: `--kl-anneal`
+    decays the coefficient, so the constraint is a starting condition rather than a ceiling. Set
+    `--spend-prior 0` to disable it entirely.
+
+    **The check that this has not capped anything**, and it must actually be run: the trained policy's
+    spend rates should end up *above* `spend_p`, not pinned at it. A rate that sits exactly on the
+    prior means the KL term is doing the deciding and the anneal is too slow.
     """
     out = {}
     for k, logits in heads.items():
+        if k in SPEND_HEADS and spend_p > 0.0:
+            # Bucket 0 is "no purchase" for every one of these heads -- quantity zero for the buy
+            # ladders, False for the two binary ones -- so this is the same construction as `op`'s
+            # noop, with the same meaning.
+            n_legal = jnp.maximum(masks[k].sum(axis=-1, keepdims=True), 1)
+            others = jnp.log(spend_p / jnp.maximum(n_legal - 1, 1))
+            is_none = jnp.arange(logits.shape[-1]) == 0
+            out[k] = jnp.where(is_none, jnp.log(1.0 - spend_p), others)
+            continue
         if k != "op":
             # Uniform over legal options: KL against a uniform prior is just negative entropy, so
             # these heads keep exactly the behaviour the entropy bonus used to give them.
@@ -459,7 +596,7 @@ def kl_to_prior(heads, prior_heads, masks):
 
 
 def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_coef=0.0,
-                kl_coef=0.0, prior_params=None, hand_noop_p=0.0):
+                kl_coef=0.0, prior_params=None, hand_noop_p=0.0, spend_p=0.0):
     """Build the jitted PPO update over one rollout's minibatches."""
 
     def loss_fn(params, batch_data, reg_coef):
@@ -528,9 +665,9 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         # regularise something the policy never sampled from.
         if kl_coef:
             cond = A.condition_on_trade(heads, batch_data["actions"]["trade"])
-        if kl_coef and hand_noop_p:
+        if kl_coef and (hand_noop_p or spend_p):
             kl_prior = kl_to_prior(
-                cond, hand_prior_heads(cond, batch_data["masks"], hand_noop_p),
+                cond, hand_prior_heads(cond, batch_data["masks"], hand_noop_p, spend_p),
                 batch_data["masks"])
         elif prior_params is not None and kl_coef:
             prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
@@ -562,7 +699,7 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         # not shape, and `KL(p || uniform) = -H(p) + const`, so minimising that KL already maximises
         # entropy on exactly the heads Ender leaves on plain entropy. Only `op` differs, and there
         # the KL pulls toward `noop_p` instead of toward uniform -- which is the point.
-        if kl_coef and (hand_noop_p or prior_params is not None):
+        if kl_coef and (hand_noop_p or spend_p or prior_params is not None):
             regulariser = reg_coef * kl_prior
         else:
             regulariser = reg_coef * entropy_loss
@@ -713,6 +850,17 @@ def main():
                          "two numbers in a config. A prior containing no strategy cannot cap the "
                          "ceiling and cannot punish exploration the way a collapsed clone can. "
                          "Takes precedence over --kl-prior when both are given. 0 disables.")
+    ap.add_argument("--spend-prior", type=float, default=0.0,
+                    help="P(transact) for the four money-spending heads (buy_seed, buy_animal, "
+                         "buy_land, hire), e.g. 0.05. Measured motivation: a trained checkpoint "
+                         "fires buy_seed on 29.1%% of turns and hire on 24.8%%, reaches $0 by game-day "
+                         "five and stays there, and therefore loses to an opponent that acts not at "
+                         "all and keeps its $3,000 -- which flattens every rung of the ladder. "
+                         "This is a *shape* ('transacting is rare'), not a policy: it says nothing "
+                         "about which purchase or when, so there is no strategy to inherit. Anneal "
+                         "it with --kl-anneal; unlike a mask it is a starting condition, not a "
+                         "ceiling. Verify it has not capped anything by checking the trained spend "
+                         "rates end up ABOVE this value rather than pinned to it. 0 disables.")
     ap.add_argument("--kl-coef", type=float, default=1.0,
                     help="0 disables the KL entirely; any non-zero value switches the regulariser "
                          "from entropy to KL-against-the-prior. The *strength* comes from "
@@ -894,11 +1042,35 @@ def main():
     update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
                                      args.max_grad_norm, optimiser, seat_coef=args.seat_coef,
                                      kl_coef=args.kl_coef, prior_params=prior_params,
-                                     hand_noop_p=args.hand_prior)
+                                     hand_noop_p=args.hand_prior,
+                                     spend_p=args.spend_prior)
+
+    # Role probabilities, in `ROLE_NAMES` order. Self-play is the remainder, as it always was, but
+    # now explicitly rather than by falling through a partition.
+    role_p = np.array([0.0, args.opponent_frac, args.farm_frac,
+                       args.trade_frac, args.idle_frac], dtype=np.float64)
+    if role_p[1:].sum() > 1.0:
+        raise SystemExit(
+            f"opponent/farm/trade/idle fracs sum to {role_p[1:].sum():.2f} > 1.0")
+    role_p[ROLE_SELF] = 1.0 - role_p[1:].sum()
+    print("seat-1 roles, sticky per episode: "
+          + "  ".join(f"{n}:{p:.0%}" for n, p in zip(ROLE_NAMES, role_p)))
+    role_logp = jnp.log(jnp.asarray(role_p, dtype=jnp.float32) + 1e-12)
+    # Initial draw. Games are mid-season at their staggered phases, so this is the only point where
+    # a role is assigned to a game that did not just start -- unavoidable, and it washes out within
+    # one season as each game terminates and re-draws.
+    roles = jax.random.categorical(
+        jax.random.PRNGKey(args.seed + 1), role_logp, shape=(args.batch,))
+    # Every slot starts mid-season on an empty board, so no slot's *first* termination is a real
+    # result. Cleared per slot as soon as it restarts. See where `reward` is computed.
+    virgin = jnp.ones((args.batch,), dtype=bool)
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
     wins, games = 0.0, 0.0
+    # Cumulative, per opponent type, in the same units as `wins`/`games` above.
+    opp_wins = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
+    opp_games = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
     t_start = time.time()
 
     # Loud, because a silent exit here is exactly what could not be diagnosed: the process wrote
@@ -917,53 +1089,21 @@ def main():
 
     for it in range(start_update, args.updates):
         key, sub = jax.random.split(key)
-        # Which phase groups face a frozen opponent this update. Rotating the choice means every
-        # group spends most of its time in self-play and some of it under cross-play, rather than
-        # permanently splitting the batch into two populations that never meet.
-        # **Strided, not contiguous.** A game's index *is* its phase group, and a phase group is a
-        # fixed position in the season, so index order is season order. Taking a contiguous block
-        # therefore handed the frozen opponent one narrow band of the season and nothing else --
-        # and since episodes only end at the season boundary, the games that terminate are their
-        # own contiguous band. Two blocks rotating at different rates mostly miss each other: the
-        # cross-play win rate saw 0 qualifying rows for update after update, and the opponent pool
-        # never played the endgame at all. Striding spreads both across every phase every update.
-        n_opp = int(round(args.opponent_frac * args.n_phases))
-        use_opp = np.zeros(args.batch, dtype=bool)
-        n_opp_games = int(round(args.opponent_frac * args.batch))
-        if n_opp_games:
-            stride = max(1, args.batch // n_opp_games)
-            use_opp[[(j * stride + it) % args.batch for j in range(n_opp_games)]] = True
-
-        # The idle seats are drawn from games the frozen pool is *not* using, and strided for the
-        # same reason: they have to reach the end of the season to produce a terminal reward.
-        # **One partition, not four independent strided picks.**
+        # Seat-1 roles are now sticky per episode and live in the rollout's scan carry, so there
+        # is nothing to partition here. The history of this line is worth keeping, because it was
+        # wrong three times in three different ways and each fix exposed the next:
         #
-        # Each type used to choose its own strided set and then drop any index another type had
-        # already claimed. Those strides share residue classes: the farmer's picks land on
-        # `it + 2 (mod 3)` and the trader's `j*6 + it + 2` are all in that same class, so **every**
-        # trader pick collided and was filtered out. Measured over twenty updates the actual mix was
-        # pool 14.8%, farmer 30.1%, trader **0.0%**, idle 2.7%, self-play 52.3% -- against 15/30/15/5
-        # and 35 asked for. The trader was the seat added specifically because it cannot draw with a
-        # passive policy, and it was never in a single game.
+        #  1. Four independent strided picks, each dropping indices another had claimed. The strides
+        #     shared residue classes, so **every** trader pick collided and was filtered out: the
+        #     realised mix was pool 14.8%, farmer 30.1%, trader 0.0%, idle 2.7%, self 52.3%.
+        #  2. One rotating permutation `(arange + it) % batch`, which made the shares exact and
+        #     reintroduced contiguity -- a game's index is its phase, so each role got a contiguous
+        #     band of the season and the scripted seats never played the endgame at all.
+        #  3. A strided permutation, which spread the bands correctly and still re-drew every role
+        #     every update, while a game spans ~22.5 updates. A game faced a mean of 4.9 distinct
+        #     opponents per season and no measurement of any of them was valid.
         #
-        # Assigning from one rotating permutation makes the shares exact by construction and the
-        # collision impossible.
-        order = (np.arange(args.batch) + it) % args.batch
-        n_opp_g = int(round(args.opponent_frac * args.batch))
-        n_farm_g = int(round(args.farm_frac * args.batch))
-        n_trade_g = int(round(args.trade_frac * args.batch))
-        n_idle_g = int(round(args.idle_frac * args.batch))
-
-        use_opp = np.zeros(args.batch, dtype=bool)
-        use_farm = np.zeros(args.batch, dtype=bool)
-        use_trade = np.zeros(args.batch, dtype=bool)
-        use_idle = np.zeros(args.batch, dtype=bool)
-        cut = 0
-        for flags, n in ((use_opp, n_opp_g), (use_farm, n_farm_g),
-                         (use_trade, n_trade_g), (use_idle, n_idle_g)):
-            flags[order[cut:cut + n]] = True
-            cut += n
-        # Whatever is left is self-play, which is the intended remainder rather than an accident.
+        # See the block comment above `make_rollout` for what that cost.
         w = np.array([POOL_PRIORITY_FLOOR + max(wr, 1e-6) ** POOL_PRIORITY_TEMP
                       + (0.25 if g <= 0 else 0.0)
                       for wr, g in zip(pool_wr, pool_games)], dtype=np.float64)
@@ -971,9 +1111,8 @@ def main():
             len(pool), p=w / w.sum()))
         opp_params = pool[opp_idx]
 
-        state, key, traj, advantages, returns = rollout(
-            params, target_params, opp_params, jnp.asarray(use_opp),
-            jnp.asarray(use_idle), jnp.asarray(use_trade), jnp.asarray(use_farm),
+        state, roles, virgin, key, traj, advantages, returns = rollout(
+            params, target_params, opp_params, roles, role_logp, virgin,
             jnp.asarray(args.early_limit, dtype=jnp.int32), state, sub)
 
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
@@ -1028,6 +1167,17 @@ def main():
         pool_live = traj["trainable"] & traj["vs_pool"] & traj["done"]
         pool_done = pool_live.sum()
         pool_reward = jnp.where(pool_live, traj["reward"], 0.0).sum()
+
+        # Per-opponent-type win rate, on the same rows `done_live` counts: the live policy's own
+        # seat, in a finished game, against one named opponent. Counts are logged beside each rate
+        # because a few games an update is a noisy estimate and a bare 0.33 hides whether it came
+        # from one game or thirty -- the same mistake `wr` made before its count was printed.
+        by_opp = {}
+        for _name, _flag in (("idle", "vs_idle"), ("trade", "vs_trade"),
+                             ("farm", "vs_farm"), ("pool", "vs_pool")):
+            _rows = traj["trainable"] & traj[_flag] & traj["done"]
+            by_opp[f"done_{_name}"] = _rows.sum()
+            by_opp[f"rew_{_name}"] = jnp.where(_rows, traj["reward"], 0.0).sum()
 
         # Terminal rows carry return == reward, so their spread should be ~0.25 and `ev_signal`
         # should always be computable. It reported n/a on half the updates, so count them.
@@ -1108,6 +1258,97 @@ def main():
         op_counts_full = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
                           * full_live[..., None]).sum(axis=(0, 1))
 
+        # **The market heads have never been logged, and FEED has never once fired.**
+        #
+        # `masks[O.FEED]` and `jax_sim`'s FEED gate impose the identical three conditions, and the
+        # shed/PICKUP/item-mask path is proven working -- `buy_animal` deposits to the shed exactly
+        # as `buy_product` would, and 4,591 animals were placed through it. So FEED is reachable,
+        # and wheat simply never arrives. Which leaves two explanations that no metric here can
+        # separate:
+        #
+        #  - `trade` has collapsed onto one mode. `sell` and `buy_product` are the only
+        #    `CONDITIONED_HEADS`: their distribution is whichever slice the sampled mode selects,
+        #    so a collapsed `trade` means wheat's slice is never drawn however good its marginal
+        #    is. `buy_animal` is unconditioned, straight off `gtok` -- which is exactly the split
+        #    between the thing that happens thousands of times and the thing that never happens.
+        #    `hand_prior_heads` shapes only `op`; every other head gets a uniform KL target, which
+        #    is the treatment already shown not to prevent `op`'s own collapse.
+        #  - Or the compound probability of purchase *and* routing *and* a live animal is simply
+        #    tiny, and it is rare rather than blocked.
+        #
+        # A census distinguishes "never sampled" from "sampled vanishingly rarely" and costs the
+        # same one-hot sum the op census already does. Per-product rather than WHEAT-only, so no
+        # item index is hard-coded here; name the column when reading it.
+        seat_rows = batch_data_full["trainable"].astype(jnp.float32)
+        n_seat = jnp.maximum(seat_rows.sum(), 1.0)
+        trade_counts = (jax.nn.one_hot(batch_data_full["actions"]["trade"],
+                                       P.N_TRADE_MODES, dtype=jnp.float32)
+                        * seat_rows[:, None]).sum(axis=0)
+        # Bucket 0 of `BUY_BUCKETS`/`SELL_BUCKETS` is quantity zero, so "> 0" is "actually traded".
+        buy_rate = ((batch_data_full["actions"]["buy_product"] > 0).astype(jnp.float32)
+                    * seat_rows[:, None]).sum(axis=0) / n_seat
+        sell_rate = ((batch_data_full["actions"]["sell"] > 0).astype(jnp.float32)
+                     * seat_rows[:, None]).sum(axis=0) / n_seat
+        # `crop` is a unit head and only PLANT reads it, so count it where a plant was chosen.
+        planting = live_units & (op_rows == O.PLANT_OP)
+        crop_counts = (jax.nn.one_hot(batch_data_full["actions"]["crop"],
+                                      J.N_CROPS, dtype=jnp.float32)
+                       * planting[..., None]).sum(axis=(0, 1))
+
+        # **Which item a PICKUP actually takes, which is the last unmeasured link in the FEED
+        # chain.** `masks[O.CARE]` and `masks[O.FEED]` differ by exactly one term --
+        # `carrying_wheat` -- and CARE fires while FEED never has. Wheat does reach the shed
+        # (`buy_product` runs at 2-22% on the two buyable items), and units pick up hundreds of
+        # times per update, so the open question is whether those PICKUPs are taking wheat or
+        # taking the animals they then PLACE. `ITEMS = PRODUCTS + ANIMALS`, so the two live in one
+        # index space and a single census over it answers the question outright.
+        picking = live_units & (op_rows == O.PICKUP)
+        item_counts = (jax.nn.one_hot(batch_data_full["actions"]["item"],
+                                      J.N_ITEMS, dtype=jnp.float32)
+                       * picking[..., None]).sum(axis=(0, 1))
+
+        # **How much capital the animal economy is currently burning.**
+        #
+        # An animal escapes after two unfed nights (`jax_sim.py:1057`, `unfed >= 2`) and every
+        # first-yield day is later than that -- GOOSE 4, COW 8, SHEEP 6. So while FEED sits at
+        # exactly zero, every animal bought is a *certain* total loss of its $300-$500 against a
+        # $3,000 opening bank, not a bad expected value. The policy is therefore receiving correct
+        # and strongly negative advantage on `buy_animal`, which hardens into an aversion that has
+        # to be unlearned later -- the hire collapse's shape, but deterministic rather than
+        # probabilistic. `PLACE` counts bound this from above and mix in ordinary shed-drops, so
+        # count the purchase head itself. It is binary per animal type.
+        buy_animal_rate = ((batch_data_full["actions"]["buy_animal"] > 0).astype(jnp.float32)
+                           * seat_rows[:, None]).sum(axis=0) / n_seat
+
+        # **Where the $3,000 goes.**
+        #
+        # The policy spends its whole opening stake inside five game-days and banks $0 for the
+        # remaining twenty-five, verified by replay. That is below the floor of its own opponent
+        # ladder -- the idle seat takes no action at all and finishes on $3,000, so an agent doing
+        # literally nothing beats ours, and every rung above idle is consequently flat: `farm` and
+        # `trade` both read 0.000 and `pool` reads 0.500, so no opponent supplies any gradient.
+        #
+        # Fixing the leak is worth more than any strategy change, because it is what makes the whole
+        # ladder informative again. `buy_product` and `buy_animal` are already counted and are far
+        # too small to explain it; these three are the remaining ways to burn a bank quickly.
+        # `buy_seed` is per crop so its action is [rows, N_CROPS]; `hire` and `buy_land` are single
+        # binary decisions, so [rows]. "Any nonzero this turn" is the comparable rate across all
+        # three -- bucket 0 of `BUY_BUCKETS` is quantity zero.
+        def _spend(name):
+            a = batch_data_full["actions"][name]
+            fired = (a > 0).any(axis=tuple(range(1, a.ndim))) if a.ndim > 1 else (a > 0)
+            return (fired.astype(jnp.float32) * seat_rows).sum() / n_seat
+
+        seed_rate = _spend("buy_seed")
+        hire_rate = _spend("hire")
+        land_rate = _spend("buy_land")
+
+        # Realised role shares. Sticky roles are *sampled*, so the mix is no longer exact by
+        # construction the way the strided partition made it -- which means it has to be measured.
+        # Three of the four previous versions of this assignment were wrong and two of them looked
+        # fine, so print what actually happened rather than what was asked for.
+        role_counts = jax.nn.one_hot(traj["roles"], N_ROLES, dtype=jnp.float32).sum(axis=(0, 1))
+
         # **Anneal the regulariser, which Ender says mattered and which this flag never did.**
         #
         # `--kl-anneal` was parsed and then never read anywhere in this file -- a dead argument for
@@ -1137,10 +1378,20 @@ def main():
             "rewarded_frac": rewarded_frac, "ev": ev_d, "ev_signal": ev_sig_d,
             "ret_mean": ret_d.mean(), "ret_std": ret_d.std(),
             "terminal_ret_std": terminal_ret_std, "op_counts": op_counts,
+            "trade_counts": trade_counts, "buy_rate": buy_rate,
+            "sell_rate": sell_rate, "crop_counts": crop_counts,
+            "item_counts": item_counts,
+            "buy_animal_rate": buy_animal_rate,
+            "role_counts": role_counts,
+            "seed_rate": seed_rate, "hire_rate": hire_rate, "land_rate": land_rate,
+            **by_opp,
             **{k: v for k, v in metrics.items()},
         })
         wins += float(stats["reward_sum"])
         games += float(stats["done_count"])
+        for _name in opp_wins:
+            opp_wins[_name] += float(stats[f"rew_{_name}"])
+            opp_games[_name] += float(stats[f"done_{_name}"])
 
         # **Record how this opponent did, or the priority weights never change.**
         #
@@ -1172,12 +1423,41 @@ def main():
             "terminal_ret_std": float(stats["terminal_ret_std"]),
             "op_counts": [float(x) for x in jax.device_get(stats["op_counts"])],
             "op_counts_full": [float(x) for x in jax.device_get(op_counts_full)],
-            "mean_units": float(jax.device_get(unit_exists.sum(axis=-1).mean())),
+            "trade_counts": [float(x) for x in stats["trade_counts"]],
+            "buy_rate": [float(x) for x in stats["buy_rate"]],
+            "sell_rate": [float(x) for x in stats["sell_rate"]],
+            "crop_counts": [float(x) for x in stats["crop_counts"]],
+            "item_counts": [float(x) for x in stats["item_counts"]],
+            "buy_animal_rate": [float(x) for x in stats["buy_animal_rate"]],
+            "role_counts": [float(x) for x in stats["role_counts"]],
+            **{k: float(stats[k]) for k in ("seed_rate", "hire_rate", "land_rate")},
+            # The bank itself, seat 0 = the live policy. The most direct statement of the leak
+            # there is: a season that ends on $0 has spent its whole stake and earned nothing.
+            "money_med": float(np.median(np.asarray(jax.device_get(state.farm.money))[:, 0])),
+            "money_max": float(np.asarray(jax.device_get(state.farm.money))[:, 0].max()),
+            # **Over the trainable policy's own rows, not every row in the rollout.**
+            # `unit_exists` spans both seats of every game, so with `--farm-frac 0.30` this was
+            # averaging our crew together with the scripted farmer's `TARGET_HANDS = 10` and
+            # reading high. `live_units` is the same mask the op census already uses. Third time
+            # this project has computed a rate over rows the policy does not own -- after the
+            # `MAX_UNITS` op census and the behaviour-cloning loss.
+            "mean_units": float(jax.device_get(
+                (live_units.sum(axis=-1).sum()
+                 / jnp.maximum(batch_data_full["trainable"].sum(), 1.0)))),
             "trainable_frac": float(jax.device_get(traj["trainable"].mean())),
             "pool": len(pool),
             "win_rate": float(wins / games) if games else float("nan"),
             "episodes": int(games),
-            "sps": float((it + 1) * args.horizon * args.batch / (time.time() - t_start)),
+            **{f"wr_{k}": (float(opp_wins[k] / opp_games[k]) if opp_games[k] else float("nan"))
+               for k in opp_wins},
+            **{f"games_{k}": int(opp_games[k]) for k in opp_games},
+            # **Turns produced by *this process*, over the time this process has been running.**
+            # `(it + 1)` counts from update 0, so on a resume it credited every pre-resume turn
+            # against post-resume wall-clock and printed 13,082 t/s on a card doing about 1,100.
+            # `turns` above is deliberately left cumulative: it measures the lineage's progress,
+            # which is the thing a checkpoint inherits. Rate is a property of the run.
+            "sps": float((it + 1 - start_update) * args.horizon * args.batch
+                         / (time.time() - t_start)),
             **{k: float(stats[k]) for k in
                  ("loss", "policy_loss", "value_loss", "seat_loss", "entropy",
                   "approx_kl", "clip_frac", "grad_norm", "kl_prior")},
@@ -1226,7 +1506,27 @@ def main():
             f"{vnet}V {row['value_mean']:.3f} {vnet}sum {row['seat_sum']:.3f} "
             f"seatL {row['seat_loss']:.4f}  klP {row['kl_prior']:.3f}  "
             f"{row['sps']:,.0f} t/s\n"
-            f"         ops {mix}",
+            f"         vs " + "  ".join(
+                f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x"
+                if row[f"games_{k}"] else f"{k}: n/a"
+                for k in ("idle", "trade", "farm", "pool")) + "\n"
+            f"         ops {mix}\n"
+            # `trade` is the coordinating latent for both conditioned market heads, so its spread
+            # is the first thing to read: near-uniform is healthy, one mode near 1.00 is the
+            # collapse that would make `buy` structurally unreachable rather than merely rare.
+            f"         trade {'/'.join(f'{x:.2f}' for x in _norm(row['trade_counts']))}"
+            f"  buy {'/'.join(f'{x:.3f}' for x in row['buy_rate'])}"
+            f"  sell {'/'.join(f'{x:.3f}' for x in row['sell_rate'])}"
+            f"  crop {'/'.join(f'{x:.2f}' for x in _norm(row['crop_counts']))}\n"
+            # PICKUP is the link between wheat sitting in the shed and a unit able to FEED.
+            f"         pickup {'/'.join(f'{x:.2f}' for x in _norm(row['item_counts']))}"
+            f"  buyanimal {'/'.join(f'{x:.4f}' for x in row['buy_animal_rate'])}\n"
+            # Realised seat-1 mix. Sticky roles are sampled, so this is measured, not guaranteed.
+            f"         roles " + "  ".join(
+                f"{n}:{x:.0%}" for n, x in zip(ROLE_NAMES, _norm(row['role_counts'])))
+            + f"  |  spend seed:{row['seed_rate']:.3f} hire:{row['hire_rate']:.3f} "
+              f"land:{row['land_rate']:.3f}"
+            + f"  bank med ${row['money_med']:,.0f} max ${row['money_max']:,.0f}",
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
