@@ -302,8 +302,14 @@ def hand_prior_heads(heads, masks, noop_p):
       to moving at the spawn state -- so as a prior it would punish PPO for the one behaviour it
       needs to discover. A flat `noop_p` cannot do that by construction.
 
-    Only `op` is shaped. The market heads have their own imbalance and no measured pathology, and
-    shaping everything at once would break the one-delta-at-a-time rule for no evidence.
+    Only `op` is shaped, and **not** because the market heads are healthy -- they are not. Decoding
+    them as independent marginals under-fires catastrophically (argmax emits zero orders, because
+    nine separate "probably not sell" decisions compose into "never sell") and sampling them
+    independently over-fires (banking $1 on noise). But that is a *correlation* failure: the
+    marginals themselves discriminate 12:1, and the joint has structure the factorisation cannot
+    represent. A flat prior over each market head would not fix a missing correlation and might
+    blunt marginals that are already good, so the fix there is an autoregressive decode over order
+    slots, not a shaped prior. Shaping `op` alone also keeps this to one delta.
     """
     out = {}
     for k, logits in heads.items():

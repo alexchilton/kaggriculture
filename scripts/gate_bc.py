@@ -31,14 +31,25 @@ from pathlib import Path
 import numpy as np
 
 # What "usable as a prior" means, decided before looking at any result so it cannot be moved
-# afterwards. The floor a hand-specified prior would give any legal op is (1 - 0.3) / 18 = 0.039,
-# so requiring a tenth of that is a modest bar and still ~65x the collapsed checkpoint's 6e-5.
+# afterwards.
+#
+# **The bar is deliberately far below the hand-specified prior, and the gap is worth stating.** At
+# the literal spawn state only three ops are legal -- NOOP, NORTH, WEST -- so `--hand-prior 0.3`
+# would put 0.35 on each of the two moves. This gate asks for 4e-3, roughly a hundredth of that.
+# It is a floor against the *collapsed* checkpoint's measured 6e-5, not a claim of parity with the
+# hand prior: passing here means "will not actively punish exploration", not "is a good prior".
 MAX_SPAWN_NOOP = 0.98
 MIN_SPAWN_MOVE = 4e-3
+GATE_SEEDS = (4000, 4001, 4002, 4003, 4004)
 
 
-def spawn_distribution(checkpoint):
-    """P(noop) and the best non-noop probability at the state every episode begins in."""
+def spawn_distribution(checkpoint, seeds=GATE_SEEDS):
+    """P(noop) and the best non-noop probability at the state every episode begins in.
+
+    Averaged over several seeds. Seed variance here is ~15% and `CLAUDE.md` records a fixed
+    three-seed objective reporting +40% where held-out seeds said +12.8%; a gate that decides
+    PASS/FAIL from one draw is the same mistake in a smaller package.
+    """
     import jax
     import jax.numpy as jnp
     import pickle
@@ -51,22 +62,31 @@ def spawn_distribution(checkpoint):
         params = pickle.load(fh)["params"]
     model = P.Policy()
 
-    env = make("kaggriculture", configuration={"seed": 4000}, debug=False)
-    env.reset(2)
-    obs = json.loads(json.dumps(env.steps[0][0]["observation"]))
-    obs["player"] = 0
-    state = adapter.state_from_obs(
-        obs, [obs["private"], adapter.agent_private_stub()])
+    noops, moves, legals, picks = [], [], [], []
+    for seed in seeds:
+        env = make("kaggriculture", configuration={"seed": seed}, debug=False)
+        env.reset(2)
+        obs = json.loads(json.dumps(env.steps[0][0]["observation"]))
+        obs["player"] = 0
+        state = adapter.state_from_obs(obs, [obs["private"], adapter.agent_private_stub()])
 
-    heads, _v = model.apply(params, *[A._flat(x) for x in jax_obs.encode(state)])
-    masks = A.masks_for(state)
-    probs = np.asarray(jax.nn.softmax(
-        jnp.where(masks["op"], heads["op"], -jnp.inf), axis=-1))[0, 0]
+        heads, _v = model.apply(params, *[A._flat(x) for x in jax_obs.encode(state)])
+        masks = A.masks_for(state)
+        probs = np.asarray(jax.nn.softmax(
+            jnp.where(masks["op"], heads["op"], -jnp.inf), axis=-1))[0, 0]
 
-    legal = np.asarray(masks["op"])[0, 0]
-    non_noop = probs.copy()
-    non_noop[O.NOOP] = 0.0
-    return float(probs[O.NOOP]), float(non_noop.max()), int(legal.sum())
+        non_noop = probs.copy()
+        non_noop[O.NOOP] = 0.0
+        noops.append(float(probs[O.NOOP]))
+        moves.append(float(non_noop.max()))
+        legals.append(int(np.asarray(masks["op"])[0, 0].sum()))
+        picks.append(int(non_noop.argmax()))
+
+    # Which direction it favours, not just how strongly. Corrective labels from a fixed-layout
+    # heuristic can teach "always walk west" rather than "read the board", and a magnitude-only
+    # check cannot tell those apart.
+    return (float(np.mean(noops)), float(np.mean(moves)), int(np.mean(legals)),
+            sorted(set(picks)))
 
 
 def plays(checkpoint):
@@ -90,12 +110,14 @@ def plays(checkpoint):
 
 def main():
     ckpt = sys.argv[1] if len(sys.argv) > 1 else "data/bc/bc.pkl"
-    p_noop, p_move, n_legal = spawn_distribution(ckpt)
+    p_noop, p_move, n_legal, dirs = spawn_distribution(ckpt)
     bank, ops = plays(ckpt)
 
     print(f"checkpoint {ckpt}")
     print(f"  spawn state: {n_legal} legal ops, P(noop) {p_noop:.6f}, "
-          f"best non-noop {p_move:.6f}")
+          f"best non-noop {p_move:.6f}  (mean over {len(GATE_SEEDS)} seeds)")
+    print(f"  favoured move op ids across seeds: {dirs}"
+          f"{'  <- identical on every seed, may be a fixed habit' if len(dirs) == 1 else ''}")
     print(f"  plays: ${bank:,.0f} vs starter   ops {dict(ops.most_common(6))}")
     print()
 
@@ -104,8 +126,10 @@ def main():
 
     print(f"  [{'PASS' if prior_ok else 'FAIL'}] usable as KL prior / init "
           f"(needs P(noop) <= {MAX_SPAWN_NOOP}, P(best move) >= {MIN_SPAWN_MOVE})")
-    print(f"  [{'PASS' if plays_ok else 'FAIL'}] plays at all "
-          f"(banking exactly $3,000 means it never acted)")
+    never_acted = abs(bank - 3000.0) < 1.0
+    print(f"  [{'PASS' if plays_ok else 'FAIL'}] plays at all -- "
+          + ("never acted at all (banked exactly the start)" if never_acted
+             else f"acted, ended at ${bank:,.0f}"))
 
     if not prior_ok:
         print("\n  Do NOT wire this into --kl-prior or --init. As a prior it would tax PPO for "
