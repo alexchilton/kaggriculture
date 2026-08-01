@@ -1105,10 +1105,21 @@ def main():
         # **The op mix, because no scalar in this log can tell farming badly from standing still.**
         # `tstd` is the return spread on rows that actually resolved -- the statistic that separates
         # "every game drew" from "the critic collapsed onto one number", which `ret_std` cannot.
+        # **The productive ops are always shown, not the top five.**
+        #
+        # Printing whichever five happened to be largest hid the only thing worth watching: the
+        # policy explores all seventeen legal ops, and the failure is not that it never tries to
+        # farm but that the *chain* never completes. One update measured 773 plants against 9
+        # harvests. A top-five view showed noop and four movement ops and nothing else, which reads
+        # as "it only knows how to walk" and is wrong.
         counts = row["op_counts"]
         total_ops = max(1.0, sum(counts))
-        top = sorted(range(len(counts)), key=lambda i: -counts[i])[:5]
-        mix = " ".join(f"{O_NAMES[i]}:{counts[i] / total_ops:.0%}" for i in top if counts[i])
+        chain = ("plant", "water", "harv", "drop", "pick")
+        mix = " ".join(
+            f"{n}:{counts[O_NAMES.index(n)] / total_ops:.2%}" for n in chain)
+        mix += f"  | noop:{counts[0] / total_ops:.0%}"
+        moves = sum(counts[O_NAMES.index(n)] for n in ("N", "S", "E", "W"))
+        mix += f" move:{moves / total_ops:.0%}"
         print(
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f} "
             f"tstd {row['terminal_ret_std']:.3f}  "
