@@ -57,8 +57,56 @@ TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
 
-def make_rollout(model, batch, horizon, gamma, gae_lambda):
-    """Build the jitted rollout: `horizon` turns of self-play, plus GAE.
+def staggered_states(batch, n_phases, seed=0):
+    """`n_phases` independent sim states, started at evenly spread points in the season.
+
+    **This is the fix for the single worst property the first training run had.** `jax_sim.State`
+    keeps `step_index` as one scalar for the whole batch, so every game in a state is in lockstep
+    and *structurally cannot* desynchronise. With a 64-turn horizon against 719-turn episodes that
+    means every game terminates on the same update: terminal reward arrived in one burst roughly
+    every eleven updates and was absent from the other ten. The critic therefore spent ten updates
+    out of every eleven regressing onto its own predictions -- a bootstrap with no unique fixed
+    point at gamma near 1 -- and was measured drifting to a value of 1.315, which is impossible
+    when the reward is capped at 1. Raising the batch size does not help at all: it makes the burst
+    bigger, not more frequent.
+
+    Holding several states at different phases fixes it without touching the simulator, so parity
+    is untouched and does not need re-gating. Each state keeps its own scalar `step_index`, and
+    `jax.vmap` runs them together, so the phase axis costs nothing in wall-clock.
+
+    The first episode of each group is a partial one -- a farm at turn 400 with an empty board is a
+    valid state but not a typical one -- which is the one-off price of staggering. Every episode
+    after that is a full season starting from a genuine reset.
+    """
+    per_group = batch // n_phases
+    states = []
+    for k in range(n_phases):
+        phase = (k * (EPISODE_TURNS + 1)) // n_phases
+        s = J.reset(per_group, seed=seed + k)
+        states.append(s._replace(step_index=jnp.asarray(phase, dtype=J._I)))
+    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *states)
+
+
+def _pack(x):
+    """[K, b, P, ...] -> [K*b*P, ...], the layout the network consumes.
+
+    `jax_obs.encode` keeps the seat axis separate, so under vmap it returns four leading axes.
+    """
+    return x.reshape(-1, *x.shape[3:])
+
+
+def _pack_flat(x):
+    """[K, b*P, ...] -> [K*b*P, ...].
+
+    `jax_act.masks_for` already folds the seat axis into the batch before returning, so its vmapped
+    output has one leading axis fewer than `encode`'s. Using the same packer for both silently
+    produced `[K*b*P*U, N_OPS]` and only surfaced as a broadcast error two frames later.
+    """
+    return x.reshape(-1, *x.shape[2:])
+
+
+def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
+    """Build the jitted rollout: `horizon` turns of self-play across all phase groups, plus GAE.
 
     `gamma` and `gae_lambda` are pinned to float32. A bare Python float promotes to float64 under
     the x64 flag `jax_sim` sets, and `gamma * next_value` would then drag the whole advantage and
@@ -66,6 +114,13 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda):
     """
     gamma = jnp.asarray(gamma, dtype=jnp.float32)
     gae_lambda = jnp.asarray(gae_lambda, dtype=jnp.float32)
+    per_group = batch // n_phases
+
+    # One vmapped call covers every phase group, so staggering costs no extra wall-clock: the
+    # groups differ only in their scalar `step_index`, which vmap maps over.
+    v_encode = jax.vmap(jax_obs.encode)
+    v_masks = jax.vmap(A.masks_for)
+    v_step = jax.vmap(J.step)
 
     @jax.jit
     def rollout(params, state, key):
@@ -76,50 +131,61 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda):
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
             # actions against the wrong observation.
-            tiles, units, glob = jax_obs.encode(state)
-            obs = (A._flat(tiles), A._flat(units), A._flat(glob))
+            tiles, units, glob = v_encode(state)              # [K, b, P, ...]
+            obs = (_pack(tiles), _pack(units), _pack(glob))
             heads, value = model.apply(params, *obs)
-            masks = A.masks_for(state)
+            masks = jax.tree_util.tree_map(_pack_flat, v_masks(state))
             actions, logp, _ent = A.sample(sub, heads, masks)
 
-            sim_actions = A.to_sim_actions(actions, batch)
-            nxt = J.step(state, sim_actions)
+            # Back to [K, b*P, ...] for the simulator, which knows nothing about the phase axis.
+            # `to_sim_actions` expects the seat axis already folded in, matching `masks_for`.
+            grouped = jax.tree_util.tree_map(
+                lambda a: a.reshape(n_phases, per_group * 2, *a.shape[1:]), actions)
+            sim_actions = jax.vmap(A.to_sim_actions, in_axes=(0, None))(grouped, per_group)
+            nxt = v_step(state, sim_actions)
 
-            # Terminal reward, win 1 / loss 0, paid on the turn the episode *ends* -- an edge, not
-            # a level. `step_index > LAST_STEP` stays true for every subsequent turn, so testing it
-            # directly pays the reward again and again: at horizon 64 an episode finishing at scan
-            # step 30 would collect it 34 times. Every game shares one scalar `step_index`, so the
-            # whole batch crosses the boundary together and a single comparison covers it.
-            was_over = state.step_index > J.LAST_STEP
+            # `just_done` is [K]: each phase group crosses its own episode boundary on its own
+            # turn, which is the whole point of staggering. Paid on the transition, never on the
+            # level -- `step_index > LAST_STEP` stays true afterwards, so testing it directly would
+            # pay the terminal reward on every remaining turn of the rollout.
+            was_over = state.step_index > J.LAST_STEP                 # [K]
             now_over = nxt.step_index > J.LAST_STEP
             just_done = now_over & ~was_over
 
-            money = nxt.farm.money                                   # [B, 2]
-            won = (money > money[:, ::-1]).astype(jnp.float32)
-            tie = (money == money[:, ::-1]).astype(jnp.float32)
-            reward = jnp.where(just_done, won + 0.5 * tie, 0.0).astype(jnp.float32)
+            money = nxt.farm.money                                    # [K, b, 2]
+            won = (money > money[..., ::-1]).astype(jnp.float32)
+            tie = (money == money[..., ::-1]).astype(jnp.float32)
+            reward = jnp.where(
+                just_done[:, None, None], won + 0.5 * tie, 0.0).astype(jnp.float32)
 
-            # Restart inside the scan. Resetting only in Python after the rollout lets the
-            # simulator keep stepping past turn 719 into a season that does not exist, and those
-            # invalid turns would still be trained on. The PRNG key is carried across so the new
+            # Restart inside the scan, per group. Resetting only in Python after the rollout lets
+            # the simulator keep stepping past turn 719 into a season that does not exist, and
+            # those invalid turns would still be trained on. The PRNG key carries across so a new
             # episode does not replay the old one's weed draws.
-            def _restart(s):
-                return J.reset(batch)._replace(key=s.key)
+            fresh = J.reset(per_group)
+            nxt = jax.tree_util.tree_map(
+                lambda new, old: jnp.where(
+                    just_done.reshape((-1,) + (1,) * (old.ndim - 1)), new, old),
+                jax.tree_util.tree_map(
+                    lambda x: jnp.broadcast_to(x, (n_phases, *x.shape)), fresh)._replace(
+                        key=nxt.key),
+                nxt,
+            )
 
-            nxt = lax.cond(just_done, _restart, lambda s: s, nxt)
-
+            done_flat = jnp.broadcast_to(
+                just_done[:, None, None], (n_phases, per_group, 2)).reshape(-1)
             out = dict(
-                logp=logp, value=value, reward=A._flat(reward),
-                done=jnp.broadcast_to(just_done, (batch, 2)).reshape(-1),
-                actions=actions, masks=masks, obs=obs,
+                logp=logp, value=value, reward=reward.reshape(-1),
+                done=done_flat, actions=actions, masks=masks, obs=obs,
             )
             return (nxt, key), out
 
         (final_state, key), traj = jax.lax.scan(
             one_turn, (state, key), None, length=horizon)
 
-        # Bootstrap from the value of the state we stopped in.
-        _h, last_value, _m = A.forward(params, model, final_state)
+        # Bootstrap from the value of the state we stopped in, across all phase groups.
+        t, u, g = v_encode(final_state)
+        _h, last_value = model.apply(params, _pack(t), _pack(u), _pack(g))
 
         def gae(carry, x):
             adv, next_value = carry
@@ -241,6 +307,13 @@ def main():
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--n-phases", type=int, default=12,
+                    help="independent sim states, started at evenly spread points in the season. "
+                         "jax_sim keeps one scalar step_index per state, so all games in a state "
+                         "terminate together and cannot drift apart; with 719-turn episodes and a "
+                         "64-turn horizon that put every terminal reward in one burst per ~11 "
+                         "updates. 12 groups gives roughly one termination per update instead. "
+                         "Must divide --batch.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="ppo")
     ap.add_argument("--ckpt-every", type=int, default=25,
@@ -259,7 +332,8 @@ def main():
     print(f"devices: {jax.devices()}")
     print(f"discount: {args.gamma_per_day} per game-day = {gamma:.6f} per turn")
     print(f"          terminal reward retains {args.gamma_per_day ** 30:.3f} of its value at t=0")
-    print(f"batch {args.batch} games ({2 * args.batch} seats), horizon {args.horizon} turns")
+    print(f"batch {args.batch} games ({2 * args.batch} seats), horizon {args.horizon} turns, "
+          f"{args.n_phases} phase groups of {args.batch // args.n_phases}")
 
     # Preflight, because the first GPU run OOMed and the cause was not obvious from the flags.
     # Transformer activation memory is linear in minibatch ROWS and quadratic in sequence length;
@@ -286,9 +360,11 @@ def main():
     key = jax.random.PRNGKey(args.seed)
     key, sub = jax.random.split(key)
 
-    state = J.reset(args.batch)
-    tiles, units, glob = jax_obs.encode(state)
-    params = model.init(sub, A._flat(tiles), A._flat(units), A._flat(glob))
+    if args.batch % args.n_phases:
+        raise SystemExit(f"--batch {args.batch} must be divisible by --n-phases {args.n_phases}")
+    state = staggered_states(args.batch, args.n_phases, seed=args.seed)
+    tiles, units, glob = jax.vmap(jax_obs.encode)(state)
+    params = model.init(sub, _pack(tiles), _pack(units), _pack(glob))
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
     print(f"params: {n_params:,}")
 
@@ -324,7 +400,8 @@ def main():
     print(f"log:  {log_path}")
     print(f"tail: scripts/deploy_train.sh watch", flush=True)
 
-    rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda)
+    rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda,
+                           args.n_phases)
     update = make_update(model, args.clip, args.vf_coef, args.ent_coef,
                          args.max_grad_norm, optimiser)
 
@@ -339,6 +416,11 @@ def main():
     # this line says so; if the first rollout dies, the traceback below says that instead.
     print(f"entering training loop: updates {start_update}..{args.updates}, "
           f"{flat_n:,} rows/update", flush=True)
+    # The first rollout traces and compiles the whole scan -- sim, policy and GAE -- which takes
+    # minutes and prints nothing. Silence at this exact point is also what every genuine failure
+    # looked like, so say plainly that silence is expected here.
+    print(f"compiling the first rollout ({args.horizon}-turn scan); this takes a few minutes and "
+          f"prints nothing until update 0", flush=True)
     if start_update >= args.updates:
         print(f"NOTHING TO DO: start_update {start_update} >= updates {args.updates}", flush=True)
 
@@ -398,7 +480,10 @@ def main():
         # no EV: it would retire the kill criterion by accident. `ev_signal` is the honest number
         # -- EV restricted to rollouts that actually contained a terminal reward -- and `nan` there
         # means "not yet measurable", not "passing".
-        rewarded = np.asarray(traj["reward"]).reshape(-1) != 0
+        # Select on `done`, not on `reward != 0`. A loss scores 0, so filtering by nonzero reward
+        # keeps only the winners -- every selected return is then 1.0, the variance is 0, and EV
+        # comes out NaN. That made the one honest kill-criterion metric permanently unmeasurable.
+        rewarded = np.asarray(traj["done"]).reshape(-1)
         if rewarded.any():
             r_ret, r_val = ret[rewarded], val[rewarded]
             r_var = r_ret.var()
@@ -421,7 +506,10 @@ def main():
         with log_path.open("a") as fh:
             fh.write(json.dumps(row) + "\n")
 
-        if it % 10 == 0 or it < 5:
+        # Print every update. Printing every tenth saves nothing and produced a five-minute silence
+        # that read as a hang -- which, given how many genuine silent deaths this run has had, is
+        # the one thing the log must never do. An update is ~20s; a line each is cheap.
+        if True:
             sig = "  n/a" if np.isnan(ev_signal) else f"{ev_signal:+.3f}"
             print(
                 f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f}  "

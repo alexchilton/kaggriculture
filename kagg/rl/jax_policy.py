@@ -138,7 +138,17 @@ class Policy(nn.Module):
             "hire": nn.Dense(2, **D)(gtok),
             "buy_land": nn.Dense(2, **D)(gtok),
         }
-        value = nn.Dense(1, dtype=DTYPE, param_dtype=DTYPE)(gtok)[..., 0]
+        # **The value head is bounded to [0, 1], and that bound is a fact, not a heuristic.**
+        # The reward is 1 for a win and 0 for a loss, paid once, and gamma <= 1 -- so no state can
+        # be worth more than 1 or less than 0. Left unbounded it drifts straight past that: with a
+        # 64-turn horizon against 719-turn episodes, only about one update in eleven contains a
+        # terminal reward, and the other ten train the critic purely on its own predictions. That
+        # bootstrap has no unique fixed point at gamma ~ 1, and it was measured climbing to 1.315 --
+        # an impossible value -- while `explained_variance` still read +0.98, because a critic that
+        # is self-consistently wrong explains its own targets perfectly.
+        #
+        # A sigmoid makes the impossible unreachable, and costs nothing when the estimate is honest.
+        value = nn.sigmoid(nn.Dense(1, dtype=DTYPE, param_dtype=DTYPE)(gtok)[..., 0])
         return heads, value
 
 

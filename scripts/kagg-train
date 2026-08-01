@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Installed on the training box at /usr/local/bin/kagg-train, so it is on PATH and there is no
+# path or tilde to type. Run it from any directory:
+#
+#   kagg-train            start training in a detached tmux session (default settings)
+#   kagg-train --batch 256 --horizon 128      ... or with any train_jax_rl.py flags
+#   kagg-log              follow the log
+#   kagg-log 50           last 50 lines
+#   kagg-stop             stop the run
+#
+# Everything is absolute: no `cd` needed, no `~` to expand, and the log always lands in the same
+# place so it can be read from another machine without hunting for the run directory.
+set -uo pipefail
+
+REPO=/home/alex/kagg
+VENV=/home/alex/kagg-venv/bin/python
+LOG=/home/alex/kagg/data/logs/train.log
+SESSION=kagg
+
+DEFAULTS="--batch 128 --horizon 64 --updates 20000 --minibatch-size 256 --ckpt-every 20"
+ARGS="${*:-$DEFAULTS}"
+
+mkdir -p "$(dirname "$LOG")"
+
+# Pull first: the box has repeatedly run an older copy than the laptop, and a training run is far
+# too expensive to spend on stale code.
+if [ -d "$REPO/.git" ]; then
+  echo "== git =="
+  git -C "$REPO" pull --ff-only 2>&1 | tail -3
+  echo "   HEAD: $(git -C "$REPO" log --oneline -1)"
+else
+  echo "== git == (no repo here; running whatever is on disk)"
+fi
+
+# One run at a time. Two runs sharing a 16GB card is how the GPU filled up before, and the second
+# one fails in ways that look like a bug in the first.
+tmux kill-session -t "$SESSION" 2>/dev/null
+pkill -9 -f 'python.*train_jax_rl' 2>/dev/null
+sleep 2
+
+[ -s "$LOG" ] && mv "$LOG" "$LOG.$(date +%H%M%S)"
+
+echo "== starting =="
+echo "   args: $ARGS"
+# tmux gives a pty, which is the only launch context that has worked on this box: nohup, setsid
+# and systemd all die, and a service dies *before* the first update with exit code 0.
+# XLA_PYTHON_CLIENT_PREALLOCATE=false stops JAX grabbing 75% of the card up front, which fails on
+# this 16GB laptop GPU and prints a ladder of RESOURCE_EXHAUSTED lines that read like a fatal OOM.
+tmux new-session -d -s "$SESSION" -c "$REPO" \
+  "PYTHONPATH=$REPO XLA_PYTHON_CLIENT_PREALLOCATE=false $VENV -u $REPO/scripts/train_jax_rl.py $ARGS 2>&1 | tee -a $LOG"
+
+sleep 6
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "   running in tmux session '$SESSION'"
+  echo "   log:    $LOG"
+  echo "   follow: kagg-log     attach: tmux attach -t $SESSION     stop: kagg-stop"
+  echo
+  tail -12 "$LOG" 2>/dev/null
+else
+  echo "   FAILED to start:"
+  tail -30 "$LOG" 2>/dev/null
+  exit 1
+fi
