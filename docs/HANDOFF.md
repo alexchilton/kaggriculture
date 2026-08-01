@@ -250,3 +250,110 @@ where we stand.
 5. **Imitation from search or replays.** Self-play from scratch reached 8th place in a comparable
    competition at ~1B steps; the top finishers used 10-15B. Seeding past the early valley is what
    the post-mortem already recommends.
+
+---
+
+## Session 2 handoff — 2026-08-01, late morning
+
+Two tracks ran in parallel: RL on the 3080, and a new heuristic agent. **The RL track is healthy
+and running. The heuristic track is broken and should be picked up first**, because it is where the
+score is.
+
+### Context that reframes everything
+
+A friend's *heuristic* scores **1230 Elo**. The ladder starts at 600 and our agents sit there.
+630 Elo points is a ~2.6% win rate for `contrarian` against it. So heuristics are nowhere near the
+ceiling in this game -- ours were simply weak -- and that changes the priority order: a strong
+heuristic is both the fastest route to a score and the best imitation target for RL later.
+
+### RL: running, and the critic bug is fixed
+
+`kagg-train` on the box; `kagg-status`, `kagg-log`, `kagg-stop` alongside it. 36 updates, ~750
+episodes, ~300k steps, 166 turns/s.
+
+The first GPU run trained but did not learn: the critic climbed 0.59 -> 0.82 heading for 1.0 while
+explained variance sat at zero and entropy collapsed. An external review found the mechanism with a
+single measurement worth remembering:
+
+> For a matched (game, turn) pair, `V(seat 0) + V(seat 1)` must equal **1** -- win plus loss, or two
+> ties. It is arithmetic, true for any policy at any skill, and it holds on **100% of rows** against
+> the ~0.14% that carry a terminal reward (one turn in 719).
+
+It read 1.17 climbing to 1.34, with `sum` almost exactly `2 x V`: the critic was **seat-blind**,
+emitting one global number for both sides of the same board. Adding that identity as an auxiliary
+loss (`--seat-coef`, on by default) fixed it -- the critic now sits near 0.50 where symmetric
+self-play says it belongs, and `ret` is falling (0.745 -> 0.661) rather than climbing.
+
+Two metrics were blind and are now fixed. **Win rate was arithmetically pinned to 0.500** because it
+summed reward across both seats of every game; it now measures the live policy's own seats and reads
+0.501-0.506, which is the only signal that can move. `ev_signal` reports `n/a` when a batch's
+terminal rows all share an outcome -- at ~22 terminal rows per update that happens often, so the
+count is now logged next to it.
+
+**Unexplained:** throughput fell from ~650 to 166 turns/s between runs at identical settings.
+Possibly thermal on a laptop GPU after hours at 100%, but that is a guess -- measure it. At 166
+turns/s, 30M steps is ~50 hours rather than ~13.
+
+### Heuristic: `kagg/agents/converter.py` is BROKEN -- uncommitted, do not ship
+
+Built from replay 89197802 (top two agents at $106k and $113k against our $38-52k). It scores
+**$159-$3,859 against `contrarian`'s $51,000**. Eight attempted fixes did not converge, and the
+last few were guesses. Everything below is *measured*, not theorised:
+
+| symptom | measurement |
+|---|---|
+| never sold anything | `sold: {}` for a whole season, `HARVEST` absent from the op census |
+| melon dies | 3 tiles at day 2, **0 by day 6** -- planted, watered a while, then dead |
+| only 3 of 14 seeds planted | planting sat below the feed loop in priority |
+| bank drains to $25 | 46 wheat hoarded in the shed for animals that did not exist |
+| feed loop dominates | **517 PICKUP against 128 FEED** |
+| livestock in storage | an earlier version ended with **37 sheep in the shed**, ~$20k idle |
+
+Bugs already fixed (keep these): purchases are capped by free pens; placement outranks feeding;
+crop harvesting was silently dropped when the loop was rewritten for per-unit animal ownership; pen
+building is deferred to just before the herd arrives; crop and livestock phases are separated.
+
+**What I would do next, and what I would not.** Do not tune the priority list further -- that is
+what the eight failed iterations were. Instrument first: log per-day plant count, water count,
+harvest count and revenue by product, and find where melon dies. The likely candidate is that
+watering still loses to the wheat-pickup loop once any animal exists, so melon never reaches its
+yield window. A cleaner structure than one global priority list is to **split the crew**: dedicate
+N units to crops and the rest to livestock, with stable ownership on both sides, rather than having
+every unit re-decide between the two economies every turn.
+
+### What the replay and the review actually established
+
+- **Melon is the opening economy and is winner-take-all.** Its `sq` glut curve fits only ~158 units
+  above I0, so whoever commits first takes the pot. `contrarian` banks $51k in this matchup almost
+  entirely from melon: 225 units off 24 tiles. Skipping melon to protect the opening bank hands that
+  market over *and* leaves no money for livestock.
+- **Wheat is an input with a guaranteed rising price.** The town drains it all season; measured $25
+  -> $56 monotonically. Both winners bought rather than grew it. One made 81% of its revenue simply
+  *trading* it -- a carry trade on a trend both players create with their own feed demand.
+- **Feeding logistics are not the constraint.** 12 hands x 24 turns = 288 actions/day; a 20-animal
+  herd needs ~140-160 including collection. The action ceiling is ~35-45 animals. What actually
+  binds is capital, the 100-item shed cap, and market absorption.
+- **The 52-58% PASS in days 0-8 is waste, not strategy.** Hands are dismissed nightly and the
+  Fibonacci fee resets each morning, so crew size is a free, memoryless daily choice -- 12 hands cost
+  $376/day against $12 for five. Carrying a full crew through the empty opening burns ~$2,900, close
+  to the entire starting bank. **This is the one place to beat the replay rather than copy it**, and
+  `converter` already sizes its crew to outstanding jobs.
+- **CARE is nearly free** given the idle capacity, and should go on every animal every cycle.
+- **Nobody buys SE (4000).** It does not relieve the binding constraint and has too few days left to
+  amortise. Treat as settled.
+
+### Also landed this session
+
+- `kagg/rl/adapter.py` + `tests/test_adapter.py` (2/2). Rebuilds a `jax_sim.State` from the
+  reference environment's dict observation, so a checkpoint can play the real game -- needed both to
+  evaluate against `contrarian` and to submit. It reconstructs the State and reuses the *same*
+  `jax_obs.encode` training uses, rather than adding a second encoder that would have to be kept in
+  agreement forever.
+- `scripts/eval_policy.py` -- run for the first time this session, which immediately found a bug in
+  it: the seat swap only applied against another checkpoint, so every random-legal evaluation
+  measured seat 0 twice. Also produced the first honest number for a trained policy: it beats
+  random-legal 1.000 while **ending the season with $7** against a $3,000 start. It wins only
+  because the opponent destroys more.
+- Host-device syncs removed from the training loop: four full-array transfers per update, plus
+  **256 host-to-device index transfers** (numpy shuffle, one dispatch per minibatch). Speedup not yet
+  measured on GPU.
