@@ -25,6 +25,8 @@ import jax.numpy as jnp
 from kagg.sim import jax_sim as J
 
 N_KINDS = 6           # EMPTY, LOCKED, WEED, PLANT, COOP, PASTURE
+_XS = jnp.arange(J.BOARD * J.BOARD) % J.BOARD
+_YS = jnp.arange(J.BOARD * J.BOARD) // J.BOARD
 N_CROPS = J.N_CROPS
 N_ANIMAL_KINDS = len(J.ANIMAL_STRUCTURE)
 
@@ -86,6 +88,51 @@ def encode(state):
     pos = farm.unit_pos
     flat = pos[..., 1] * J.BOARD + pos[..., 0]
     on_shed = (flat[..., None] == J.SHED_TILES).any(axis=-1)
+
+    # **Where the nearest job is, given rather than derived.**
+    #
+    # This file already takes that position elsewhere -- "Age drives every yield rule, so give it
+    # directly rather than making the net subtract" -- and it is the move Ender's whole
+    # target-selection pipeline is built on: precompute the intercept geometry and hand it to the
+    # policy rather than making a transformer learn orbital mechanics from raw positions through
+    # reward alone. Ours is the trivial version of the same problem, Manhattan distance on a static
+    # 10x10 grid.
+    #
+    # Measured motivation: over 412,992 owned-unit actions the policy placed 4,591 animals and fed
+    # 12, and planted 13,439 crops and harvested 98. Setup actions -- one-shot, on the tile the unit
+    # already occupies -- are common; maintenance actions, which require *returning to the same tile
+    # on a later day*, are three orders of magnitude rarer. Every unit is reset to spawn each night,
+    # so every return is a fresh multi-step walk whose payoff arrives days later, and the chance of
+    # sampling one correctly decays exponentially with its length. With 98 successes in 413k actions
+    # there is essentially no completed trajectory for the critic to learn from.
+    #
+    # This is a fact, not a quality judgment: it says where the nearest dry plant is, not that
+    # watering is what the unit ought to do. `CLAUDE.md` draws the line at masking to *force* an
+    # action, which this does not do -- a unit is free to ignore it, as it is free to ignore `age`.
+    def _target(candidate):
+        """Signed direction and distance to the nearest tile satisfying `candidate`. [B, P, U, 3]"""
+        dx = _XS[None, None, None, :] - pos[..., 0:1]
+        dy = _YS[None, None, None, :] - pos[..., 1:2]
+        dist = jnp.abs(dx) + jnp.abs(dy)
+        masked = jnp.where(candidate[:, :, None, :], dist, 999)
+        nearest = jnp.argmin(masked, axis=-1)[..., None]
+        found = jnp.take_along_axis(masked, nearest, axis=-1) < 999
+        take = lambda a: jnp.take_along_axis(a, nearest, axis=-1)   # noqa: E731
+        return jnp.concatenate([
+            jnp.where(found, take(dx) / (J.BOARD - 1.0), 0.0),
+            jnp.where(found, take(dy) / (J.BOARD - 1.0), 0.0),
+            # Distance is inverted so "nothing to do" and "very far" are both near zero, and a job
+            # underfoot is 1. A raw distance would make the absent case indistinguishable from a
+            # nearby one only by the sign of a separate flag.
+            jnp.where(found, 1.0 / (1.0 + take(masked).astype(jnp.float32)), 0.0),
+        ], axis=-1).astype(jnp.float32)
+
+    is_plant_t = t.kind == J.PLANT
+    needs_water = is_plant_t & ~t.watered_today
+    is_ripe = is_plant_t & (t.yield_units > 0)
+    has_animal_t = t.animal != J.NO_ANIMAL
+    needs_feed = has_animal_t & ~t.fed_today
+
     units = jnp.concatenate(
         [
             live.astype(jnp.float32)[..., None],
@@ -93,6 +140,10 @@ def encode(state):
             (pos[..., 1] / (J.BOARD - 1.0)).astype(jnp.float32)[..., None],
             on_shed.astype(jnp.float32)[..., None],
             jnp.minimum(farm.carried / 10.0, 3.0).astype(jnp.float32),
+            _target(needs_water),
+            _target(is_ripe),
+            _target(needs_feed),
+            _target(t.kind == J.EMPTY),
         ],
         axis=-1,
     )
