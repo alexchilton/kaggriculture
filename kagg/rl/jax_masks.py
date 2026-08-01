@@ -32,7 +32,8 @@ def unit_op_mask(state):
     Evaluated on the tile the unit is standing on *now*, before anything this turn has moved.
     """
     t, farm = state.tiles, state.farm
-    day = state.step_index // J.TURNS_PER_DAY
+    # `[B]`, per game -- every value gathered below is `[B, P, U]`, so it needs two trailing axes.
+    day = (state.step_index // J.TURNS_PER_DAY)[:, None, None]
 
     pos = farm.unit_pos                                    # [B, P, U, 2]
     x, y = pos[..., 0], pos[..., 1]

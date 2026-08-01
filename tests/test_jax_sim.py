@@ -249,7 +249,9 @@ def test_shed_overflow_destroys_the_same_haul_as_the_numpy_sim(seed):
     game.step_index = 23
     import jax.numpy as jnp
     state = state._replace(
-        step_index=jnp.asarray(23, dtype=jnp.int32),
+        # Per game now, not one scalar for the batch: episodes have to be able to run out of
+        # phase with each other, which is what puts a terminal reward in every training update.
+        step_index=jnp.full((batch,), 23, dtype=jnp.int32),
         farm=state.farm._replace(
             carried=jnp.asarray(carried, dtype=jnp.int32),
             shed=jnp.asarray(shed, dtype=jnp.int32),

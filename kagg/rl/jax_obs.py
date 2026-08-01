@@ -49,8 +49,11 @@ def encode(state):
     `[B, P, GLOBAL_FEATURES]`. Seat `p` sees its own farm in full and the other seat in aggregate.
     """
     t, farm = state.tiles, state.farm
-    day = (state.step_index // J.TURNS_PER_DAY).astype(jnp.float32)
-    hour = (state.step_index % J.TURNS_PER_DAY).astype(jnp.float32)
+    # `[B]`, not a scalar: `jax_sim` keeps `step_index` per game so episodes can run out of phase.
+    day = (state.step_index // J.TURNS_PER_DAY).astype(jnp.float32)        # [B]
+    hour = (state.step_index % J.TURNS_PER_DAY).astype(jnp.float32)        # [B]
+    day_t = day[:, None, None]                                             # against [B, P, TILES]
+    day_g = day[:, None]                                                   # against [B, P]
 
     # ---- tiles ---------------------------------------------------------------------------------
     is_plant = t.kind == J.PLANT
@@ -64,9 +67,9 @@ def encode(state):
             t.watered_today.astype(jnp.float32)[..., None],
             (t.consecutive_unwatered / 2.0).astype(jnp.float32)[..., None],
             # Age drives every yield rule, so give it directly rather than making the net subtract.
-            jnp.where(is_plant, (day[None, None, None] - t.planted_day) / 30.0, 0.0)
+            jnp.where(is_plant, (day_t - t.planted_day) / 30.0, 0.0)
             .astype(jnp.float32)[..., None],
-            (t.fertilized_until_day >= day).astype(jnp.float32)[..., None],
+            (t.fertilized_until_day >= day_t).astype(jnp.float32)[..., None],
             t.fed_today.astype(jnp.float32)[..., None],
             t.cared_today.astype(jnp.float32)[..., None],
             t.fertilizer_available.astype(jnp.float32)[..., None],
@@ -119,8 +122,8 @@ def encode(state):
             (opp_money / MONEY_SCALE).astype(jnp.float32)[..., None],
             # The lead is the quantity the terminal reward actually turns on, so state it directly.
             ((farm.money - opp_money) / MONEY_SCALE).astype(jnp.float32)[..., None],
-            jnp.broadcast_to(day / 30.0, (b, 2))[..., None],
-            jnp.broadcast_to(hour / 24.0, (b, 2))[..., None],
+            jnp.broadcast_to((day / 30.0)[:, None], (b, 2))[..., None],
+            jnp.broadcast_to((hour / 24.0)[:, None], (b, 2))[..., None],
             jnp.broadcast_to(prices[:, None, :], (b, 2, J.N_PRODUCTS)),
             jnp.broadcast_to(inventory[:, None, :], (b, 2, J.N_PRODUCTS)),
             jnp.minimum(farm.seeds / 10.0, 5.0).astype(jnp.float32),

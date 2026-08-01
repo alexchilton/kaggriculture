@@ -59,7 +59,15 @@ EPISODE_TURNS = 719
 
 
 def staggered_states(batch, n_phases, seed=0):
-    """`n_phases` independent sim states, started at evenly spread points in the season.
+    """One state whose games start at evenly spread points in the season.
+
+    `jax_sim.State` now keeps `step_index` **per game**, so this is a single state with a phase
+    vector -- not, as it was, `n_phases` separate states glued together with `vmap`. That earlier
+    shape gave only `n_phases` distinct phases for the whole batch, so terminations still arrived in
+    bursts, just smaller ones; and it multiplied the compiled graph by the number of groups, which
+    is why compile time went from ninety seconds to over ten minutes. `n_phases` is kept as a knob
+    only so a run can deliberately coarsen the spread; the default of one phase per game is what
+    the fix is for.
 
     **This is the fix for the single worst property the first training run had.** `jax_sim.State`
     keeps `step_index` as one scalar for the whole batch, so every game in a state is in lockstep
@@ -79,13 +87,10 @@ def staggered_states(batch, n_phases, seed=0):
     valid state but not a typical one -- which is the one-off price of staggering. Every episode
     after that is a full season starting from a genuine reset.
     """
-    per_group = batch // n_phases
-    states = []
-    for k in range(n_phases):
-        phase = (k * (EPISODE_TURNS + 1)) // n_phases
-        s = J.reset(per_group, seed=seed + k)
-        states.append(s._replace(step_index=jnp.asarray(phase, dtype=J._I)))
-    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *states)
+    groups = max(1, min(n_phases, batch))
+    idx = np.arange(batch)
+    phase = ((idx % groups) * (EPISODE_TURNS + 1)) // groups
+    return J.reset(batch, seed=seed, phase=phase)
 
 
 def _pack(x):
@@ -132,12 +137,6 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     gae_lambda = jnp.asarray(gae_lambda, dtype=jnp.float32)
     per_group = batch // n_phases
 
-    # One vmapped call covers every phase group, so staggering costs no extra wall-clock: the
-    # groups differ only in their scalar `step_index`, which vmap maps over.
-    v_encode = jax.vmap(jax_obs.encode)
-    v_masks = jax.vmap(A.masks_for)
-    v_step = jax.vmap(J.step)
-
     @functools.partial(jax.jit, static_argnums=())
     def rollout(params, value_params, opp_params, use_opp, state, key):
         def one_turn(carry, _):
@@ -147,13 +146,13 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
             # actions against the wrong observation.
-            tiles, units, glob = v_encode(state)              # [K, b, P, ...]
-            obs = (_pack(tiles), _pack(units), _pack(glob))
+            tiles, units, glob = jax_obs.encode(state)         # [B, P, ...]
+            obs = (A._flat(tiles), A._flat(units), A._flat(glob))
             heads, _v_self = model.apply(params, *obs)
             # Values for the bootstrap come from `value_params`, which is either the live params
             # (default) or a slow EMA copy. Actions always come from the live policy.
             _h_t, value = model.apply(value_params, *obs)
-            masks = jax.tree_util.tree_map(_pack_flat, v_masks(state))
+            masks = A.masks_for(state)
             actions, logp, _ent = A.sample(sub, heads, masks)
 
             # **Opponent pool.** In pure self-play both seats share parameters, so a mutual draw is
@@ -167,51 +166,49 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
 
             # `use_opp` is per phase group. Seat 0 is always the live policy; seat 1 is the frozen
             # opponent wherever the flag is set, so those groups produce genuine cross-play.
-            seat = jnp.arange(2)[None, None, :]
-            take_opp = (use_opp[:, None, None] & (seat == 1))
-            take_opp = jnp.broadcast_to(take_opp, (n_phases, per_group, 2)).reshape(-1)
+            seat = jnp.arange(2)[None, :]
+            take_opp = (use_opp[:, None] & (seat == 1))
+            take_opp = jnp.broadcast_to(take_opp, (batch, 2)).reshape(-1)
             actions = jax.tree_util.tree_map(
                 lambda mine, theirs: jnp.where(
                     take_opp.reshape((-1,) + (1,) * (mine.ndim - 1)), theirs, mine),
                 actions, opp_actions)
 
-            # Back to [K, b*P, ...] for the simulator, which knows nothing about the phase axis.
-            # `to_sim_actions` expects the seat axis already folded in, matching `masks_for`.
-            grouped = jax.tree_util.tree_map(
-                lambda a: a.reshape(n_phases, per_group * 2, *a.shape[1:]), actions)
-            sim_actions = jax.vmap(A.to_sim_actions, in_axes=(0, None))(grouped, per_group)
-            nxt = v_step(state, sim_actions)
+            sim_actions = A.to_sim_actions(actions, batch)
+            nxt = J.step(state, sim_actions)
 
-            # `just_done` is [K]: each phase group crosses its own episode boundary on its own
-            # turn, which is the whole point of staggering. Paid on the transition, never on the
-            # level -- `step_index > LAST_STEP` stays true afterwards, so testing it directly would
-            # pay the terminal reward on every remaining turn of the rollout.
-            was_over = state.step_index > J.LAST_STEP                 # [K]
+            # `just_done` is [B]: every game crosses its own episode boundary on its own turn,
+            # which is the whole point. Paid on the transition, never on the level --
+            # `step_index > LAST_STEP` stays true afterwards, so testing it directly would pay the
+            # terminal reward on every remaining turn of the rollout.
+            was_over = state.step_index > J.LAST_STEP                 # [B]
             now_over = nxt.step_index > J.LAST_STEP
             just_done = now_over & ~was_over
 
-            money = nxt.farm.money                                    # [K, b, 2]
-            won = (money > money[..., ::-1]).astype(jnp.float32)
-            tie = (money == money[..., ::-1]).astype(jnp.float32)
+            money = nxt.farm.money                                    # [B, 2]
+            won = (money > money[:, ::-1]).astype(jnp.float32)
+            tie = (money == money[:, ::-1]).astype(jnp.float32)
             reward = jnp.where(
-                just_done[:, None, None], won + 0.5 * tie, 0.0).astype(jnp.float32)
+                just_done[:, None], won + 0.5 * tie, 0.0).astype(jnp.float32)
 
             # Restart inside the scan, per group. Resetting only in Python after the rollout lets
             # the simulator keep stepping past turn 719 into a season that does not exist, and
             # those invalid turns would still be trained on. The PRNG key carries across so a new
             # episode does not replay the old one's weed draws.
-            fresh = J.reset(per_group)
-            nxt = jax.tree_util.tree_map(
-                lambda new, old: jnp.where(
-                    just_done.reshape((-1,) + (1,) * (old.ndim - 1)), new, old),
-                jax.tree_util.tree_map(
-                    lambda x: jnp.broadcast_to(x, (n_phases, *x.shape)), fresh)._replace(
-                        key=nxt.key),
-                nxt,
+            # Only the per-game fields are selected. `key` and `unlock_day` are not per game --
+            # the PRNG key is a single [2] array for the whole state -- so a blanket tree_map over
+            # the State tries to broadcast a [B] mask against it and fails.
+            fresh = J.reset(batch)
+            pick = lambda new, old: jnp.where(                       # noqa: E731
+                just_done.reshape((-1,) + (1,) * (old.ndim - 1)), new, old)
+            nxt = nxt._replace(
+                step_index=pick(fresh.step_index, nxt.step_index),
+                tiles=jax.tree_util.tree_map(pick, fresh.tiles, nxt.tiles),
+                farm=jax.tree_util.tree_map(pick, fresh.farm, nxt.farm),
+                inventory=pick(fresh.inventory, nxt.inventory),
             )
 
-            done_flat = jnp.broadcast_to(
-                just_done[:, None, None], (n_phases, per_group, 2)).reshape(-1)
+            done_flat = jnp.broadcast_to(just_done[:, None], (batch, 2)).reshape(-1)
             out = dict(
                 logp=logp, value=value, reward=reward.reshape(-1),
                 done=done_flat, actions=actions, masks=masks, obs=obs,
@@ -226,8 +223,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             one_turn, (state, key), None, length=horizon)
 
         # Bootstrap from the value of the state we stopped in, across all phase groups.
-        t, u, g = v_encode(final_state)
-        _h, last_value = model.apply(value_params, _pack(t), _pack(u), _pack(g))
+        t, u, g = jax_obs.encode(final_state)
+        _h, last_value = model.apply(value_params, A._flat(t), A._flat(u), A._flat(g))
 
         def gae(carry, x):
             adv, next_value = carry
@@ -467,8 +464,8 @@ def main():
     if args.batch % args.n_phases:
         raise SystemExit(f"--batch {args.batch} must be divisible by --n-phases {args.n_phases}")
     state = staggered_states(args.batch, args.n_phases, seed=args.seed)
-    tiles, units, glob = jax.vmap(jax_obs.encode)(state)
-    params = model.init(sub, _pack(tiles), _pack(units), _pack(glob))
+    tiles, units, glob = jax_obs.encode(state)
+    params = model.init(sub, A._flat(tiles), A._flat(units), A._flat(glob))
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
     print(f"params: {n_params:,}")
 
@@ -538,9 +535,10 @@ def main():
         # group spends most of its time in self-play and some of it under cross-play, rather than
         # permanently splitting the batch into two populations that never meet.
         n_opp = int(round(args.opponent_frac * args.n_phases))
-        use_opp = np.zeros(args.n_phases, dtype=bool)
-        if n_opp:
-            use_opp[[(it * n_opp + j) % args.n_phases for j in range(n_opp)]] = True
+        use_opp = np.zeros(args.batch, dtype=bool)
+        n_opp_games = int(round(args.opponent_frac * args.batch))
+        if n_opp_games:
+            use_opp[[(it * n_opp_games + j) % args.batch for j in range(n_opp_games)]] = True
         opp_params = pool[it % len(pool)]
 
         state, key, traj, advantages, returns = rollout(

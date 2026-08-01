@@ -222,7 +222,7 @@ class Farm(NamedTuple):
 class State(NamedTuple):
     """A batch of B two-player games. A pytree, so it passes straight through `jit` and `scan`."""
 
-    step_index: jnp.ndarray       # scalar int32
+    step_index: jnp.ndarray       # [B] int32 -- per game, so episodes can be out of phase
     tiles: Tiles
     farm: Farm
     inventory: jnp.ndarray        # [B, N_PRODUCTS]
@@ -235,7 +235,7 @@ class State(NamedTuple):
 
     @property
     def day(self):
-        return self.step_index // TURNS_PER_DAY
+        return self.step_index // TURNS_PER_DAY          # [B]
 
 
 class Actions(NamedTuple):
@@ -326,8 +326,19 @@ def unlock_array(schedule, batch):
     return jnp.asarray(out)
 
 
-def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_PLAYERS):
-    """Initial state, identical to a freshly constructed `kagg.sim.game.Game`."""
+def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_PLAYERS,
+          phase=None):
+    """Initial state, identical to a freshly constructed `kagg.sim.game.Game`.
+
+    `phase` is an optional `[batch]` array of starting turn indices. **`step_index` is per game**,
+    not one scalar for the batch, so episodes can be out of phase with each other -- which is the
+    whole point. With a shared counter every game terminates on the same turn, so a terminal reward
+    arrives in one burst every ~11 updates and the critic spends the other ten regressing onto its
+    own predictions. Batch size cannot fix that: it makes the burst bigger, not more frequent.
+
+    Leaving `phase` as None starts every game at turn 0, which is the old behaviour exactly and is
+    what the parity harness relies on.
+    """
     shape = (batch, players, TILES)
     tiles = Tiles(
         kind=jnp.broadcast_to(jnp.where(INITIAL_LOCKED, LOCKED, EMPTY).astype(_I), shape),
@@ -364,7 +375,8 @@ def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_
         n_land=jnp.zeros((batch, players), dtype=_I),
     )
     return State(
-        step_index=jnp.asarray(0, dtype=_I),
+        step_index=(jnp.zeros((batch,), dtype=_I) if phase is None
+                    else jnp.asarray(phase, dtype=_I)),
         tiles=tiles,
         farm=farm,
         inventory=jnp.broadcast_to(jnp.asarray(M.I0, dtype=_I), (batch, N_PRODUCTS)),
@@ -420,6 +432,9 @@ def _scatter(arr, idx, value):
 
 
 def _apply_unit_actions(tiles, farm, actions, day):
+    # `day` arrives as `[B]` (per game) and everything gathered below is `[B, P]`, so give it the
+    # seat axis once here rather than at each of the dozen comparisons that follow.
+    day = day[:, None]
     """Every unit acts, one slot at a time, both players and the whole batch at once.
 
     The slot loop stays sequential because two of a player's units may stand on the same tile in
@@ -906,18 +921,27 @@ def _center_multiplier(day):
 
 
 def _drain(step, day, unlock_day):
-    """Units the town removes this step. Shops tick every 4 steps, the centre every 12."""
-    unlocked = (unlock_day <= day).astype(_I)
-    shops = jnp.where(step % W.SHOP_INTERVAL == 0, unlocked @ SHOP_PULL, 0)
+    """Units the town removes this step. Shops tick every 4 steps, the centre every 12.
+
+    `step` and `day` are `[B]` now, so every comparison against them needs a trailing axis to line
+    up with the `[B, N_PRODUCTS]` result.
+    """
+    unlocked = (unlock_day <= day[:, None]).astype(_I)
+    shops = jnp.where((step % W.SHOP_INTERVAL == 0)[:, None], unlocked @ SHOP_PULL, 0)
     centre = jnp.where(
-        step % W.CENTER_INTERVAL == 0, _center_multiplier(day) * CENTER_PULL, 0
+        (step % W.CENTER_INTERVAL == 0)[:, None],
+        _center_multiplier(day)[:, None] * CENTER_PULL[None, :], 0
     )
     return shops + centre
 
 
 def _decay_plants(tiles, step):
-    """A finished plant loses a unit every *other* step counted from the lifespan boundary."""
+    """A finished plant loses a unit every *other* step counted from the lifespan boundary.
+
+    `step` is `[B]`; tile fields are `[B, P, TILES]`, so it needs two trailing axes.
+    """
     mls = tiles.max_lifespan_step
+    step = step[:, None, None]
     due = (tiles.kind == PLANT) & (mls >= 0) & (step >= mls) & (((step - mls) % 2) == 0)
     units = jnp.where(due, tiles.yield_units - 1, tiles.yield_units)
 
@@ -931,7 +955,11 @@ def _decay_plants(tiles, step):
 
 
 def _daily_refresh_plants(tiles, current_day):
-    """The nightly transition: watering enforcement, then ongoing production, in that order."""
+    """The nightly transition: watering enforcement, then ongoing production, in that order.
+
+    `current_day` is `[B]`; every tile field is `[B, P, TILES]`, so it needs two trailing axes.
+    """
+    current_day = current_day[:, None, None]
     next_day = current_day + 1
     is_plant = tiles.kind == PLANT
     was_watered = (tiles.watered_today != 0) & is_plant
@@ -1019,6 +1047,7 @@ def _daily_refresh_animals(tiles, current_day):
     that both fed and produced, and a fresh one is banked only when the animal was cared for *and*
     fed.
     """
+    current_day = current_day[:, None, None]
     next_day = current_day + 1
     has_animal = tiles.animal != NO_ANIMAL
     fed = tiles.fed_today & has_animal
@@ -1073,6 +1102,12 @@ def _night(tiles, farm, key, day, weed_chance):
 # ---- the loop --------------------------------------------------------------------------------
 
 
+def _select_per_game(mask, a, b):
+    """Pick `a` where `mask[g]`, else `b`, for pytrees whose arrays lead with the game axis."""
+    return jax.tree_util.tree_map(
+        lambda x, y: jnp.where(mask.reshape((-1,) + (1,) * (x.ndim - 1)), x, y), a, b)
+
+
 @functools.partial(jax.jit, static_argnames=("weed_chance",))
 def step(state, actions, weed_chance=0.0):
     """Advance every game by one turn. The whole turn is one traced graph.
@@ -1082,7 +1117,7 @@ def step(state, actions, weed_chance=0.0):
     two shifts every sale price in the game.
     """
     actions = _canonical(actions)
-    day = state.step_index // TURNS_PER_DAY
+    day = state.step_index // TURNS_PER_DAY                # [B]
 
     tiles, farm = _apply_unit_actions(state.tiles, state.farm, actions, day)
 
@@ -1093,13 +1128,16 @@ def step(state, actions, weed_chance=0.0):
     inventory = inventory - _drain(state.step_index, day, state.unlock_day)
     tiles = _decay_plants(tiles, state.step_index)
 
-    is_night = ((state.step_index + 1) % TURNS_PER_DAY) == 0
-    tiles, farm, key = lax.cond(
-        is_night,
-        lambda t, f, k: _night(t, f, k, day, weed_chance),
-        lambda t, f, k: (t, f, k),
-        tiles, farm, state.key,
-    )
+    # Night is now per game, so it cannot be a `lax.cond` on a scalar: different games cross the
+    # day boundary on different turns. The nightly transition is computed for every game and
+    # selected where it applies. That costs the night path on every step rather than one turn in
+    # 24 -- the price of letting episodes run out of phase, and cheaper than the alternative of
+    # vmapping several whole simulator states, which multiplies the compiled graph instead.
+    is_night = (((state.step_index + 1) % TURNS_PER_DAY) == 0)          # [B]
+    n_tiles, n_farm, n_key = _night(tiles, farm, state.key, day, weed_chance)
+    tiles = _select_per_game(is_night, n_tiles, tiles)
+    farm = _select_per_game(is_night, n_farm, farm)
+    key = n_key
 
     return state._replace(
         step_index=state.step_index + 1,
@@ -1168,7 +1206,7 @@ class JaxGame:
 
     @property
     def day(self):
-        return self.step_index // TURNS_PER_DAY
+        return self.step_index // TURNS_PER_DAY          # [B]
 
     @property
     def inventory(self):
