@@ -420,19 +420,55 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
 
         # KL to the behaviour-cloned prior. Computed only when a prior is supplied, so a run without
         # one costs nothing and behaves exactly as before.
+        # **The KL is taken over the *conditioned* heads, not the raw ones.**
+        #
+        # `sell` and `buy_product` carry a trade-mode axis that the masks do not, so the raw heads
+        # are `[N, N_PRODUCTS, N_TRADE_MODES, K]` against a `[N, N_PRODUCTS, K]` mask and the
+        # broadcast simply fails. More importantly, the distribution the policy actually acted from
+        # is the slice its sampled mode selected -- a KL against a marginal over modes would
+        # regularise something the policy never sampled from.
+        if kl_coef:
+            cond = A.condition_on_trade(heads, batch_data["actions"]["trade"])
         if kl_coef and hand_noop_p:
             kl_prior = kl_to_prior(
-                heads, hand_prior_heads(heads, batch_data["masks"], hand_noop_p),
+                cond, hand_prior_heads(cond, batch_data["masks"], hand_noop_p),
                 batch_data["masks"])
         elif prior_params is not None and kl_coef:
             prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
-            kl_prior = kl_to_prior(heads, jax.lax.stop_gradient(prior_heads),
-                                   batch_data["masks"])
+            prior_cond = A.condition_on_trade(
+                jax.lax.stop_gradient(prior_heads), batch_data["actions"]["trade"])
+            kl_prior = kl_to_prior(cond, prior_cond, batch_data["masks"])
         else:
             kl_prior = jnp.asarray(0.0, dtype=jnp.float32)
 
-        loss = (policy_loss + vf_coef * value_loss + ent_coef * entropy_loss
-                + seat_coef * seat_loss + kl_coef * kl_prior)
+        # **The KL substitutes for entropy on the head that has a prior, and shares its
+        # coefficient. It is not a separate term with a separate dial.**
+        #
+        # Read off Ender's actual source rather than his write-up, which does not make this clear:
+        #
+        #     halt_reg = new_halt_entropy
+        #     if has_halt_prior:
+        #         halt_reg = -halt_prior_kl                     # KL *replaces* entropy, this head
+        #     total_regularizer = halt_reg + ... + target_used * new_target_entropy
+        #     loss_ent = -entropy_coef * entropy                # one coefficient for all of it
+        #
+        # Heads without a prior keep plain entropy. There is no `kl_coef` anywhere in his code.
+        #
+        # Getting this wrong is why two runs here learned nothing: a separate `--kl-coef 0.01`
+        # alongside `--ent-coef 0` -- which this script's own help text recommended -- left the
+        # objective with a KL contribution of 0.00025 and no entropy at all, so effectively no
+        # regulariser. Under his structure, zeroing the entropy coefficient zeroes the KL too.
+        # The KL term *is* the whole regulariser when a prior is set, and adding entropy alongside
+        # would double-count it: `hand_prior_heads` returns a uniform prior for every head it does
+        # not shape, and `KL(p || uniform) = -H(p) + const`, so minimising that KL already maximises
+        # entropy on exactly the heads Ender leaves on plain entropy. Only `op` differs, and there
+        # the KL pulls toward `noop_p` instead of toward uniform -- which is the point.
+        if kl_coef and (hand_noop_p or prior_params is not None):
+            regulariser = ent_coef * kl_prior
+        else:
+            regulariser = ent_coef * entropy_loss
+
+        loss = policy_loss + vf_coef * value_loss + regulariser + seat_coef * seat_loss
         approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
         clip_frac = ((jnp.abs(ratio - 1.0) > clip).astype(jnp.float32) * w).sum() / w_sum
         return loss, dict(policy_loss=policy_loss, value_loss=value_loss, seat_loss=seat_loss,
@@ -577,9 +613,10 @@ def main():
                          "two numbers in a config. A prior containing no strategy cannot cap the "
                          "ceiling and cannot punish exploration the way a collapsed clone can. "
                          "Takes precedence over --kl-prior when both are given. 0 disables.")
-    ap.add_argument("--kl-coef", type=float, default=0.01,
-                    help="weight on KL(policy || prior). Ender reduced his later in training for "
-                         "a further significant gain; 0 disables.")
+    ap.add_argument("--kl-coef", type=float, default=1.0,
+                    help="0 disables the KL entirely; any non-zero value switches the regulariser "
+                         "from entropy to KL-against-the-prior. The *strength* comes from "
+                         "--ent-coef, which they share, matching Ender's structure.")
     ap.add_argument("--kl-anneal", type=int, default=0,
                     help="updates over which --kl-coef decays linearly to zero. 0 keeps it flat.")
     ap.add_argument("--idle-frac", type=float, default=0.25,
