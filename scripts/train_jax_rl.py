@@ -52,8 +52,13 @@ import optax
 
 from kagg.rl import jax_act as A, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
+from kagg.sim import ops as O
 
 RUN_DIR = pathlib.Path("data/jax_rl_runs")
+
+# Short names for the op census printed each update, in `kagg.sim.ops` code order.
+O_NAMES = ("noop", "N", "S", "E", "W", "water", "harv", "plant", "dig", "pick", "drop",
+           "place", "feed", "care", "fert+", "fert!", "coop", "pasture")
 TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
@@ -717,6 +722,30 @@ def main():
         e_var = (((ret_d - val_d) - ((ret_d - val_d) * w).sum() / n) ** 2 * w).sum() / n
         ev_sig_d = jnp.where(r_var > 1e-8, 1.0 - e_var / jnp.maximum(r_var, 1e-8), jnp.nan)
 
+        # **The spread of returns on rows that actually resolved.**
+        #
+        # `ret_std` is taken over every row of the rollout, and only ~0.14% of rows carry a reward
+        # -- one turn in 719. For the rest GAE's `return = advantage + value` collapses to the value
+        # bootstrap, so `ret_mean` tracks `value_mean` almost exactly and `ret_std` describes the
+        # *critic's* output spread, not the distribution of outcomes. A small `ret_std` was read
+        # here as "every game is ending in a draw"; it supports no such conclusion, and the two
+        # possibilities -- genuine draws, or a critic that has collapsed onto one number -- are
+        # indistinguishable from it. `r_var` above is the statistic that separates them and it was
+        # computed and thrown away.
+        terminal_ret_std = jnp.sqrt(jnp.maximum(r_var, 0.0))
+
+        # **What the policy is actually doing, which no scalar has ever shown.**
+        #
+        # Every metric in this log is an aggregate: returns, entropy, a win rate. None of them can
+        # distinguish a policy that farms badly from one that stands still, and both look identical
+        # in a loss curve. The op census is the diagnostic that found two structural bugs in the
+        # heuristic agents in a single run today, and it costs one one-hot sum here. Counted over
+        # the live policy's own rows only, so the idle opponent's NOOPs are not mistaken for ours.
+        live_units = batch_data_full["trainable"][:, None]
+        op_rows = batch_data_full["actions"]["op"]
+        op_counts = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
+                     * live_units[..., None]).sum(axis=(0, 1))
+
         n_chunks = max(1, flat_n // args.minibatch_size)
         key, ekey = jax.random.split(key)
         params, opt_state, metrics = run_epochs(
@@ -732,6 +761,7 @@ def main():
             "value_mean": flatten(traj["value"]).mean(),
             "rewarded_frac": rewarded_frac, "ev": ev_d, "ev_signal": ev_sig_d,
             "ret_mean": ret_d.mean(), "ret_std": ret_d.std(),
+            "terminal_ret_std": terminal_ret_std, "op_counts": op_counts,
             **{k: v for k, v in metrics.items()},
         })
         wins += float(stats["reward_sum"])
@@ -750,6 +780,8 @@ def main():
             "seat_sum": float(stats["seat_sum"]),
             "seat_sum_absdev": float(stats["seat_sum_absdev"]),
             "value_mean": float(stats["value_mean"]),
+            "terminal_ret_std": float(stats["terminal_ret_std"]),
+            "op_counts": [float(x) for x in jax.device_get(stats["op_counts"])],
             "trainable_frac": float(jax.device_get(traj["trainable"].mean())),
             "pool": len(pool),
             "win_rate": float(wins / games) if games else float("nan"),
@@ -769,13 +801,22 @@ def main():
         # `V` and `sum` describe whichever net produced the rollout values. Say which, so that an
         # EMA copy carrying half the random initialisation is never again read as the live critic.
         vnet = "t" if args.target_ema else ""
+        # **The op mix, because no scalar in this log can tell farming badly from standing still.**
+        # `tstd` is the return spread on rows that actually resolved -- the statistic that separates
+        # "every game drew" from "the critic collapsed onto one number", which `ret_std` cannot.
+        counts = row["op_counts"]
+        total_ops = max(1.0, sum(counts))
+        top = sorted(range(len(counts)), key=lambda i: -counts[i])[:5]
+        mix = " ".join(f"{O_NAMES[i]}:{counts[i] / total_ops:.0%}" for i in top if counts[i])
         print(
-            f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f}  "
+            f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f} "
+            f"tstd {row['terminal_ret_std']:.3f}  "
             f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f}  "
             f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
             f"wr {row['win_rate']:.3f}/{int(games)}x  term {int(stats['n_terminal'])}  "
             f"{vnet}V {row['value_mean']:.3f} {vnet}sum {row['seat_sum']:.3f} "
-            f"seatL {row['seat_loss']:.4f}  {row['sps']:,.0f} turns/s",
+            f"seatL {row['seat_loss']:.4f}  {row['sps']:,.0f} t/s\n"
+            f"         ops {mix}",
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
