@@ -1125,3 +1125,97 @@ Two diagnosed bugs, one fixed and one not:
 
 Do not wire it in as an opponent until it clears `jax_heuristic`'s $23,783, or it makes the ladder
 worse while appearing to make it better.
+
+---
+
+## NEXT JOB, fully specified: BC from the winners' replays
+
+Everything below is verified tonight. A fresh session should be able to build this without
+rediscovering any of it.
+
+### Why this and not DAgger against a jax teacher
+
+`scripts/bc_dagger.py` works and is tested, but its only teacher that demonstrates FEED is
+`jax_rancher` at **$12,078**. The replays on disk contain seats banking **$112k-$132k** -- a 10x
+better teacher. Use the winners.
+
+**The covariate-shift objection is weaker than it looks, and this is the reframing that matters.**
+BC was parked because it was gated *as a standalone agent*: `P(noop)` at spawn 0.9920 against a 0.98
+bar, "the checkpoint banks $0". For a **warm start** that is the wrong bar. The checkpoint does not
+have to play well; it has to move the weights into a region where PPO's own exploration reaches the
+animal economy. PPO then generates on-policy data immediately, which is itself the correction a fixed
+replay set cannot provide. Keep `--teacher rancher` DAgger as the fallback if the shift does bite.
+
+### The path is proven, not assumed
+
+Replay observations contain `farms`, `market`, `step` **and** `private`, which is exactly what
+`kagg/rl/adapter.py:93 state_from_obs(obs, privates)` needs. Verified on `data/89113699.json` at
+turns 0, 50, 240, 500 and 700: **5/5 rebuilt**, encoded at the current widths, no NaNs, money tracking
+the real game ($3,000 -> $120,190).
+
+```python
+st = d["steps"][turn]
+obs = st[0]["observation"]
+privs = [st[0]["observation"].get("private") or {},
+         st[1]["observation"].get("private") or {}]
+state = adapter.state_from_obs(obs, privs)      # batch-of-one jax_sim.State
+tiles, units, glob = jax_obs.encode(state)      # 27 / 28 / 59
+```
+
+### Action formats, measured
+
+- Unit actions live in `action["farmer"]` (one list) and `action["hands"]` (a list of lists).
+- **`PLANT` carries NO crop argument** -- the crop comes from seeds held. This cost a whole design:
+  an early parser required the argument, found none, and concluded the top seats never plant. They
+  plant 96 times a season, day 0 to day 26.
+- Other unit actions look like `["PICKUP", "WHEAT", 4]`, `["PLACE", "COW"]`, `["FEED"]`, `["CARE"]`.
+  The op is **element 0** -- do not split the list on whitespace, which counts "WHEAT" as an op and
+  is what produced a bogus 20% PICKUP reading.
+- Market orders in `action["market"]`: `["SELL", "WOOL", 3]`, `["BUY_PRODUCT", "WHEAT", 9]`,
+  `["BUY_SEED", "MELON", 12]`, `["BUY_ANIMAL", "SHEEP", 1]`, `["HIRE"]`, `["BUY_LAND"]`.
+
+### Three traps that cost real time tonight -- do not repeat
+
+1. **Score only labels the mask calls legal.** A masked-illegal option is `NEG_INF = -1e9`, and the
+   teacher names an item and a quantity on *every* unit slot including ones where nothing is legal.
+   The first version of `bc_dagger.py` reported a loss of **5.3e7 that would not move** for exactly
+   this reason. `legal = take_along_axis(mask, label[..., None], -1)`, then zero those rows.
+2. **Weight the unit heads by live units.** `MAX_UNITS` is 24 against a crew of a few, so scoring
+   every slot makes ~85% of the loss a constant. This project has now made that mistake three times.
+3. **Quantities are buckets, not raw numbers.** Project onto `P.SELL_BUCKETS` [0,1,3,10,30],
+   `P.BUY_BUCKETS` [0,1,2,5], `P.UNIT_QTY_BUCKETS` [1,2,5,10] by *nearest*, not floor -- a teacher
+   selling 7 is better described by 10 than by 3. `bc_dagger._bucket_index` already does this.
+
+Also: `trade` has no counterpart in a replay (agents name quantities, not a mode). Leave it at 0 and
+exclude it from the loss, as `bc_dagger.SCORED_HEADS` does.
+
+### Hard ordering constraint
+
+The observation width is part of the checkpoint. Current widths are **27 / 28 / 59** and
+`--init` refuses a mismatch with a message naming both. Train BC against the observation the PPO run
+will use, or the run is wasted. The RL run live now (`ppo-20260801-213754`) already uses these.
+
+### Which seats to clone
+
+312 seats across 163 replays in `data/*.json`. The top 25 span $112,754-$132,245. Their playbook:
+
+```
+animals   median 11 -- SHEEP 55%, COW 43%, GOOSE 1.8%   (pastures; BUILD_COOP correlates +0.022)
+wheat     41 seed units per seat AND 295 BUY_PRODUCT orders -- grown AND bought
+crops     MELON 25, CARROT 22, STRAWBERRY 21 seed units
+crew      median 12, peak 13, re-hired nightly
+land      2 quadrants, first at median turn 242 = day 10
+sells     WHEAT 36.8%, FERTILIZER 23.1%, MILK 19.7%, WOOL 15.5%, crops 4.9%
+```
+
+Filter by `rewards[seat]` and clone the top decile; cloning a $3.5k seat teaches the wrong thing.
+
+### Then
+
+```bash
+.venv/bin/python -u scripts/bc_replay.py --top 25 2>&1 | tee data/logs/bc_replay.log
+kagg-train <same flags> --init data/bc_runs/<stamp>/latest.pkl
+```
+
+Success is not "the BC checkpoint plays well". It is **FEED leaving zero in the PPO run**, and
+`bank med` leaving $0.
