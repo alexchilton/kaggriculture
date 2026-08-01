@@ -435,3 +435,25 @@ def test_an_animals_days_to_next_yield_matches_the_simulator():
                         step_index=jnp.full_like(s.step_index, d * J.TURNS_PER_DAY))
         feats = np.asarray(jax_obs.encode(st)[0])[0, 0, 0]
         assert np.isclose(feats, 1.0).any(), f"day {d} produces but no feature reads 1.0"
+
+
+def test_the_declared_feature_widths_match_the_arrays():
+    """`TILE_FEATURES`, `UNIT_FEATURES` and `GLOBAL_FEATURES` are documentation unless checked.
+
+    All three had gone stale: UNIT_FEATURES said 16 against an actual 28, unchanged since the
+    nearest-job geometry landed a session earlier. Nothing broke -- flax infers real shapes at trace
+    time and the only other reader is a printed memory estimate -- but a constant that lies about the
+    observation is exactly the kind of thing a later change trusts.
+    """
+    jax = pytest.importorskip("jax")
+    from kagg.rl import jax_obs
+    from kagg.sim import jax_sim as J
+
+    tiles, units, glob = jax_obs.encode(J.reset(2))
+
+    assert tiles.shape[-1] == jax_obs.TILE_FEATURES, (
+        f"TILE_FEATURES says {jax_obs.TILE_FEATURES}, arrays are {tiles.shape[-1]}")
+    assert units.shape[-1] == jax_obs.UNIT_FEATURES, (
+        f"UNIT_FEATURES says {jax_obs.UNIT_FEATURES}, arrays are {units.shape[-1]}")
+    assert glob.shape[-1] == jax_obs.GLOBAL_FEATURES, (
+        f"GLOBAL_FEATURES says {jax_obs.GLOBAL_FEATURES}, arrays are {glob.shape[-1]}")

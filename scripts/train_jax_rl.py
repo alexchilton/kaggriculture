@@ -549,9 +549,21 @@ def hand_prior_heads(heads, masks, noop_p, spend_p=0.0):
             is_none = jnp.arange(logits.shape[-1]) == 0
             out[k] = jnp.where(is_none, jnp.log(1.0 - spend_p), others)
             continue
-        if k != "op":
+        if k != "op" or noop_p <= 0.0:
             # Uniform over legal options: KL against a uniform prior is just negative entropy, so
             # these heads keep exactly the behaviour the entropy bonus used to give them.
+            #
+            # **`noop_p <= 0.0` is load-bearing and its absence NaN'd a run.** The caller's guard was
+            # widened from `if hand_noop_p:` to `if (hand_noop_p or spend_p):` so that
+            # `--spend-prior` could work on its own -- which let `noop_p = 0.0` reach the `op` branch
+            # below, where `jnp.log(noop_p)` is `-inf`. The KL then went NaN and took the whole run
+            # with it: ret nan, V nan, ent 0.0, every spend rate 0.000 and the bank frozen at
+            # exactly $3,000, inside ten updates.
+            #
+            # It survived its smoke test because that run passed `--hand-prior 0.3` and the deploy
+            # did not, so the two differed in precisely the argument that mattered. Two updates was
+            # also too short: the failure needed ~50. A prior touching five heads deserved a longer
+            # test than a decode change.
             out[k] = jnp.zeros_like(logits)
             continue
         m = masks[k]
@@ -1071,6 +1083,7 @@ def main():
     # Cumulative, per opponent type, in the same units as `wins`/`games` above.
     opp_wins = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
     opp_games = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
+    opp_draws = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
     t_start = time.time()
 
     # Loud, because a silent exit here is exactly what could not be diagnosed: the process wrote
@@ -1178,6 +1191,19 @@ def main():
             _rows = traj["trainable"] & traj[_flag] & traj["done"]
             by_opp[f"done_{_name}"] = _rows.sum()
             by_opp[f"rew_{_name}"] = jnp.where(_rows, traj["reward"], 0.0).sum()
+            # **Draws counted separately, because a mean of 0.5 has two very different causes.**
+            #
+            # In symmetric self-play one seat wins and one loses, so the mean is 0.5 by construction
+            # at any skill -- that is arithmetic, not a plateau, and it is true of AlphaZero too.
+            # What separates a healthy mirror from a dead one is variance: fifty wins and fifty
+            # losses gives mean 0.5 with real gradient, a hundred draws gives mean 0.5 with none.
+            #
+            # Right now it is the second: both seats bank $0 and `money == money` is exact, so every
+            # mirror game is a guaranteed tie. `wr_pool` alone cannot tell those apart, which is the
+            # same shape as every other metric in this file that had to be fixed -- correct on its
+            # own terms and unable to answer the question being asked of it.
+            by_opp[f"draw_{_name}"] = jnp.where(
+                _rows, (traj["reward"] == 0.5).astype(jnp.float32), 0.0).sum()
 
         # Terminal rows carry return == reward, so their spread should be ~0.25 and `ev_signal`
         # should always be computable. It reported n/a on half the updates, so count them.
@@ -1392,6 +1418,7 @@ def main():
         for _name in opp_wins:
             opp_wins[_name] += float(stats[f"rew_{_name}"])
             opp_games[_name] += float(stats[f"done_{_name}"])
+            opp_draws[_name] += float(stats[f"draw_{_name}"])
 
         # **Record how this opponent did, or the priority weights never change.**
         #
@@ -1451,6 +1478,8 @@ def main():
             **{f"wr_{k}": (float(opp_wins[k] / opp_games[k]) if opp_games[k] else float("nan"))
                for k in opp_wins},
             **{f"games_{k}": int(opp_games[k]) for k in opp_games},
+            **{f"draws_{k}": (float(opp_draws[k] / opp_games[k]) if opp_games[k] else float("nan"))
+               for k in opp_draws},
             # **Turns produced by *this process*, over the time this process has been running.**
             # `(it + 1)` counts from update 0, so on a resume it credited every pre-resume turn
             # against post-resume wall-clock and printed 13,082 t/s on a card doing about 1,100.
@@ -1507,7 +1536,7 @@ def main():
             f"seatL {row['seat_loss']:.4f}  klP {row['kl_prior']:.3f}  "
             f"{row['sps']:,.0f} t/s\n"
             f"         vs " + "  ".join(
-                f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x"
+                f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x/d{row[f'draws_{k}']:.0%}"
                 if row[f"games_{k}"] else f"{k}: n/a"
                 for k in ("idle", "trade", "farm", "pool")) + "\n"
             f"         ops {mix}\n"

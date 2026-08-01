@@ -30,9 +30,15 @@ _YS = jnp.arange(J.BOARD * J.BOARD) // J.BOARD
 N_CROPS = J.N_CROPS
 N_ANIMAL_KINDS = len(J.ANIMAL_STRUCTURE)
 
-TILE_FEATURES = N_KINDS + N_CROPS + N_ANIMAL_KINDS + 11      # 25
-UNIT_FEATURES = 4 + J.N_ITEMS                                # 16
-GLOBAL_FEATURES = 3 + 2 + J.N_PRODUCTS * 2 + N_CROPS + J.N_ITEMS + 3 + 14   # 57
+# **These three are asserted against the real arrays by
+# `tests/test_train_metrics.py::test_the_declared_feature_widths_match_the_arrays`.** All three had
+# gone stale -- UNIT_FEATURES said 16 against an actual 28, unchanged since the nearest-job geometry
+# landed, and the handoff even records "Unit features 16 -> 28". Nothing broke, because flax infers
+# real shapes at trace time and the only other reader is a printed memory estimate, but a constant
+# that lies is the kind of thing that gets trusted later.
+TILE_FEATURES = N_KINDS + N_CROPS + N_ANIMAL_KINDS + 13      # 27
+UNIT_FEATURES = 4 + J.N_ITEMS + 4 * 3                        # 28
+GLOBAL_FEATURES = 3 + 2 + J.N_PRODUCTS * 2 + N_CROPS + J.N_ITEMS + 3 + 2 + 14   # 59
 
 # Fixed scales. Chosen from measured ranges, and frozen so checkpoints stay comparable.
 MONEY_SCALE = 50_000.0

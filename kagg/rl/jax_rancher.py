@@ -67,8 +67,20 @@ TARGET_HANDS = 12
 # six against a shed of twelve leaves most of them empty-handed -- and an empty-handed unit retries
 # next turn, which is what drove PICKUP to 38-52% of all actions. Feed is one wheat per animal per
 # day, so hold a couple of days of it and have each unit carry a small share.
+# **Carry a week of feed, not a day of it.** Sizing the shared claim was necessary and not
+# sufficient: with the plots deliberately placed next to the shed, a unit carrying two wheat runs
+# pickup -> step -> feed -> step back -> pickup, so one action in four is a PICKUP *by construction*,
+# and no amount of contention-fixing changes that arithmetic. The measured winners run PICKUP at 2.3%
+# against FEED 5.0%, so they are not making a shed trip per feed either.
+# Measured, in one sitting, all with the claim guard in place:
+#   CARRY_WHEAT 2, WHEAT_PER_ANIMAL 4  -> $12,078, PICKUP 37.3%, FEED 3.36%, NOOP 44.5%
+#   CARRY_WHEAT 10, WHEAT_PER_ANIMAL 6 -> $ 8,691, PICKUP 23.1%, FEED 4.70%, NOOP 49.5%
+# The bigger carry buys the op profile the winners have and loses money doing it: NOOP rises to
+# half of all actions, so the units are idle rather than efficient. Kept at the money-best setting,
+# because a teacher is judged on what it banks. The op profile is a diagnostic, not the objective --
+# which is worth remembering, since chasing it is what produced the worse agent.
 WHEAT_PER_ANIMAL = 4
-CARRY_WHEAT = 2               # wheat a unit takes from the shed before setting out, in one action
+CARRY_WHEAT = 2
 CARRY_BEFORE_DROP = 6
 # Sell on sight. Produce waiting for a batch of three is produce risking the cap, and the glut curves
 # punish dumping far less than the dump destroys.
@@ -185,14 +197,34 @@ def actions(state):
     want_pasture = (n_pasture + n_animals) < TARGET_ANIMALS
     commit(here_build & want_pasture[..., None], O.BUILD_PASTURE)
 
+    # **Only as many units request wheat as the shed can actually supply.**
+    #
+    # `jax_sim` allocates a concurrent PICKUP in unit order and depletes as it goes: six wheat across
+    # four units each asking five gives [5, 1, 0, 0]. The last two get nothing, stand on the shed
+    # with `held_wheat == 0`, and re-emit PICKUP next turn -- forever. That is the whole of the 37-52%
+    # PICKUP rate against a measured winner target of 2.3%, and tuning the wheat buffer only moved it
+    # around because the contention is the mechanism, not the supply.
+    #
+    # So size the claim: rank the units and let only the first `shed_wheat // CARRY_WHEAT` ask. The
+    # rest fall through to the routing below and go do a job instead of queueing. This is
+    # `_nth_nearest`'s trick -- a rank each, no shared state -- applied to a depletable pool rather
+    # than to a set of tiles.
+    rank_u = jnp.arange(J.MAX_UNITS)[None, None, :]
+    wheat_slots = (shed_wheat // jnp.maximum(CARRY_WHEAT, 1))[..., None]
+    may_take_wheat = rank_u < wheat_slots
+    animal_slots = shed_animal[..., None]
+    may_take_animal = rank_u < animal_slots
+
     # At the shed: drop produce, then take an animal to house, then top up wheat.
     commit(on_shed & (carrying - held_wheat >= CARRY_BEFORE_DROP), O.DROP)
-    commit(on_shed & (shed_cow[..., None] > 0) & (held_animal == 0), O.PICKUP, COW_ITEM)
-    commit(on_shed & (shed_sheep[..., None] > 0) & (held_animal == 0), O.PICKUP, SHEEP_ITEM)
+    commit(on_shed & may_take_animal & (shed_cow[..., None] > 0) & (held_animal == 0),
+           O.PICKUP, COW_ITEM)
+    commit(on_shed & may_take_animal & (shed_sheep[..., None] > 0) & (held_animal == 0),
+           O.PICKUP, SHEEP_ITEM)
     # **One pickup, not one per unit of wheat.** `unit_qty` is per action, so taking a day's feed in
     # a single PICKUP is what stops units standing on the shed re-picking every turn -- the first
     # version emitted PICKUP on 52% of all unit actions against a measured winner target of 2.3%.
-    commit(on_shed & (shed_wheat[..., None] > 0) & (held_wheat == 0), O.PICKUP, O.WHEAT_ITEM)
+    commit(on_shed & may_take_wheat & (held_wheat == 0), O.PICKUP, O.WHEAT_ITEM)
 
     # ---- routing ----------------------------------------------------------------------------
     rank = jnp.arange(J.MAX_UNITS)
@@ -212,10 +244,10 @@ def actions(state):
     commit((held_animal > 0) & (idx >= 0), step)
 
     # Out of wheat with animals to feed, or produce to bank: go to the shed.
-    commit((held_wheat == 0) & (shed_wheat[..., None] > 0)
+    commit((held_wheat == 0) & may_take_wheat
            & (needs_feed.sum(axis=-1)[..., None] > 0), to_shed)
     commit(carrying - held_wheat >= CARRY_BEFORE_DROP, to_shed)
-    commit((held_animal == 0) & (shed_animal[..., None] > 0), to_shed)
+    commit((held_animal == 0) & may_take_animal, to_shed)
 
     # Then the jobs, hungriest first.
     for candidate in (needs_feed, animal_ripe, needs_care, has_fert):
