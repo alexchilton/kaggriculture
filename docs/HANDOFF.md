@@ -814,3 +814,54 @@ is essentially no completed trajectory in the data for the critic to learn from.
 from activity and the hire collapse is self-reinforcing, so more hours will tighten a dead end
 rather than escape it. The geometry feature is that change; run the ~19-update owned-unit census
 again and see whether water and harvest move at all before committing hours.
+
+### Start here, in this order
+
+1. **Restart the training run** with the command above. The one on the box predates the last two
+   fixes and its numbers mean nothing.
+2. **Run the falsification test** before trusting the geometry feature: does the action distribution
+   shift toward WATER when a unit stands adjacent to a dry tile versus far from one?
+3. **Read the owned-unit census after ~19 updates.** The question is whether `water` moves toward
+   `plant` and `harv` leaves ~0.02%, on **full-season rows only** -- early-truncated rows cannot
+   legally harvest if the limit falls under the crop's `first_yield_day`, and mixing them makes the
+   rate part policy and part arithmetic.
+4. If it has not moved, the conclusion is the one that has been circling all day: terminal-only
+   reward cannot teach a maintenance behaviour whose payoff is ten days out, and the bootstrap has
+   to come from demonstration. The best available teacher is now `kagg/rl/jax_heuristic.py`, which
+   runs in-sim and can generate unlimited on-distribution trajectories -- a far better source than
+   the 156 replays the parked BC track used.
+
+### Where the points actually are
+
+**The heuristic track produced the only ladder movement today: 712 Elo, +174.** It is also the
+track that was nearly dropped on the argument that Ender proved RL sufficient without imitation.
+
+Three measured, unexploited opportunities, in order of size:
+
+1. **Optimal execution.** `market_price` is a pure deterministic function and `_process_market`
+   re-quotes after *every unit*, so selling is a price-impact problem -- Almgren-Chriss, not
+   Black-Scholes, and easier than either because there is no volatility term. Measured cost of
+   dumping rather than spreading: melon $26,552 against $56,250, so **~$30k of `contrarian`'s $51k
+   total is lost to execution alone**. Largest single number on the board.
+2. **`converter`'s livestock half is still broken** -- 562 PICKUP against 197 FEED, animals
+   accumulating unplaced in the shed, 36% of unit actions PASS while paying for 17 hands. v8 scored
+   712 *with* that broken. The ES has an obvious next run once it is fixed.
+3. **FERTILIZE, DIG and BUILD_COOP are emitted by no agent we have.** Fertiliser does not raise
+   melon's ceiling but reaches it in three watered days instead of five (`tests/test_fertilizer.py`),
+   and geese are the one animal whose product cannot be crashed -- `EGG`'s glut curve is `log` and
+   never floors.
+
+### Two rules this session paid for
+
+- **Any rate computed over `MAX_UNITS` is wrong.** The op census counted all 24 unit slots against a
+  crew of about three, so "95% NOOP" was ~88% padding and misdirected most of a day. The same
+  mistake had been found and fixed in the BC loss hours earlier and not carried across. It was in
+  the diagnostic only -- `unit_op_mask` already zeroes those slots' gradient -- but a wrong reading
+  drives real decisions.
+- **Read the author's source, not the write-up.** One hour with `github.com/sinking-point/ender`
+  found four things his write-up does not say: no separate `kl_coef` (the KL substitutes for entropy
+  and shares its coefficient, so `--ent-coef 0` silently disabled both), lr 3e-5 not 3e-4,
+  win-rate-weighted league sampling, and `--earlygame-env-turn-limit`. This is now a rule in
+  `CLAUDE.md`: judge a technique against the problem its author built it for, and never hand a
+  reviewer the narrow framing -- both wrong conclusions from reviews this session came from the
+  framing given to them, not the reasoning inside them.
