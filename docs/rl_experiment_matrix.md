@@ -22,16 +22,37 @@ Everything here shares one mechanism -- `--kl-prior` / `--kl-coef` / `--kl-annea
 
 ## The failure every row is trying to beat
 
-Per-turn PPO from random init reaches **95% NOOP within four updates** and never improves on its
-initialisation.
-It is rational, not broken: terminal reward pays 0.5 for a draw and 0 for acting incompetently, so a
-policy that has not discovered farming is correct to stand still.
-`explained_variance` sat at 0.08 against a committed 0.5 kill criterion.
+> **CORRECTION, same day.** The "95% NOOP" this whole section was written around was mostly a
+> measurement artifact. The op census counted all 24 unit slots, and a crew is about **three**, so
+> roughly 88% of that figure was slots the farm does not own -- NOOP by construction. Counting only
+> owned slots, real noop is **17-18%** and the policy acts on the great majority of its units.
+>
+> The bug was in the *diagnostic only*, never in the loss: `unit_op_mask` already forces dead slots
+> to a point mass on NOOP, so they contributed exactly zero gradient. Training was never corrupted.
+> The reading was, and the reading drove most of a day's decisions.
+>
+> **The real failure, measured cleanly on full-season rows:** `plant 2.4%`, `water 0.8%`,
+> `harv 0.00%`. It plants roughly three times more often than it waters, and an unwatered plant dies
+> in two days -- so it plants crops and abandons them. A competent agent would water perhaps ten
+> times per plant, so the ratio is inverted by about thirty-fold. It is not paralysed; it is
+> incompetent at maintenance, which is a different and more tractable problem.
+>
+> Rows below that were justified by the old number -- the hand-specified prior in particular, which
+> demanded 30% noop against a real 17% and was therefore pulling toward *less* action -- are no
+> longer justified. Read them with that in mind.
 
-The gate for every row below is the same and is cheap: **run ~50 updates and watch `noop%` in the op
-census**. Falling means it is learning to act. Flat at 95% means it is not.
-Second gate, only for anything using a *learned* prior: the **T=1 sampling sweep** -- `P(noop)` at
-the spawn state must be well below 0.9999.
+Per-turn PPO from random init was believed to reach 95% NOOP within four updates and never improve
+on its initialisation.
+The reasoning attached to it is still sound as far as it goes: terminal reward pays 0.5 for a draw
+and 0 for acting incompetently, so a policy that has not discovered farming has little to gain from
+acting badly.
+`explained_variance` sat at 0.08 against a committed 0.5 kill criterion -- though with every game
+drawing there was almost no return variance for it to explain, so that number described the
+collapse rather than diagnosing it.
+
+The gate is now: **does `water` overtake `plant`, and does `harv` come off zero, on full-season rows
+specifically.** Early-truncated envs cannot legally harvest if the limit falls before the crop's
+`first_yield_day`, so a rate aggregated across both is part policy and part arithmetic.
 
 ## The axes
 
