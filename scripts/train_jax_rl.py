@@ -917,7 +917,7 @@ def main():
             "sps": float((it + 1) * args.horizon * args.batch / (time.time() - t_start)),
             **{k: float(stats[k]) for k in
                  ("loss", "policy_loss", "value_loss", "seat_loss", "entropy",
-                  "approx_kl", "clip_frac", "grad_norm")},
+                  "approx_kl", "clip_frac", "grad_norm", "kl_prior")},
         }
         with log_path.open("a") as fh:
             fh.write(json.dumps(row) + "\n")
@@ -943,7 +943,8 @@ def main():
             f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
             f"wr {row['win_rate']:.3f}/{int(games)}x  term {int(stats['n_terminal'])}  "
             f"{vnet}V {row['value_mean']:.3f} {vnet}sum {row['seat_sum']:.3f} "
-            f"seatL {row['seat_loss']:.4f}  {row['sps']:,.0f} t/s\n"
+            f"seatL {row['seat_loss']:.4f}  klP {row['kl_prior']:.3f}  "
+            f"{row['sps']:,.0f} t/s\n"
             f"         ops {mix}",
             flush=True,
         )

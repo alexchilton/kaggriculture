@@ -26,6 +26,12 @@ UNIT_HEADS = ("op", "crop", "item", "qty")
 MARKET_HEADS = ("sell", "buy_product", "buy_seed", "buy_animal", "hire", "buy_land")
 ALL_HEADS = UNIT_HEADS + MARKET_HEADS
 
+# Heads that carry a per-trade-mode axis and are read through `condition_on_trade`. Only the
+# per-product quantity heads: those are the ones a teacher decides *together*, and the ones where
+# treating nine marginals as a joint produced an agent that emitted no orders at all under argmax
+# and spent its bank on noise under independent sampling.
+CONDITIONED_HEADS = ("sell", "buy_product")
+
 
 def _flat(x):
     """[B, P, ...] -> [B*P, ...]; both seats run through the network as one batch."""
@@ -44,7 +50,10 @@ def masks_for(state):
     item = jax_masks.unit_item_mask(state)
     qty = jnp.ones((b, 2, J.MAX_UNITS, len(P.UNIT_QTY_BUCKETS)), dtype=bool)
     market = jax_masks.market_masks(state, P.SELL_BUCKETS, P.BUY_BUCKETS)
-    out = {"op": op, "crop": crop, "item": item, "qty": qty, **market}
+    # Every trade mode is always legal: it is a coordinating latent, not a claim about the board,
+    # and the per-product masks still enforce what the shed and the bank can actually support.
+    trade = jnp.ones((b, 2, P.N_TRADE_MODES), dtype=bool)
+    out = {"op": op, "crop": crop, "item": item, "qty": qty, "trade": trade, **market}
     return {k: _flat(v) for k, v in out.items()}
 
 
@@ -87,21 +96,44 @@ def _reduce(x, active=None):
     return x.reshape(x.shape[0], -1).sum(axis=-1)
 
 
+def condition_on_trade(heads, trade):
+    """Select each product head's slice for the sampled trade mode.
+
+    `sell` and `buy_product` carry a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis; once the mode is
+    drawn, the conditional distribution over products is the corresponding slice. This is what makes
+    the factorisation `p(trade) * prod_i p(product_i | trade)` exact rather than mean-field -- the
+    per-product decisions share one coordinating variable, which is how a teacher actually trades.
+    """
+    idx = trade[..., None, None, None]                    # [.., 1, 1, 1]
+    out = dict(heads)
+    for k in CONDITIONED_HEADS:
+        out[k] = jnp.take_along_axis(heads[k], jnp.broadcast_to(
+            idx, heads[k].shape[:-2] + (1, heads[k].shape[-1])), axis=-2)[..., 0, :]
+    return out
+
+
 def sample(key, heads, masks):
     """Sample every head. Returns `(actions, log_prob, entropy)` with log_prob summed per seat.
 
     Every head is sampled, because the simulator reads a value from every slot. Only the heads the
     chosen op actually consults are *scored* -- see `active_unit_heads`.
+
+    **`trade` is drawn first and the product heads are conditioned on it.** Sampling them
+    independently is what produced an agent that banked $1: nine calibrated marginals drawn
+    separately give combinations the joint never contains.
     """
-    keys = jax.random.split(key, len(ALL_HEADS))
-    actions = {}
+    keys = jax.random.split(key, len(ALL_HEADS) + 1)
+    actions = {"trade": P.sample_head(keys[-1], heads["trade"], masks["trade"])[0]}
+    conditioned = condition_on_trade(heads, actions["trade"])
+
     for k, sub in zip(ALL_HEADS, keys):
-        actions[k] = P.sample_head(sub, heads[k], masks[k])[0]
+        actions[k] = P.sample_head(sub, conditioned[k], masks[k])[0]
 
     active = active_unit_heads(actions["op"])
     logps, entropies = [], []
-    for k in ALL_HEADS:
-        lp, ent = P.eval_head(heads[k], masks[k], actions[k])
+    for k in ALL_HEADS + ("trade",):
+        src = conditioned[k] if k in CONDITIONED_HEADS else heads[k]
+        lp, ent = P.eval_head(src, masks[k], actions[k])
         a = active.get(k)
         logps.append(_reduce(lp, a))
         entropies.append(_reduce(ent, a))
@@ -114,11 +146,20 @@ def evaluate(heads, masks, actions):
     The active set is derived from the *stored* op, so behaviour and update agree on exactly which
     heads were part of the decision. Deriving it from anything else would make the ratio a ratio of
     two different distributions.
+
+    **The trade mode is conditioned on for the same reason and it is not optional.** The behaviour
+    policy drew its products from the slice its sampled mode selected, so scoring them under a
+    different slice -- or under a marginal over modes -- would put a different distribution in the
+    numerator of the PPO ratio than the one that generated the data. `p(trade)` is scored too, so
+    the density is the full `p(trade) * prod_i p(product_i | trade)` and the ratio stays a ratio of
+    the same object.
     """
     active = active_unit_heads(actions["op"])
+    conditioned = condition_on_trade(heads, actions["trade"])
     logps, entropies = [], []
-    for k in ALL_HEADS:
-        lp, ent = P.eval_head(heads[k], masks[k], actions[k])
+    for k in ALL_HEADS + ("trade",):
+        src = conditioned[k] if k in CONDITIONED_HEADS else heads[k]
+        lp, ent = P.eval_head(src, masks[k], actions[k])
         a = active.get(k)
         logps.append(_reduce(lp, a))
         entropies.append(_reduce(ent, a))
