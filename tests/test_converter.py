@@ -211,6 +211,38 @@ def test_it_harvests_what_it_plants():
     assert total["HARVEST"] > 0, f"nothing was ever harvested: {dict(total)}"
 
 
+@pytest.mark.xfail(strict=True, reason="diagnosed and measured; the obvious fix made it worse")
+def test_it_never_hires_a_crew_it_cannot_pay_for():
+    """The wage bill is Fibonacci and the hire block never checks the bank.
+
+    `_hire_cost` is `fib(n)` for the n-th hire of the day, so a crew costs $376/day at twelve,
+    $609 at thirteen and **$986 at fourteen** -- hands 13 and 14 together cost more than the first
+    twelve combined. `max_hands` is 14.
+
+    `reserve` is honoured for wheat, animals and land, and ignored for wages: `target_hands` is
+    derived from the job count alone and the order is appended with no reference to `money`. In the
+    livestock phase the job count is always large, so it hires to the cap every day regardless.
+    Measured: 390 HIRE orders against 52 SELLs, $45,280 in and $44,258 out, and a bank sitting at
+    $18-$67 for days 13-14 and 22-26 -- permanently one turn from being unable to act.
+
+    **Left failing on purpose: the obvious fix is worse than the bug.** Gating the hire on
+    `money - reserve` against the marginal `fib(n)` fee was tried across seven configurations and
+    every one scored at or below the unfixed agent on the ladder -- 0.000 for most, 0.033 at best,
+    against 0.100 for doing nothing about it. The gate reads `money` during the market block, which
+    is *before* the turn's sales settle, and it can veto even the `min_hands` floor, so the farm
+    collapses to the lone farmer and stops earning at all. The diagnosis stands; the remedy has to
+    price the hand against what it will *produce*, not against the cash in hand at that instant.
+    """
+    records, _ = play_with_census()
+
+    broke = [(r["day"], r["hour"], r["money"]) for r in records
+             if r["money"] < converter.PARAMS["reserve"] and r["market"].get("HIRE")]
+
+    assert not broke, (
+        f"hired below the ${converter.PARAMS['reserve']:.0f} reserve on {len(broke)} turns, "
+        f"first few: {broke[:5]}")
+
+
 @pytest.mark.xfail(strict=True, reason="the livestock phase is still broken -- next piece of work")
 def test_the_feed_loop_does_not_dominate_the_crew():
     """517 PICKUP against 128 FEED: the crew spent its season walking wheat, not farming.
