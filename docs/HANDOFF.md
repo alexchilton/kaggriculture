@@ -491,3 +491,125 @@ Strided, `wr` populates and moves for the first time -- 0.000/2x, 0.300/5x, 0.31
    update and was reading around 0 early.
 4. The `contrarian` rung gives 0% to a mirror match, so it cannot distinguish "draws" from "loses
    badly". Other rungs carry the signal, but a margin-aware tiebreak there would sharpen it.
+
+---
+
+## Session 4 — 2026-08-01, afternoon
+
+**v8 submitted** (ref 55159760): the ES-tuned `converter`.
+Note v7 came back at **538.4**, below v5's 584.1 and v6's 569.1 -- the agent it replaces was never
+our best, and local head-to-head said otherwise.
+Local win rate predicts direction, not magnitude. Again.
+
+### The heuristic result
+
+| | ladder (held-out) |
+|---|---|
+| `converter`, hand-tuned from the replay | **0.092** -- below `pass`, which does nothing |
+| `converter`, island-ES tuned | **0.975** |
+| `contrarian` (v7) | 0.825 |
+
+On a third seed set the tuned agent beats `contrarian` **87.5% over 16 seat-swapped games,
++$15,010**.
+The ES went the *opposite* way to hand-tuning on all three structural dials: herd 20 -> 12,
+expand_day 8 -> 3, max_hands 14 -> 17.
+Eight rounds of hand-tuning never converged on any of them.
+
+### Two bugs, and two failed fixes worth remembering
+
+Fixed: `yield_units > 0` is not "harvestable" (melon advertises a crop for 10 days before
+`first_yield_day` and HARVEST silently returns, so units re-picked a legal no-op forever), and
+planting outranked watering (a seed dies overnight unless watered the same day).
+WATER over a season went 0 -> 128.
+
+**Failed, and reverted:** an affordability gate on hiring. The diagnosis was right -- 390 HIRE
+orders, $45,280 in against $44,258 out, bank at $18 -- but every one of seven configurations scored
+at or below the unfixed agent, because `money` is read before the turn's sales settle and the gate
+can veto the `min_hands` floor. The fix that works is simply a lower `max_hands`.
+**Also failed:** clustering animal ownership by distance from the shed. It cut movement 2,655 ->
+2,356 and left the walking *ratio* at 68% either way; 2.1 moves per work action turns out to be
+close to inherent for a 10x10 board with a central shed, and my 50% threshold was an assumption.
+
+### RL: it is not broken, it is rationally doing nothing
+
+The op census -- printed every update now -- settled in one line what two of us had been arguing
+about from scalars:
+
+```
+[ 0] tstd 0.478   ops noop:88%
+[ 4] tstd 0.000   ops noop:95%
+[ 8] tstd 0.000   ops noop:95%
+```
+
+`tstd` is the return spread over rows that actually resolved. At init the random policy acts and
+outcomes vary; within four updates it converges to 95% NOOP, and once both sides do nothing every
+game draws at $3,000 and the spread is exactly zero.
+
+**The draws are an outcome, not a cause, and the behaviour is rational.** With terminal-only reward,
+doing nothing draws (0.5) while acting incompetently loses (0.0). A policy that has not discovered
+farming is correct to stand still.
+
+That rules out the tuning fixes: `clip_frac` 0.012-0.083, `seat_sum` 0.997-1.005, `seatL` 0.0000,
+entropy stable at 2.5-2.9 with `ent_coef` already raised 6.7x for no effect.
+My `--idle-frac` opponent *is* the attractor rather than an escape from it.
+
+**Two corrections I got wrong on the way, both from reading scalars instead of behaviour:**
+`ret_std` is taken over every rollout row, and since ~0.14% of rows carry a reward it tracks
+`value_mean` and describes the *critic's* spread, not outcomes -- so "std 0.003 means everything
+draws" did not follow. And I relayed a review's `clip_frac 0.18-0.33` and climbing `seat_sum` as
+live problems when they came from a stale 5-update log predating the day's fixes; the current run
+has neither.
+
+**Do not add a prior against NOOP.** Illegal ops are already masked -- `sample_head` applies
+`_masked_logits` before sampling, and `unit_op_mask` excludes ops that would do nothing. Forcing
+action is the quality-masking anti-pattern `CLAUDE.md` records as an Orbit Wars failure.
+
+### Imitation learning: the data is here
+
+`scripts/fetch_replays.py` pulls from the daily dumps behind
+`kaggle/kaggriculture-episodes-index`. 2026-07-31 averages **1427** at the top against our ~600.
+**156 replays on disk, 3.1 GB, ~112,000 winner turns**, keeping only episodes whose winner banked
+$60k. Best teachers: $128k, $123k, $121k, $121k, $118k.
+
+`kagg/il/replays.py` turns them into supervised pairs. Both seats record a full observation
+including `private` -- checked, not assumed. `encode_action` inverts an action dict into head
+labels and the round trip through `jax_act.to_sim_actions` is tested, because labels that quietly
+mean something else are invisible in a loss curve.
+
+### Optimal execution is worth more than it sounds
+
+`market_price(item, inventory)` is a pure deterministic function and `_process_market` re-quotes
+after **every unit**, so selling is a price-impact problem -- Almgren-Chriss, not Black-Scholes,
+and easier than either because there is no volatility term. Measured cost of dumping rather than
+spreading:
+
+| product | qty | dump | spread | lost |
+|---|---|---|---|---|
+| MELON | 225 | $26,552 | $56,250 | **$29,698 (53%)** |
+| WOOL | 120 | $7,989 | $24,000 | $16,011 (67%) |
+| MILK | 120 | $6,225 | $19,200 | $12,975 (68%) |
+
+`contrarian` banks $51k in total. The melon execution loss alone is about $30k.
+(The spread column assumes the town fully drains between batches, so it is an optimistic bound --
+but the direction is not in doubt.)
+
+### Randomness: there is almost none
+
+Exactly two RNG draws in the whole environment, both from `random.Random((seed * 1_000_003) ^ day)`:
+weed spawning at `weedSpawnChance = 0.005` per empty tile per day, and which shop unlocks every
+three days. Everything else -- prices, growth, yields, town drain, hire costs -- is deterministic.
+
+So a game is fully reproducible given its seed, which is why parity can be bit-exact; the ~15% seed
+variance across games comes from those two draws. **It is not an optimisation problem, and the RNG
+is not the reason: it is a two-player game on a shared market.** The dominant uncertainty is the
+opponent. That is why mirror sweeps point the wrong way and why a graded ladder worked where
+single-opponent tuning did not.
+
+### Next
+
+1. **BC on the 156 replays**, then that checkpoint as PPO init *and* as a frozen JAX opponent
+   (which also solves the curriculum problem -- a Python heuristic cannot run inside the scan).
+2. **Optimal execution** in `converter`'s sell rule. Biggest measured single number on the board.
+3. **FERTILIZE**, which no agent emits. It does not raise melon's ceiling but reaches it in three
+   watered days instead of five -- see `tests/test_fertilizer.py`.
+4. Watch `noop%` in the op census. Falling means it is learning to act; flat at 95% means it is not.
