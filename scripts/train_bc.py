@@ -73,7 +73,7 @@ def load(limit_shards=None):
 UNIT_HEADS = ("op", "crop", "item", "qty")
 
 
-def cross_entropy(logits, target, weight=None):
+def cross_entropy(logits, target, weight=None, smooth=0.0):
     """Mean cross-entropy, optionally weighted per element.
 
     **The per-unit heads must be masked to units that exist.** `MAX_UNITS` is 24 while a real crew
@@ -88,6 +88,25 @@ def cross_entropy(logits, target, weight=None):
     """
     logp = jax.nn.log_softmax(logits, axis=-1)
     picked = jnp.take_along_axis(logp, target[..., None].astype(jnp.int32), axis=-1)[..., 0]
+    if smooth:
+        # **Label smoothing, and here it is a safety property rather than a regulariser.**
+        #
+        # Unsmoothed, the op head learned a 9.7-nat gap at the daily spawn state: noop at logit 8.3
+        # against -1.43 for the only alternatives. That is P(move) = 6e-5 per unit-turn, so across
+        # a thirteen-unit crew and a thirty-day season you would expect **about one** unit to ever
+        # leave the shed tile. The agent is then stuck in an absorbing state -- nothing planted
+        # means no quadrant unlocks and no new jobs, so every subsequent morning looks like day 0
+        # and reproduces the same decision, which is why it banks exactly its $3,000 start rather
+        # than some variable small number.
+        #
+        # It matters most for the use this checkpoint is actually for. As a KL prior,
+        # `KL(policy || prior)` taxes the policy for putting mass where the prior has none, so a
+        # prior that assigns 6e-5 to moving would *punish* PPO for discovering the one behaviour it
+        # needs -- with `--ent-coef 0` recommended alongside it, nothing would push back. Capping
+        # the achievable gap caps that tax directly.
+        # Put `smooth` of the target mass on the uniform distribution over classes, which is the
+        # mean log-probability -- the standard form, and it bounds the achievable logit gap.
+        picked = (1.0 - smooth) * picked + smooth * logp.mean(axis=-1)
     if weight is None:
         return -picked.mean()
     return -(picked * weight).sum() / jnp.maximum(weight.sum(), 1.0)
@@ -100,6 +119,11 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--shards", type=int, default=None)
     ap.add_argument("--holdout", type=float, default=0.05)
+    ap.add_argument("--smooth", type=float, default=0.05,
+                    help="label smoothing. Bounds the logit gap, which matters because this "
+                         "checkpoint is a KL prior: an unsmoothed head learned P(move)=6e-5 at "
+                         "the spawn state, and KL(policy||prior) would then tax PPO for "
+                         "discovering the one behaviour it needs. 0 disables.")
     args = ap.parse_args()
 
     tiles, units, glob, labels = load(args.shards)
@@ -133,7 +157,8 @@ def main():
         for k, w in HEAD_WEIGHTS.items():
             if k not in heads:
                 continue
-            ce = cross_entropy(heads[k], batch[f"y_{k}"], live if k in UNIT_HEADS else None)
+            ce = cross_entropy(heads[k], batch[f"y_{k}"], live if k in UNIT_HEADS else None,
+                               smooth=args.smooth)
             parts[k] = ce
             total = total + w * ce
         return total, parts
