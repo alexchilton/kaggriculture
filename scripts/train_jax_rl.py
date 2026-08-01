@@ -316,6 +316,10 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 crossplay=jnp.broadcast_to(
                     (use_opp | use_idle | use_trade | use_farm)[:, None],
                     (batch, 2)).reshape(-1),
+                # Games against a *pool checkpoint* specifically. `crossplay` covers every scripted
+                # seat too, which is right for the win-rate metric and wrong for deciding how hard
+                # a given checkpoint is -- see where the priority EMA is updated.
+                vs_pool=jnp.broadcast_to(use_opp[:, None], (batch, 2)).reshape(-1),
             )
             return (nxt, key), out
 
@@ -914,7 +918,8 @@ def main():
         w = np.array([POOL_PRIORITY_FLOOR + max(wr, 1e-6) ** POOL_PRIORITY_TEMP
                       + (0.25 if g <= 0 else 0.0)
                       for wr, g in zip(pool_wr, pool_games)], dtype=np.float64)
-        opp_idx = int(np.random.default_rng(it).choice(len(pool), p=w / w.sum()))
+        opp_idx = int(np.random.default_rng((args.seed, it)).choice(
+            len(pool), p=w / w.sum()))
         opp_params = pool[opp_idx]
 
         state, key, traj, advantages, returns = rollout(
@@ -963,6 +968,16 @@ def main():
         done_live = traj["done"] & live
         done_count = done_live.sum()
         reward_sum = jnp.where(done_live, traj["reward"], 0.0).sum()
+
+        # **The league EMA needs games against *that checkpoint*, not against anything at all.**
+        #
+        # `crossplay` is true for the idle seat, the trader and the farmer as well as for the pool
+        # checkpoint. Feeding all of it into one checkpoint's difficulty estimate means up to three
+        # quarters of the evidence has nothing to do with that checkpoint, and the priority
+        # weighting then pushes sampling in the wrong direction -- the opposite of what it is for.
+        pool_live = traj["trainable"] & traj["vs_pool"] & traj["done"]
+        pool_done = pool_live.sum()
+        pool_reward = jnp.where(pool_live, traj["reward"], 0.0).sum()
 
         # Terminal rows carry return == reward, so their spread should be ~0.25 and `ev_signal`
         # should always be computable. It reported n/a on half the updates, so count them.
@@ -1043,6 +1058,7 @@ def main():
         # One transfer per update, of scalars only.
         stats = jax.device_get({
             "done_count": done_count, "reward_sum": reward_sum,
+            "pool_done": pool_done, "pool_reward": pool_reward,
             "n_terminal": n_terminal,
             "seat_sum": seat_sum_mean, "seat_sum_absdev": seat_sum_absdev,
             "value_mean": flatten(traj["value"]).mean(),
@@ -1061,9 +1077,9 @@ def main():
         # against it -- terminal rows are ~0.14% of rows, so an update can legitimately see none,
         # and folding a zero-sample estimate into the EMA would drag every member toward 0.5 and
         # flatten the curriculum back into the round-robin this replaces.
-        n_done = float(stats["done_count"])
+        n_done = float(stats["pool_done"])
         if n_done > 0:
-            opp_wr = 1.0 - float(stats["reward_sum"]) / n_done
+            opp_wr = 1.0 - float(stats["pool_reward"]) / n_done
             a = POOL_PRIORITY_ALPHA
             pool_wr[opp_idx] = (1 - a) * pool_wr[opp_idx] + a * opp_wr
             pool_games[opp_idx] += int(n_done)
