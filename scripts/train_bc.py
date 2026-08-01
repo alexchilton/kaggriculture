@@ -70,11 +70,27 @@ def load(limit_shards=None):
             {k: np.concatenate(v) for k, v in labels.items()})
 
 
-def cross_entropy(logits, target):
-    """Mean cross-entropy over whatever leading axes the head has."""
+UNIT_HEADS = ("op", "crop", "item", "qty")
+
+
+def cross_entropy(logits, target, weight=None):
+    """Mean cross-entropy, optionally weighted per element.
+
+    **The per-unit heads must be masked to units that exist.** `MAX_UNITS` is 24 while a real crew
+    is seven to thirteen, so more than half of every batch is padding whose label is NOOP by
+    construction. Training on it is not merely wasteful: those slots are the overwhelming majority
+    of the op loss, they are trivially predictable, and the gradient from the slots that carry an
+    actual decision is drowned by them.
+
+    Measured before this mask, on slots where the teacher *acted* the model was right 39.2% of the
+    time, against 95.7% on slots where the teacher did nothing -- and the 77% headline was almost
+    entirely the easy half.
+    """
     logp = jax.nn.log_softmax(logits, axis=-1)
     picked = jnp.take_along_axis(logp, target[..., None].astype(jnp.int32), axis=-1)[..., 0]
-    return -picked.mean()
+    if weight is None:
+        return -picked.mean()
+    return -(picked * weight).sum() / jnp.maximum(weight.sum(), 1.0)
 
 
 def main():
@@ -111,11 +127,13 @@ def main():
 
     def loss_fn(params, batch):
         heads, _value = model.apply(params, batch["tiles"], batch["units"], batch["glob"])
+        # Column 0 of the unit features is `live` -- whether that slot is a unit the farm owns.
+        live = (batch["units"][..., 0] > 0.5).astype(jnp.float32)
         total, parts = 0.0, {}
         for k, w in HEAD_WEIGHTS.items():
             if k not in heads:
                 continue
-            ce = cross_entropy(heads[k], batch[f"y_{k}"])
+            ce = cross_entropy(heads[k], batch[f"y_{k}"], live if k in UNIT_HEADS else None)
             parts[k] = ce
             total = total + w * ce
         return total, parts
@@ -128,10 +146,27 @@ def main():
 
     @jax.jit
     def op_accuracy(params, batch):
-        """Top-1 on the op head -- the only number that says whether it learned to *act*."""
+        """Accuracy split by whether the teacher actually did something.
+
+        The aggregate is close to worthless here and was actively misleading: padding slots and
+        genuine no-ops are ~67% of all slots and trivially predictable, so a model can read 77%
+        overall while being right only 39% of the time on the slots that carry a decision. Only
+        `acted` says whether it learned to play.
+        """
         heads, _ = model.apply(params, batch["tiles"], batch["units"], batch["glob"])
         pred = heads["op"].argmax(axis=-1)
-        return (pred == batch["y_op"]).mean(), (pred != 0).mean(), (batch["y_op"] != 0).mean()
+        y = batch["y_op"]
+        live = batch["units"][..., 0] > 0.5
+        acted = live & (y != 0)
+        idle = live & (y == 0)
+        correct = pred == y
+
+        def masked(m):
+            return (correct & m).sum() / jnp.maximum(m.sum(), 1)
+
+        return (masked(live), masked(acted), masked(idle),
+                (live & (pred != 0)).sum() / jnp.maximum(live.sum(), 1),
+                acted.sum() / jnp.maximum(live.sum(), 1))
 
     def make_batch(idx):
         b = {"tiles": jnp.asarray(tiles[idx], jnp.float32),
@@ -157,12 +192,13 @@ def main():
                 print(f"  epoch {epoch} step {seen:5d}  loss {run / seen:.4f}", flush=True)
 
         vb = make_batch(idx_val[:4096])
-        acc, pred_act, true_act = op_accuracy(params, vb)
+        acc, acc_acted, acc_idle, pred_act, true_act = op_accuracy(params, vb)
         _vl, vparts = loss_fn(params, vb)
-        print(f"epoch {epoch}: train {run / max(1, seen):.4f}  "
-              f"val op-acc {float(acc):.3f}  "
-              f"predicted-acting {float(pred_act):.3f} vs teacher {float(true_act):.3f}  "
-              f"| " + "  ".join(f"{k}:{float(v):.3f}" for k, v in vparts.items()), flush=True)
+        print(f"epoch {epoch}: train {run / max(1, seen):.4f}  | live-slot acc {float(acc):.3f}  "
+              f"**ACTED {float(acc_acted):.3f}**  idle {float(acc_idle):.3f}  "
+              f"acting {float(pred_act):.3f} vs {float(true_act):.3f}\n"
+              f"          " + "  ".join(f"{k}:{float(v):.3f}" for k, v in vparts.items()),
+              flush=True)
 
         with (OUT / "bc.pkl").open("wb") as fh:
             pickle.dump({"params": params, "epoch": epoch}, fh)

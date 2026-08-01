@@ -119,29 +119,47 @@ def encode_action(action, n_units):
             "hire": hire, "buy_land": buy_land}
 
 
-def iter_turns(path, winners_only=True):
+def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True):
     """Yield `(shared_obs, privates, action, seat)` for each recorded turn of one replay.
 
-    `winners_only` keeps the seat that finished with more money, which is the whole point: a replay
-    contains one agent worth imitating and one worth beating, and they are equally represented.
+    `winners_only` keeps the seat that finished with more money. `min_bank` keeps any seat that
+    finished above a threshold instead, which is usually the better filter: in 89197802 the *losing*
+    seat still banked $106,091, and discarding it throws away a teacher because of who it happened
+    to be drawn against.
+
+    **`hide_opponent` blanks the other seat's private state, and it must stay on.** A replay records
+    both players' sheds, seeds and carried inventory, but a real agent only ever sees its own -- the
+    environment hands it `agent_private_stub()` for the opponent. Training on the full pair and then
+    playing with the stub is a distribution shift that flatters every offline number and shows up
+    only on the ladder, which is exactly the failure mode `adapter.py` warns about in its own
+    docstring.
     """
     replay = json.loads(Path(path).read_text())
     steps = replay["steps"]
     rewards = [p.get("reward") or 0.0 for p in steps[-1]]
     best = int(np.argmax(rewards))
 
+    def wanted(seat):
+        if min_bank is not None:
+            return rewards[seat] >= min_bank
+        return seat == best if winners_only else True
+
+    blank = {"shed": {}, "seeds": {}, "inventories": [{}]}
+
     for step in steps:
         if len(step) < 2:
             continue
         for seat in range(2):
-            if winners_only and seat != best:
+            if not wanted(seat):
                 continue
             entry = step[seat]
             obs, action = entry.get("observation"), entry.get("action")
             if not obs or not action or not obs.get("farms"):
                 continue
-            privates = [step[p].get("observation", {}).get("private")
-                        or {"shed": {}, "seeds": {}, "inventories": [{}]} for p in range(2)]
+            mine = obs.get("private") or dict(blank)
+            privates = [mine if p == seat else dict(blank) for p in range(2)] if hide_opponent \
+                else [step[p].get("observation", {}).get("private") or dict(blank)
+                      for p in range(2)]
             yield obs, privates, action, seat
 
 
