@@ -617,7 +617,13 @@ def main():
         if args.opponent_frac and it and it % args.pool_every == 0:
             pool.append(jax.device_get(params))
             if len(pool) > args.pool_size:
-                pool.pop(0)          # drop the oldest; the pool should track the recent frontier
+                # Drop from the *middle*, never the ends. Evicting the oldest would leave a pool of
+                # near-identical recent snapshots -- which is how self-play starts cycling: the
+                # policy forgets strategies it used to beat, rediscovers a counter to its recent
+                # self, loses to something from ten thousand updates ago, and every local win rate
+                # looks healthy throughout. Keeping the first entry preserves an anchor that cannot
+                # drift, and keeping the newest preserves the frontier.
+                pool.pop(len(pool) // 2)
 
         if it % args.ckpt_every == 0:
             save_checkpoint(latest_ckpt, params, opt_state, it, args, best=best_wr)

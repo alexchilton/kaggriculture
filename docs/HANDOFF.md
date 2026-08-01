@@ -146,3 +146,107 @@ docs/            experiment_log.md first, then ladder_analysis.md
 
 Build and verify a submission: `.venv/bin/python scripts/build_submission.py` — it refuses to ship
 anything that cannot beat `starter` from both seats.
+
+## RL: the per-turn policy on the fast sim (2026-08-01)
+
+The simulator now models the whole game, so the policy is per-turn over all 18 ops rather than
+tuning a heuristic's dials. `scripts/train_jax_rl.py`, `kagg/rl/`, 643,351 parameters.
+
+Start a run on the 3080 box with `kagg-train` (installed at `/usr/local/bin`, so no path to type);
+`kagg-status`, `kagg-log`, `kagg-stop` do what they say. Runs survive disconnection -- verified by
+leaving one for twelve minutes with no SSH sessions at all.
+
+### The frame
+
+Terminal reward, win 1 / loss 0, paid once on the turn the episode ends. gamma 0.97 **per game-day**
+= 0.998732 per turn, so a terminal reward still carries 40% of its value at turn 0. Per-turn 0.97
+would be 3e-10 -- the same number means two entirely different things depending on the unit, which
+is why both are printed at startup.
+
+### What was wrong, and how each was found
+
+Five bugs, and only the first was found by reading the code:
+
+1. **The terminal reward was paid on every turn after the episode ended.** `step_index > LAST_STEP`
+   is a level, not an edge, so a 64-turn rollout paid it up to 34 times. Found by Alex asking
+   whether the crash was in the episode-completion path -- it was not, but the question sent me to
+   look at code no test had ever reached.
+2. **Episodes never restarted inside the scan**, so the simulator ran past turn 719 into a season
+   that does not exist, and those turns were trained on.
+3. **The policy ran entirely in float64.** `jax_sim` enables x64 for parity, so anything that does
+   not state its dtype -- including `self.param()` -- silently becomes f64, and this card runs f64
+   at 1/32 rate. 24 turns/s against a simulator doing 44,700. Nothing in the logs looked wrong.
+   A startup check now refuses to run unless every parameter is float32.
+4. **`ev_signal` could never report a number.** It selected rows with `reward != 0`, which keeps
+   only winners; every selected return was then 1.0, variance 0, EV undefined. The one honest
+   kill-criterion metric had never once fired.
+5. **Episodes ran in lockstep and structurally could not desynchronise.** `jax_sim.State` keeps
+   `step_index` as a single scalar for the whole batch, so every game terminated on the same update:
+   terminal reward arrived in one burst every ~11 updates and was absent from the other ten. The
+   critic spent ten updates in eleven regressing onto its own predictions -- a bootstrap with no
+   unique fixed point at gamma near 1 -- and drifted to a value of **1.315**, which is impossible
+   when the reward is capped at 1. `explained_variance` read +0.98 throughout, because a critic that
+   is self-consistently wrong explains its own targets perfectly.
+
+   **Raising the batch size does not help**: with a shared scalar counter it makes the burst bigger,
+   not more frequent. Fixed by holding `--n-phases` independent states at evenly spread points in
+   the season and running them under `vmap`. No simulator change, so parity is untouched.
+
+Number 5 was found by an external model review, not by me. I had been treating its symptoms.
+
+### Also applied from that review
+
+- **Only heads the chosen op reads are scored.** Every head is still sampled, but a crop head
+  sampled when the op is not PLANT had no causal effect, so scoring it is zero-mean noise spread
+  over four times more parameters than the decision involved. Entropy fell from ~100 nats to ~9
+  when they stopped being scored -- that gap was the noise.
+- **Value clipping**, the same trust region the policy gets.
+- **Sigmoid value head.** Reward in {0,1} and gamma <= 1 means the true value is provably in [0,1].
+  A guardrail, not the cure -- the staggering is the cure.
+- **Opponent pool**, 25% of groups. Pure mirror self-play has a degenerate fixed point: both seats
+  share parameters, so a mutual draw is stable and nothing pushes against it. A frozen past self
+  does not co-operate in standing still. Its rows are weighted out of the loss -- their log-probs
+  come from other parameters, and including them would make the PPO ratio a comparison of two
+  unrelated policies.
+- **EMA target network**, available via `--target-ema`, **off by default**: changing two things
+  about the same mechanism at once breaks the one-delta-at-a-time rule.
+
+### The missing measurement -- do this first
+
+**`eval_policy.py` cannot yet play `contrarian`, and that is the gap that matters.**
+
+It scores against random-legal (a floor) and frozen checkpoints (the only self-play signal both
+sides cannot fake). It does not score against our heuristic agents, because they take the reference
+environment's **dict observations** -- `farm["tiles"][y][x]`, `private["shed"]`, `market["prices"]`
+-- while the policy plays on `jax_sim.State` arrays. Bridging them needs an adapter that renders a
+`State` into the dict shape `heuristic.agent(obs, config)` expects, per game, per turn.
+
+That adapter is worth building even though it is only for evaluation, because of what it would tell
+us. The opponent pool is frozen copies of *itself*, so it is **not** heuristic-bounded -- the
+opponent improves exactly as fast as the policy does. But self-play has a failure mode that no
+internal metric can see: **a local equilibrium**. If neither side ever discovers the animal economy,
+neither is ever punished for lacking it, and the pair converges happily on a crop-farming plateau
+around $38k while the real frontier is $110k. Every win rate looks fine throughout.
+
+`contrarian` is the yardstick that would expose it: if the policy plateaus at roughly contrarian's
+level, we are in the valley. Train against it and we inherit its ceiling -- `CLAUDE.md` is explicit
+that a heuristic is a sparring partner and never the policy -- but measure against it and we learn
+where we stand.
+
+### Open, in order
+
+1. **Adapter so `eval_policy.py` can play `contrarian`.** The only thing that can currently detect
+   a self-play plateau.
+2. **Watch entropy.** It fell 9.3 -> 3.8 -> 3.0 over three updates once the noise heads stopped
+   being scored. `--ent-coef 0.003` was chosen when entropy was ~100, so it is effectively a
+   different knob now. If entropy reaches ~0 within the first few hundred updates, raise it.
+3. **`ev_signal` must pass 0.5.** The committed kill criterion, and only now measurable at all.
+   Ignore the bare `ev` column: on reward-free windows it is the critic scoring itself.
+4. **Throughput.** ~400 turns/s at batch 128 puts 1B steps -- the scale that took 8th place on this
+   same GPU -- at about a month. Batch 384 has the card at 100% against 14% before, and
+   `scripts/sweep_batch.py` measures marginal (not cumulative) rate at several sizes. Compile time
+   at batch 384 with 12 phase groups and the opponent pool is over ten minutes, which is worth
+   attention on its own.
+5. **Imitation from search or replays.** Self-play from scratch reached 8th place in a comparable
+   competition at ~1B steps; the top finishers used 10-15B. Seeding past the early valley is what
+   the post-mortem already recommends.
