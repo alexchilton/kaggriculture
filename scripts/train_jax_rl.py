@@ -931,6 +931,14 @@ def main():
                          "this project saved nothing across 448k steps because the trigger was in "
                          "a unit nobody was watching.")
     ap.add_argument("--resume", default=None, help="path to a checkpoint .pkl to continue from")
+    ap.add_argument("--init", default=None,
+                    help="warm-start PARAMS ONLY from a BC checkpoint (scripts/bc_dagger.py), "
+                         "leaving the optimiser fresh and the update counter at zero. Params only "
+                         "and deliberately no KL-anchor to the same checkpoint: `hand_prior_heads` "
+                         "records that a collapsed clone as a prior 'would punish PPO for the one "
+                         "behaviour it needs to discover', and init-plus-anchor double-commits to "
+                         "whatever bad habit the clone has. Anchor later as a separate experiment "
+                         "if PPO is measurably unlearning something good. Ignored with --resume.")
     args = ap.parse_args()
 
     gamma = args.gamma_per_day ** (1.0 / TURNS_PER_DAY)
@@ -1034,6 +1042,21 @@ def main():
 
     start_update = 0
     best_wr = -1.0
+    if args.init and not args.resume:
+        with pathlib.Path(args.init).open("rb") as fh:
+            bc = pickle.load(fh)
+        # **The observation width is part of the checkpoint.** A BC run trained against a different
+        # tile/unit/global width cannot load here, and the failure would otherwise surface as an
+        # opaque shape error deep in `apply`. Say so plainly instead.
+        want = (jax_obs.TILE_FEATURES, jax_obs.UNIT_FEATURES, jax_obs.GLOBAL_FEATURES)
+        got = tuple(bc.get("widths") or ())
+        if got and got != want:
+            raise SystemExit(
+                f"--init checkpoint was trained on observation widths {got}, this build is {want}. "
+                f"Retrain BC against the current observation.")
+        params = jax.device_put(bc["params"])
+        print(f"warm-started params from {args.init} "
+              f"(teacher: {bc.get('args', {}).get('teacher', '?')}); optimiser is fresh")
     if args.resume:
         ck = load_checkpoint(args.resume)
         params, opt_state = ck["params"], ck["opt_state"]

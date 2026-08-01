@@ -1,0 +1,282 @@
+"""DAgger against a live in-sim teacher, producing a warm-start checkpoint for `train_jax_rl.py`.
+
+**Why a live oracle and not a replay set.** The previous BC attempt was parked on covariate shift:
+corrective labels were "96.7% non-noop and entirely WEST and NORTH -- the learner never leaves spawn,
+so the teacher never demonstrates anything else", and the checkpoint "plays well from a state a good
+player produced and cannot produce one". That is a property of a *fixed* demonstration set: it can
+never show recovery from a state the student wanders into, because the student was not there when the
+set was recorded.
+
+Both teachers here run inside the compiled simulator, so they can be asked "what would you do?" at
+whatever state the student actually reached, every turn. That is DAgger's whole point and it is the
+structural fix for exactly the failure that parked the track. No `pure_callback`, no serialisation,
+no replay files -- the teacher is array code in the same scan as the student.
+
+**Choose the teacher deliberately, because they teach different halves.**
+
+  --teacher heuristic   the crop economy: melon in, water it, harvest, sell. Banks $23,783.
+                        `buy_animal` is hard-zero (`jax_heuristic.py:192`) and it never FEEDs, so it
+                        CANNOT teach the animal economy. Do not use it and expect FEED.
+  --teacher rancher     the animal economy: pasture, place, feed, care, collect fertiliser. Keeps
+                        9-10 animals alive to day 29 -- the only thing in this project that does --
+                        but banks only $12,078 and spends 37% of its actions on PICKUP against a
+                        measured winner target of 2.3%. A weaker teacher that demonstrates the ops
+                        the policy has never once emitted.
+
+FEED has fired exactly zero times in every RL run to date. If that is the gap being targeted, the
+teacher has to be `rancher`, with the caveat that it will also teach the shed thrash.
+
+**What this deliberately does not do.** It trains params only. `--init` in `train_jax_rl.py` restores
+params and leaves the optimiser fresh, and there is no KL-anchor to the BC checkpoint -- Ender's own
+warning applies, recorded in `hand_prior_heads`: a collapsed clone as a prior "would punish PPO for
+the one behaviour it needs to discover". Warm-start, then let PPO move freely; anchor later only if
+it is measurably unlearning something good, as a separate experiment.
+
+**Ordering constraint that will waste a run if ignored.** The observation width is part of the
+checkpoint. Tiles are 27 and the global token 59 as of the animal-age and price features; a BC
+checkpoint trained against any other width will not load. Always train BC against the observation
+that the PPO run will use.
+
+    .venv/bin/python -u scripts/bc_dagger.py --teacher rancher --rounds 8 --batch 64
+"""
+
+import argparse
+import pathlib
+import pickle
+import time
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+
+from kagg.rl import jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
+from kagg.rl import jax_rancher as RANCH
+from kagg.sim import jax_sim as J
+
+EPISODE_TURNS = 719
+RUN_DIR = pathlib.Path("data/bc_runs")
+
+
+def _bucket_index(raw, buckets):
+    """Nearest bucket index for a raw quantity -- the inverse of `A.to_sim_actions`'s lookup.
+
+    The teacher speaks in quantities (`sell=7`), the student in bucket indices, so a label has to be
+    projected onto the student's own action space or the cross-entropy is against something the
+    student cannot emit. Nearest rather than floor: with SELL_BUCKETS [0,1,3,10,30], a teacher
+    selling 7 is much better described by 10 than by 3.
+    """
+    d = jnp.abs(raw[..., None] - buckets.reshape((1,) * raw.ndim + (-1,)))
+    return jnp.argmin(d, axis=-1)
+
+
+def teacher_labels(sim_actions):
+    """`J.Actions` -> the head-index dict the student's `evaluate` scores against.
+
+    Every head the simulator reads gets a label. `trade` is the one head with no teacher counterpart
+    -- neither scripted agent has a trade mode, they just name quantities -- so it is left at mode 0
+    and excluded from the loss below.
+    """
+    b2 = lambda x, buckets: _bucket_index(x, buckets)          # noqa: E731
+    return {
+        "op": sim_actions.unit_op.astype(jnp.int32),
+        "crop": sim_actions.unit_crop.astype(jnp.int32),
+        "item": sim_actions.unit_item.astype(jnp.int32),
+        "qty": b2(sim_actions.unit_qty, P.UNIT_QTY_BUCKETS),
+        "sell": b2(sim_actions.sell, P.SELL_BUCKETS),
+        "buy_product": b2(sim_actions.buy_product, P.BUY_BUCKETS),
+        "buy_seed": b2(sim_actions.buy_seed, P.BUY_BUCKETS),
+        "buy_animal": (sim_actions.buy_animal > 0).astype(jnp.int32),
+        "hire": sim_actions.hire.astype(jnp.int32),
+        "buy_land": sim_actions.buy_land.astype(jnp.int32),
+        "trade": jnp.zeros(sim_actions.hire.shape, dtype=jnp.int32),
+    }
+
+
+# `trade` has no teacher, and scoring it would train the student toward mode 0 for no reason.
+SCORED_HEADS = tuple(h for h in A.ALL_HEADS if h != "trade")
+
+
+def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
+    """One DAgger round: roll the *student* out, label every state with the teacher, fit.
+
+    `beta` is the probability that a turn is actually *executed* by the teacher rather than the
+    student. beta=1 is plain behaviour cloning on teacher states -- which is what failed before,
+    because the student never sees its own mistakes. beta=0 is pure DAgger: the student drives and
+    the teacher only labels, so every label lands on a state the student really produced. Annealing
+    from high to low is the standard schedule and is why this can escape the spawn fixation.
+    """
+
+    @jax.jit
+    def rollout(params, state, key):
+        def one_turn(carry, _):
+            state, key = carry
+            key, ka, kb = jax.random.split(key, 3)
+
+            tiles, units, glob = jax_obs.encode(state)
+            obs = (A._flat(tiles), A._flat(units), A._flat(glob))
+            masks = A.masks_for(state)
+            student_actions, _lp, _e = A.sample(ka, model.apply(params, *obs)[0], masks)
+
+            teacher_sim = teacher_fn(state)
+            labels = teacher_labels(teacher_sim)
+
+            # Who actually moves the world this turn.
+            take_teacher = jax.random.uniform(kb, (batch,)) < beta
+            flat_take = jnp.repeat(take_teacher, 2)
+            student_sim = A.to_sim_actions(student_actions, batch)
+            sim_actions = jax.tree_util.tree_map(
+                lambda s, t: jnp.where(
+                    flat_take.reshape(batch, 2, *((1,) * (s.ndim - 2))), t, s),
+                student_sim, teacher_sim)
+
+            nxt = J.step(state, sim_actions)
+            done = (nxt.step_index > J.LAST_STEP) & ~(state.step_index > J.LAST_STEP)
+            fresh = J.reset(batch)
+            pick = lambda new, old: jnp.where(                  # noqa: E731
+                done.reshape((-1,) + (1,) * (old.ndim - 1)), new, old)
+            nxt = nxt._replace(
+                step_index=pick(fresh.step_index, nxt.step_index),
+                tiles=jax.tree_util.tree_map(pick, fresh.tiles, nxt.tiles),
+                farm=jax.tree_util.tree_map(pick, fresh.farm, nxt.farm),
+                inventory=pick(fresh.inventory, nxt.inventory),
+            )
+            # Only slots the teacher can be held responsible for: a live unit's action.
+            unit_live = units[..., 0].reshape(batch * 2, -1) > 0.5
+            return (nxt, key), dict(obs=obs, masks=masks, labels=labels, unit_live=unit_live)
+
+        (final, key), traj = jax.lax.scan(one_turn, (state, key), None, length=horizon)
+        return final, key, traj
+
+    def loss_fn(params, batch_data):
+        heads, _v = model.apply(params, *batch_data["obs"])
+        cond = A.condition_on_trade(heads, batch_data["labels"]["trade"])
+        total, n = 0.0, 0.0
+        for h in SCORED_HEADS:
+            src = cond[h] if h in A.CONDITIONED_HEADS else heads[h]
+            lab = batch_data["labels"][h]
+            mask = batch_data["masks"][h]
+            logp, _ent = P.eval_head(src, mask, lab)
+            # **Only score a label the student is allowed to emit.** A masked-illegal option carries
+            # `NEG_INF = -1e9`, so a single illegal label swamps the whole objective -- the first run
+            # of this reported a loss of 5.3e7 that did not move, because the teacher names an item
+            # and a quantity on every unit slot including ones where nothing is legal, and those
+            # rows were being asked for an infinite log-probability. You cannot clone an action the
+            # student has no way to take.
+            legal = jnp.take_along_axis(mask, lab[..., None], axis=-1)[..., 0]
+            logp = jnp.where(legal, logp, 0.0)
+            if h in A.UNIT_HEADS:
+                # **Dead unit slots carry no information and must not be averaged in.** `MAX_UNITS`
+                # is 24 against a crew of a few, so scoring every slot makes ~85% of the loss a
+                # constant -- the padding mistake this project has now made three times, once in
+                # this very loss.
+                w = batch_data["unit_live"].astype(jnp.float32) * legal.astype(jnp.float32)
+                total = total - (logp * w).sum() / jnp.maximum(w.sum(), 1.0)
+            else:
+                w = legal.astype(jnp.float32)
+                total = total - (logp * w).sum() / jnp.maximum(w.sum(), 1.0)
+            n += 1.0
+        return total / n
+
+    @jax.jit
+    def fit(params, opt_state, batch_data):
+        loss, grads = jax.value_and_grad(loss_fn)(params, batch_data)
+        updates, opt_state = optimiser.update(grads, opt_state, params)
+        return optax.apply_updates(params, updates), opt_state, loss
+
+    return rollout, fit
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--teacher", choices=("heuristic", "rancher"), default="rancher",
+                    help="rancher teaches the animal economy (FEED/CARE/COLLECT_FERT); heuristic "
+                         "teaches crops and CANNOT teach FEED -- its buy_animal is hard-zero")
+    ap.add_argument("--rounds", type=int, default=8)
+    ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--horizon", type=int, default=32)
+    ap.add_argument("--epochs", type=int, default=4)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--beta0", type=float, default=0.9,
+                    help="teacher-execution probability in round 0, annealed to 0 by the last round")
+    ap.add_argument("--d-model", type=int, default=128)
+    ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--layers", type=int, default=3)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--tag", default="bc")
+    args = ap.parse_args()
+
+    teacher_fn = HEUR.actions if args.teacher == "heuristic" else RANCH.actions
+    model = P.Policy(d_model=args.d_model, n_heads=args.heads, n_layers=args.layers)
+    key = jax.random.PRNGKey(args.seed)
+    key, sub = jax.random.split(key)
+    state0 = J.reset(args.batch)
+    t, u, g = jax_obs.encode(state0)
+    params = model.init(sub, A._flat(t), A._flat(u), A._flat(g))
+    n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
+
+    # Same dtype guard the PPO trainer has: `jax_sim` enables x64 for parity, so anything that does
+    # not state its dtype silently becomes float64, and this card runs f64 at 1/32 rate.
+    bad = [k for k, v in jax.tree_util.tree_leaves_with_path(params) if v.dtype != jnp.float32]
+    if bad:
+        raise SystemExit(f"non-float32 params: {bad[:3]}")
+
+    optimiser = optax.chain(optax.clip_by_global_norm(0.5), optax.adam(args.lr))
+    opt_state = optimiser.init(params)
+
+    run = RUN_DIR / f"{args.tag}-{time.strftime('%Y%m%d-%H%M%S')}"
+    run.mkdir(parents=True, exist_ok=True)
+    print(f"teacher: {args.teacher}   params: {n_params:,}   run dir: {run}")
+    print(f"tile/unit/glob widths: {jax_obs.TILE_FEATURES}/{jax_obs.UNIT_FEATURES}/"
+          f"{jax_obs.GLOBAL_FEATURES}  -- a PPO run must use the same or this will not load",
+          flush=True)
+
+    state = state0
+    for rnd in range(args.rounds):
+        beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, args.rounds - 1))
+        rollout, fit = make_step(model, teacher_fn, args.batch, args.horizon, optimiser, beta)
+        key, kr = jax.random.split(key)
+        state, key, traj = rollout(params, state, kr)
+
+        flat_n = args.horizon * args.batch * 2
+
+        data = dict(
+            obs=tuple(x.reshape((flat_n,) + x.shape[2:]) for x in traj["obs"]),
+            masks={k: v.reshape((flat_n,) + v.shape[2:]) for k, v in traj["masks"].items()},
+            # **Labels carry three leading axes and obs/masks carry two.** The teacher speaks in
+            # `J.Actions`, which is `[batch, seats, ...]`, so a scanned label is
+            # `[horizon, batch, seats, ...]`; obs and masks are already seat-flattened by `A._flat`
+            # before the scan, so they are `[horizon, batch*seats, ...]`. Collapsing both with the
+            # same slice silently doubles the label width.
+            labels={k: v.reshape((flat_n,) + v.shape[3:]) for k, v in traj["labels"].items()},
+            unit_live=traj["unit_live"].reshape((flat_n,) + traj["unit_live"].shape[2:]),
+        )
+        losses = []
+        for _ in range(args.epochs):
+            params, opt_state, loss = fit(params, opt_state, data)
+            losses.append(float(loss))
+
+        # What the teacher actually demonstrated, on live slots only. If FEED is zero here the
+        # teacher cannot teach it, and no amount of student training will conjure it.
+        ops = np.asarray(jax.device_get(data["labels"]["op"]))
+        live = np.asarray(jax.device_get(data["unit_live"]))
+        cnt = np.bincount(ops[live].ravel(), minlength=18).astype(float)
+        tot = max(1.0, cnt.sum())
+        show = {"FEED": 12, "CARE": 13, "COLLFERT": 14, "HARV": 6, "WATER": 5,
+                "PLANT": 7, "PICKUP": 9, "NOOP": 0}
+        mix = "  ".join(f"{k}:{100 * cnt[i] / tot:.2f}%" for k, i in show.items())
+        print(f"[round {rnd}] beta {beta:.2f}  loss {losses[0]:.4f} -> {losses[-1]:.4f}\n"
+              f"           teacher demo mix  {mix}", flush=True)
+
+        with (run / "latest.pkl").open("wb") as fh:
+            pickle.dump({"params": jax.device_get(params), "update": -1,
+                         "args": vars(args), "best": None,
+                         "widths": (jax_obs.TILE_FEATURES, jax_obs.UNIT_FEATURES,
+                                    jax_obs.GLOBAL_FEATURES)}, fh,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+
+    print(f"\ndone. warm-start with:  kagg-train ... --init {run}/latest.pkl")
+
+
+if __name__ == "__main__":
+    main()
