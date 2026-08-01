@@ -1070,7 +1070,14 @@ def main():
         # in a loss curve. The op census is the diagnostic that found two structural bugs in the
         # heuristic agents in a single run today, and it costs one one-hot sum here. Counted over
         # the live policy's own rows only, so the idle opponent's NOOPs are not mistaken for ours.
-        live_units = batch_data_full["trainable"][:, None]
+        # **Count only slots the farm actually owns.** `trainable` marks rows that are ours rather
+        # than an opponent's; it says nothing about whether a *unit* exists. `MAX_UNITS` is 24 and a
+        # crew is ten or so, so fourteen slots in every row are NOOP by construction -- roughly 58%
+        # of the census before the policy decides anything. Every "95% noop" reading today was that
+        # padding plus the real rate, and the real rate is materially lower. This is the same
+        # mistake that was found and fixed in the behaviour-cloning loss and never carried across.
+        unit_exists = batch_data_full["obs"][1][..., 0] > 0.5      # `live` is unit feature 0
+        live_units = batch_data_full["trainable"][:, None] & unit_exists
         op_rows = batch_data_full["actions"]["op"]
         op_counts = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
                      * live_units[..., None]).sum(axis=(0, 1))
