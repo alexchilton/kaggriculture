@@ -50,7 +50,7 @@ from jax import lax
 import numpy as np
 import optax
 
-from kagg.rl import jax_act as A, jax_obs, jax_policy as P
+from kagg.rl import jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
@@ -156,7 +156,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     per_group = batch // n_phases
 
     @functools.partial(jax.jit, static_argnums=())
-    def rollout(params, value_params, opp_params, use_opp, use_idle, use_trade, state, key):
+    def rollout(params, value_params, opp_params, use_opp, use_idle, use_trade, use_farm,
+                state, key):
         def one_turn(carry, _):
             state, key = carry
             key, sub = jax.random.split(key)
@@ -217,7 +218,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                     take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
                 actions)
             take_opp = take_opp | take_idle | jnp.broadcast_to(
-                use_trade[:, None] & (seat == 1), (batch, 2)).reshape(-1)
+                (use_trade | use_farm)[:, None] & (seat == 1), (batch, 2)).reshape(-1)
 
             sim_actions = A.to_sim_actions(actions, batch)
 
@@ -255,6 +256,19 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 hire=jnp.where(trade_seat, False, sim_actions.hire),
                 buy_land=jnp.where(trade_seat, False, sim_actions.buy_land),
             )
+
+            # **The only opponent in the pool that can punish a bad farm.**
+            #
+            # It banks $23,783 over a season against the trader's $3,368 and the idle seat's
+            # $3,000, and it runs natively here rather than through a callback -- see
+            # `kagg/rl/jax_heuristic.py`. The idle and trader seats are beatable by a fixed amount,
+            # so they are a floor; this one has actual play in it.
+            farm_seat = jnp.broadcast_to(use_farm[:, None] & (seat == 1), (batch, 2))
+            heur = HEUR.actions(state)
+            sim_actions = jax.tree_util.tree_map(
+                lambda mine, theirs: jnp.where(
+                    farm_seat.reshape(farm_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
+                sim_actions, heur)
             nxt = J.step(state, sim_actions)
 
             # `just_done` is [B]: every game crosses its own episode boundary on its own turn,
@@ -300,7 +314,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
                 # of a cross-play game, so the live policy's side of one can be picked out.
                 crossplay=jnp.broadcast_to(
-                    (use_opp | use_idle | use_trade)[:, None], (batch, 2)).reshape(-1),
+                    (use_opp | use_idle | use_trade | use_farm)[:, None],
+                    (batch, 2)).reshape(-1),
             )
             return (nxt, key), out
 
@@ -668,6 +683,12 @@ def main():
                          "--ent-coef, which they share, matching Ender's structure.")
     ap.add_argument("--kl-anneal", type=int, default=0,
                     help="updates over which --kl-coef decays linearly to zero. 0 keeps it flat.")
+    ap.add_argument("--farm-frac", type=float, default=0.25,
+                    help="fraction of games whose seat 1 is the JAX-native farmer, which banks "
+                         "$23,783 a season against the trader's $3,368 and the idle seat's $3,000. "
+                         "It is the only opponent in the pool that can punish a bad farm: the other "
+                         "two are beatable by a fixed amount, so they are a floor, while this one "
+                         "has real play in it. 0 disables.")
     ap.add_argument("--trade-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 only trades wheat: buys early, sells late, "
                          "every unit passing. It banks $3,989 from a $3,000 start using zero crew "
@@ -869,19 +890,27 @@ def main():
 
         # The idle seats are drawn from games the frozen pool is *not* using, and strided for the
         # same reason: they have to reach the end of the season to produce a terminal reward.
+        use_farm = np.zeros(args.batch, dtype=bool)
+        n_farm = int(round(args.farm_frac * args.batch))
+        if n_farm:
+            stride = max(1, args.batch // n_farm)
+            picks = [(j * stride + it + 2 * stride // 3) % args.batch for j in range(n_farm)]
+            use_farm[[p for p in picks if not use_opp[p]]] = True
+
         use_trade = np.zeros(args.batch, dtype=bool)
         n_trade = int(round(args.trade_frac * args.batch))
         if n_trade:
             stride = max(1, args.batch // n_trade)
             picks = [(j * stride + it + stride // 3) % args.batch for j in range(n_trade)]
-            use_trade[[p for p in picks if not use_opp[p]]] = True
+            use_trade[[p for p in picks if not use_opp[p] and not use_farm[p]]] = True
 
         use_idle = np.zeros(args.batch, dtype=bool)
         n_idle = int(round(args.idle_frac * args.batch))
         if n_idle:
             stride = max(1, args.batch // n_idle)
             picks = [(j * stride + it + stride // 2) % args.batch for j in range(n_idle)]
-            use_idle[[p for p in picks if not use_opp[p] and not use_trade[p]]] = True
+            use_idle[[p for p in picks
+                      if not use_opp[p] and not use_trade[p] and not use_farm[p]]] = True
         w = np.array([POOL_PRIORITY_FLOOR + max(wr, 1e-6) ** POOL_PRIORITY_TEMP
                       + (0.25 if g <= 0 else 0.0)
                       for wr, g in zip(pool_wr, pool_games)], dtype=np.float64)
@@ -890,7 +919,7 @@ def main():
 
         state, key, traj, advantages, returns = rollout(
             params, target_params, opp_params, jnp.asarray(use_opp),
-            jnp.asarray(use_idle), jnp.asarray(use_trade), state, sub)
+            jnp.asarray(use_idle), jnp.asarray(use_trade), jnp.asarray(use_farm), state, sub)
 
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
         # and `reward` arrays back to the host, as this did, forces a synchronisation on every
