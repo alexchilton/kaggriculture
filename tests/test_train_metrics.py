@@ -388,3 +388,50 @@ def test_the_price_of_the_next_purchase_is_visible():
     assert any(abs(v - hire) < 1e-6 for v in glob), (
         f"next-hire cost as a share of the bank ({hire:.6f}) is not in the global token")
     assert not np.isnan(glob).any() and not np.isinf(glob).any()
+
+
+def test_an_animals_days_to_next_yield_matches_the_simulator():
+    """**The `is_ripe` asymmetry again, in the tile features rather than the geometry.**
+
+    `t.placed_day` was used nowhere in `jax_obs.py`. Crops got their age with an explicit comment --
+    "Age drives every yield rule, so give it directly rather than making the net subtract" -- and the
+    animal half of the identical rule got nothing, so the policy could not tell a cow that yields
+    tomorrow from one that yields in four days.
+
+    `jax_sim`'s rule is `days_since = day - placed_day - ANIMAL_FIRST_YIELD_DAY[a]`, producing when
+    `days_since >= 0 and days_since % ANIMAL_INTERVAL[a] == 0`. The feature is the inverted distance
+    to that event, so it must read exactly 1.0 on a production day and less on every other.
+    """
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+    from kagg.rl import jax_obs
+    from kagg.sim import jax_sim as J
+
+    COW = 1
+    first = int(np.asarray(J.ANIMAL_FIRST_YIELD_DAY)[COW])
+    interval = int(np.asarray(J.ANIMAL_INTERVAL)[COW])
+    s = J.reset(2)
+    tiles = s.tiles._replace(
+        animal=s.tiles.animal.at[:, :, 0].set(COW),
+        placed_day=s.tiles.placed_day.at[:, :, 0].set(0),
+    )
+
+    got, want = [], []
+    for day in range(first + 2 * interval + 2):
+        st = s._replace(tiles=tiles,
+                        step_index=jnp.full_like(s.step_index, day * J.TURNS_PER_DAY))
+        feats = np.asarray(jax_obs.encode(st)[0])[0, 0, 0]
+        ds = day - first
+        produces = ds >= 0 and ds % interval == 0
+        # The feature reads 1.0 only when the animal produces today.
+        got.append(bool(np.isclose(feats.max(), 1.0) and any(np.isclose(feats, 1.0))))
+        want.append(produces)
+
+    # On every production day some feature must be exactly 1.0 (the inverted zero distance).
+    prod_days = [d for d, w in enumerate(want) if w]
+    assert prod_days, "the test's own setup produced no yield days"
+    for d in prod_days:
+        st = s._replace(tiles=tiles,
+                        step_index=jnp.full_like(s.step_index, d * J.TURNS_PER_DAY))
+        feats = np.asarray(jax_obs.encode(st)[0])[0, 0, 0]
+        assert np.isclose(feats, 1.0).any(), f"day {d} produces but no feature reads 1.0"

@@ -71,6 +71,38 @@ def encode(state):
             # Age drives every yield rule, so give it directly rather than making the net subtract.
             jnp.where(is_plant, (day_t - t.planted_day) / 30.0, 0.0)
             .astype(jnp.float32)[..., None],
+            # **The same fact for animals, which had been left out.** `t.placed_day` was used
+            # nowhere in this file: crops got their age with the comment above explaining why, and
+            # the animal half of the identical rule got nothing. `jax_sim`'s production rule is
+            #     days_since = day - placed_day - ANIMAL_FIRST_YIELD_DAY[a]
+            #     produces   = (days_since >= 0) & (days_since % ANIMAL_INTERVAL[a] == 0)
+            # so without age the policy cannot tell a goose that yields tomorrow from one that
+            # yields in four days, and has to discover HARVEST timing by trial against a terminal
+            # reward. This is the same asymmetry as the `is_ripe` target -- the crop economy had the
+            # feature and the animal economy did not -- and the animal ops are the two strongest
+            # money predictors in the game (FEED +0.452, CARE +0.441 over 312 real seats).
+            jnp.where(has_animal, (day_t - t.placed_day) / 30.0, 0.0)
+            .astype(jnp.float32)[..., None],
+            # **Turns until this animal next produces**, which is the modulo above precomputed
+            # rather than derived through reward. Intervals differ per species -- goose 1, cow 2,
+            # sheep 3 -- so the periodicity is not something age alone reveals without also learning
+            # a per-species phase. Inverted so "produces today" reads 1 and "far off" reads near
+            # zero, matching how the nearest-job distances are scaled.
+            #
+            # It is a fact, not a judgment: it says when product appears, not that harvesting is
+            # what the unit should do.
+            (1.0 / (1.0 + jnp.where(
+                has_animal,
+                jnp.maximum(0, J.ANIMAL_FIRST_YIELD_DAY[jnp.maximum(t.animal, 0)]
+                            - (day_t - t.placed_day))
+                + jnp.where(
+                    (day_t - t.placed_day)
+                    >= J.ANIMAL_FIRST_YIELD_DAY[jnp.maximum(t.animal, 0)],
+                    (-(day_t - t.placed_day
+                       - J.ANIMAL_FIRST_YIELD_DAY[jnp.maximum(t.animal, 0)]))
+                    % jnp.maximum(J.ANIMAL_INTERVAL[jnp.maximum(t.animal, 0)], 1),
+                    0),
+                1000).astype(jnp.float32))).astype(jnp.float32)[..., None],
             (t.fertilized_until_day >= day_t).astype(jnp.float32)[..., None],
             t.fed_today.astype(jnp.float32)[..., None],
             t.cared_today.astype(jnp.float32)[..., None],
