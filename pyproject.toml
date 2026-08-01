@@ -20,3 +20,6 @@ include = ["kagg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: plays whole episodes; deselect with -m 'not slow'",
+]

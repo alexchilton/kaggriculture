@@ -579,11 +579,19 @@ def main():
         # Which phase groups face a frozen opponent this update. Rotating the choice means every
         # group spends most of its time in self-play and some of it under cross-play, rather than
         # permanently splitting the batch into two populations that never meet.
+        # **Strided, not contiguous.** A game's index *is* its phase group, and a phase group is a
+        # fixed position in the season, so index order is season order. Taking a contiguous block
+        # therefore handed the frozen opponent one narrow band of the season and nothing else --
+        # and since episodes only end at the season boundary, the games that terminate are their
+        # own contiguous band. Two blocks rotating at different rates mostly miss each other: the
+        # cross-play win rate saw 0 qualifying rows for update after update, and the opponent pool
+        # never played the endgame at all. Striding spreads both across every phase every update.
         n_opp = int(round(args.opponent_frac * args.n_phases))
         use_opp = np.zeros(args.batch, dtype=bool)
         n_opp_games = int(round(args.opponent_frac * args.batch))
         if n_opp_games:
-            use_opp[[(it * n_opp_games + j) % args.batch for j in range(n_opp_games)]] = True
+            stride = max(1, args.batch // n_opp_games)
+            use_opp[[(j * stride + it) % args.batch for j in range(n_opp_games)]] = True
         opp_params = pool[it % len(pool)]
 
         state, key, traj, advantages, returns = rollout(

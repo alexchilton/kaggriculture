@@ -93,6 +93,39 @@ def test_crossplay_rows_move_with_the_policy():
     assert _win_rate(rows, never, live) == pytest.approx(0.0)
 
 
+def _use_opp(batch, opponent_frac, it, contiguous):
+    """Which games face the frozen opponent on update `it`, old scheme and new."""
+    n = int(round(opponent_frac * batch))
+    flags = np.zeros(batch, dtype=bool)
+    if not n:
+        return flags
+    if contiguous:
+        flags[[(it * n + j) % batch for j in range(n)]] = True
+    else:
+        stride = max(1, batch // n)
+        flags[[(j * stride + it) % batch for j in range(n)]] = True
+    return flags
+
+
+@pytest.mark.parametrize("contiguous,expect_covered", [(True, False), (False, True)])
+def test_crossplay_games_must_reach_the_end_of_the_season(contiguous, expect_covered):
+    """A game's index is its phase group, and a phase group is a fixed season position.
+
+    So index order is season order, and the games that *finish* are the contiguous band sitting at
+    the season boundary. Choosing cross-play games as a contiguous block means two blocks rotating
+    at different rates, which mostly miss: the cross-play win rate saw zero qualifying rows update
+    after update, and the frozen opponent never played the endgame. Striding covers every band on
+    every update.
+    """
+    batch = 256
+    ending = np.zeros(batch, dtype=bool)
+    ending[-24:] = True                      # the phase groups about to cross turn 719
+
+    covered = [bool((_use_opp(batch, 0.25, it, contiguous) & ending).any()) for it in range(8)]
+
+    assert all(covered) is expect_covered, f"per-update coverage of the endgame: {covered}"
+
+
 def test_crossplay_rows_are_the_live_policys_own_seat():
     """Never the opponent's: its reward is our loss, and averaging it back in cancels the signal."""
     rows = _rows(16, 0.25)
