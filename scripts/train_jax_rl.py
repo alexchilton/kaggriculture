@@ -247,7 +247,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     return rollout
 
 
-def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser):
+def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_coef=0.0):
     """Build the jitted PPO update over one rollout's minibatches."""
 
     def loss_fn(params, batch_data):
@@ -287,10 +287,29 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser):
         ) * w).sum() / w_sum
         entropy_loss = -(entropy * w).sum() / w_sum
 
-        loss = policy_loss + vf_coef * value_loss + ent_coef * entropy_loss
+        # **Seat-sum consistency: V(seat 0) + V(seat 1) = 1.**
+        #
+        # The two seats of a game are the same board seen from opposite sides, so their win
+        # probabilities add to one -- win 1 + loss 0, or tie 0.5 twice. This is arithmetic, not a
+        # property of a good critic: it holds for any policy at any skill level, and it holds on
+        # **100% of rows**, against the ~0.14% that carry a terminal reward (one turn in 719).
+        #
+        # That distinction is why this is not reward shaping. It invents no reward and expresses no
+        # opinion about which actions are good; it only forbids the critic from claiming both sides
+        # of the same game are winning. Measured before adding it, the sum was 1.17 and climbing to
+        # 1.28 while mean(V) was 0.64 -- i.e. `sum` was almost exactly `2 x V`, meaning the critic
+        # was seat-blind, emitting one global number that drifted upward rather than predicting
+        # anything about the position.
+        #
+        # Rows arrive as [B*P] with the seat axis innermost, so a reshape recovers the pairs.
+        pairs = value.reshape(-1, 2)
+        seat_loss = jnp.square(pairs.sum(axis=-1) - 1.0).mean()
+
+        loss = (policy_loss + vf_coef * value_loss + ent_coef * entropy_loss
+                + seat_coef * seat_loss)
         approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
         clip_frac = ((jnp.abs(ratio - 1.0) > clip).astype(jnp.float32) * w).sum() / w_sum
-        return loss, dict(policy_loss=policy_loss, value_loss=value_loss,
+        return loss, dict(policy_loss=policy_loss, value_loss=value_loss, seat_loss=seat_loss,
                           entropy=entropy.mean(), approx_kl=approx_kl, clip_frac=clip_frac)
 
     @jax.jit
@@ -313,7 +332,16 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser):
         """
         def one_epoch(carry, ekey):
             params, opt_state = carry
-            perm = jax.random.permutation(ekey, n_chunks * chunk)
+            # Permute **seat pairs**, not rows. Rows arrive as [B*P] with the seat axis innermost,
+            # so rows 2k and 2k+1 are the two seats of one game at one turn. Shuffling rows
+            # independently scatters those partners into different minibatches, and the
+            # V(seat0)+V(seat1)=1 term then pairs unrelated rows and optimises nothing -- measured:
+            # the seat sum climbed 1.17 -> 1.34 with the loss active, exactly as without it.
+            # Permuting pairs keeps each partner adjacent, and every minibatch stays a whole
+            # number of games.
+            n_pairs = (n_chunks * chunk) // 2
+            pair_perm = jax.random.permutation(ekey, n_pairs)
+            perm = jnp.stack([2 * pair_perm, 2 * pair_perm + 1], axis=-1).reshape(-1)
             perm = perm.reshape(n_chunks, chunk)
 
             def one_minibatch(carry, rows):
@@ -388,13 +416,21 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--clip", type=float, default=0.2)
     ap.add_argument("--vf-coef", type=float, default=0.5)
-    ap.add_argument("--ent-coef", type=float, default=0.003,
-                    help="0.02 was far too high for a large factored space in Orbit Wars; start "
-                         "low and raise only if entropy collapses")
+    ap.add_argument("--ent-coef", type=float, default=0.02,
+                    help="Raised from 0.003 once inactive heads stopped being scored: that took "
+                         "entropy from ~100 nats to ~10, so the same coefficient was an ~30x "
+                         "weaker bonus than intended and entropy collapsed 9.7 -> 2.1 in ten "
+                         "updates. The Orbit Wars warning against 0.02 was about a *large* "
+                         "MultiDiscrete space measured on the old scale.")
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--seat-coef", type=float, default=1.0,
+                    help="weight on the V(seat0)+V(seat1)=1 consistency loss. Not reward shaping: "
+                         "it is an identity that holds for any policy, and it anchors the critic "
+                         "on 100%% of rows instead of the 0.14%% carrying a terminal reward. "
+                         "0 disables.")
     ap.add_argument("--opponent-frac", type=float, default=0.25,
                     help="fraction of phase groups whose seat 1 is played by a frozen past self. "
                          "Pure self-play shares parameters between both seats, so a mutual draw is "
@@ -442,7 +478,12 @@ def main():
     # from the log rather than discovered 40 seconds in.
     rows = args.horizon * 2 * args.batch
     tokens = 1 + J.TILES + J.MAX_UNITS
-    act_gib = (
+    # 1.6x fudge on the analytic figure. The plain attention+MLP arithmetic said 3.26 GiB for a
+    # 1024-row minibatch that then failed asking for 5.25 GiB: the epoch `lax.scan` keeps the whole
+    # rollout resident while each chunk's activations are live, and XLA's own temporaries are not
+    # in the formula either. An estimate that reads low is worse than no estimate -- it gets
+    # believed right up to the OOM.
+    act_gib = 1.6 * (
         args.minibatch_size * args.heads * tokens * tokens * 4
         + args.minibatch_size * tokens * args.d_model * 5 * 4
     ) * args.layers * 2 / 2**30
@@ -508,7 +549,7 @@ def main():
     rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda,
                            args.n_phases)
     update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
-                                     args.max_grad_norm, optimiser)
+                                     args.max_grad_norm, optimiser, seat_coef=args.seat_coef)
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
@@ -547,8 +588,32 @@ def main():
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
         # and `reward` arrays back to the host, as this did, forces a synchronisation on every
         # update and blocks the pipeline on a transfer whose only purpose is a running average.
-        done_count = traj["done"].sum()
-        reward_sum = jnp.where(traj["done"], traj["reward"], 0.0).sum()
+        # **Seat-sum consistency.** For a matched (game, turn) pair the two seats are the same
+        # board from opposite sides, so V(seat 0) + V(seat 1) must be 1 in expectation for ANY
+        # policy -- win 1 + loss 0, or tie 0.5 twice. It is not a property of a *good* critic, it
+        # is arithmetic, and it holds on 100% of rows rather than the ~0.14% that carry a terminal
+        # reward. If this sum tracks 1 while mean(V) sits at 0.82, the critic is consistent and the
+        # high mean says something about which states get sampled. If it climbs with mean(V), both
+        # seats are claiming to win the same game and the critic is provably broken.
+        v_pairs = traj["value"].reshape(traj["value"].shape[0], -1, 2)
+        seat_sum = v_pairs.sum(axis=-1)
+        seat_sum_mean = seat_sum.mean()
+        seat_sum_absdev = jnp.abs(seat_sum - 1.0).mean()
+
+        # **Win rate over the live policy's own seats only.** Summing reward across both seats of
+        # every game is arithmetically pinned to 0.5 -- one winner and one loser per game, always --
+        # so it reported 0.500 for ten straight updates while saying nothing. The interesting games
+        # are the ones where a frozen opponent holds seat 1: there the live policy's win rate is
+        # free to move, and averaging its opponent's mirrored result back in destroyed exactly that
+        # signal.
+        live = traj["trainable"]
+        done_live = traj["done"] & live
+        done_count = done_live.sum()
+        reward_sum = jnp.where(done_live, traj["reward"], 0.0).sum()
+
+        # Terminal rows carry return == reward, so their spread should be ~0.25 and `ev_signal`
+        # should always be computable. It reported n/a on half the updates, so count them.
+        n_terminal = traj["done"].sum()
         rewarded_frac = traj["done"].mean()
 
         def flatten(x):
@@ -589,6 +654,9 @@ def main():
         # One transfer per update, of scalars only.
         stats = jax.device_get({
             "done_count": done_count, "reward_sum": reward_sum,
+            "n_terminal": n_terminal,
+            "seat_sum": seat_sum_mean, "seat_sum_absdev": seat_sum_absdev,
+            "value_mean": flatten(traj["value"]).mean(),
             "rewarded_frac": rewarded_frac, "ev": ev_d, "ev_signal": ev_sig_d,
             "ret_mean": ret_d.mean(), "ret_std": ret_d.std(),
             **{k: v for k, v in metrics.items()},
@@ -605,14 +673,18 @@ def main():
             "explained_variance": ev,
             "ev_signal": ev_signal,
             "rewarded_frac": float(stats["rewarded_frac"]),
+            "n_terminal": float(stats["n_terminal"]),
+            "seat_sum": float(stats["seat_sum"]),
+            "seat_sum_absdev": float(stats["seat_sum_absdev"]),
+            "value_mean": float(stats["value_mean"]),
             "trainable_frac": float(jax.device_get(traj["trainable"].mean())),
             "pool": len(pool),
             "win_rate": float(wins / games) if games else float("nan"),
             "episodes": int(games),
             "sps": float((it + 1) * args.horizon * args.batch / (time.time() - t_start)),
             **{k: float(stats[k]) for k in
-                 ("loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac",
-                  "grad_norm")},
+                 ("loss", "policy_loss", "value_loss", "seat_loss", "entropy",
+                  "approx_kl", "clip_frac", "grad_norm")},
         }
         with log_path.open("a") as fh:
             fh.write(json.dumps(row) + "\n")
@@ -625,7 +697,9 @@ def main():
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f}  "
             f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f}  "
             f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
-            f"wr {row['win_rate']:.3f}  ep {int(games)}  {row['sps']:,.0f} turns/s",
+            f"wr {row['win_rate']:.3f}  ep {int(games)} term {int(stats['n_terminal'])}  "
+            f"V {row['value_mean']:.3f} sum {row['seat_sum']:.3f} "
+            f"seatL {row['seat_loss']:.4f}  {row['sps']:,.0f} turns/s",
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
