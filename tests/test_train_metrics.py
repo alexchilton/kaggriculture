@@ -171,3 +171,70 @@ def test_crossplay_rows_are_the_live_policys_own_seat():
 
     assert live.sum() == 4, "one row per cross-play game, not two"
     assert set(rows["seat"][live]) == {0}
+
+
+def test_the_hand_prior_is_the_shape_it_claims_to_be():
+    """`noop_p` on doing nothing, the remainder split evenly over the other *legal* ops.
+
+    Ender's prior was two numbers in a config, and the whole argument for preferring it over a
+    cloned one is that it contains no strategy -- so it cannot cap the ceiling, and it cannot
+    punish exploration the way a collapsed clone does. That argument only holds if the
+    distribution really is flat outside noop, which is what this checks.
+    """
+    import importlib.util
+    import pathlib
+
+    import jax.numpy as jnp
+
+    from kagg.sim import ops as O
+
+    spec = importlib.util.spec_from_file_location(
+        "t", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train_jax_rl.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # One unit with four legal ops: noop, and three others.
+    mask = np.zeros((1, 1, O.N_OPS), dtype=bool)
+    mask[0, 0, [O.NOOP, O.NORTH, O.WEST, O.WATER]] = True
+    heads = {"op": jnp.zeros((1, 1, O.N_OPS))}
+    masks = {"op": jnp.asarray(mask)}
+
+    prior = mod.hand_prior_heads(heads, masks, noop_p=0.3)["op"]
+    p = np.asarray(jnp.exp(jnp.where(masks["op"], prior, -jnp.inf)))[0, 0]
+
+    assert p[O.NOOP] == pytest.approx(0.3, abs=1e-6)
+    for op in (O.NORTH, O.WEST, O.WATER):
+        assert p[op] == pytest.approx(0.7 / 3, abs=1e-6), "non-noop mass must be flat"
+    assert p.sum() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_hand_prior_cannot_punish_exploration():
+    """The property that blocks the cloned prior, stated as a test.
+
+    The measured BC checkpoint assigns 6e-5 to moving at the spawn state, so `KL(policy || prior)`
+    would tax PPO for discovering the one behaviour it needs. A hand prior's floor on any legal
+    option is `(1 - noop_p) / n_legal`, which for realistic values is thousands of times larger.
+    """
+    import importlib.util
+    import pathlib
+
+    import jax.numpy as jnp
+
+    from kagg.sim import ops as O
+
+    spec = importlib.util.spec_from_file_location(
+        "t", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train_jax_rl.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    mask = np.zeros((1, 1, O.N_OPS), dtype=bool)
+    mask[0, 0, :] = True                       # worst case: every op legal, mass spread thinnest
+    heads = {"op": jnp.zeros((1, 1, O.N_OPS))}
+    masks = {"op": jnp.asarray(mask)}
+
+    prior = mod.hand_prior_heads(heads, masks, noop_p=0.3)["op"]
+    p = np.asarray(jnp.exp(prior))[0, 0]
+    worst = p[O.NORTH]
+
+    assert worst > 1e-3, f"floor {worst:.2e} is too thin to be safe as a prior"
+    assert worst > 500 * 6e-5, "must be far above the collapsed clone's 6e-5 at spawn"

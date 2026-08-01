@@ -284,6 +284,44 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     return rollout
 
 
+def hand_prior_heads(heads, masks, noop_p):
+    """A prior that is a *shape*, not a policy: `noop_p` on doing nothing, the rest spread evenly.
+
+    **This is what Ender actually did, and the distinction matters.** He used no imitation learning
+    at all -- 8th place from scratch, under $200, on this class of hardware -- and his prior was two
+    numbers typed into a config: `halt_init_prob=0.9` and `fraction_init_ratio=1:1:1:1:10`. Not a
+    cloned agent.
+
+    Two consequences follow, and they are why this is worth trying before the cloned prior:
+
+    - **It cannot cap the ceiling.** A prior containing no strategy offers no strategy to inherit,
+      so it sidesteps the risk `CLAUDE.md` attaches to letting a heuristic become the policy. A
+      behaviour-cloned prior does not: it encodes actual play, at the level of whatever it cloned.
+    - **It cannot be adversarial the way a collapsed clone can.** `KL(policy || prior)` taxes the
+      policy for putting mass where the prior has none, and the current BC checkpoint assigns 6e-5
+      to moving at the spawn state -- so as a prior it would punish PPO for the one behaviour it
+      needs to discover. A flat `noop_p` cannot do that by construction.
+
+    Only `op` is shaped. The market heads have their own imbalance and no measured pathology, and
+    shaping everything at once would break the one-delta-at-a-time rule for no evidence.
+    """
+    out = {}
+    for k, logits in heads.items():
+        if k != "op":
+            # Uniform over legal options: KL against a uniform prior is just negative entropy, so
+            # these heads keep exactly the behaviour the entropy bonus used to give them.
+            out[k] = jnp.zeros_like(logits)
+            continue
+        m = masks[k]
+        n_legal = jnp.maximum(m.sum(axis=-1, keepdims=True), 1)
+        # log p for the non-noop options, so that noop takes `noop_p` and the rest split the
+        # remainder. Written in log space directly rather than as logits to normalise.
+        others = jnp.log((1.0 - noop_p) / jnp.maximum(n_legal - 1, 1))
+        is_noop = jnp.arange(logits.shape[-1]) == O.NOOP
+        out[k] = jnp.where(is_noop, jnp.log(noop_p), others)
+    return out
+
+
 def kl_to_prior(heads, prior_heads, masks):
     """Mean KL(current || prior) over every head, respecting legality masks.
 
@@ -298,10 +336,10 @@ def kl_to_prior(heads, prior_heads, masks):
     its initialisation. Same instrument, opposite direction -- which also explains why raising
     `ent_coef` 6.7x did nothing measurable: uniform was the wrong target either way.
 
-    The prior here is the behaviour-cloned network, so it is not a hand-written guess about how to
-    play; it is a $100k+ agent. And it is a *soft* penalty, not a mask, so it stays clear of the
-    quality-masking anti-pattern `CLAUDE.md` records as an Orbit Wars failure: nothing is forbidden,
-    some things are merely made expensive to abandon.
+    The prior is either a behaviour-cloned network or a hand-specified shape -- see
+    `hand_prior_heads`. Either way it is a *soft* penalty rather than a mask, so it stays clear of
+    the quality-masking anti-pattern `CLAUDE.md` records as an Orbit Wars failure: nothing is
+    forbidden, some things are merely made expensive to abandon.
     """
     total = 0.0
     for k, logits in heads.items():
@@ -316,7 +354,7 @@ def kl_to_prior(heads, prior_heads, masks):
 
 
 def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_coef=0.0,
-                kl_coef=0.0, prior_params=None):
+                kl_coef=0.0, prior_params=None, hand_noop_p=0.0):
     """Build the jitted PPO update over one rollout's minibatches."""
 
     def loss_fn(params, batch_data):
@@ -376,7 +414,11 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
 
         # KL to the behaviour-cloned prior. Computed only when a prior is supplied, so a run without
         # one costs nothing and behaves exactly as before.
-        if prior_params is not None and kl_coef:
+        if kl_coef and hand_noop_p:
+            kl_prior = kl_to_prior(
+                heads, hand_prior_heads(heads, batch_data["masks"], hand_noop_p),
+                batch_data["masks"])
+        elif prior_params is not None and kl_coef:
             prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
             kl_prior = kl_to_prior(heads, jax.lax.stop_gradient(prior_heads),
                                    batch_data["masks"])
@@ -523,6 +565,12 @@ def main():
                          "prior is the general form, and a cloned $100k agent is a better prior "
                          "than any guess. Set --ent-coef 0 when using this: it replaces the "
                          "entropy bonus rather than joining it.")
+    ap.add_argument("--hand-prior", type=float, default=0.0,
+                    help="P(noop) for a hand-specified KL prior, e.g. 0.3. This is what Ender "
+                         "actually used -- he ran no imitation learning at all and his prior was "
+                         "two numbers in a config. A prior containing no strategy cannot cap the "
+                         "ceiling and cannot punish exploration the way a collapsed clone can. "
+                         "Takes precedence over --kl-prior when both are given. 0 disables.")
     ap.add_argument("--kl-coef", type=float, default=0.01,
                     help="weight on KL(policy || prior). Ender reduced his later in training for "
                          "a further significant gain; 0 disables.")
@@ -665,7 +713,8 @@ def main():
                            args.n_phases)
     update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
                                      args.max_grad_norm, optimiser, seat_coef=args.seat_coef,
-                                     kl_coef=args.kl_coef, prior_params=prior_params)
+                                     kl_coef=args.kl_coef, prior_params=prior_params,
+                                     hand_noop_p=args.hand_prior)
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
