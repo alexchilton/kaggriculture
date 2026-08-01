@@ -735,3 +735,82 @@ one. Ordinary covariate shift.
    wired.
 5. GPU runs at **84-90 C** and throttles: 646 t/s early, 150-180 t/s sustained. Plan timings on the
    throttled rate. `--minibatch-size 1024` dies with a real OOM; 512 fits.
+
+### Landed after the session-5 writeup — read this before starting the RL
+
+Three more fixes, and **the training run on the box is stale**: it was started before the last two
+and is still using the old observation.
+**Restart it before reading anything into its numbers.**
+
+```
+kagg-train --batch 256 --horizon 32 --updates 4000 --minibatch-size 512 --epochs 2 \
+  --n-phases 256 --opponent-frac 0.15 --idle-frac 0.05 --trade-frac 0.15 --farm-frac 0.30 \
+  --early-limit 288 --seat-coef 1.0 --ent-coef 0.01 --lr 3e-5 --pool-every 50 --ckpt-every 50
+```
+
+**1. The trader opponent was in 0% of games.**
+Each opponent type picked its own strided set of indices and dropped any another type had claimed.
+The strides share residue classes -- the farmer lands on `it + 2 (mod 3)` and every trader pick
+`j*6 + it + 2` is in that same class -- so **every** trader pick collided and was filtered out.
+Measured against what was asked: pool 15 -> 14.8%, farmer 30 -> 30.1%, trader 15 -> **0.0%**,
+idle 5 -> 2.7%, self-play 35 -> **52.3%**.
+The trader is the seat that exists *because* it banks $3,368 and so cannot draw with a passive
+policy -- the entire point of it -- and it had never appeared in a game.
+Now one rotating partition, so shares are exact and collisions impossible.
+
+**2. Two claims in the session-5 writeup above are wrong, corrected here rather than edited out.**
+
+- *"The crew is shrinking, which is the policy learning cost discipline."* **There is no dismiss
+  action.** `jax_sim._end_of_day` does `n_units=jnp.ones_like(...)` -- the engine resets the crew to
+  one every night unconditionally. What is falling is the *hire* rate, and it is a vicious circle,
+  not discipline: fewer units means fewer chances to stumble into a completed maintenance loop,
+  which means less evidence that hiring pays, which means hiring less. Real winners run crews of
+  10-17 banking $50k-$110k. 1.3 is a collapse to the cheapest thing that does not lose -- the same
+  shape as the noop finding one level up.
+- *"It builds pastures twice as often as it plants."* Partly a confound: `BUILD_PASTURE` and
+  `BUILD_COOP` are masked only on `kind == EMPTY` with **no cost check at all**, while `PLANT`
+  requires a seed already bought. `PLACE` is the clean comparison -- it is *more* gated than PLANT
+  and still fires at a third of its rate, while water/care/feed are an order of magnitude rarer
+  again. The setup-versus-maintenance split survives; that one comparison did not support it.
+
+**3. Each unit now gets the direction to its nearest job** (`kagg/rl/jax_obs.py`).
+Four targets -- nearest tile needing water, nearest ripe tile, nearest unfed animal, nearest free
+tile -- each as signed dx, dy and an inverted distance, so "nothing to do" and "very far" both read
+near zero while a job underfoot reads one. Unit features 16 -> 28.
+
+The reasoning, which is the transferable part: **precompute the geometric fact rather than making
+the network derive it through reward.** `jax_obs.py` already does this ("Age drives every yield
+rule, so give it directly rather than making the net subtract"), and Ender's entire target-selection
+pipeline is built on it -- he precomputes orbital intercept geometry and hands it to the policy
+rather than teaching a transformer orbital mechanics from raw positions. Ours is the trivial version:
+Manhattan distance on a static 10x10 grid.
+It is a fact, not a quality judgment -- it says where the nearest dry plant is, not that watering is
+what the unit should do, so it stays the right side of `CLAUDE.md`'s line about masking to *force*
+an action.
+
+**This changes the observation width, so existing checkpoints will not load.** Acceptable: the BC
+track is parked and the run it invalidates was 20 updates old.
+
+**The cheap falsification test to run first, before trusting the feature:** does the policy's action
+distribution shift toward WATER when a unit is adjacent to a dry tile versus far from one? If it
+shifts, the problem was the length of the walk and this feature is the right lever. If it does not
+shift even when adjacent, something more basic is wrong and the feature is fixing the wrong thing.
+
+### The state of the RL, honestly
+
+Every run so far converges toward *less* activity, not more. Latest, on full-season rows:
+plant 5.66% -> 2.39%, water 1.72% -> 0.74%, harvest never leaving ~0.02%, hire rate collapsing.
+It is not paralysed and it is not failing to explore -- it tries seventeen of eighteen ops. It does
+setup and skips maintenance, in **both** economies: 4,591 animals placed against 12 fed, 13,439
+crops planted against 98 harvested.
+
+Fable's read, which I agree with: this is an exploration base-rate problem convolved with credit
+assignment, not a horizon problem. Gamma handles the horizon fine. The issue is that completing a
+maintenance loop needs several correct movement steps followed by the right op on arrival, repeated
+across days, with the reward arriving 8-12 days later -- and with 98 successes in 413k actions there
+is essentially no completed trajectory in the data for the critic to learn from.
+
+**Do not just let it run longer without landing a change first.** The direction is currently away
+from activity and the hire collapse is self-reinforcing, so more hours will tighten a dead end
+rather than escape it. The geometry feature is that change; run the ~19-update owned-unit census
+again and see whether water and harvest move at all before committing hours.
