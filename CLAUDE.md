@@ -146,12 +146,24 @@ These were agreed before any code was written, specifically so they cannot be ra
   length the credit-assignment argument for per-step decomposition no longer applies, and the
   true objective is available directly: the ladder is an Elo rating, so **terminal win/loss
   (+1/-1/0) with gamma 1.0 is what `scripts/train_rl.py` actually trains on.**
-  Money is logged but never rewarded. The bullet below still stands for any *per-turn* policy,
-  where 720-step credit assignment is the problem it was written about.
-- **Per-step bank delta is the reward, with gamma ≈ 1.0.** This is not reward shaping.
-  See `docs/rl_feasibility.md` for the full argument.
-  A future session will be tempted to "fix" this back to terminal-only because the Orbit Wars
-  post-mortem says "never shape the reward". That ban was about *proxy* rewards. It does not apply here.
+  Money is logged but never rewarded.
+- **SUPERSEDED 2026-08-01 for the per-turn policy too — Alex's call, made explicitly.**
+  **The reward is terminal: win 1, loss 0, gamma 1.0. Never per step.** This now applies to
+  *every* policy in the project, so the per-step bullet below no longer governs anything and is
+  kept only so a future session does not "restore" it from `docs/rl_feasibility.md`.
+
+  It is also what the evidence says. Of the top finishers whose write-ups we have, four used a
+  terminal signal — Felix Neumann terminal -1/+1, simjeg terminal with gamma 0.995, Isaiah Pressman
+  terminal, Billy Bradley's `ender` positive-only 0/1/2 with gamma 0.998 — and none used a
+  per-step bank delta. The ladder is an Elo rating, so margin does not count, and a $43k win and a
+  $4k win are the same result.
+
+  If credit assignment over 720 steps stalls, the agreed next move is a **per-game-day** signal,
+  not a per-step one, and only after `explained_variance` has been checked first.
+- **~~Per-step bank delta is the reward, with gamma ≈ 1.0.~~ NO LONGER IN FORCE.** Superseded by
+  the bullet above for every policy. Left in place because `docs/rl_feasibility.md` still argues
+  for it at length, and a future session reading that doc alone would otherwise reintroduce it.
+  The argument there is not wrong about credit assignment; it was simply overruled.
 - **Legality masking is fine and expected.** MaskablePPO is the intended trainer.
   The Orbit Wars warning was about masking no-op to *force* action, which is a quality judgment.
   Masking illegal ops is a legality fact and is explicitly blessed by our own post-mortem.
