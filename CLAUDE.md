@@ -110,6 +110,49 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
   question asked. Both times a review here reached a wrong conclusion it was because the framing
   handed to it was wrong, not the reasoning inside it.
 
+- **A metric can be correct per row and still meaningless, if its label is unstable over the thing
+  it describes.** The per-opponent win rate was computed on exactly the right rows -- the live
+  policy's own seat, in a finished game, against a named opponent -- and measured nothing, because
+  the opponent was re-drawn every update while a game spans ~22.5 of them. A game faced a mean of
+  4.9 distinct opponents; the label recorded whichever one held the seat on the final update. So
+  before trusting an aggregate, ask what unit it is aggregating over and whether the label is
+  constant across that unit. `farm:0.445` and a replay of the same checkpoint losing 32/32 while
+  banking $0 against $30,292 were both accurate statements about different things.
+
+- **Prefer a replay to an aggregate whenever the aggregate could be a tie.** The reward pays 0.5 for
+  a draw, so a win rate near 0.5 is indistinguishable from "draws everything" -- and two policies
+  that both bank $0 draw with certainty, since `money == money` is exact. `scripts/play_checkpoint.py`
+  reports W/D/L and the bank curve for that reason. Every conclusion about the RL for a whole day
+  came from rates that a five-minute replay contradicted.
+
+- **Check the hardware before planning around a throughput number.** The GPU had been running at
+  **210 MHz of 2100** under `SwThermalSlowdown` at 90 C, drawing 41-64 W. Every throughput figure in
+  these docs was measured on a throttled card, and the "1B steps is about a month" estimate was out
+  by 3x in the pessimistic direction. Cold it does ~1,100 turns/s and decays to ~370 within two
+  minutes. `nvidia-smi --query-gpu=clocks.sm,clocks.max.sm` is one command and it closed an item
+  that had been open as "unexplained" for two sessions.
+
+- **Rank the ops by what correlates with winning before optimising any of them.** Across 312 real
+  leaderboard seats, FEED (+0.452), CARE (+0.441) and harv/plant (+0.439) predict money, while
+  PLANT (-0.358) and WATER (-0.276) predict *less* of it -- the top decile plants 1.27% of its
+  actions against the bottom quartile's 3.77%. A whole day was spent celebrating a water/plant ratio
+  climbing 0.30 -> 2.5, and water/plant correlates with money at **+0.100**. The measurement cost
+  ten minutes and would have redirected the day.
+
+- **A prior that is a shape is not a prior that is a policy, and only the second one caps the
+  ceiling.** Ender's was `halt_init_prob=0.9` -- one number meaning "mostly do nothing", containing
+  no strategy to inherit. "Buy land on day 10" is read off replays and is strategy. `--spend-prior`
+  is deliberately the first kind: it says transacting is rare, never which purchase or when, and
+  `--kl-anneal` decays it so it is a starting condition rather than a constraint. The test that it
+  has not capped anything is that trained spend rates finish **above** the prior, not pinned to it.
+
+- **A decision to skip a fix can expire when the problem changes.** `hand_prior_heads` declined to
+  shape the market heads for a stated and correct reason: their failure was *under*-firing from a
+  broken joint decode, and a flat prior would not fix a missing correlation. The autoregressive
+  decode landed and the failure inverted to over-firing -- `buy_seed` on 29.1% of turns, bank at $0
+  by day five. Same code, same argument, opposite problem. Re-read the reason a thing was rejected
+  before assuming it still holds.
+
 ## Kill criteria — committed up front
 
 These were agreed before any code was written, specifically so they cannot be rationalised away later.

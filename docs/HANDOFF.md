@@ -865,3 +865,263 @@ Three measured, unexploited opportunities, in order of size:
   `CLAUDE.md`: judge a technique against the problem its author built it for, and never hand a
   reviewer the narrow framing -- both wrong conclusions from reviews this session came from the
   framing given to them, not the reasoning inside them.
+
+---
+
+## Session 6 — 2026-08-01, evening
+
+**The headline: the win rate was not real, and the reason was a bug that made every measurement of
+every opponent invalid.**
+A replay of the update-250 checkpoint, played properly to completion, **loses 32/32 from both seats
+and banks $0 against the scripted farmer's $30,292**, while the log read `farm:0.445/91x`.
+Training has been restarted from scratch with the fix.
+
+Read `## The rotating-opponent bug` below before trusting any per-opponent number in any log written
+before this session.
+
+### The rotating-opponent bug
+
+The seat-1 opponent was drawn fresh every update, while the game state persisted across updates.
+A season is 720 turns and `--horizon` is 32, so a game spans ~22.5 updates and had its opponent
+re-drawn on every one of them.
+Measured over one season, a single game faced a mean of **4.9 distinct opponents**:
+
+```
+game 0:  opp idle farm self trade opp self farm opp self farm self trade farm self farm opp self ...
+```
+
+Three consequences, worst last:
+
+- **The per-opponent win rate measured nothing.** `farm:0.445/91x` meant "games carrying the farm
+  label on their *final* update", and those games spent 30% of their season against the farmer.
+- **It is why all four columns read ~0.5.** For 35% of updates seat 1 is the live policy, which
+  spends its stake to $0; both seats finish near zero, `money == money` holds, and the tie pays 0.5.
+  `idle:0.464 trade:0.489 farm:0.445 pool:0.500` was one number four times: the draw rate of two
+  starved farms.
+- **The opponent ladder did not exist.** The farmer cannot bank $23,783 while holding the seat for
+  30% of updates with the policy dismantling the farm in between, so the policy had never played a
+  full game against *any* coherent opponent.
+  `--farm-frac`, `--trade-frac` and `--idle-frac` did not do what their names say.
+
+**Fixed** by drawing the role once per episode and holding it until that slot restarts, which means
+it lives in the rollout's scan carry rather than in the Python loop.
+Pinned by `tests/test_train_metrics.py::test_a_games_opponent_must_not_change_mid_season`,
+parametrised so the old scheme goes red at 5 opponents and the new one holds at <= 2.
+
+This line has now been wrong three times in three different ways, each fix exposing the next, and
+the history is kept in the comment above `make_rollout` so it is not rediscovered a fourth time:
+residue-class collisions (trader in 0% of games) -> contiguous bands (scripted seats never played
+the endgame) -> per-update redraw (this one).
+
+### The virgin-episode bug
+
+`staggered_states` seeds each slot mid-season on an **empty** board with $3,000 a side, because
+`reset(phase=...)` moves `step_index` and nothing else.
+A slot seeded at turn 700 therefore terminates twenty turns later having played twenty turns, and
+`won = money > money[::-1]` is decided by the day/board mismatch rather than by play.
+
+The scripted farmer makes it worse in a way that is easy to miss: its own logic reads
+`day = step_index // TURNS_PER_DAY` and gates planting on `day <= LAST_PLANT_DAY`
+(`jax_heuristic.py:179`), so on a fresh board claiming to be day 29 it declines to plant or hire at
+all.
+Both sides stand still and the game scores as an exact tie, worth 0.5.
+
+**This fires on every run start, not only on a resume** -- `staggered_states` runs unconditionally
+before the `--resume` branch.
+One illegitimate terminal reward per game slot, every time the process starts.
+
+**Fixed** with a `virgin` flag: a slot's first ending pays no reward and is flagged `trunc`, not
+`done`.
+The distinction is load-bearing and was nearly missed -- `gae` zeroes the bootstrap on `done`, so a
+suppressed reward still flagged `done` would teach the critic that a mid-season state is worth
+exactly zero, trading a wrong reward for a wrong value target.
+Pinned by `test_a_phase_seeded_first_ending_keeps_its_bootstrap`.
+
+### What actually worked: `is_ripe`
+
+The one genuine behavioural win of the session, and it was found by asking an external model to look
+for *internal inconsistencies* rather than to evaluate a hypothesis.
+
+`jax_obs.py`'s nearest-job geometry gave units a directional pull toward a ripe **crop** and none at
+all toward a harvestable **animal**, though `jax_masks.py:86` makes HARVEST legal on both.
+The crop half was also *broader* than legality: it omitted the mask's `FIRST_YIELD_DAY` condition,
+so it pointed units at seedlings they were not yet old enough to harvest -- spending the walk and
+then masking the payoff.
+
+Now mirrors the mask exactly. Measured effect, on full-season rows:
+
+| | before | after |
+|---|---|---|
+| water/plant ratio | 0.30 | **~2.5** |
+| water | 1.7% | 9.3% |
+| harvest | 0.01% | 0.31% |
+
+Harvest had sat on that 0.01% floor for the project's entire history.
+**Both thresholds we set for judging the feature were wrong** -- an external review said judge at
+update 25-30 and so did I; the change began at update 42.
+On either call we would have killed the run four updates before it turned.
+
+### The animal economy is a measured trap, not merely unlearned
+
+`escaped = has_animal & (unfed >= 2)` (`jax_sim.py:1057`), and every first-yield day is later:
+GOOSE 4, COW 8, SHEEP 6, at $300/$400/$500.
+So with FEED at exactly zero, **every animal bought is a certain total loss** of 10-17% of the
+opening bank -- not a bad expected value, a deterministic one with no variance for PPO to average.
+
+The policy has correctly learned the lesson: `buyanimal` is down to **0.07%** from thousands of
+placements earlier in the day.
+Which closes the loop -- no animals on the board means `has_animal` is false, means FEED is masked
+out, means animals can never be fed, means the aversion deepens.
+That is the hire-collapse shape, but deterministic.
+
+Two hypotheses were killed by the new censuses, both worth recording because both were plausible:
+
+- **`trade` collapse.** Refuted: `trade` reads 0.27-0.42 across all three modes, near-uniform.
+- **`item` never selecting wheat.** Refuted: `pickup` index 0 (WHEAT) is **14-19%** of pickups, and
+  `buy_product` fires at 2-22% on the two buyable items. Wheat is bought *and* carried.
+
+So the blocker is upstream of both: there are no animals to feed.
+**And there is no teacher.** `jax_heuristic.py:192` sets `buy_animal=zeros` and its docstring says
+so outright -- "this is the crop economy only... deliberately not the animal economy".
+Nothing in the training distribution has ever fed an animal.
+Extending `jax_heuristic` to ranch would give both a teacher and an opponent that punishes ignoring
+livestock; that is the next substantial piece of work on the RL track.
+
+### The GPU was at 10% clock, which invalidates every throughput figure in these docs
+
+This closes the "**Unexplained:** throughput fell from ~650 to 166 turns/s" item above.
+It is `SwThermalSlowdown`: **210 MHz of a 2100 MHz maximum** at 88-91 C, drawing only 41-64 W of a
+part rated far higher.
+Not power-capped -- the cooling cannot shed even a third of its rated heat, which points at dust,
+paste or a blocked intake rather than a voltage curve.
+
+Measured decay on a restarted run, marginal rate rather than cumulative:
+
+```
+upd 152  1108 t/s      upd 156   538 t/s
+upd 154  1026 t/s      upd 160   372 t/s
+```
+
+**~1,100 t/s cold, ~370 sustained.** An underfan bought roughly 2x (210 -> 240-285 MHz, 90 -> 88 C)
+and is not sufficient.
+Consequence for planning: 1B turns is ~10 days at full clock against ~31 at the throttled rate and
+~67 at the pre-fan rate.
+Every scale estimate previously written down, including "1B steps ... about a month", was taken on a
+throttled card.
+
+`t/s` was also wrong on any resumed run -- `(it + 1)` counts from update 0, so it credited
+pre-resume turns against post-resume wall-clock and printed 13,082 on a card doing ~1,100.
+
+### Built
+
+- `scripts/play_checkpoint.py` -- plays a checkpoint against the in-sim farmer for a full season and
+  reports **W/D/L rather than a rate**, the bank curve per game-day, and an op census over the
+  policy's own live units.
+  This is what caught the win-rate bug, and the lesson generalises: **a rate cannot distinguish
+  "wins half" from "draws everything", and this project's reward pays 0.5 for a tie.**
+- Four censuses, all logging-only: market (`trade`/`buy`/`sell`/`crop`), `item` on PICKUP,
+  `buy_animal`, and realised role shares.
+  Sticky roles are *sampled* rather than partitioned, so the mix is no longer exact by construction
+  and has to be measured.
+- Win rate split by opponent type, `mean_units` corrected to the policy's own rows, and three new
+  differential tests.
+
+### Where to pick up
+
+1. **Read the fresh run** (`ppo-20260801-194804`, started 19:48, sticky roles, from scratch).
+   The numbers that matter are `vs farm` -- now a real measurement for the first time -- and whether
+   harvest keeps climbing off 0.31%.
+   Expect `vs` columns to differ sharply from the ~0.5 everything used to read.
+2. **Verify with a replay, not the log.** `scripts/play_checkpoint.py <ckpt> --games 32 --sample`.
+   A win rate near 0.5 with `tstd` near 0 still means draws, and the replay is the only thing that
+   distinguishes them.
+3. **The animal economy needs a ranching teacher** before FEED can ever fire. See above.
+4. **Fix the cooling.** It is worth ~3x on every remaining decision in this project and costs an
+   afternoon.
+5. `scripts/eval_policy.py:41` **cannot run at all** -- its `_greedy` argmaxes `sell`/`buy_product`
+   without conditioning on `trade` first, so it hits a shape mismatch. Broken since the
+   autoregressive decode landed.
+6. `tests/test_ladder.py::test_the_waste_detector_finds_a_deliberately_reintroduced_no_op` fails on
+   clean `main` and predates this session.
+
+### The measured op ranking, which reordered the whole RL priority list
+
+Across 312 real leaderboard seats ($3.5k-$132k), Spearman correlation of each op's share of a seat's
+actions against the money it banked:
+
+| metric | rho | top 10% | bottom 25% |
+|---|---|---|---|
+| FEED | **+0.452** | 5.02% | 1.20% |
+| CARE | **+0.441** | 5.02% | 1.03% |
+| harv/plant | **+0.439** | 2.63 | 1.06 |
+| PICKUP | +0.381 | 2.32% | 1.07% |
+| BUILD_PASTURE | +0.376 | 0.27% | 0.07% |
+| DROP | +0.371 | 1.53% | 0.33% |
+| COLLECT_FERTILIZER | +0.340 | 3.40% | 0.93% |
+| PLANT | **-0.358** | 1.27% | 3.77% |
+| WATER | **-0.276** | 7.59% | 17.71% |
+| water/plant | +0.100 | 6.62 | 5.99 |
+| MOVE | -0.098 | 49.7% | 50.4% |
+
+Six of the top seven are the wheat -> animal -> product pipeline. **Both crop ops are negatively
+correlated** -- the top decile plants a third as often as the bottom quartile and waters less than
+half as often. `BUILD_PASTURE` is +0.376 while `BUILD_COOP` is +0.022, so cows and sheep matter and
+geese do not, which cuts against this file's earlier note about `EGG`'s glut curve.
+
+**And `water/plant` is +0.100 -- essentially uncorrelated.** The session spent a day treating it as
+the convergence target, on a ratio read off two top seats. `harv/plant` is the one that matters.
+The `is_ripe` win is real but was oversold here on the strength of the wrong statistic.
+
+The top 25 seats' playbook, same method:
+
+```
+animals   median 11 -- SHEEP 55%, COW 43%, GOOSE 1.8%    (pastures, not coops)
+          first purchase turn 1 (day 0), last day 11
+wheat     BOUGHT, median 295 orders, first at turn 2 -- not grown
+crew      median 12, peak 13, re-hired nightly (281 orders)
+land      2 quadrants, first at median turn 242 = day 10
+feed:care 1.01 -- one visit, both ops
+sells     WHEAT 47.5%, FERTILIZER 23.1%, WOOL 12.0%, MILK 9.1%
+planting  ~80 actions in a whole season
+```
+
+### Where the $3,000 goes -- measured, and it is not what I first claimed
+
+Attempt rates on a trained checkpoint: `buy_seed` **0.291**, `hire` **0.248**, `buy_land` **0.016**.
+
+I had argued land was the leak, because `LAND_PRICES[0] + LAND_PRICES[1]` is exactly $3,000 and both
+purchases are affordability-legal. The census refuted it: seed attempts are 18x more frequent. Land
+still costs the most per successful action, so **neither is proven** -- these are attempt rates and
+every head is affordability-masked, so attempts continue and silently fail once the bank is empty.
+Attributing dollars needs money-delta-by-cause logging, which does not exist yet.
+
+`--spend-prior` was added in response: a KL prior shaping the four spending heads toward "transacting
+is rare", annealed by `--kl-anneal`. See `CLAUDE.md` for why a shape is not a policy, and for the
+test that it has not capped anything -- trained spend rates must finish **above** the prior.
+
+### `kagg/rl/jax_rancher.py` -- WORK IN PROGRESS, do not use as a teacher yet
+
+The animal economy is the game and nothing in the project plays it: `jax_heuristic` is crop-only by
+design and `contrarian`/`converter` are Python agents that cannot run in the scan. This is the port.
+
+**Status: the loop works, the revenue does not.** Best measured result **$8,460-$8,626** against
+`jax_heuristic`'s $23,783 and the real winners' $112k-132k. It keeps 9-10 animals alive to day 29,
+which nothing else in this project has done, and it fires FEED/CARE/COLLECT_FERT at close to the
+measured winner shares. So the chain buy -> pasture -> pickup -> place -> feed -> care -> harvest is
+correct end to end.
+
+Two diagnosed bugs, one fixed and one not:
+
+- **Fixed: shed overflow destroyed the produce.** `SHED_CAP` is 100 and the first version bought
+  wheat to 3x the herd, reaching 67 wheat by day 29. 5,408 products were harvested over a season and
+  the shed ended with five -- the rest discarded on the nightly carried-inventory dump. Wheat in the
+  shed is not a buffer, it is a claim on the only storage the produce has.
+- **NOT fixed: PICKUP is 37-52% of all unit actions against a 2.3% target.** `jax_sim` PICKUP takes
+  `min(want_qty, in_shed)` from a shed **shared by every unit in the same vectorised step**, so a
+  crew of fifteen each asking for six against a shed of twelve leaves most empty-handed -- and an
+  empty-handed unit re-emits PICKUP next turn. Raising the wheat buffer traded the thrash for a
+  smaller herd ($8,460, 4 animals). The real fix is probably to stagger which units go to the shed,
+  or to have one unit ferry feed, rather than to tune the buffer.
+
+Do not wire it in as an opponent until it clears `jax_heuristic`'s $23,783, or it makes the ladder
+worse while appearing to make it better.
