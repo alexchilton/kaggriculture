@@ -304,7 +304,36 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser):
         params = optax.apply_updates(params, updates)
         return params, opt_state, {**aux, "loss": loss, "grad_norm": gnorm}
 
-    return update
+    @functools.partial(jax.jit, static_argnames=("epochs", "n_chunks", "chunk"))
+    def run_epochs(params, opt_state, data, key, epochs, n_chunks, chunk):
+        """Every minibatch of every epoch as a single dispatch.
+
+        The obvious loop -- shuffle in numpy, slice per minibatch, call a jitted update -- costs one
+        host-to-device transfer of the index array *per minibatch*. At 128 chunks and 2 epochs that
+        is 256 round trips per update, each one a separate dispatch with its own launch latency,
+        for an update whose actual arithmetic is a few hundred milliseconds. Permuting on device and
+        scanning over the chunks collapses all of it into one call.
+        """
+        def one_epoch(carry, ekey):
+            params, opt_state = carry
+            perm = jax.random.permutation(ekey, n_chunks * chunk)
+            perm = perm.reshape(n_chunks, chunk)
+
+            def one_minibatch(carry, rows):
+                params, opt_state = carry
+                mb = jax.tree_util.tree_map(lambda x: x[rows], data)
+                params, opt_state, metrics = update(params, opt_state, mb)
+                return (params, opt_state), metrics
+
+            (params, opt_state), metrics = lax.scan(one_minibatch, (params, opt_state), perm)
+            return (params, opt_state), metrics
+
+        keys = jax.random.split(key, epochs)
+        (params, opt_state), metrics = lax.scan(one_epoch, (params, opt_state), keys)
+        # Report the last minibatch of the last epoch, matching what the Python loop reported.
+        return params, opt_state, jax.tree_util.tree_map(lambda m: m[-1, -1], metrics)
+
+    return update, run_epochs
 
 
 def _clip_by_norm(grads, max_norm):
@@ -481,8 +510,8 @@ def main():
 
     rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda,
                            args.n_phases)
-    update = make_update(model, args.clip, args.vf_coef, args.ent_coef,
-                         args.max_grad_norm, optimiser)
+    update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
+                                     args.max_grad_norm, optimiser)
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
@@ -517,15 +546,13 @@ def main():
         state, key, traj, advantages, returns = rollout(
             params, target_params, opp_params, jnp.asarray(use_opp), state, sub)
 
-        # Episodes restart inside the scan now, so there is no Python-level reset here. Doing both
-        # would reset a second time one turn into the new episode and silently discard it.
-        finished = np.asarray(traj["done"]).sum()
-        if finished:
-            rewards = np.asarray(traj["reward"])[np.asarray(traj["done"])]
-            wins += float(rewards.sum())
-            games += float(rewards.size)
+        # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
+        # and `reward` arrays back to the host, as this did, forces a synchronisation on every
+        # update and blocks the pipeline on a transfer whose only purpose is a running average.
+        done_count = traj["done"].sum()
+        reward_sum = jnp.where(traj["done"], traj["reward"], 0.0).sum()
+        rewarded_frac = traj["done"].mean()
 
-        # Re-encode observations once per rollout for the update passes.
         def flatten(x):
             return x.reshape(flat_n, *x.shape[2:])
 
@@ -540,64 +567,54 @@ def main():
             obs=tuple(flatten(x) for x in traj["obs"]),
         )
 
-        idx = np.arange(flat_n)
+        # Explained variance, also reduced on device. `ev` over everything is mostly the critic
+        # scoring itself on reward-free rows; `ev_signal` restricts to rows where an episode
+        # actually ended, which is the only version that can fail.
+        ret_d = batch_data_full["returns"]
+        val_d = flatten(traj["value"])
+        ev_d = 1.0 - (ret_d - val_d).var() / jnp.maximum(ret_d.var(), 1e-8)
+        done_d = batch_data_full["trainable"] & flatten(traj["done"])
+        w = done_d.astype(jnp.float32)
+        n = jnp.maximum(w.sum(), 1.0)
+        r_mean = (ret_d * w).sum() / n
+        r_var = ((ret_d - r_mean) ** 2 * w).sum() / n
+        e_var = (((ret_d - val_d) - ((ret_d - val_d) * w).sum() / n) ** 2 * w).sum() / n
+        ev_sig_d = jnp.where(r_var > 1e-8, 1.0 - e_var / jnp.maximum(r_var, 1e-8), jnp.nan)
+
         n_chunks = max(1, flat_n // args.minibatch_size)
-        metrics = None
-        for _ in range(args.epochs):
-            np.random.shuffle(idx)
-            for chunk in np.array_split(idx, n_chunks):
-                chunk = jnp.asarray(chunk)
-                mb = dict(
-                    old_logp=batch_data_full["old_logp"][chunk],
-                    old_value=batch_data_full["old_value"][chunk],
-                    trainable=batch_data_full["trainable"][chunk],
-                    adv=batch_data_full["adv"][chunk],
-                    returns=batch_data_full["returns"][chunk],
-                    actions={k: v[chunk] for k, v in batch_data_full["actions"].items()},
-                    masks={k: v[chunk] for k, v in batch_data_full["masks"].items()},
-                    obs=tuple(x[chunk] for x in batch_data_full["obs"]),
-                )
-                params, opt_state, metrics = update(params, opt_state, mb)
-                target_params = ema_update(target_params, params, args.target_ema)
+        key, ekey = jax.random.split(key)
+        params, opt_state, metrics = run_epochs(
+            params, opt_state, batch_data_full, ekey,
+            epochs=args.epochs, n_chunks=n_chunks, chunk=args.minibatch_size)
+        target_params = ema_update(target_params, params, args.target_ema)
 
-        ret = np.asarray(batch_data_full["returns"])
-        val = np.asarray(traj["value"]).reshape(-1)
-        var = ret.var()
-        ev = float(1.0 - (ret - val).var() / var) if var > 1e-8 else float("nan")
-
-        # **Explained variance is a lie until a terminal reward lands inside the window.**
-        # Episodes are 719 turns and a rollout is `horizon` turns, so most rollouts contain no
-        # reward at all. With every reward zero, the return is pure value bootstrap and the
-        # advantage is derived from the same value function, so EV measures the critic against
-        # itself and comes out near 1.0 on an untrained network. `CLAUDE.md` makes EV > 0.5 a
-        # committed kill criterion for this exact frame, so an EV that cannot fail is worse than
-        # no EV: it would retire the kill criterion by accident. `ev_signal` is the honest number
-        # -- EV restricted to rollouts that actually contained a terminal reward -- and `nan` there
-        # means "not yet measurable", not "passing".
-        # Select on `done`, not on `reward != 0`. A loss scores 0, so filtering by nonzero reward
-        # keeps only the winners -- every selected return is then 1.0, the variance is 0, and EV
-        # comes out NaN. That made the one honest kill-criterion metric permanently unmeasurable.
-        rewarded = np.asarray(traj["done"]).reshape(-1)
-        if rewarded.any():
-            r_ret, r_val = ret[rewarded], val[rewarded]
-            r_var = r_ret.var()
-            ev_signal = float(1.0 - (r_ret - r_val).var() / r_var) if r_var > 1e-8 else float("nan")
-        else:
-            ev_signal = float("nan")
+        # One transfer per update, of scalars only.
+        stats = jax.device_get({
+            "done_count": done_count, "reward_sum": reward_sum,
+            "rewarded_frac": rewarded_frac, "ev": ev_d, "ev_signal": ev_sig_d,
+            "ret_mean": ret_d.mean(), "ret_std": ret_d.std(),
+            **{k: v for k, v in metrics.items()},
+        })
+        wins += float(stats["reward_sum"])
+        games += float(stats["done_count"])
+        ev = float(stats["ev"])
+        ev_signal = float(stats["ev_signal"])
 
         row = {
             "update": it,
             "turns": (it + 1) * args.horizon * args.batch,
-            "ret_mean": float(ret.mean()), "ret_std": float(ret.std()),
+            "ret_mean": float(stats["ret_mean"]), "ret_std": float(stats["ret_std"]),
             "explained_variance": ev,
             "ev_signal": ev_signal,
-            "rewarded_frac": float(rewarded.mean()),
-            "trainable_frac": float(np.asarray(traj["trainable"]).mean()),
+            "rewarded_frac": float(stats["rewarded_frac"]),
+            "trainable_frac": float(jax.device_get(traj["trainable"].mean())),
             "pool": len(pool),
             "win_rate": float(wins / games) if games else float("nan"),
             "episodes": int(games),
             "sps": float((it + 1) * args.horizon * args.batch / (time.time() - t_start)),
-            **{k: float(v) for k, v in metrics.items()},
+            **{k: float(stats[k]) for k in
+                 ("loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac",
+                  "grad_norm")},
         }
         with log_path.open("a") as fh:
             fh.write(json.dumps(row) + "\n")
