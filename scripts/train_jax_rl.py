@@ -161,6 +161,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     per_group = batch // n_phases
     # Even-numbered envs are the early-game ones, matching Ender's split exactly.
     is_early = (jnp.arange(batch) % 2) == 0
+    _EARLY_ROWS = jnp.repeat(is_early, 2)         # [B*2], for splitting per-seat statistics
 
     @functools.partial(jax.jit, static_argnums=())
     def rollout(params, value_params, opp_params, use_opp, use_idle, use_trade, use_farm,
@@ -721,10 +722,13 @@ def main():
     ap.add_argument("--early-limit", type=int, default=0,
                     help="if >0, even-numbered envs truncate at this many turns and restart, so "
                          "the opening is trained on constantly instead of once a season. Ender's "
-                         "`--earlygame-env-turn-limit`. Our chain breaks in the opening -- buy "
-                         "seed, walk out, plant, water for days -- and at 720 turns a season that "
-                         "sequence is one turn in 720 of the gradient. 150 covers melon's first "
-                         "harvest at day 10; 80 covers wheat's at day 2 with room to spare.")
+                         "`--earlygame-env-turn-limit`. **Count in turns, not days: there are 24 "
+                         "turns to a day.** Melon becomes harvestable at day 10 = turn 240 and its "
+                         "window closes at day 12 = turn 288, so anything below ~264 truncates "
+                         "before a melon can legally be picked and those rows are structurally "
+                         "incapable of completing the chain -- which then reads as the policy "
+                         "failing to learn it. 288 covers melon; 96 covers wheat, which yields at "
+                         "day 2 = turn 48.")
     ap.add_argument("--farm-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 is the JAX-native farmer, which banks "
                          "$23,783 a season against the trader's $3,368 and the idle seat's $3,000. "
@@ -1082,6 +1086,21 @@ def main():
         op_counts = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
                      * live_units[..., None]).sum(axis=(0, 1))
 
+        # **Split the census by whether the row can reach a harvest at all.**
+        #
+        # Early-game envs truncate and restart, so if the limit falls before a crop's
+        # `first_yield_day` those rows are *structurally* incapable of a legal HARVEST -- the mask
+        # requires `day - planted >= FIRST_YIELD_DAY`. Aggregating them with full-season rows gives
+        # a harvest rate that is part policy and part arithmetic, and reads as the policy failing at
+        # something it was never allowed to attempt. Same species of mistake as counting unit slots
+        # the farm does not own.
+        full_rows = jnp.tile(~jnp.repeat(
+            jnp.asarray((np.arange(args.batch) % 2) == 0), 2)[None, :],
+            (args.horizon, 1)).reshape(-1)
+        full_live = live_units & full_rows[:, None]
+        op_counts_full = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
+                          * full_live[..., None]).sum(axis=(0, 1))
+
         # **Anneal the regulariser, which Ender says mattered and which this flag never did.**
         #
         # `--kl-anneal` was parsed and then never read anywhere in this file -- a dead argument for
@@ -1145,6 +1164,8 @@ def main():
             "value_mean": float(stats["value_mean"]),
             "terminal_ret_std": float(stats["terminal_ret_std"]),
             "op_counts": [float(x) for x in jax.device_get(stats["op_counts"])],
+            "op_counts_full": [float(x) for x in jax.device_get(op_counts_full)],
+            "mean_units": float(jax.device_get(unit_exists.sum(axis=-1).mean())),
             "trainable_frac": float(jax.device_get(traj["trainable"].mean())),
             "pool": len(pool),
             "win_rate": float(wins / games) if games else float("nan"),
@@ -1181,7 +1202,14 @@ def main():
             f"{n}:{counts[O_NAMES.index(n)] / total_ops:.2%}" for n in chain)
         mix += f"  | noop:{counts[0] / total_ops:.0%}"
         moves = sum(counts[O_NAMES.index(n)] for n in ("N", "S", "E", "W"))
-        mix += f" move:{moves / total_ops:.0%}"
+        mix += f" move:{moves / total_ops:.0%} crew:{row['mean_units']:.1f}"
+        cf = row["op_counts_full"]
+        tf = max(1.0, sum(cf))
+        if args.early_limit:
+            # Only the full-season rows can legally reach a harvest, so their chain is the one
+            # worth reading when early-game envs are on.
+            mix += ("\n         full-season only  "
+                    + " ".join(f"{n}:{cf[O_NAMES.index(n)] / tf:.2%}" for n in chain))
         print(
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f} "
             f"tstd {row['terminal_ret_std']:.3f}  "
