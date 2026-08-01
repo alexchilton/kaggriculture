@@ -129,8 +129,23 @@ def encode(state):
 
     is_plant_t = t.kind == J.PLANT
     needs_water = is_plant_t & ~t.watered_today
-    is_ripe = is_plant_t & (t.yield_units > 0)
     has_animal_t = t.animal != J.NO_ANIMAL
+
+    # **Mirror `jax_masks.HARVEST` exactly, or this points units at jobs they cannot do and hides
+    # jobs they can.** The mask is `ripe_plant | (has_animal & units_held > 0)`, and this target
+    # was only the crop half of it -- so a unit got a directional pull toward a ripe melon and
+    # none at all toward a goose with eggs waiting. FEED has never once fired in 90 updates and
+    # animal-product harvest sits with it; giving the crop economy geometry the animal economy
+    # does not have would keep it that way by construction.
+    #
+    # The crop half also dropped the mask's `FIRST_YIELD_DAY` condition, which made it *broader*
+    # than legality: it pointed at seedlings carrying yield they are not yet old enough to take.
+    # A target that says "go here" for an illegal op is worse than no target -- it spends the walk
+    # and then masks the payoff.
+    crop_safe_t = jnp.clip(t.crop, 0, N_CROPS - 1)
+    ripe_crop = (is_plant_t & (t.yield_units > 0)
+                 & ((day_t - t.planted_day) >= J.FIRST_YIELD_DAY[crop_safe_t]))
+    is_ripe = ripe_crop | (has_animal_t & (t.yield_units > 0))
     needs_feed = has_animal_t & ~t.fed_today
 
     units = jnp.concatenate(
@@ -167,6 +182,32 @@ def encode(state):
     prices = (J.price(state.inventory) / PRICE_SCALE).astype(jnp.float32)
     inventory = ((state.inventory - J.INV0) / INVENTORY_SCALE).astype(jnp.float32)
     b = farm.money.shape[0]
+
+    # **What the next purchase costs, as a share of everything the farm has.**
+    #
+    # `money`, `n_land` and `hires_today` are all present, but no price is. The policy therefore has
+    # to learn the lookups `n_land -> {1000, 2000, 4000}` and `hires_today -> mult * fib(n)` through
+    # reward alone, and the reward is terminal -- 700 turns after the purchase.
+    #
+    # Measured motivation: `LAND_PRICES[0] + LAND_PRICES[1]` is exactly $3,000, the opening bank, and
+    # both purchases are affordability-legal. A policy that buys two quadrants on day 0 is broke for
+    # the remaining twenty-five days, which is precisely what the update-250 replay does -- $3,000 to
+    # $0 by day 5, then nothing. Across 312 real seats the median first land purchase is turn 242
+    # (day 10) and the top decile buys 1.59 quadrants; the seat that bought three from turn 1 banked
+    # $9,443 against the leaders' $130k. So the quadrant is not a bad buy, it is a bad buy *now*, and
+    # "now" is a function of the price against the bank.
+    #
+    # The ratio is the fact the mask already computes and then throws away: `land_ok` tests
+    # `money >= LAND_PRICES[n_land]` and exposes only the boolean, so "costs a third of everything"
+    # and "costs 3%" are indistinguishable to the policy. This says what it costs, not whether to
+    # buy -- the same side of `CLAUDE.md`'s line as `age` and the nearest-job geometry.
+    safe_money = jnp.maximum(farm.money, 1.0)
+    next_land = J.LAND_PRICES[jnp.minimum(farm.n_land, J.N_LAND - 1)]
+    land_afford = jnp.where(farm.n_land < J.N_LAND,
+                            jnp.minimum(next_land / safe_money, 4.0), 0.0)
+    next_hire = J.HIRE_COST[jnp.minimum(farm.hires_today, J.MAX_UNITS)]
+    hire_afford = jnp.minimum(next_hire / safe_money, 4.0)
+
     glob = jnp.concatenate(
         [
             (farm.money / MONEY_SCALE).astype(jnp.float32)[..., None],
@@ -182,6 +223,8 @@ def encode(state):
             (farm.n_units / 24.0).astype(jnp.float32)[..., None],
             (farm.n_land / 3.0).astype(jnp.float32)[..., None],
             (farm.hires_today / 12.0).astype(jnp.float32)[..., None],
+            land_afford.astype(jnp.float32)[..., None],
+            hire_afford.astype(jnp.float32)[..., None],
             opponent,
         ],
         axis=-1,
