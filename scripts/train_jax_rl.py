@@ -216,6 +216,10 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # from different parameters, so including them would make the PPO ratio a ratio of
                 # two unrelated policies.
                 trainable=~take_opp,
+                # Which rows belong to a game the frozen opponent is playing in. Not the same as
+                # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
+                # of a cross-play game, so the live policy's side of one can be picked out.
+                crossplay=jnp.broadcast_to(use_opp[:, None], (batch, 2)).reshape(-1),
             )
             return (nxt, key), out
 
@@ -595,18 +599,35 @@ def main():
         # reward. If this sum tracks 1 while mean(V) sits at 0.82, the critic is consistent and the
         # high mean says something about which states get sampled. If it climbs with mean(V), both
         # seats are claiming to win the same game and the critic is provably broken.
+        #
+        # **It describes whichever net produced `traj["value"]`, which is not always the one being
+        # trained.** Under `--target-ema` that is the slow EMA copy, and an EMA is not the network
+        # any gradient has touched: at decay 0.99 it still carries `0.99^n` of the random
+        # initialisation, which is 53% at update 63. A run with the EMA on therefore printed
+        # `V 0.606 sum 1.212` -- the exact signature of a seat-blind critic -- while `seat_loss`
+        # on the live net read 0.0006, i.e. a seat sum of 1.02 and perfectly healthy. The diagnostic
+        # was reporting the untrained initialisation showing through the average, and it was read as
+        # the anchor having failed. `seat_loss` is the live net and is the one to trust; the column
+        # is labelled in the log line so the two cannot be confused again.
         v_pairs = traj["value"].reshape(traj["value"].shape[0], -1, 2)
         seat_sum = v_pairs.sum(axis=-1)
         seat_sum_mean = seat_sum.mean()
         seat_sum_absdev = jnp.abs(seat_sum - 1.0).mean()
 
-        # **Win rate over the live policy's own seats only.** Summing reward across both seats of
-        # every game is arithmetically pinned to 0.5 -- one winner and one loser per game, always --
-        # so it reported 0.500 for ten straight updates while saying nothing. The interesting games
-        # are the ones where a frozen opponent holds seat 1: there the live policy's win rate is
-        # free to move, and averaging its opponent's mirrored result back in destroyed exactly that
-        # signal.
-        live = traj["trainable"]
+        # **Win rate over cross-play rows only, because every other row is pinned.**
+        #
+        # Summing reward across both seats of a game is arithmetically 0.5 -- one winner and one
+        # loser, always. Restricting to `trainable` was supposed to fix that and does not: in a
+        # self-play group *both* seats are trainable, so both are counted and the pair still
+        # averages exactly 0.5. At `--opponent-frac 0.25` a self-play game contributes two pinned
+        # rows and a cross-play game one free row, so 86% of what was measured could not move, and
+        # it duly read 0.500 to three decimals on every update of a 63-update run.
+        #
+        # The live policy's seat in a cross-play game is the only row whose outcome is not
+        # determined by its partner. That is the whole signal, so measure exactly it, and log the
+        # count alongside because a few dozen rows an update is a noisy estimate that should be
+        # read as such.
+        live = traj["trainable"] & traj["crossplay"]
         done_live = traj["done"] & live
         done_count = done_live.sum()
         reward_sum = jnp.where(done_live, traj["reward"], 0.0).sum()
@@ -693,12 +714,15 @@ def main():
         # silence that read as a hang -- the one thing this log must never do, given how many
         # genuine silent deaths there have been. An update is ~20s; a line each is cheap.
         sig = "  n/a" if np.isnan(ev_signal) else f"{ev_signal:+.3f}"
+        # `V` and `sum` describe whichever net produced the rollout values. Say which, so that an
+        # EMA copy carrying half the random initialisation is never again read as the live critic.
+        vnet = "t" if args.target_ema else ""
         print(
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f}  "
             f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f}  "
             f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
-            f"wr {row['win_rate']:.3f}  ep {int(games)} term {int(stats['n_terminal'])}  "
-            f"V {row['value_mean']:.3f} sum {row['seat_sum']:.3f} "
+            f"wr {row['win_rate']:.3f}/{int(games)}x  term {int(stats['n_terminal'])}  "
+            f"{vnet}V {row['value_mean']:.3f} {vnet}sum {row['seat_sum']:.3f} "
             f"seatL {row['seat_loss']:.4f}  {row['sps']:,.0f} turns/s",
             flush=True,
         )
