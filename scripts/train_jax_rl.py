@@ -45,6 +45,7 @@ import time
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 import numpy as np
 import optax
 
@@ -84,16 +85,32 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda):
             sim_actions = A.to_sim_actions(actions, batch)
             nxt = J.step(state, sim_actions)
 
-            # Terminal reward, win 1 / loss 0, paid on the last turn of the episode only.
-            done = nxt.step_index > J.LAST_STEP
+            # Terminal reward, win 1 / loss 0, paid on the turn the episode *ends* -- an edge, not
+            # a level. `step_index > LAST_STEP` stays true for every subsequent turn, so testing it
+            # directly pays the reward again and again: at horizon 64 an episode finishing at scan
+            # step 30 would collect it 34 times. Every game shares one scalar `step_index`, so the
+            # whole batch crosses the boundary together and a single comparison covers it.
+            was_over = state.step_index > J.LAST_STEP
+            now_over = nxt.step_index > J.LAST_STEP
+            just_done = now_over & ~was_over
+
             money = nxt.farm.money                                   # [B, 2]
             won = (money > money[:, ::-1]).astype(jnp.float32)
             tie = (money == money[:, ::-1]).astype(jnp.float32)
-            reward = jnp.where(done, won + 0.5 * tie, 0.0).astype(jnp.float32)   # [B, 2]
+            reward = jnp.where(just_done, won + 0.5 * tie, 0.0).astype(jnp.float32)
+
+            # Restart inside the scan. Resetting only in Python after the rollout lets the
+            # simulator keep stepping past turn 719 into a season that does not exist, and those
+            # invalid turns would still be trained on. The PRNG key is carried across so the new
+            # episode does not replay the old one's weed draws.
+            def _restart(s):
+                return J.reset(batch)._replace(key=s.key)
+
+            nxt = lax.cond(just_done, _restart, lambda s: s, nxt)
 
             out = dict(
                 logp=logp, value=value, reward=A._flat(reward),
-                done=jnp.broadcast_to(done, (batch, 2)).reshape(-1),
+                done=jnp.broadcast_to(just_done, (batch, 2)).reshape(-1),
                 actions=actions, masks=masks, obs=obs,
             )
             return (nxt, key), out
@@ -329,14 +346,13 @@ def main():
         key, sub = jax.random.split(key)
         state, key, traj, advantages, returns = rollout(params, state, sub)
 
-        # An episode that ended restarts, so games keep flowing without a Python-level reset.
+        # Episodes restart inside the scan now, so there is no Python-level reset here. Doing both
+        # would reset a second time one turn into the new episode and silently discard it.
         finished = np.asarray(traj["done"]).sum()
         if finished:
             rewards = np.asarray(traj["reward"])[np.asarray(traj["done"])]
             wins += float(rewards.sum())
             games += float(rewards.size)
-        if bool(np.asarray(state.step_index) > J.LAST_STEP):
-            state = J.reset(args.batch)
 
         # Re-encode observations once per rollout for the update passes.
         def flatten(x):
