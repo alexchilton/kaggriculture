@@ -62,10 +62,17 @@ def random_legal_actions(key, state):
     return out
 
 
-def play(params_a, params_b, model, batch, key, greedy=True):
-    """Play `batch` games with A in seat 0 and B in seat 1. Returns per-game final money [B, 2].
+def play(params_a, params_b, model, batch, key, greedy=True, swap=False):
+    """Play `batch` games. Returns per-game final money `[B, 2]`.
 
-    `params_b = None` means the random-legal opponent.
+    A takes seat 0 and B seat 1, unless `swap`, which puts A in seat 1. `params_b = None` means the
+    random-legal opponent.
+
+    `swap` exists because the seating is worth real money: `_process_market` quotes both players
+    against the same inventory but commits in seat order, so seat 0 wins every contested trade tie.
+    Reporting one seating flatters or damns a policy for free. The first version of this script had
+    a `swap` that only applied when the opponent was another checkpoint, so every random-legal
+    evaluation silently measured seat 0 twice and printed the same number under two labels.
     """
     state = J.reset(batch)
 
@@ -85,13 +92,14 @@ def play(params_a, params_b, model, batch, key, greedy=True):
             heads_b, _ = model.apply(params_b, A._flat(tiles), A._flat(units), A._flat(glob))
             act_b = _greedy(heads_b, masks) if greedy else A.sample(kb, heads_b, masks)[0]
 
-        # Seat 0's actions come from A, seat 1's from B. Both were computed over the full [B, P]
-        # batch; take the column each player is actually sitting in.
+        # Each player supplies the column of the seat it occupies. Both sets were computed over the
+        # full [B, P] batch, so this is a column select, not a re-run.
         merged = {}
         for k in A.ALL_HEADS:
             a = act_a[k].reshape(batch, 2, *act_a[k].shape[1:])
             b = act_b[k].reshape(batch, 2, *act_b[k].shape[1:])
-            merged[k] = jnp.concatenate([a[:, :1], b[:, 1:]], axis=1).reshape(
+            first, second = (b, a) if swap else (a, b)
+            merged[k] = jnp.concatenate([first[:, :1], second[:, 1:]], axis=1).reshape(
                 batch * 2, *act_a[k].shape[1:])
 
         sim_actions = A.to_sim_actions(merged, batch)
@@ -128,18 +136,24 @@ def main():
     key = jax.random.PRNGKey(args.seed)
     k1, k2 = jax.random.split(key)
 
-    # Seat order is worth real money on contested trades, so play both seatings and report both.
-    m1 = play(params, other, model, args.games, k1, greedy=not args.sample)
-    wr1 = score(m1)
-    m2 = play(other, params, model, args.games, k2, greedy=not args.sample) if other is not None \
-        else play(params, other, model, args.games, k2, greedy=not args.sample)
-    wr2 = 1.0 - score(m2) if other is not None else score(m2)
+    # Both seatings, always -- including against random-legal, where `swap` is what actually moves
+    # the policy into seat 1 rather than replaying seat 0 under a different key.
+    m1 = play(params, other, model, args.games, k1, greedy=not args.sample, swap=False)
+    wr_seat0 = score(m1)
 
-    money = np.asarray(m1)[:, 0]
-    print(f"\nwin rate as seat 0: {wr1:.3f}")
-    print(f"win rate as seat 1: {wr2:.3f}")
-    print(f"overall:            {(wr1 + wr2) / 2:.3f}")
-    print(f"mean bank:          ${money.mean():,.0f}  (max ${money.max():,.0f})")
+    m2 = play(params, other, model, args.games, k2, greedy=not args.sample, swap=True)
+    # With `swap`, the policy is in seat 1, so its win rate is the complement of seat 0's score.
+    wr_seat1 = 1.0 - score(m2)
+
+    own = np.concatenate([np.asarray(m1)[:, 0], np.asarray(m2)[:, 1]])
+    opp = np.concatenate([np.asarray(m1)[:, 1], np.asarray(m2)[:, 0]])
+    print(f"\nwin rate as seat 0: {wr_seat0:.3f}")
+    print(f"win rate as seat 1: {wr_seat1:.3f}")
+    print(f"overall:            {(wr_seat0 + wr_seat1) / 2:.3f}")
+    print(f"policy bank:        mean ${own.mean():,.0f}  max ${own.max():,.0f}")
+    print(f"opponent bank:      mean ${opp.mean():,.0f}  max ${opp.max():,.0f}")
+    print(f"starting money was $3,000 -- a policy below that is destroying value, and a win over an "
+          f"opponent who destroys more is not evidence of skill.")
 
 
 if __name__ == "__main__":

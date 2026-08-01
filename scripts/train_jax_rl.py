@@ -602,18 +602,17 @@ def main():
         with log_path.open("a") as fh:
             fh.write(json.dumps(row) + "\n")
 
-        # Print every update. Printing every tenth saves nothing and produced a five-minute silence
-        # that read as a hang -- which, given how many genuine silent deaths this run has had, is
-        # the one thing the log must never do. An update is ~20s; a line each is cheap.
-        if True:
-            sig = "  n/a" if np.isnan(ev_signal) else f"{ev_signal:+.3f}"
-            print(
-                f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f}  "
-                f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f}  "
-                f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
-                f"wr {row['win_rate']:.3f}  ep {int(games)}  {row['sps']:,.0f} turns/s",
-                flush=True,
-            )
+        # Every update gets a line. Printing every tenth saved nothing and produced a five-minute
+        # silence that read as a hang -- the one thing this log must never do, given how many
+        # genuine silent deaths there have been. An update is ~20s; a line each is cheap.
+        sig = "  n/a" if np.isnan(ev_signal) else f"{ev_signal:+.3f}"
+        print(
+            f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f}  "
+            f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f}  "
+            f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
+            f"wr {row['win_rate']:.3f}  ep {int(games)}  {row['sps']:,.0f} turns/s",
+            flush=True,
+        )
         if args.opponent_frac and it and it % args.pool_every == 0:
             pool.append(jax.device_get(params))
             if len(pool) > args.pool_size:

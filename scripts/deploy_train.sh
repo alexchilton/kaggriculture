@@ -133,8 +133,9 @@ follow)
   ;;
 
 status)
-  put scripts/remote_status.sh "$REMOTE/status.sh"
-  sh "bash $REMOTE/status.sh"
+  # Defers to `kagg-status` on the box so there is one definition of "how is it going", whether it
+  # is asked from here or from a terminal there.
+  sh "kagg-status"
   ;;
 
 stop)

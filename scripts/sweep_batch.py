@@ -30,17 +30,18 @@ _train = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_train)
 
 
-def measure(batch, horizon, minibatch, d_model, layers, heads, updates=4):
+def measure(batch, horizon, minibatch, d_model, layers, heads, updates=4, n_phases=4):
     model = P.Policy(d_model=d_model, n_heads=heads, n_layers=layers)
     key = jax.random.PRNGKey(0)
-    state = J.reset(batch)
-    tiles, units, glob = jax_obs.encode(state)
-    params = model.init(key, A._flat(tiles), A._flat(units), A._flat(glob))
+    state = _train.staggered_states(batch, n_phases)
+    tiles, units, glob = jax.vmap(jax_obs.encode)(state)
+    params = model.init(key, _train._pack(tiles), _train._pack(units), _train._pack(glob))
 
     optimiser = optax.adam(3e-4)
     opt_state = optimiser.init(params)
-    rollout = _train.make_rollout(model, batch, horizon, 0.998732, 0.95)
+    rollout = _train.make_rollout(model, batch, horizon, 0.998732, 0.95, n_phases)
     update = _train.make_update(model, 0.2, 0.5, 0.003, 0.5, optimiser)
+    no_opp = jnp.zeros(n_phases, dtype=bool)
 
     flat_n = horizon * 2 * batch
     n_chunks = max(1, flat_n // minibatch)
@@ -49,13 +50,15 @@ def measure(batch, horizon, minibatch, d_model, layers, heads, updates=4):
     for it in range(updates):
         t0 = time.perf_counter()
         key, sub = jax.random.split(key)
-        state, key, traj, advantages, returns = rollout(params, state, sub)
+        state, key, traj, advantages, returns = rollout(
+            params, params, params, no_opp, state, sub)
 
         def flatten(x):
             return x.reshape(flat_n, *x.shape[2:])
 
         data = dict(
             old_logp=flatten(traj["logp"]), adv=flatten(advantages),
+            old_value=flatten(traj["value"]), trainable=flatten(traj["trainable"]),
             returns=flatten(returns),
             actions={k: flatten(v) for k, v in traj["actions"].items()},
             masks={k: flatten(v) for k, v in traj["masks"].items()},
@@ -67,6 +70,7 @@ def measure(batch, horizon, minibatch, d_model, layers, heads, updates=4):
             chunk = jnp.asarray(chunk)
             mb = dict(
                 old_logp=data["old_logp"][chunk], adv=data["adv"][chunk],
+                old_value=data["old_value"][chunk], trainable=data["trainable"][chunk],
                 returns=data["returns"][chunk],
                 actions={k: v[chunk] for k, v in data["actions"].items()},
                 masks={k: v[chunk] for k, v in data["masks"].items()},
@@ -89,6 +93,7 @@ def main():
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--n-phases", type=int, default=4)
     ap.add_argument("--batches", type=int, nargs="+", default=[128, 256, 512, 1024])
     args = ap.parse_args()
 
@@ -101,7 +106,7 @@ def main():
         try:
             rate, compile_s, steady = measure(
                 batch, args.horizon, args.minibatch_size,
-                args.d_model, args.layers, args.heads)
+                args.d_model, args.layers, args.heads, n_phases=args.n_phases)
             days = 1e9 / rate / 86400
             print(f"{batch:>6} {compile_s:>10.1f} {steady:>9.2f} {rate:>10,.0f} {days:>12.1f}")
         except Exception as exc:                                  # OOM is the expected failure
