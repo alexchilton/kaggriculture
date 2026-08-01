@@ -101,6 +101,32 @@ def test_market_orders_encode_to_the_right_buckets():
     assert heads["hire"] == 1 and heads["buy_land"] == 1
 
 
+def test_every_label_is_in_range_for_its_head():
+    """A label outside its head's class count is silently fatal.
+
+    JAX's `take_along_axis` does **not** clip an out-of-bounds index -- it returns NaN, which
+    propagates through the summed loss and shows up only as `train nan` several layers away. That
+    is exactly what `buy_animal` did: the head is `N_ANIMALS x 2` and `to_sim_actions` passes it
+    through as the count, so it is binary, and the teacher's real quantity of 2 or 3 was being
+    written straight into the labels.
+    """
+    from kagg.rl import jax_policy as P
+    from kagg.sim import jax_sim as J
+
+    sizes = {"op": O.N_OPS, "crop": J.N_CROPS, "item": J.N_ITEMS,
+             "qty": len(P.UNIT_QTY_BUCKETS), "sell": len(P.SELL_BUCKETS),
+             "buy_product": len(P.BUY_BUCKETS), "buy_seed": len(P.BUY_BUCKETS),
+             "buy_animal": 2, "hire": 2, "buy_land": 2}
+
+    worst = {}
+    for _obs, _priv, action, _seat in replays.iter_turns(REPLAY):
+        for k, v in replays.encode_action(action, n_units=24).items():
+            worst[k] = max(worst.get(k, 0), int(np.max(v)))
+
+    over = {k: (worst[k], sizes[k]) for k in worst if worst[k] >= sizes[k]}
+    assert not over, f"labels out of range for their head (label_max, n_classes): {over}"
+
+
 def test_a_pass_turn_encodes_to_all_noop():
     """The idle action must be all-zeros, the same fact the RL idle opponent relies on."""
     heads = replays.encode_action({"farmer": ["PASS"], "hands": [["PASS"]], "market": []}, 2)

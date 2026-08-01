@@ -103,7 +103,12 @@ def encode_action(action, n_units):
         elif kind == "BUY_SEED" and len(order) > 2 and order[1] in CROP_INDEX:
             buy_seed[CROP_INDEX[order[1]]] = _bucket(order[2], _BUY)
         elif kind == "BUY_ANIMAL" and len(order) > 1 and order[1] in ANIMAL_INDEX:
-            buy_animal[ANIMAL_INDEX[order[1]]] = min(3, int(order[2]) if len(order) > 2 else 1)
+            # **Binary, not a quantity.** The `buy_animal` head is `N_ANIMALS x 2` and
+            # `to_sim_actions` passes it through as the count, so the only values it can express are
+            # 0 and 1. Writing the teacher's actual quantity here put 2s and 3s in the labels, and
+            # JAX does *not* clip an out-of-range index in `take_along_axis` -- it returns NaN,
+            # which propagated through the total loss and printed as `train nan`.
+            buy_animal[ANIMAL_INDEX[order[1]]] = 1
         elif kind == "HIRE":
             hire = np.int32(1)
         elif kind == "BUY_LAND":
