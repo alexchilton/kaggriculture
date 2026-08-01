@@ -44,7 +44,17 @@ is no strategy to inherit. It is a *shape*, not a policy.
 - risk: low. Anneal to zero as Ender did.
 - crosses off: "is the NOOP collapse fixable without imitation at all?"
 
-### 2. BC as KL prior — **blocked**
+### 2. BC as KL prior — **blocked, and deprioritised**
+
+**Stop new investment here.** Making BC trustworthy as a prior now needs the op-head fix *and* its
+own version of the market-head correlation fix, which converges on the same architecture work the
+non-BC path needs anyway, plus all the BC-specific collection, calibration and gating on top. That
+is strictly more expensive for the option whose selling point -- encoded skill -- is the part
+flagged as risky. Ender reached 8th place with no imitation learning at all.
+
+Let the retrain and gate finish, since they are sunk. If the gate passes, keep the checkpoint as a
+cheap frozen opponent. Do not start DAgger round 2 or build loss-reweighting on spec.
+
 
 Code exists. Currently unsafe.
 
@@ -86,17 +96,39 @@ It therefore *cannot draw* with a do-nothing policy, which the idle opponent can
 
 - crosses off: "is the draw available at all?"
 
-### 6. Autoregressive micro-steps — 2-3 days, **not for the spawn bug**
+### 6. Autoregressive decode over market heads — ~half a day, and it is a real bug
 
-Ruled out twice for that purpose: each unit's mask depends only on its own position, so sequencing
-units cannot change the deadlocked unit's own marginal -- and the T=1 sampling result shows the
-marginal *is* the whole problem.
+**This row was nearly struck off for the wrong reason.** It was assessed by asking "will it fix the
+spawn deadlock?" -- correctly answered no, twice, because each unit's mask depends only on its own
+position and the T=1 sampling result shows that marginal is the whole problem. But Ender built
+micro-steps for **action-space explosion**, and we have that independently, measured three times:
 
-Still likely needed for what it actually addresses: our joint action is 24 units x (op, crop, item,
-qty) sampled independently, which is where "nine independent probably-nots compose into never" came
-from.
+- greedy argmax over per-head marginals emits **zero** market orders, because nine independent
+  "probably not sell" decisions compose into "never sell";
+- independent sampling from the same marginals banks **$1**, firing combinations the joint
+  distribution never produces;
+- the marginals themselves are *good* -- 12:1 discrimination on `buy_product` -- so the decode is
+  destroying information the network has.
 
-- do **not** schedule as this bug's fix. Revisit after rows 1-5.
+`jax_policy.py` states the assumption plainly: "conditionally independent given the state, so the
+joint log-prob is the sum -- exact, not an approximation". True for scoring a log-prob. False for
+producing an action. It is a mean-field factorisation, and a teacher liquidating the shed is making
+one coordinated decision across products, not nine coin flips.
+
+**Scope is much smaller than the 2-3 days first estimated**, because only the six market heads need
+it -- there is no evidence one hand's op must condition on another's:
+
+| version | cost |
+|---|---|
+| one coarse "trade today, roughly how much" head that the nine product heads condition on | ~half day |
+| autoregressive decode over the ten order slots `Game._order_book` already uses | ~1-1.5 days |
+
+- **sequencing:** it does not block the deadlock and does not compete with rows 1-5. A policy can
+  escape spawn, plant, water and harvest with the market heads exactly as they are. What it caps is
+  *monetisation* -- roughly $30k of `contrarian`'s $51k is optimal execution -- so do it after PPO
+  demonstrably explores, and before trusting any measured ceiling on banked money.
+- the per-head thresholds in `neural.py` are a hand-tuned workaround for this, and need
+  recalibrating for every checkpoint. This replaces them.
 
 ### 7. Bigger model — deferred
 
