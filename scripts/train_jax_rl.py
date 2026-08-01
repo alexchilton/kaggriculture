@@ -60,6 +60,13 @@ RUN_DIR = pathlib.Path("data/jax_rl_runs")
 # Short names for the op census printed each update, in `kagg.sim.ops` code order.
 O_NAMES = ("noop", "N", "S", "E", "W", "water", "harv", "plant", "dig", "pick", "drop",
            "place", "feed", "care", "fert+", "fert!", "coop", "pasture")
+
+# The scripted wheat trader. Buy early, hold, sell late -- measured at $3,989 from a $3,000 start
+# with zero crew actions, against a price path that rose $25 -> $46 monotonically because the town
+# drains wheat all season and wheat's glut curve is `log`, so it never floors.
+TRADER_BUY_UNTIL = 12
+TRADER_SELL_FROM = 20
+TRADER_LOT = 5
 TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
@@ -144,7 +151,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     per_group = batch // n_phases
 
     @functools.partial(jax.jit, static_argnums=())
-    def rollout(params, value_params, opp_params, use_opp, use_idle, state, key):
+    def rollout(params, value_params, opp_params, use_opp, use_idle, use_trade, state, key):
         def one_turn(carry, _):
             state, key = carry
             key, sub = jax.random.split(key)
@@ -204,9 +211,45 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 lambda a: jnp.where(
                     take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
                 actions)
-            take_opp = take_opp | take_idle
+            take_opp = take_opp | take_idle | jnp.broadcast_to(
+                use_trade[:, None] & (seat == 1), (batch, 2)).reshape(-1)
 
             sim_actions = A.to_sim_actions(actions, batch)
+
+            # **A seat that trades wheat and nothing else, so the draw stops being available.**
+            #
+            # The idle opponent above cannot fix the collapse, because it *is* the collapse: two
+            # sides doing nothing draw at exactly $3,000 each, and a draw pays 0.5 against a maximum
+            # of 1. Ender never faced this as cleanly -- in his game standing still still loses
+            # ground, while here an idle farm is a stable fixed point.
+            #
+            # This one ends the season ahead. Measured directly: an agent that PASSes every unit and
+            # only buys wheat early and sells it late banks **$3,989** against a $3,000 start, using
+            # zero crew actions -- `BUY_PRODUCT` and `SELL` are absent from `_apply_unit_action` and
+            # settle in the market phase, so they cost nothing a farmer could otherwise be doing.
+            # The price path is what makes it free money: the town drains wheat all season and
+            # `above_func` is `log`, so it never floors. Measured $25 -> $46 monotonically.
+            #
+            # So a do-nothing policy now *loses* to this seat rather than drawing with it, which is
+            # the whole point: it removes the 0.5 payoff for inaction instead of trying to
+            # regularise around it.
+            day = state.step_index // J.TURNS_PER_DAY
+            trade_seat = jnp.broadcast_to(
+                use_trade[:, None] & (seat == 1), (batch, 2))
+            buy = (day < TRADER_BUY_UNTIL)[:, None] & trade_seat
+            sell = (day >= TRADER_SELL_FROM)[:, None] & trade_seat
+            wheat = O.WHEAT_ITEM
+
+            def _set(arr, rows, col, value):
+                return arr.at[:, :, col].set(jnp.where(rows, value, arr[:, :, col]))
+
+            sim_actions = sim_actions._replace(
+                unit_op=jnp.where(trade_seat[..., None], O.NOOP, sim_actions.unit_op),
+                buy_product=_set(sim_actions.buy_product, buy, wheat, TRADER_LOT),
+                sell=_set(sim_actions.sell, sell, wheat, TRADER_LOT),
+                hire=jnp.where(trade_seat, False, sim_actions.hire),
+                buy_land=jnp.where(trade_seat, False, sim_actions.buy_land),
+            )
             nxt = J.step(state, sim_actions)
 
             # `just_done` is [B]: every game crosses its own episode boundary on its own turn,
@@ -252,7 +295,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
                 # of a cross-play game, so the live policy's side of one can be picked out.
                 crossplay=jnp.broadcast_to(
-                    (use_opp | use_idle)[:, None], (batch, 2)).reshape(-1),
+                    (use_opp | use_idle | use_trade)[:, None], (batch, 2)).reshape(-1),
             )
             return (nxt, key), out
 
@@ -620,6 +663,13 @@ def main():
                          "--ent-coef, which they share, matching Ender's structure.")
     ap.add_argument("--kl-anneal", type=int, default=0,
                     help="updates over which --kl-coef decays linearly to zero. 0 keeps it flat.")
+    ap.add_argument("--trade-frac", type=float, default=0.25,
+                    help="fraction of games whose seat 1 only trades wheat: buys early, sells late, "
+                         "every unit passing. It banks $3,989 from a $3,000 start using zero crew "
+                         "actions, so unlike --idle-frac a do-nothing policy LOSES to it rather "
+                         "than drawing. That removes the 0.5 payoff for inaction, which is the "
+                         "actual fixed point -- our idle farm is a stable $3,000 forever, where "
+                         "Ender's game punished standing still on its own. 0 disables.")
     ap.add_argument("--idle-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 passes every turn and banks its opening "
                          "$3,000. A frozen past self shares the policy's failures, so self-play "
@@ -800,17 +850,24 @@ def main():
 
         # The idle seats are drawn from games the frozen pool is *not* using, and strided for the
         # same reason: they have to reach the end of the season to produce a terminal reward.
+        use_trade = np.zeros(args.batch, dtype=bool)
+        n_trade = int(round(args.trade_frac * args.batch))
+        if n_trade:
+            stride = max(1, args.batch // n_trade)
+            picks = [(j * stride + it + stride // 3) % args.batch for j in range(n_trade)]
+            use_trade[[p for p in picks if not use_opp[p]]] = True
+
         use_idle = np.zeros(args.batch, dtype=bool)
         n_idle = int(round(args.idle_frac * args.batch))
         if n_idle:
             stride = max(1, args.batch // n_idle)
             picks = [(j * stride + it + stride // 2) % args.batch for j in range(n_idle)]
-            use_idle[[p for p in picks if not use_opp[p]]] = True
+            use_idle[[p for p in picks if not use_opp[p] and not use_trade[p]]] = True
         opp_params = pool[it % len(pool)]
 
         state, key, traj, advantages, returns = rollout(
             params, target_params, opp_params, jnp.asarray(use_opp),
-            jnp.asarray(use_idle), state, sub)
+            jnp.asarray(use_idle), jnp.asarray(use_trade), state, sub)
 
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
         # and `reward` arrays back to the host, as this did, forces a synchronisation on every
