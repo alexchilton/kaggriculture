@@ -1,5 +1,21 @@
 # RL experiment matrix
 
+> **v8 scored 712 Elo** (2026-08-01), against v5's 584, v6's 569, v7's 538 and v4's 526. First
+> submission meaningfully above the 600 start, +174 over the agent it replaced. It is the ES-tuned
+> `converter`, and the hand-tuned version of the same agent scored 0.092 on the local ladder --
+> below a do-nothing agent -- so essentially all of that came from the search.
+>
+> This gives a second anchor on local-ladder -> real-Elo, which the project has never had:
+>
+> | agent | local ladder | real Elo |
+> |---|---|---|
+> | `contrarian` | 0.825 | 538 |
+> | `converter` ES-tuned | 0.963 | 712 |
+>
+> Two points is not a calibration, but it is the first evidence the local ladder tracks the real one
+> in *magnitude* rather than only direction. Gap remaining: 518 to a friend's pure heuristic at
+> 1230, 715 to the daily dump's 1427 top.
+
 Written 2026-08-01 so that options stop being re-argued and start being crossed off.
 Everything here shares one mechanism -- `--kl-prior` / `--kl-coef` / `--kl-anneal`, already committed
 -- so the rows are **not** mutually exclusive and most compose.
