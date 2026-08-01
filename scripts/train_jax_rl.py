@@ -51,6 +51,7 @@ import numpy as np
 import optax
 
 from kagg.rl import jax_act as A, jax_obs, jax_policy as P
+from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
@@ -283,7 +284,39 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     return rollout
 
 
-def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_coef=0.0):
+def kl_to_prior(heads, prior_heads, masks):
+    """Mean KL(current || prior) over every head, respecting legality masks.
+
+    **Ender's fix, and it replaces the entropy bonus rather than joining it.** An entropy bonus
+    pushes toward *uniform*, which is never the target: you do not want "do nothing" and every
+    farming op to be equally likely. His write-up is blunt about it -- a higher halt-bias
+    initialisation "quickly regressed" until he swapped the entropy term for a KL penalty against a
+    sensible prior, which "resulted in a huge immediate improvement".
+
+    Our failure is the mirror image of his. He had runaway action and biased the prior toward
+    halting; we have a policy that reaches 95% NOOP within four updates and never once improves on
+    its initialisation. Same instrument, opposite direction -- which also explains why raising
+    `ent_coef` 6.7x did nothing measurable: uniform was the wrong target either way.
+
+    The prior here is the behaviour-cloned network, so it is not a hand-written guess about how to
+    play; it is a $100k+ agent. And it is a *soft* penalty, not a mask, so it stays clear of the
+    quality-masking anti-pattern `CLAUDE.md` records as an Orbit Wars failure: nothing is forbidden,
+    some things are merely made expensive to abandon.
+    """
+    total = 0.0
+    for k, logits in heads.items():
+        m = masks[k]
+        cur = jax.nn.log_softmax(jnp.where(m, logits, NEG_INF), axis=-1)
+        pri = jax.nn.log_softmax(jnp.where(m, prior_heads[k], NEG_INF), axis=-1)
+        p = jnp.exp(cur)
+        # Illegal entries contribute nothing: their probability is zero under both distributions.
+        kl = jnp.where(m, p * (cur - pri), 0.0).sum(axis=-1)
+        total = total + kl.mean()
+    return total
+
+
+def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_coef=0.0,
+                kl_coef=0.0, prior_params=None):
     """Build the jitted PPO update over one rollout's minibatches."""
 
     def loss_fn(params, batch_data):
@@ -341,12 +374,22 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         pairs = value.reshape(-1, 2)
         seat_loss = jnp.square(pairs.sum(axis=-1) - 1.0).mean()
 
+        # KL to the behaviour-cloned prior. Computed only when a prior is supplied, so a run without
+        # one costs nothing and behaves exactly as before.
+        if prior_params is not None and kl_coef:
+            prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
+            kl_prior = kl_to_prior(heads, jax.lax.stop_gradient(prior_heads),
+                                   batch_data["masks"])
+        else:
+            kl_prior = jnp.asarray(0.0, dtype=jnp.float32)
+
         loss = (policy_loss + vf_coef * value_loss + ent_coef * entropy_loss
-                + seat_coef * seat_loss)
+                + seat_coef * seat_loss + kl_coef * kl_prior)
         approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
         clip_frac = ((jnp.abs(ratio - 1.0) > clip).astype(jnp.float32) * w).sum() / w_sum
         return loss, dict(policy_loss=policy_loss, value_loss=value_loss, seat_loss=seat_loss,
-                          entropy=entropy.mean(), approx_kl=approx_kl, clip_frac=clip_frac)
+                          entropy=entropy.mean(), approx_kl=approx_kl, clip_frac=clip_frac,
+                          kl_prior=kl_prior)
 
     @jax.jit
     def update(params, opt_state, batch_data):
@@ -472,6 +515,19 @@ def main():
                          "Pure self-play shares parameters between both seats, so a mutual draw is "
                          "a stable outcome nothing pushes against; a frozen opponent does not "
                          "co-operate in standing still. 0 disables.")
+    ap.add_argument("--kl-prior", type=str, default=None,
+                    help="path to a behaviour-cloned checkpoint to use as the KL prior. Ender's "
+                         "fix: an entropy bonus pushes toward uniform, which is the wrong target "
+                         "in either direction -- he had runaway action and biased toward halting, "
+                         "we reach 95%% NOOP and want the opposite. Regularising toward a sensible "
+                         "prior is the general form, and a cloned $100k agent is a better prior "
+                         "than any guess. Set --ent-coef 0 when using this: it replaces the "
+                         "entropy bonus rather than joining it.")
+    ap.add_argument("--kl-coef", type=float, default=0.01,
+                    help="weight on KL(policy || prior). Ender reduced his later in training for "
+                         "a further significant gain; 0 disables.")
+    ap.add_argument("--kl-anneal", type=int, default=0,
+                    help="updates over which --kl-coef decays linearly to zero. 0 keeps it flat.")
     ap.add_argument("--idle-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 passes every turn and banks its opening "
                          "$3,000. A frozen past self shares the policy's failures, so self-play "
@@ -570,7 +626,23 @@ def main():
     target_params = params
     # The pool starts holding the initial policy: an untrained opponent is still a real opponent,
     # and beating it is the first thing worth being able to measure.
+    # **The behaviour-cloned prior, used for three things at once.**
+    #
+    # As the KL target it replaces the entropy bonus; as `--init` it starts the policy inside the
+    # economy instead of outside it; and dropped into `pool` it is the first opponent in this run's
+    # history that has ever farmed. Every existing pool member is a frozen copy of the policy at
+    # some point in its life, and the policy has always been inert -- so the "opponent pool" was
+    # entirely self-referential and could not punish standing still.
+    prior_params = None
+    if args.kl_prior:
+        with open(args.kl_prior, "rb") as fh:
+            prior_params = jax.device_put(pickle.load(fh)["params"])
+        print(f"KL prior loaded from {args.kl_prior} (coef {args.kl_coef}, "
+              f"ent_coef {args.ent_coef})", flush=True)
+
     pool = [jax.device_get(params)]
+    if prior_params is not None:
+        pool.append(jax.device_get(prior_params))
 
     start_update = 0
     best_wr = -1.0
@@ -592,7 +664,8 @@ def main():
     rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda,
                            args.n_phases)
     update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
-                                     args.max_grad_norm, optimiser, seat_coef=args.seat_coef)
+                                     args.max_grad_norm, optimiser, seat_coef=args.seat_coef,
+                                     kl_coef=args.kl_coef, prior_params=prior_params)
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
