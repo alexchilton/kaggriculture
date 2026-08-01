@@ -613,3 +613,125 @@ single-opponent tuning did not.
 3. **FERTILIZE**, which no agent emits. It does not raise melon's ceiling but reaches it in three
    watered days instead of five -- see `tests/test_fertilizer.py`.
 4. Watch `noop%` in the op census. Falling means it is learning to act; flat at 95% means it is not.
+
+---
+
+## Session 5 — 2026-08-01, afternoon and evening
+
+**v8 scored 712 Elo.** First submission meaningfully above the 600 start, against v5's 584, v6's
+569, v7's 538 and v4's 526.
+It is the ES-tuned `converter`; the hand-tuned version of the same agent scored **0.092** on the
+local ladder, below an agent that does nothing, so essentially all of +174 came from the search.
+
+That is the day's only ladder movement, and it came from the track that was nearly deprioritised on
+the argument that Ender proved RL sufficient without imitation.
+Worth remembering the next time a track is called a distraction.
+
+It also gives a second anchor on local -> real, which this project has never had:
+`contrarian` 0.825 -> 538, `converter` 0.963 -> 712.
+Not a calibration at two points, but the first sign the local ladder tracks *magnitude* and not only
+direction.
+
+### The correction that matters most
+
+**"95% NOOP" was mostly a measurement artifact, and it drove most of a day's decisions.**
+The op census counted all 24 unit slots while a crew is about **three**, so roughly 88% of the
+figure was slots the farm does not own -- NOOP by construction.
+Counting owned slots only, real noop is 17-18%.
+
+The bug was in the *diagnostic only*, never the loss: `unit_op_mask` already forces dead slots to a
+point mass, so they contributed exactly zero gradient.
+Training was never corrupted. The reading was.
+
+It is the same padding mistake found and fixed in the behaviour-cloning loss earlier the same day
+and not carried across. **Any rate computed over `MAX_UNITS` is wrong** -- check for others.
+
+### What is actually broken, measured cleanly
+
+On full-season rows, over the first dozen updates:
+
+```
+upd   plant   water   harv    crew
+  0   5.66%   1.72%   0.00%    3.8
+  5   3.17%   1.25%   0.04%    2.8
+ 12   2.39%   0.74%   0.02%    1.3
+```
+
+It plants roughly three times more often than it waters, and an unwatered plant dies in two days --
+so it plants and abandons.
+A competent agent waters about ten times per plant, so the ratio is inverted by roughly thirty-fold.
+This is the identical bug fixed in `converter` this morning, where planting outranked watering; the
+difference is that here it has to be learned rather than reordered.
+
+**And the crew is shrinking, which is the policy learning the wrong lesson correctly.** Hands cost
+money and it has no productive use for them, so dismissing them is the cheapest way to stop losing.
+`wr` creeps up in step. It is converging on "spend nothing", which beats the idle seat's $3,000 and
+loses to the farmer's $23,783.
+That also means `terminal_ret_std` reaching 0.500 -- the first real win/loss variance all day -- may
+be cost discipline rather than crop revenue, and it is worth knowing which before celebrating it.
+
+### Bugs fixed in the training loop
+
+Found mostly by reading Ender's actual source at `github.com/sinking-point/ender` rather than his
+write-up, at Alex's insistence. That was the single most productive hour of the session.
+
+- **The KL port was wrong.** He has no separate `kl_coef`: the KL substitutes for entropy *inside*
+  the entropy term and shares `entropy_coef`, and heads without a prior keep plain entropy. Our help
+  text told the operator to set `--ent-coef 0` alongside a separate `--kl-coef`, which under his
+  structure zeroes the KL too. **Two runs therefore had no regulariser at all.**
+- **`--kl-anneal` was parsed and never read** -- a dead flag for the one mechanism his write-up
+  singles out. It could not have worked anyway: `ent_coef` was captured as a Python float in a
+  closure and baked into the compiled graph.
+- **`--early-limit 150` truncated before melon could ripen.** There are 24 turns to a day and melon
+  yields at day 10 = turn 240. Half the batch reset four days early, structurally incapable of a
+  legal HARVEST, and the census aggregated them with full-season rows -- so `harv 0.00%` was part
+  policy and part arithmetic. Now 288, and the census reports full-season rows separately.
+- **League priority EMA credited each checkpoint with games against other opponents.** Ported his
+  `_select_league_opponent` verbatim, then fed it `crossplay`, which is true for the idle, trader
+  and farmer seats too.
+- Cross-play games were selected as a **contiguous block** of indices, and a game's index is its
+  phase, so the frozen opponent never played the endgame and the win rate saw zero qualifying rows.
+- Hyperparameters: lr 3e-4 -> **3e-5** (his), ent-coef 0.02 -> 0.01, TF32 on.
+
+### Built
+
+- `kagg/rl/jax_heuristic.py` -- a crop-economy farmer in pure array ops that **banks $23,783** and
+  runs natively inside the compiled scan. `contrarian` and `converter` cannot: they are Python
+  agents over dict observations. I had called that impossible; it is not, `jax.pure_callback` exists,
+  it is merely expensive. This was the cheaper route.
+- Three scripted opponents forming a ladder: idle $3,000, wheat trader $3,368, farmer $23,783.
+  The trader matters because our null action is a *stable* $3,000 where Ender's game punished
+  standing still on its own -- his recipe was never going to be sufficient here unaided.
+- Autoregressive market decode: `sell`/`buy_product` emit one slice per coarse trade mode, sampled
+  first, so `p(trade) * prod_i p(product_i | trade)` is exact rather than mean-field. Fixes an agent
+  that emitted **zero** market orders under argmax (nine "probably not sell" marginals composing
+  into "never") and banked $1 under independent sampling.
+- Early-game envs, league priority sampling, `tests/test_jax_act.py` pinning that `evaluate`
+  reproduces `sample`'s log-prob.
+
+### The BC track, parked
+
+Gate failed: `P(noop)` at spawn 0.9920 against a 0.98 bar, and the checkpoint banks **$0**.
+DAgger moved the marginal nearly an order of magnitude and the agent does now move, but the
+corrective labels were 96.7% non-noop and **entirely WEST and NORTH** -- the learner never leaves
+spawn, so `converter` never demonstrates anything else.
+The directional check flagged an identical favoured op on all five seeds.
+
+The checkpoint reproduces its teachers closely on *teacher* states at day 0 and day 4 alike,
+including their idle turns. It plays well from a state a good player produced and cannot produce
+one. Ordinary covariate shift.
+
+### Where to pick up
+
+1. **Read the run.** Gate is `water` overtaking `plant` and `harv` leaving zero, on full-season rows.
+   At update 12 both were still falling. If that holds at 50, more compute will not reverse it.
+2. **The heuristic track is where the points are.** 712 with the livestock half of `converter` still
+   broken -- 562 PICKUP against 197 FEED, animals accumulating unplaced. The ES has an obvious next
+   run once that is fixed.
+3. **Optimal execution** remains the largest single measured number on the board: ~$30k of
+   `contrarian`'s $51k lost to price impact on melon alone.
+4. **`--init` still does not exist.** `train_jax_rl.py` has `--resume` (a PPO checkpoint) and random
+   init, and nothing that warm-starts from BC. It was written up as plan item 1 twice and never
+   wired.
+5. GPU runs at **84-90 C** and throttles: 646 t/s early, 150-180 t/s sustained. Plan timings on the
+   throttled rate. `--minibatch-size 1024` dies with a real OOM; 512 fits.
