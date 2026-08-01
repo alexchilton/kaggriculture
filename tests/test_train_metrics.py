@@ -93,6 +93,44 @@ def test_crossplay_rows_move_with_the_policy():
     assert _win_rate(rows, never, live) == pytest.approx(0.0)
 
 
+def test_an_all_zero_action_really_is_the_do_nothing_agent():
+    """The idle opponent is all-zeros, so this has to hold or the seat is doing something.
+
+    `NOOP` is op 0, and bucket 0 of every market head is quantity 0. If either ever changes, an
+    "idle" seat silently starts farming and the metric it was added to unpin goes quiet again.
+    """
+    from kagg.rl import jax_policy as P
+    from kagg.sim import ops as O
+
+    assert O.NOOP == 0
+    assert int(P.SELL_BUCKETS[0]) == 0
+    assert int(P.BUY_BUCKETS[0]) == 0
+
+
+def test_idle_seats_are_excluded_from_the_policy_loss_and_counted_as_crossplay():
+    """An idle seat's actions are not the policy's, so they must not enter the PPO ratio.
+
+    They must still count as cross-play, because those are precisely the games whose outcome is
+    not pinned by a partner -- which is the whole reason the seat exists.
+    """
+    batch = 8
+    seat = np.tile([0, 1], batch)
+    use_opp = np.zeros(batch, dtype=bool)
+    use_idle = np.zeros(batch, dtype=bool)
+    use_opp[0], use_idle[4] = True, True
+
+    take_opp = np.repeat(use_opp, 2) & (seat == 1)
+    take_idle = np.repeat(use_idle, 2) & (seat == 1)
+    trainable = ~(take_opp | take_idle)
+    crossplay = np.repeat(use_opp | use_idle, 2)
+
+    assert not trainable[1] and not trainable[9], "opponent/idle seats must not be trained on"
+    assert trainable[0] and trainable[8], "the live policy's own seat must be trained on"
+
+    live = trainable & crossplay
+    assert set(np.flatnonzero(live)) == {0, 8}, "one free row per cross-play game, seat 0"
+
+
 def _use_opp(batch, opponent_frac, it, contiguous):
     """Which games face the frozen opponent on update `it`, old scheme and new."""
     n = int(round(opponent_frac * batch))

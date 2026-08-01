@@ -138,7 +138,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     per_group = batch // n_phases
 
     @functools.partial(jax.jit, static_argnums=())
-    def rollout(params, value_params, opp_params, use_opp, state, key):
+    def rollout(params, value_params, opp_params, use_opp, use_idle, state, key):
         def one_turn(carry, _):
             state, key = carry
             key, sub = jax.random.split(key)
@@ -173,6 +173,32 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 lambda mine, theirs: jnp.where(
                     take_opp.reshape((-1,) + (1,) * (mine.ndim - 1)), theirs, mine),
                 actions, opp_actions)
+
+            # **A seat that does nothing, and it is not a joke opponent.**
+            #
+            # Self-play against a frozen *self* cannot escape a mutual draw: both sides share the
+            # failure, so neither is ever punished for it. Measured over 15 updates, `ret` sat at
+            # 0.4925 with a standard deviation of **0.0030** -- a mix of wins and losses would be
+            # near 0.5 -- so essentially every game was ending in a draw. `ev_signal` was `n/a` on
+            # 8 of 12 updates for exactly that reason: all terminal rewards equal 0.5, so there is
+            # no variance to explain, and the win rate was climbing toward 0.5 from below because
+            # 0.5 *is* the draw value. It was converging to do-nothing, not learning to win.
+            #
+            # The cure does not need `contrarian` and cannot use it: a Python heuristic cannot run
+            # inside a compiled scan, and the adapter bridges dicts *into* a State, not out. It
+            # needs an opponent that merely refuses to lose money. `eval_policy` has the policy
+            # ending a season on **$7 against a $3,000 start**, so a seat that passes every turn
+            # and banks its opening $3,000 beats it outright, and the draw is broken.
+            #
+            # `NOOP` is op 0 and bucket 0 of every market head is quantity 0, so all-zeros *is*
+            # that agent -- no network, no parameters, nothing to keep in sync.
+            take_idle = jnp.broadcast_to(
+                use_idle[:, None] & (seat == 1), (batch, 2)).reshape(-1)
+            actions = jax.tree_util.tree_map(
+                lambda a: jnp.where(
+                    take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
+                actions)
+            take_opp = take_opp | take_idle
 
             sim_actions = A.to_sim_actions(actions, batch)
             nxt = J.step(state, sim_actions)
@@ -219,7 +245,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # Which rows belong to a game the frozen opponent is playing in. Not the same as
                 # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
                 # of a cross-play game, so the live policy's side of one can be picked out.
-                crossplay=jnp.broadcast_to(use_opp[:, None], (batch, 2)).reshape(-1),
+                crossplay=jnp.broadcast_to(
+                    (use_opp | use_idle)[:, None], (batch, 2)).reshape(-1),
             )
             return (nxt, key), out
 
@@ -440,6 +467,13 @@ def main():
                          "Pure self-play shares parameters between both seats, so a mutual draw is "
                          "a stable outcome nothing pushes against; a frozen opponent does not "
                          "co-operate in standing still. 0 disables.")
+    ap.add_argument("--idle-frac", type=float, default=0.25,
+                    help="fraction of games whose seat 1 passes every turn and banks its opening "
+                         "$3,000. A frozen past self shares the policy's failures, so self-play "
+                         "settled into mutual draws -- ret 0.4925 +/- 0.0030 over 15 updates, and "
+                         "ev_signal n/a on 8 of 12 because every terminal reward was 0.5. The "
+                         "policy ends a season on $7, so an opponent that merely does nothing "
+                         "beats it and the draw breaks. 0 disables.")
     ap.add_argument("--pool-every", type=int, default=50,
                     help="updates between snapshots added to the opponent pool")
     ap.add_argument("--pool-size", type=int, default=5)
@@ -592,10 +626,20 @@ def main():
         if n_opp_games:
             stride = max(1, args.batch // n_opp_games)
             use_opp[[(j * stride + it) % args.batch for j in range(n_opp_games)]] = True
+
+        # The idle seats are drawn from games the frozen pool is *not* using, and strided for the
+        # same reason: they have to reach the end of the season to produce a terminal reward.
+        use_idle = np.zeros(args.batch, dtype=bool)
+        n_idle = int(round(args.idle_frac * args.batch))
+        if n_idle:
+            stride = max(1, args.batch // n_idle)
+            picks = [(j * stride + it + stride // 2) % args.batch for j in range(n_idle)]
+            use_idle[[p for p in picks if not use_opp[p]]] = True
         opp_params = pool[it % len(pool)]
 
         state, key, traj, advantages, returns = rollout(
-            params, target_params, opp_params, jnp.asarray(use_opp), state, sub)
+            params, target_params, opp_params, jnp.asarray(use_opp),
+            jnp.asarray(use_idle), state, sub)
 
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
         # and `reward` arrays back to the host, as this did, forces a synchronisation on every
