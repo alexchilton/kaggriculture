@@ -936,27 +936,34 @@ def main():
 
         # The idle seats are drawn from games the frozen pool is *not* using, and strided for the
         # same reason: they have to reach the end of the season to produce a terminal reward.
+        # **One partition, not four independent strided picks.**
+        #
+        # Each type used to choose its own strided set and then drop any index another type had
+        # already claimed. Those strides share residue classes: the farmer's picks land on
+        # `it + 2 (mod 3)` and the trader's `j*6 + it + 2` are all in that same class, so **every**
+        # trader pick collided and was filtered out. Measured over twenty updates the actual mix was
+        # pool 14.8%, farmer 30.1%, trader **0.0%**, idle 2.7%, self-play 52.3% -- against 15/30/15/5
+        # and 35 asked for. The trader was the seat added specifically because it cannot draw with a
+        # passive policy, and it was never in a single game.
+        #
+        # Assigning from one rotating permutation makes the shares exact by construction and the
+        # collision impossible.
+        order = (np.arange(args.batch) + it) % args.batch
+        n_opp_g = int(round(args.opponent_frac * args.batch))
+        n_farm_g = int(round(args.farm_frac * args.batch))
+        n_trade_g = int(round(args.trade_frac * args.batch))
+        n_idle_g = int(round(args.idle_frac * args.batch))
+
+        use_opp = np.zeros(args.batch, dtype=bool)
         use_farm = np.zeros(args.batch, dtype=bool)
-        n_farm = int(round(args.farm_frac * args.batch))
-        if n_farm:
-            stride = max(1, args.batch // n_farm)
-            picks = [(j * stride + it + 2 * stride // 3) % args.batch for j in range(n_farm)]
-            use_farm[[p for p in picks if not use_opp[p]]] = True
-
         use_trade = np.zeros(args.batch, dtype=bool)
-        n_trade = int(round(args.trade_frac * args.batch))
-        if n_trade:
-            stride = max(1, args.batch // n_trade)
-            picks = [(j * stride + it + stride // 3) % args.batch for j in range(n_trade)]
-            use_trade[[p for p in picks if not use_opp[p] and not use_farm[p]]] = True
-
         use_idle = np.zeros(args.batch, dtype=bool)
-        n_idle = int(round(args.idle_frac * args.batch))
-        if n_idle:
-            stride = max(1, args.batch // n_idle)
-            picks = [(j * stride + it + stride // 2) % args.batch for j in range(n_idle)]
-            use_idle[[p for p in picks
-                      if not use_opp[p] and not use_trade[p] and not use_farm[p]]] = True
+        cut = 0
+        for flags, n in ((use_opp, n_opp_g), (use_farm, n_farm_g),
+                         (use_trade, n_trade_g), (use_idle, n_idle_g)):
+            flags[order[cut:cut + n]] = True
+            cut += n
+        # Whatever is left is self-play, which is the intended remainder rather than an accident.
         w = np.array([POOL_PRIORITY_FLOOR + max(wr, 1e-6) ** POOL_PRIORITY_TEMP
                       + (0.25 if g <= 0 else 0.0)
                       for wr, g in zip(pool_wr, pool_games)], dtype=np.float64)
