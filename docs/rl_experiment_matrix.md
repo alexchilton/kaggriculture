@@ -55,8 +55,28 @@ flagged as risky. Ender reached 8th place with no imitation learning at all.
 Let the retrain and gate finish, since they are sunk. If the gate passes, keep the checkpoint as a
 cheap frozen opponent. Do not start DAgger round 2 or build loss-reweighting on spec.
 
-**If the gate fails, the order is fixed** -- written down now so it is not re-argued under time
-pressure:
+**The gate was run on 2026-08-01 and FAILED.** Recorded here rather than in the chain below,
+because the chain does not apply -- it describes what to do *if the BC track is being continued*,
+and the decision was to park it.
+
+```
+P(noop) at spawn   0.991952   (was 0.9999 -- DAgger round 1 moved it 8x)
+best non-noop      0.002627   (bar is 0.004)
+favoured move op   17 on all five seeds  <- BUILD_PASTURE, a fixed habit
+plays              $0 vs starter, ops {PASS 563, WEST 120, NORTH 36}
+```
+
+Three readings. DAgger works -- the mechanism moved the marginal by nearly an order of magnitude
+and the agent now moves at all, against 719 straight PASSes before. It is not enough. And it is now
+*worse*: banking $0 against the $3,000 it started with, so acting incoherently costs more than not
+acting. The directional check earned itself immediately -- an identical favoured op on every seed
+is the fixed-habit failure predicted from labels that were 100% WEST and NORTH.
+
+**Parked here.** Round 2 was started and stopped within minutes, which was the correct call and the
+wrong start: continuing is exactly the new investment this row says not to make.
+
+**If the BC track is ever resumed, the order is fixed** -- written down so it is not re-argued
+under time pressure:
 
 1. **DAgger round 2 with `mix_expert > 0`.** The parameter already exists in `dagger.py`; round 1
    used 0.0 deliberately. Letting the expert occasionally take a turn carries the rollout *past* the

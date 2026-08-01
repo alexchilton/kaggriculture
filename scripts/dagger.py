@@ -44,14 +44,14 @@ from kagg.rl import adapter, jax_obs
 OUT = Path("data/il")
 
 
-def collect(n_games=40, start_seed=7000, mix_expert=0.0):
+def collect(n_games=40, start_seed=7000, mix_expert=0.0, checkpoint=None):
     """Play the checkpoint, record what the expert would have done at each state it reached.
 
     `mix_expert` occasionally hands a turn to the expert, so the rollout is not confined entirely to
     the failure state -- the standard DAgger beta. At 0 it is pure on-policy, which is what we want
     first, because the stuck states are the whole point.
     """
-    learner = neural.make_agent()
+    learner = neural.make_agent(checkpoint) if checkpoint else neural.make_agent()
     expert = converter.agent
     tiles_b, units_b, glob_b, labels_b = [], [], [], {}
     rng = np.random.default_rng(0)
@@ -98,14 +98,18 @@ def collect(n_games=40, start_seed=7000, mix_expert=0.0):
 
 def main():
     n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 40
-    tiles_b, units_b, glob_b, labels_b = collect(n_games)
+    mix = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
+    ckpt = sys.argv[3] if len(sys.argv) > 3 else None
+    round_id = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+    print(f"round {round_id}: {n_games} games, mix_expert={mix}, checkpoint={ckpt or 'default'}")
+    tiles_b, units_b, glob_b, labels_b = collect(n_games, mix_expert=mix, checkpoint=ckpt)
     if not tiles_b:
         raise SystemExit("no data collected")
 
     OUT.mkdir(parents=True, exist_ok=True)
     # A distinct prefix so a rebuild of the replay shards does not silently drop these, and so the
     # mixture of teacher data to corrective data stays visible on disk.
-    path = OUT / "dagger_000.npz"
+    path = OUT / f"dagger_{round_id:03d}.npz"
     np.savez_compressed(
         path,
         tiles=np.asarray(tiles_b, dtype=np.float16),
