@@ -363,7 +363,7 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
                 kl_coef=0.0, prior_params=None, hand_noop_p=0.0):
     """Build the jitted PPO update over one rollout's minibatches."""
 
-    def loss_fn(params, batch_data):
+    def loss_fn(params, batch_data, reg_coef):
         tiles, units, glob = batch_data["obs"]
         heads, value = model.apply(params, tiles, units, glob)
         logp, entropy = A.evaluate(heads, batch_data["masks"], batch_data["actions"])
@@ -464,9 +464,9 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         # entropy on exactly the heads Ender leaves on plain entropy. Only `op` differs, and there
         # the KL pulls toward `noop_p` instead of toward uniform -- which is the point.
         if kl_coef and (hand_noop_p or prior_params is not None):
-            regulariser = ent_coef * kl_prior
+            regulariser = reg_coef * kl_prior
         else:
-            regulariser = ent_coef * entropy_loss
+            regulariser = reg_coef * entropy_loss
 
         loss = policy_loss + vf_coef * value_loss + regulariser + seat_coef * seat_loss
         approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
@@ -476,15 +476,16 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
                           kl_prior=kl_prior)
 
     @jax.jit
-    def update(params, opt_state, batch_data):
-        (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(params, batch_data)
+    def update(params, opt_state, batch_data, reg_coef):
+        (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+            params, batch_data, reg_coef)
         grads, gnorm = _clip_by_norm(grads, max_grad_norm)
         updates, opt_state = optimiser.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
         return params, opt_state, {**aux, "loss": loss, "grad_norm": gnorm}
 
     @functools.partial(jax.jit, static_argnames=("epochs", "n_chunks", "chunk"))
-    def run_epochs(params, opt_state, data, key, epochs, n_chunks, chunk):
+    def run_epochs(params, opt_state, data, key, epochs, n_chunks, chunk, reg_coef):
         """Every minibatch of every epoch as a single dispatch.
 
         The obvious loop -- shuffle in numpy, slice per minibatch, call a jitted update -- costs one
@@ -510,7 +511,7 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
             def one_minibatch(carry, rows):
                 params, opt_state = carry
                 mb = jax.tree_util.tree_map(lambda x: x[rows], data)
-                params, opt_state, metrics = update(params, opt_state, mb)
+                params, opt_state, metrics = update(params, opt_state, mb, reg_coef)
                 return (params, opt_state), metrics
 
             (params, opt_state), metrics = lax.scan(one_minibatch, (params, opt_state), perm)
@@ -911,11 +912,23 @@ def main():
         op_counts = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
                      * live_units[..., None]).sum(axis=(0, 1))
 
+        # **Anneal the regulariser, which Ender says mattered and which this flag never did.**
+        #
+        # `--kl-anneal` was parsed and then never read anywhere in this file -- a dead argument for
+        # the one mechanism his write-up singles out: "reducing this coefficient later in training
+        # resulted in significant improvement". It could not have worked as written either, because
+        # `ent_coef` was captured as a Python float when `make_update` built its closure, so it was
+        # baked into the compiled graph and constant for the whole run. It is now a traced value.
+        reg_coef = args.ent_coef
+        if args.kl_anneal:
+            reg_coef *= max(0.0, 1.0 - it / float(args.kl_anneal))
+
         n_chunks = max(1, flat_n // args.minibatch_size)
         key, ekey = jax.random.split(key)
         params, opt_state, metrics = run_epochs(
             params, opt_state, batch_data_full, ekey,
-            epochs=args.epochs, n_chunks=n_chunks, chunk=args.minibatch_size)
+            epochs=args.epochs, n_chunks=n_chunks, chunk=args.minibatch_size,
+            reg_coef=reg_coef)
         target_params = ema_update(target_params, params, args.target_ema)
 
         # One transfer per update, of scalars only.
