@@ -740,9 +740,34 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         if kl_coef:
             cond = A.condition_all(heads, batch_data["actions"])
         if kl_coef and (hand_noop_p or spend_p):
-            kl_prior = kl_to_prior(
-                cond, hand_prior_heads(cond, batch_data["masks"], hand_noop_p, spend_p),
-                batch_data["masks"])
+            prior = hand_prior_heads(cond, batch_data["masks"], hand_noop_p, spend_p)
+            # **Both priors at once, each on the head it is right for.** Measured on a day-25
+            # board, P(act) implied by each:
+            #
+            #                  BC prior   uniform (what the hand prior gives an unshaped head)
+            #     buy_seed         0.9%     75.0%
+            #     buy_product      0.4%     40.0%
+            #     buy_animal       0.1%     50.0%
+            #     hire             6.3%     50.0%
+            #     buy_land         0.0%     46.7%
+            #     sell             6.6%     27.3%
+            #
+            # `hand_prior_heads` returns *uniform* for every head it does not shape, and
+            # `KL(p||uniform)` is negative entropy -- so those heads are pushed toward buying on
+            # 40-75% of turns. That is what emptied a $53,373 inherited farm down to $14 and lost
+            # to an opponent that does nothing. `--spend-prior` covers only four of the six; nothing
+            # covers `buy_product` or `sell`.
+            #
+            # The BC prior has the market right and the `op` head wrong: it predates commitments, so
+            # its zero-padded commit logits carry 2.4% of the mass against 21.7% uniform -- a 9x
+            # suppression of the one behaviour under test. Neither prior is correct everywhere, and
+            # there is no reason to use one where the other is better.
+            if prior_params is not None:
+                bc_heads, _pv = model.apply(prior_params, tiles, units, glob)
+                bc_cond = A.condition_all(
+                    jax.lax.stop_gradient(bc_heads), batch_data["actions"])
+                prior = {k: (prior[k] if k == "op" else bc_cond[k]) for k in prior}
+            kl_prior = kl_to_prior(cond, prior, batch_data["masks"])
         elif prior_params is not None and kl_coef:
             prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
             prior_cond = A.condition_all(
