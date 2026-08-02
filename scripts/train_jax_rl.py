@@ -181,6 +181,28 @@ ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE = range(5)
 N_ROLES = 5
 ROLE_NAMES = ("self", "pool", "farm", "trade", "idle")
 
+PRODUCT_NAMES = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
+                 "EGG", "MILK", "WOOL", "FERTILIZER")
+
+# **Teacher market rates -- a reference column, explicitly NOT a target.**
+#
+# Share of turns carrying a non-zero order, measured over the 17,975 rows of `bc_top25.npz` (the
+# top-25 leaderboard seats). Printed beside our own rates because "is 0.24 a lot?" is unanswerable
+# without something to compare to.
+#
+# **These are day-2 numbers from a 62-day competition** (launched 2026-07-30). The field will move,
+# and `CLAUDE.md` records the standing rule that a teacher is a sparring partner and never the
+# final policy -- so a gap against this column is information, not an error to correct. Two entries
+# are worth knowing regardless of meta, because they are arithmetic rather than fashion:
+#
+#   - the teacher BUYS fertilizer on exactly 0.000 of turns and SELLS it on 0.179. It is collected
+#     free from animals with COLLECT_FERT. Buying it is buying what they harvest and sell.
+#   - the teacher BUYS wheat on 0.455 of turns, its single most common market action, because wheat
+#     is the input to the animal economy -- bought cheap, fed to livestock, sold on as milk and wool
+#     at ~83% of the winner's revenue.
+TEACHER_BUY = (0.455, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.000)
+TEACHER_SELL = (0.367, 0.021, 0.002, 0.019, 0.023, 0.001, 0.070, 0.093, 0.179)
+
 
 def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     """Build the jitted rollout: `horizon` turns of self-play across all phase groups, plus GAE.
@@ -1948,6 +1970,30 @@ def main():
                 day_bits.append(f"d{d}: n/a")
         day_line = ("         by seed day  " + "  ".join(day_bits) + "\n") if day_bits else ""
 
+        # **Market lines with product names and the teacher's rate beside ours.**
+        #
+        # `buy 0.240/0.000/0.000/0.000/0.000/0.000/0.000/0.000/0.262` is unreadable, and worse, the
+        # seven zeros are STRUCTURAL -- only WHEAT and FERTILIZER are in `jax_sim.BUYABLE`, so the
+        # policy is masked out of the rest. Printed as a bare list it reads as "the policy refuses
+        # to buy seven products" when it cannot buy them at all.
+        #
+        # **Read the teacher column as a reference point, not a target.** These are the top-25
+        # leaderboard seats scraped on day 2 of a 62-day competition; their play is an early-meta
+        # artifact and will not be what wins. It is here because "how does this compare to people
+        # who are currently beating us" is the question the raw numbers cannot answer, not because
+        # matching it is the goal -- `CLAUDE.md` is explicit that a teacher is a sparring partner
+        # and never the final policy.
+        buyable = [i for i, b in enumerate(np.asarray(J.BUYABLE)) if b]
+        def _mkt(rates, teacher, keep):
+            return "  ".join(
+                f"{PRODUCT_NAMES[i][:5]}:{rates[i]:.3f}(t{teacher[i]:.3f})" for i in keep)
+        buy_line = ("         BUY  " + _mkt(row["buy_rate"], TEACHER_BUY, buyable)
+                    + "   (only these two are buyable)\n")
+        sell_keep = sorted(range(len(PRODUCT_NAMES)),
+                           key=lambda i: -max(row["sell_rate"][i], TEACHER_SELL[i]))[:6]
+        sell_line = ("         SELL " + _mkt(row["sell_rate"], TEACHER_SELL, sorted(sell_keep))
+                     + "\n")
+
         print(
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f} "
             f"tstd {row['terminal_ret_std']:.3f}  "
@@ -1967,11 +2013,10 @@ def main():
             # is the first thing to read: near-uniform is healthy, one mode near 1.00 is the
             # collapse that would make `buy` structurally unreachable rather than merely rare.
             f"         trade {'/'.join(f'{x:.2f}' for x in _norm(row['trade_counts']))}"
-            f"  buy {'/'.join(f'{x:.3f}' for x in row['buy_rate'])}"
-            f"  sell {'/'.join(f'{x:.3f}' for x in row['sell_rate'])}"
             f"  crop {'/'.join(f'{x:.2f}' for x in _norm(row['crop_counts']))}\n"
+            + buy_line + sell_line
             # PICKUP is the link between wheat sitting in the shed and a unit able to FEED.
-            f"         pickup {'/'.join(f'{x:.2f}' for x in _norm(row['item_counts']))}"
+            + f"         pickup {'/'.join(f'{x:.2f}' for x in _norm(row['item_counts']))}"
             f"  buyanimal {'/'.join(f'{x:.4f}' for x in row['buy_animal_rate'])}\n"
             # Realised seat-1 mix. Sticky roles are sampled, so this is measured, not guaranteed.
             f"         roles " + "  ".join(
