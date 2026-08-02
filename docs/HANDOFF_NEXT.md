@@ -37,6 +37,36 @@ for d in (25,20,15,10,0): print(d, r.get(f\"games_day{d}\"), r.get(f\"wr_day{d}\
 "'
 ```
 
+## READ THIS FIRST: the policy does nothing from turn 0
+
+`scripts/play_checkpoint.py` on `mix5-20260802-120823/latest.pkl` (update 50), 16 games per seating:
+
+```
+seat 0 vs scripted farmer:  W/D/L  0 / 0 / 16
+seat 1 vs scripted farmer:  W/D/L  0 / 0 / 16
+policy $  2,998  (started 3,000)      farmer $ 30,292
+bank by day  d0:3,000 d5:3,000 d10:3,000 d15:3,000 d20:3,000 d25:2,998 d29:2,998
+ops  N:53.73%  S:37.39%  E:4.44%  W:4.44%
+     WATER:0%  PLANT:0%  HARVEST:0%  FEED:0%  CARE:0%   raw FEED count 0
+```
+
+**100% movement, zero productive actions over a whole season, 32/32 losses.** It walks north and
+south and never touches a crop or an animal.
+
+**So `vs farm 0.659` is entirely an artifact of the seeded start.** The policy is not a competent
+farmer that is merely untested at turn 0 -- from a real start it produces nothing. A conclusion
+recorded earlier in this session, that `vs idle 0.979` showed the policy "maintains and grows a farm",
+is **wrong**: it maintains a *pre-built day-25 board* and does nothing otherwise.
+
+This vindicates the standing rule and it should not need learning a fourth time: **prefer a replay to
+an aggregate.** Every seeded win rate today was consistent with a policy that banks $2,998.
+
+**What it implies for the plan.** The day-0 share is not a coverage nicety worth 2% of episodes -- the
+opening is entirely unlearned and is the whole problem. And the flat animal gap was not only a
+symmetry artifact; there is no animal behaviour to measure. Before any more curriculum tuning, decide
+whether a policy trained on seeded maintenance can ever transfer to turn 0, or whether the opening
+needs its own training signal.
+
 ## Both critic-side gates are dead — do not use them
 
 Under symmetric starts these two are structurally uninformative, not broken:
@@ -62,6 +92,8 @@ update 38 on one run whose settled rate came much later. For anchoring a follow-
 
 ## Next three moves, in order
 
+0. **Re-run `scripts/play_checkpoint.py` on every checkpoint you evaluate.** It is the only thing that
+   caught the above, and it takes five minutes. A seeded win rate cannot see a policy that banks $2,998.
 1. **Read the per-day rates once `mix5d` has a few hundred games per day.** Day 25 accumulates ~6x
    faster than day 0 (episode length), so give it time. The question: are the middle rungs
    contributing, or is day 25 carrying four dead days?
