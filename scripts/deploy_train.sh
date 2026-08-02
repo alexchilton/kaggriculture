@@ -57,7 +57,8 @@ sync)
     put "$f" "$REMOTE/$f"; echo "sent $f"
   done
   echo "--- checksums ---"
-  for f in kagg/sim/jax_sim.py kagg/rl/jax_policy.py scripts/train_jax_rl.py; do
+  for f in kagg/sim/jax_sim.py kagg/rl/jax_policy.py kagg/rl/commit.py \
+           kagg/rl/jax_act.py kagg/rl/curriculum.py scripts/train_jax_rl.py; do
     l=$(md5 -q "$f"); r=$(sh "md5sum $REMOTE/$f" | awk '{print $1}')
     [ "$l" = "$r" ] && echo "  ok   $f" || echo "  DIFF $f  local=$l remote=$r"
   done

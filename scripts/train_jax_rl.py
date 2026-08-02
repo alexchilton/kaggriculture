@@ -50,7 +50,7 @@ from jax import lax
 import numpy as np
 import optax
 
-from kagg.rl import (curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
+from kagg.rl import (commit as CM, curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
                      jax_policy as P, league)
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
@@ -200,7 +200,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     def rollout(params, value_params, opp_params, roles, role_logp, virgin,
                 early_limit, state, key, seed_states):
         def one_turn(carry, _):
-            state, roles, virgin, key = carry
+            state, roles, virgin, key, cmt = carry
             key, sub = jax.random.split(key)
 
             # Seat-1 role, held for the life of the episode. Derived here rather than passed in, so
@@ -268,7 +268,31 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             take_opp = take_opp | take_idle | jnp.broadcast_to(
                 (use_trade | use_farm)[:, None] & (seat == 1), (batch, 2)).reshape(-1)
 
-            sim_actions = A.to_sim_actions(actions, batch)
+            # **Commitments are resolved here, between the policy and the simulator.**
+            #
+            # `actions["op"]` may hold a `COMMIT_*` token, which `jax_sim` has never heard of.
+            # `commit.resolve` turns it into the primitive the unit would have submitted anyway --
+            # a step along the frozen path, or the arrival op -- and reports which unit-turns were
+            # the policy's own decision. The undecided ones are dropped from the density below, so
+            # the PPO ratio never compares an action the policy did not choose.
+            u32 = lambda k: A._unflat(actions[k], batch).astype(jnp.int32)   # noqa: E731
+            sim_op, sim_crop, sim_item, sim_qty, cmt_next, decided = CM.resolve(
+                cmt, state, u32("op"), u32("crop"), u32("item"), u32("qty"))
+            sim_actions = A.to_sim_actions(actions, batch)._replace(
+                unit_op=sim_op.astype(J._I), unit_crop=sim_crop.astype(J._I),
+                unit_item=sim_item.astype(J._I),
+                unit_qty=P.UNIT_QTY_BUCKETS[sim_qty].astype(J._I))
+
+            # **Re-score the behaviour log-prob against the decision mask, or the ratio is a lie.**
+            #
+            # `A.sample` above ran before commitments were resolved, so its `logp` still counts the
+            # unit-turns that turned out to be walk steps -- while `A.evaluate` in the update will
+            # drop them. Storing the un-masked number would make `exp(new - old)` a comparison of
+            # two different sums on every turn a commitment was running: no error, no NaN, just a
+            # gradient pointing somewhere arbitrary. Re-scoring costs nothing (same heads, same
+            # masks, no second forward pass) and routes both sides through the one `_score`.
+            decided_flat = A._flat(decided)
+            logp, _ent = A.evaluate(heads, masks, actions, decided_flat)
 
             # **A seat that trades wheat and nothing else, so the draw stops being available.**
             #
@@ -449,6 +473,12 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 vs_trade=jnp.broadcast_to(use_trade[:, None], (batch, 2)).reshape(-1),
                 vs_farm=jnp.broadcast_to(use_farm[:, None], (batch, 2)).reshape(-1),
                 roles=roles,
+                # **Which unit-turns were the policy's own decision**, in network-flat layout.
+                # False on the intermediate turns of a commitment: the unit was walking a path it
+                # chose earlier, so scoring that turn would credit the policy for an action it did
+                # not take. Stored rather than recomputed for the same reason the observations are
+                # -- the update must mask exactly what the behaviour policy masked.
+                decided=decided_flat,
             )
 
             # **Re-draw the role only for games that just ended.** A surviving game keeps the
@@ -459,10 +489,18 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # Once a slot restarts it has been reset to turn 0 on an empty board, so from here its
             # episodes are genuine and their terminal rewards count.
             nxt_virgin = virgin & ~restart
-            return (nxt, nxt_roles, nxt_virgin, key), out
+            # Night respawns every unit, dismisses every hand and empties every inventory, so a walk
+            # in progress is invalid whatever its timer says. A restarting slot is a fresh game and
+            # must not inherit a commitment either.
+            nxt_cmt = CM.clear_at_night(cmt_next, nxt)
+            nxt_cmt = jax.tree_util.tree_map(
+                lambda a, z: jnp.where(
+                    restart.reshape((-1,) + (1,) * (a.ndim - 1)), z, a),
+                nxt_cmt, CM.init(batch))
+            return (nxt, nxt_roles, nxt_virgin, key, nxt_cmt), out
 
-        (final_state, final_roles, final_virgin, key), traj = jax.lax.scan(
-            one_turn, (state, roles, virgin, key), None, length=horizon)
+        (final_state, final_roles, final_virgin, key, _final_cmt), traj = jax.lax.scan(
+            one_turn, (state, roles, virgin, key, CM.init(batch)), None, length=horizon)
 
         # Bootstrap from the value of the state we stopped in, across all phase groups.
         t, u, g = jax_obs.encode(final_state)
@@ -633,7 +671,8 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
     def loss_fn(params, batch_data, reg_coef):
         tiles, units, glob = batch_data["obs"]
         heads, value = model.apply(params, tiles, units, glob)
-        logp, entropy = A.evaluate(heads, batch_data["masks"], batch_data["actions"])
+        logp, entropy = A.evaluate(heads, batch_data["masks"], batch_data["actions"],
+                                   batch_data.get("decided"))
 
         # Rows chosen by a frozen opponent carry log-probs from other parameters; including them
         # would make the ratio a comparison of two unrelated policies. Weight them out rather than
@@ -1525,6 +1564,9 @@ def main():
             actions={k: flatten(v) for k, v in traj["actions"].items()},
             masks={k: flatten(v) for k, v in traj["masks"].items()},
             obs=tuple(flatten(x) for x in traj["obs"]),
+            # The behaviour policy's own decision mask. `A.evaluate` must be given exactly this,
+            # not a recomputed version -- see the note where it is stored.
+            decided=flatten(traj["decided"]),
         )
 
         # Explained variance, also reduced on device. `ev` over everything is mostly the critic

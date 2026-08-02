@@ -33,7 +33,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from kagg.rl import jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
+from kagg.rl import commit as CM, jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
@@ -44,6 +44,12 @@ EPISODE_TURNS = 719
 OP_NAMES = ("NOOP", "N", "S", "E", "W", "WATER", "HARV", "PLANT", "DIG",
             "PICKUP", "DROP", "PLACE", "FEED", "CARE", "COLLFERT", "FERTIL",
             "COOP", "PASTURE")
+# **Op counts are taken AFTER commitments resolve, so they describe what the units did.**
+# A `COMMIT_*` token is a decision, not an action: the turns it produces are ordinary moves and one
+# arrival op. Counting the tokens instead would report a policy that "does COMMIT_FEED 5% of the
+# time" while the animals starve, which is the same species of lie as counting submitted ops rather
+# than ops that took effect.
+COMMIT_NAMES = ("cWATER", "cHARV", "cFEED", "cPLANT", "cPICKUP")
 
 
 def _greedy(heads, masks):
@@ -81,7 +87,7 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS):
     seat = 1 if swap else 0
 
     def one_turn(carry, _):
-        state, key = carry
+        state, key, cmt = carry
         key, ka = jax.random.split(key)
 
         tiles, units, glob = jax_obs.encode(state)
@@ -89,7 +95,16 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS):
         heads, _ = model.apply(params, A._flat(tiles), A._flat(units), A._flat(glob))
         act = _greedy(heads, masks) if greedy else A.sample(ka, heads, masks)[0]
 
-        sim_actions = A.to_sim_actions(act, batch)
+        # Commitments resolve exactly as they do in training, or this replay would measure a
+        # different agent than the one that was trained -- which is the whole reason this script
+        # exists.
+        u32 = lambda k: A._unflat(act[k], batch).astype(jnp.int32)   # noqa: E731
+        sim_op, sim_crop, sim_item, sim_qty, cmt, _decided = CM.resolve(
+            cmt, state, u32("op"), u32("crop"), u32("item"), u32("qty"))
+        sim_actions = A.to_sim_actions(act, batch)._replace(
+            unit_op=sim_op.astype(J._I), unit_crop=sim_crop.astype(J._I),
+            unit_item=sim_item.astype(J._I),
+            unit_qty=P.UNIT_QTY_BUCKETS[sim_qty].astype(J._I))
         heur = HEUR.actions(state)
 
         # The farmer takes whichever seat the policy does not.
@@ -103,18 +118,28 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS):
         nxt = J.step(state, sim_actions)
 
         live = jax_obs.encode(state)[1][..., 0].reshape(batch, 2, -1) > 0.5
-        ops = act["op"].reshape(batch, 2, -1)
+        # **The RESOLVED op, not the policy's token.** A `COMMIT_FEED` is a decision; what the unit
+        # actually did that turn is a step or an arrival. Counting tokens would report a policy that
+        # commits to feeding 5% of the time while every animal starves.
+        ops = sim_op
         mine = jnp.zeros((batch, 2), dtype=bool).at[:, seat].set(True)
         counted = live & mine[..., None]
         counts = (jax.nn.one_hot(ops, O.N_OPS, dtype=jnp.float32)
                   * counted[..., None]).sum(axis=(0, 1, 2))
-        return (nxt, key), (nxt.farm.money, counts, counted.sum())
+        # How often the policy chose to commit at all, so a replay can tell "never uses the
+        # mechanism" from "uses it and it does not help".
+        tok = act["op"].reshape(batch, 2, -1)
+        commits = (jax.nn.one_hot(tok - O.N_OPS, CM.N_COMMIT, dtype=jnp.float32)
+                   * counted[..., None]).sum(axis=(0, 1, 2))
+        cmt_next = CM.clear_at_night(cmt, nxt)
+        return (nxt, key, cmt_next), (nxt.farm.money, counts, counted.sum(), commits)
 
-    (final, _), (money_t, counts_t, unit_t) = jax.lax.scan(
-        one_turn, (state, key), None, length=turns)
+    (final, _, _), (money_t, counts_t, unit_t, commit_t) = jax.lax.scan(
+        one_turn, (state, key, CM.init(batch)), None, length=turns)
     # One sample per game-day rather than per turn, which is the unit a human reads.
     trace = money_t[::J.TURNS_PER_DAY]
-    return final.farm.money, trace, counts_t.sum(axis=0), float(unit_t.sum())
+    return (final.farm.money, trace, counts_t.sum(axis=0), float(unit_t.sum()),
+            commit_t.sum(axis=0))
 
 
 def report(money, swap):
@@ -169,7 +194,7 @@ def main():
     key = jax.random.PRNGKey(args.seed)
     for swap in (False, True):
         key, sub = jax.random.split(key)
-        money, trace, counts, unit_turns = play(
+        money, trace, counts, unit_turns, commits = play(
             params, model, args.games, sub, swap, greedy=args.greedy)
         w, d, ll, me, them = report(money, swap)
         seat = 1 if swap else 0
@@ -187,6 +212,11 @@ def main():
         tf = np.asarray(trace)[:, :, 1 - seat]
         print("  farmer bank by day  "
               + "  ".join(f"d{d_}:{np.median(tf[d_]):,.0f}" for d_ in days if d_ < len(tf)))
+
+        cm = np.asarray(commits)
+        print("  commits chosen  " + "  ".join(
+            f"{CM_NAME}:{cm[i] / max(1.0, unit_turns):.2%}"
+            for i, CM_NAME in enumerate(COMMIT_NAMES)))
 
         c = np.asarray(counts)
         total = max(1.0, unit_turns)

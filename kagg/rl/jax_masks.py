@@ -20,9 +20,12 @@ does.
 
 import jax.numpy as jnp
 
+from kagg.rl import commit
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
+# The primitive ops this file builds masks for. The commit tokens are appended by `unit_op_mask`
+# from `commit.commit_mask`; `N_OPS` deliberately still means "the simulator's ops" here.
 N_OPS = O.N_OPS
 
 
@@ -98,9 +101,12 @@ def unit_op_mask(state):
     masks[O.BUILD_PASTURE] = kind == J.EMPTY
 
     live = J._ARANGE_UNITS[None, None, :] < farm.n_units[:, :, None]
-    stacked = jnp.stack(masks, axis=-1)
+    # **The commit tokens are appended, and they are legality just as the primitives are.**
+    # `commit_mask` says a target of that kind exists somewhere reachable -- not that walking to it
+    # is worth doing. A unit may always decline; nothing here forces a commitment.
+    stacked = jnp.concatenate([jnp.stack(masks, axis=-1), commit.commit_mask(state)], axis=-1)
     # A dead slot may only NOOP, so its distribution is a point mass and contributes no gradient.
-    only_noop = (jnp.arange(N_OPS) == O.NOOP)
+    only_noop = (jnp.arange(commit.N_POLICY_OPS) == O.NOOP)
     return jnp.where(live[..., None], stacked, only_noop)
 
 

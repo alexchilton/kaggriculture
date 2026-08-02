@@ -48,11 +48,17 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
-from kagg.rl import jax_obs
+from kagg.rl import commit as CM, jax_obs
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
-N_OPS = O.N_OPS
+# **The policy's op space is the simulator's 18 plus one token per commitment.**
+#
+# `ops.N_OPS` stays 18 because it is shared with the parity harness, and an op the reference has
+# never heard of would make "300/300 exact" a statement about a different game. The commit tokens
+# live only above that line and are translated back to primitives by `kagg.rl.commit.resolve`
+# before anything reaches `jax_sim`.
+N_OPS = CM.N_POLICY_OPS
 
 # **The policy computes in float32, deliberately and explicitly.**
 #

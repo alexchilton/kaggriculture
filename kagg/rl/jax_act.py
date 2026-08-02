@@ -174,7 +174,7 @@ def condition_all(heads, actions):
     return condition_on_op(condition_on_trade(heads, actions["trade"]), actions["op"])
 
 
-def _score(conditioned, masks, actions):
+def _score(conditioned, masks, actions, decided=None):
     """Log-prob and entropy of `actions` under already-conditioned heads, summed per seat.
 
     **`sample` and `evaluate` both come through here, and that is deliberate.** The PPO ratio is
@@ -185,6 +185,15 @@ def _score(conditioned, masks, actions):
     single code path is the reason it stays true rather than the reason we would find out.
     """
     active = active_unit_heads(actions["op"])
+    # **A unit walking out a commitment contributes nothing to the density.**
+    #
+    # Not scored as probability 1 -- excluded. Both `logp` and the entropy for that unit-turn drop
+    # out of the sum, so the term is identical under old and new parameters and `exp(0 - 0) = 1`
+    # for that slot by construction. That is the same trick `active` already plays for heads an op
+    # does not read, and it is why a multi-turn commitment cannot corrupt the PPO ratio: there is
+    # no second code path to drift, only a wider mask on the one that already exists.
+    if decided is not None:
+        active = {k: v & decided for k, v in active.items()}
     logps, entropies = [], []
     for k in ALL_HEADS + ("trade",):
         lp, ent = P.eval_head(conditioned[k], masks[k], actions[k])
@@ -224,7 +233,7 @@ def sample(key, heads, masks):
     return actions, *_score(conditioned, masks, actions)
 
 
-def evaluate(heads, masks, actions):
+def evaluate(heads, masks, actions, decided=None):
     """Score stored actions under current params, for the ratio in the PPO objective.
 
     The active set is derived from the *stored* op, so behaviour and update agree on exactly which
@@ -239,8 +248,12 @@ def evaluate(heads, masks, actions):
     and `p(op)` are scored too, so the density is the full
     `p(trade) * p(op) * prod p(product|trade) * prod p(arg|op)` and the ratio stays a ratio of the
     same object.
+
+    `decided` is the stored per-unit "this turn was a decision" mask from the rollout. Passing the
+    stored one rather than recomputing it is the same discipline as deriving the active set from the
+    stored op: recomputing would let the update disagree with behaviour about which turns counted.
     """
-    return _score(condition_all(heads, actions), masks, actions)
+    return _score(condition_all(heads, actions), masks, actions, decided)
 
 
 def to_sim_actions(actions, batch):

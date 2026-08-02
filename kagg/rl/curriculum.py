@@ -239,7 +239,11 @@ def _duplicate_seat(state, seat=0):
 
 
 def length_weighted_mix(days, season_days=30):
-    """`{day: fraction}` weighted so every day contributes the SAME share of terminal episodes.
+    """`{day: fraction}` weighted so each day contributes the requested share of terminal episodes.
+
+    Pass an iterable of days for an EQUAL share each, or a `{day: episode_fraction}` mapping to ask
+    for a specific split -- `{0: 0.6, 25: 0.1, ...}` means "60% of finished episodes should start at
+    day 0", which is not expressible as a slot fraction and is the thing actually worth setting.
 
     **The problem it fixes.** A day-`d` episode is `(season_days - d)` game-days long, and every slot
     emits the same `--horizon` turns per update, so terminal episodes from day `d` arrive in
@@ -258,13 +262,32 @@ def length_weighted_mix(days, season_days=30):
     a day-0 episode needs ~22 updates to finish even one. The middle and early rungs were not
     contributing weakly; they were contributing nothing.
     """
-    days = sorted({int(d) for d in days}, reverse=True)
-    if not days:
+    # A mapping asks for specific episode shares; a bare iterable asks for an equal split. Both end
+    # up in `want`, so there is exactly one weighting expression below rather than two that could
+    # drift apart.
+    if isinstance(days, dict):
+        want = {int(d): float(f) for d, f in days.items()}
+        if any(f <= 0 for f in want.values()):
+            raise ValueError("episode fractions must be positive; drop the day instead of asking "
+                             "for a zero share, or it silently will not run")
+        total_want = sum(want.values())
+        if abs(total_want - 1.0) > 1e-6:
+            raise ValueError(f"episode fractions sum to {total_want:.6f}, not 1.0")
+    else:
+        keys = sorted({int(d) for d in days}, reverse=True)
+        want = {d: 1.0 / len(keys) for d in keys} if keys else {}
+
+    if not want:
         raise ValueError("no days given")
-    for d in days:
+    for d in want:
         if d < 0 or d >= season_days:
             raise ValueError(f"day {d} is outside 0..{season_days - 1}")
-    weights = {d: float(season_days - d) for d in days}
+
+    # **Slots ~ episode_share x remaining length.** Episodes arrive in proportion to
+    # `slots / (season_days - d)`, so multiplying the target by the length cancels the bias exactly
+    # and each day lands on the share that was asked for. The equal-share case reduces to the
+    # original `season_days - d`, which is why the old spelling keeps working unchanged.
+    weights = {d: want[d] * float(season_days - d) for d in sorted(want, reverse=True)}
     total = sum(weights.values())
     return {d: w / total for d, w in weights.items()}
 
@@ -280,7 +303,19 @@ def parse_mix(spec):
     # Spelled as a prefix rather than a separate flag so the two cannot both be set and disagree.
     text = str(spec).strip()
     if text.lower().startswith("length:"):
-        return length_weighted_mix(int(x) for x in text.split(":", 1)[1].split(",") if x.strip())
+        body = [x.strip() for x in text.split(":", 1)[1].split(",") if x.strip()]
+        # Both spellings behind the one prefix: `length:25,20,0` is an equal episode split, and
+        # `length:0:0.6,25:0.1` names the episode share per day. Deciding on the presence of a
+        # colon keeps them from being two flags that can disagree.
+        if any(":" in p for p in body):
+            if not all(":" in p for p in body):
+                raise ValueError(
+                    "mixed 'length:' forms: give every day a fraction (length:0:0.6,25:0.4) or "
+                    "none of them (length:0,25), not a mixture -- the missing ones would silently "
+                    "take a share nobody wrote down")
+            return length_weighted_mix({int(p.split(":", 1)[0]): float(p.split(":", 1)[1])
+                                        for p in body})
+        return length_weighted_mix(int(x) for x in body)
 
     mix = {}
     for part in str(spec).split(","):

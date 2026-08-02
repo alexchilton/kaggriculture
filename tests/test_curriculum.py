@@ -173,3 +173,43 @@ def test_early_limit_below_the_seed_turn_is_rejected():
             f"and this case does not test what it claims")
     # And the combination that is fine: a limit above the seed turn truncates normally.
     assert 480 > 15 * TURNS_PER_DAY
+
+
+def test_length_weighted_mix_accepts_unequal_episode_targets():
+    """`length:` must express "60% of EPISODES from day 0", not only an equal split.
+
+    The equal-share form already existed. What did not is asking for a *specific* episode
+    share per day, which is the thing the owner actually wants to set: day-0 coverage is the
+    whole problem and "equal" is not the same request as "most of it".
+    """
+    mix = curriculum.length_weighted_mix({0: 0.6, 10: 0.1, 15: 0.1, 20: 0.1, 25: 0.1})
+
+    # Slots are weighted by remaining season length, so day 0 (30 days) needs far more slots
+    # than day 25 (5 days) to finish the same number of episodes.
+    assert abs(sum(mix.values()) - 1.0) < 1e-9
+    assert mix[0] > mix[25] * 10, "a day-0 episode is 6x longer; its slot share must dominate"
+
+    # The property that matters: the resulting TERMINAL-EPISODE share is what was asked for.
+    episodes = {d: mix[d] / (30 - d) for d in mix}
+    total = sum(episodes.values())
+    for d, want in ((0, 0.6), (10, 0.1), (15, 0.1), (20, 0.1), (25, 0.1)):
+        got = episodes[d] / total
+        assert abs(got - want) < 1e-9, f"day {d} gets {got:.4f} of episodes, asked for {want}"
+
+
+def test_length_weighted_mix_still_supports_the_equal_share_form():
+    """The existing `length:25,20,...` spelling must keep working unchanged."""
+    mix = curriculum.length_weighted_mix([25, 20, 15, 10, 0])
+    episodes = {d: mix[d] / (30 - d) for d in mix}
+    total = sum(episodes.values())
+    for d in mix:
+        assert abs(episodes[d] / total - 0.2) < 1e-9, "equal form must give equal episode share"
+
+
+def test_parse_mix_accepts_length_prefix_with_fractions():
+    """`length:0:0.6,25:0.1` -- the day:fraction form behind the length prefix."""
+    mix = curriculum.parse_mix("length:0:0.6,10:0.1,15:0.1,20:0.1,25:0.1")
+    episodes = {d: mix[d] / (30 - d) for d in mix}
+    total = sum(episodes.values())
+    assert abs(episodes[0] / total - 0.6) < 1e-9
+    assert abs(sum(mix.values()) - 1.0) < 1e-9
