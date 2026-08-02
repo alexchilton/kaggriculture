@@ -32,6 +32,20 @@ POOL_PRIORITY_ALPHA = 0.2
 POOL_UNPLAYED_BONUS = 0.25
 
 
+def hold_updates(horizon, episode_turns):
+    """Updates one pool member must hold the seat to cover a whole episode.
+
+    `ceil(episode_turns / horizon)`, floored at 1. A game that starts mid-window still straddles at
+    most one boundary, so it faces at most two opponents rather than the ~23 it faced before -- and
+    the common case is one. Making it exact would mean per-slot opponent parameters, which is a
+    different and far more expensive design: the rollout applies **one** parameter set to the whole
+    batch, so per-slot members would need either a forward pass per member or a batch-sized copy of
+    the parameters. Two-at-worst for free is the right trade; the residual is stated rather than
+    hidden.
+    """
+    return max(1, -(-int(episode_turns) // max(1, int(horizon))))
+
+
 @dataclass
 class Member:
     """One frozen checkpoint, and an EMA of the win rate it achieves *against the live policy*.
@@ -73,11 +87,30 @@ class Pool:
              + (POOL_UNPLAYED_BONUS if m.games <= 0 else 0.0)
              for m in self.members], dtype=np.float64)
 
-    def select(self, seed, update):
-        """Index of the opponent for this update. Seeded by `(seed, update)`, so a resumed run at
-        the same update draws the same opponent."""
+    def select(self, seed, update, hold=1):
+        """Index of the opponent for this update. Seeded by `(seed, window)`, so a resumed run at
+        the same update draws the same opponent.
+
+        **`hold` is the number of consecutive updates one member keeps the seat, and it is the fix
+        for a bug that made `wr_pool` meaningless.** This was drawn per *update*, inside the update
+        loop, while an episode is `EPISODE_TURNS` long and one update advances `--horizon` turns of
+        it. At horizon 32 that is ~23 updates per game, so seat 1 was played by ~23 different frozen
+        checkpoints over a single season, swapping every 32 turns.
+
+        An opponent stitched from 23 checkpoints has no plan -- it restarts its strategy 23 times a
+        season -- and plays far worse than any single member. That is how `wr_pool` reached 0.990
+        against snapshots that are near-peers on a fair board, and why every member's recorded rate
+        sat at 0.01-0.15: none of them had ever played a whole game, and `record` credited whichever
+        one held the seat on the final update.
+
+        `CLAUDE.md` already names this failure for the per-opponent win rate -- "the opponent was
+        re-drawn every update while a game spans ~22.5 of them". Sticky *roles* fixed it for the
+        opponent TYPE and left the member identity redrawn, so the same bug survived in the same
+        file. `hold=1` reproduces the old behaviour exactly and exists only so that is expressible.
+        """
         w = self.weights()
-        return int(np.random.default_rng((seed, update)).choice(len(self.members), p=w / w.sum()))
+        window = update // max(1, int(hold))
+        return int(np.random.default_rng((seed, window)).choice(len(self.members), p=w / w.sum()))
 
     def params(self, index):
         return self.members[index].params

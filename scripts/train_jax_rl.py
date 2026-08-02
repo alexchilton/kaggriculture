@@ -598,6 +598,34 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     return rollout
 
 
+def role_logits_per_slot(role_p, seed_days, n_slots):
+    """Per-slot role distribution, with `idle` confined to day-0 slots.
+
+    **`vs idle` is five different questions wearing one label.** Under symmetric seats the idle
+    opponent holds its opening bank for the whole episode, and openings span **$623 at day 0 to
+    $54,031 at day 25** -- an 87x spread. So at day 25 "beat idle" asks whether you can out-earn a
+    five-figure position in five days, and at day 0 it asks whether you can make money at all from
+    a real start. Only the second is the check the metric is read as, and the aggregate has sat at
+    0.995 for the whole run precisely because the other rungs are near-saturated.
+
+    Confining idle to day-0 slots makes the label constant over the thing it describes, which is
+    the property `CLAUDE.md` demands of an aggregate. The freed budget is not deleted: the returned
+    logits are unnormalised, so `jax.random.categorical` renormalises per slot and idle's share
+    goes back to the *real* opponents on every non-day-0 slot, where the open problem actually is.
+
+    A floor of `log(1e-12)` rather than `-inf` -- finite, matching how a zero `--trade-frac` is
+    already expressed one line up, and leaving no `-inf` to turn into a NaN if the row is ever
+    reduced over.
+    """
+    lp = jnp.log(jnp.asarray(role_p, dtype=jnp.float32) + 1e-12)
+    out = jnp.broadcast_to(lp, (n_slots, len(role_p)))
+    if seed_days is None:
+        return out
+    day0 = jnp.asarray(seed_days) == 0
+    return out.at[:, ROLE_IDLE].set(
+        jnp.where(day0, lp[ROLE_IDLE], jnp.log(jnp.asarray(1e-12, dtype=jnp.float32))))
+
+
 def op_census(op_rows, live, n_ops=CM.N_POLICY_OPS):
     """Count chosen ops over `live` rows, one bin per op in the space `n_ops` describes.
 
@@ -1594,7 +1622,11 @@ def main():
     role_p[ROLE_SELF] = 1.0 - role_p[1:].sum()
     print("seat-1 roles, sticky per episode: "
           + "  ".join(f"{n}:{p:.0%}" for n, p in zip(ROLE_NAMES, role_p)))
-    role_logp = jnp.log(jnp.asarray(role_p, dtype=jnp.float32) + 1e-12)
+    # Per-slot, so `idle` can be confined to the day-0 rung. See `role_logits_per_slot`.
+    role_logp = role_logits_per_slot(role_p, seed_days, args.batch)
+    pool_hold = league.hold_updates(args.horizon, EPISODE_TURNS)
+    print(f"pool: one member holds the seat for {pool_hold} updates "
+          f"(= {EPISODE_TURNS} turns / horizon {args.horizon}), so a game faces at most two")
     # Initial draw. Games are mid-season at their staggered phases, so this is the only point where
     # a role is assigned to a game that did not just start -- unavoidable, and it washes out within
     # one season as each game terminates and re-draws.
@@ -1648,7 +1680,11 @@ def main():
         #     opponents per season and no measurement of any of them was valid.
         #
         # See the block comment above `make_rollout` for what that cost.
-        opp_idx = pool.select(args.seed, it)
+        # **One member holds the seat for a whole episode.** Drawn per update, seat 1 was played
+        # by ~23 different checkpoints per game -- see `league.select`. `pool_hold` is derived from
+        # the horizon rather than exposed as a flag, because the correct value is arithmetic:
+        # however many updates it takes to cover `EPISODE_TURNS`.
+        opp_idx = pool.select(args.seed, it, hold=pool_hold)
         opp_params = pool.params(opp_idx)
 
         # The curriculum's start day walks down on the update clock, and the seed pool is rebuilt
@@ -1668,6 +1704,12 @@ def main():
                     mirror=args.curriculum_mirror,
                     symmetric=args.curriculum_symmetric, top=args.curriculum_top or None,
                     with_days=True)
+                # **Rebuild the per-slot role logits, because which slots are day-0 just changed.**
+                # `idle` is confined to the day-0 rung, and that confinement is expressed as a mask
+                # over slot indices -- so a resample that reassigns days without rebuilding this
+                # would leave idle seated against whichever rungs happened to be day-0 last time.
+                # Exactly the stale-label failure this file keeps being bitten by.
+                role_logp = role_logits_per_slot(role_p, seed_days, args.batch)
                 days = ", ".join(str(d) for d in sorted(cur_mix, reverse=True))
                 print(f"         curriculum: reseeding mixed pool (days {days})"
                       f"{' (trainee in the poorer seat)' if args.curriculum_behind else ''}",

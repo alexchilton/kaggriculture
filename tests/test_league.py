@@ -103,3 +103,62 @@ def test_selection_is_reproducible_for_a_given_update():
     for i in range(4):
         pool.add(f"ckpt{i}")
     assert [pool.select(7, u) for u in range(20)] == [pool.select(7, u) for u in range(20)]
+
+
+def test_a_pool_member_holds_the_seat_for_a_whole_episode():
+    """One frozen checkpoint must play a game from start to finish, not 32 turns of it.
+
+    **The bug this pins.** `opp_idx = pool.select(seed, it)` was drawn once per *update*, inside the
+    update loop, while an episode is 719 turns and a `--horizon 32` update advances 32 of them. So
+    seat 1 was played by ~23 different frozen checkpoints over a single game, swapping every 32
+    turns. Sticky *roles* were added so a game keeps its opponent TYPE for the season; the member
+    identity was left redrawn, so the fix was half applied.
+
+    The consequence is not a subtle bias. An opponent stitched from 23 checkpoints has no coherent
+    plan -- it restarts its strategy 23 times a season -- and plays far worse than any single member
+    of the pool. Measured: `wr_pool` read 0.990 while an honest head-to-head between two of those
+    same checkpoints on a fair board was nowhere near that, and every member's recorded win rate sat
+    at 0.01-0.15 because none of them had ever played a whole game. `pool.record` then attributed
+    the result to whichever member happened to hold the seat on the final update.
+
+    `CLAUDE.md` already names this exact failure for the per-opponent win rate -- "the opponent was
+    re-drawn every update while a game spans ~22.5 of them" -- so this is the same bug found twice
+    in two places, fixed once.
+    """
+    from kagg.rl import league
+
+    pool = Pool(max_size=8)
+    for i in range(6):
+        pool.add({"w": i})
+
+    horizon, episode_turns = 32, 719
+    hold = league.hold_updates(horizon, episode_turns)
+    span = -(-episode_turns // horizon)          # updates one game spans, rounded up
+
+    assert hold >= span, "a member must hold the seat for at least one whole episode"
+
+    worst = 0
+    for start in range(0, 300):
+        seen = {pool.select(0, u, hold=hold) for u in range(start, start + span)}
+        worst = max(worst, len(seen))
+    assert worst <= 2, (
+        f"a game spanning {span} updates saw up to {worst} distinct opponents; at most 2 is "
+        f"possible once a member holds the seat for {hold} updates, and 2 only when the game "
+        f"straddles a boundary")
+
+    # The contrast, so the test states what was wrong rather than only what is right.
+    unheld = max(len({pool.select(0, u, hold=1) for u in range(s, s + span)}) for s in range(50))
+    assert unheld > 2, "with hold=1 a single game faces many opponents -- that was the bug"
+
+
+def test_holding_the_seat_does_not_freeze_the_choice_forever():
+    """Members must still rotate across games, or the pool collapses to one opponent."""
+    from kagg.rl import league
+
+    pool = Pool(max_size=8)
+    for i in range(6):
+        pool.add({"w": i})
+    hold = league.hold_updates(32, 719)
+
+    seen = {pool.select(0, u, hold=hold) for u in range(0, hold * 40)}
+    assert len(seen) > 1, "the seat must rotate between members across successive episodes"

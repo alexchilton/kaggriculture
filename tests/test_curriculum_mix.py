@@ -383,3 +383,42 @@ def test_the_length_prefix_parses_and_sums_to_one():
 def test_a_length_spec_with_an_out_of_season_day_is_refused():
     with pytest.raises(ValueError, match="outside"):
         curriculum.parse_mix("length:30,0")
+
+
+def test_day_zero_is_the_actual_start_of_a_game():
+    """The day-0 rung must be a real game start: $3,000, no seeds, empty tiles, turn 0.
+
+    **What it was.** `states_at_day(n, day=0)` snapshots a *recorded elite replay* at a turn drawn
+    from `_turn_indices(.., 0)` = turns 1..48 -- median ~turn 24, a full game-day in -- and
+    `lo = max(1, (0 - DAY_WINDOW) * 24)` means turn 0 is never sampled at all. The run's own startup
+    line measured the result: "day 0: $623", because by turn ~24 the recorded player had converted
+    ~$2,400 of its $3,000 into seed and put it in the ground.
+
+    **Why that matters even though the seats are symmetric.** Fairness was never the problem -- both
+    sides get the same position and whoever ends richer wins. Coverage was. The competition starts
+    at turn 0 with $3,000 and nothing planted, and 78% of training slots were the day-0 rung, so the
+    policy was trained to *continue an elite opening* and deployed to *make one*. The two measure
+    differently and both were right: the day-0 rung read wr 0.59-0.72 while the same checkpoint
+    played from `J.reset` ended on $1,104 from $3,000.
+
+    It also made `vs idle` unreadable at this rung: idle inherits $623, sits on it, and its
+    unwatered crops die -- so "beat idle" meant "extract more than $0 from an inherited half-built
+    farm", not "turn $3,000 into more than $3,000".
+    """
+    import numpy as np
+
+    from kagg.rl import curriculum
+    from kagg.sim import jax_sim as J
+    from kagg.sim.tiles import EMPTY, LOCKED
+
+    states, days = curriculum.states_at_mix(8, {0: 1.0}, seed=0, with_days=True)
+
+    assert set(int(d) for d in days) == {0}
+    money = np.asarray(states.farm.money)
+    assert np.allclose(money, 3000.0), (
+        f"day-0 boards start on {money.mean():.0f}, not $3,000 -- this rung is a replay snapshot "
+        f"of somebody else's opening rather than the opening we are scored on")
+    assert int(np.asarray(states.step_index).max()) == 0, "a game start is turn 0"
+    assert np.asarray(states.farm.seeds).sum() == 0, "nothing is bought yet at turn 0"
+    kind = np.asarray(states.tiles.kind)
+    assert np.all((kind == EMPTY) | (kind == LOCKED)), "nothing is planted yet at turn 0"

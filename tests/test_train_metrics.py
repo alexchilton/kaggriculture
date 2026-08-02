@@ -633,3 +633,41 @@ def test_spend_heads_take_no_shared_target_and_do_not_fall_back_to_the_clone():
         assert k in mod.HAND_PRIOR_HEADS_WITH_BC, (
             f"{k} would fall through to the BC prior, so '--spend-prior 0' would silently mean "
             f"'use the day-2 clone' rather than 'no target'")
+
+
+def test_idle_is_confined_to_the_day_zero_rung():
+    """`idle` may only be drawn for a day-0 slot, and its freed budget goes to the real opponents.
+
+    Under symmetric seats the idle opponent holds its opening bank all episode, and openings span
+    $623 at day 0 to $54,031 at day 25. So "beat idle" is a different question per rung -- a money
+    check at day 0, a near-saturated formality at day 25 -- and one aggregate averaging all five is
+    the unstable-label failure `CLAUDE.md` warns about. `wr_idle` sat at 0.995 all run.
+
+    The freed share must not vanish: the logits are unnormalised and `jax.random.categorical`
+    renormalises per slot, so on a non-day-0 slot idle's mass returns to farm/ranch/pool, which is
+    where the open problem is.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    mod = _load()
+    # self, pool, farm, trade, idle, ranch
+    role_p = [0.55, 0.20, 0.15, 0.0, 0.05, 0.05]
+    seed_days = [0, 0, 25, 10, 0, 20]
+
+    lg = mod.role_logits_per_slot(role_p, seed_days, len(seed_days))
+    p = np.asarray(jax.nn.softmax(lg, axis=-1))
+
+    for i, d in enumerate(seed_days):
+        if d == 0:
+            assert p[i, mod.ROLE_IDLE] == pytest.approx(0.05, abs=1e-4), \
+                f"slot {i} is day 0 and must still draw idle at its configured share"
+        else:
+            assert p[i, mod.ROLE_IDLE] < 1e-6, \
+                f"slot {i} is day {d} and must never draw idle"
+
+    # Budget is redistributed, not deleted -- every slot is still a distribution.
+    assert np.allclose(p.sum(axis=-1), 1.0, atol=1e-5)
+    far = seed_days.index(25)
+    assert p[far, mod.ROLE_FARM] > p[0, mod.ROLE_FARM], \
+        "idle's freed share must go back to the real opponents on non-day-0 slots"

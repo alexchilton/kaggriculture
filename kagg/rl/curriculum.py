@@ -410,6 +410,27 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behi
             continue
         day_seed = seed + 1000 * day
         day_labels.extend([day] * n)
+        if day == 0:
+            # **Day 0 is the actual start of a game, not a snapshot of somebody else's.**
+            #
+            # `states_at_day(.., day=0)` draws from `_turn_indices(.., 0)` = turns 1..48, median
+            # ~turn 24 -- a full game-day in -- and `lo = max(1, (0 - DAY_WINDOW) * 24)` means turn
+            # 0 is never drawn at all. Measured at startup, that rung began on **$623**, because by
+            # turn ~24 the recorded player had converted ~$2,400 of its $3,000 into seed and
+            # planted it.
+            #
+            # Symmetric seats made that *fair* -- both sides get the same position, richer ends the
+            # winner -- and it was never a fairness problem. It was coverage. The competition starts
+            # at turn 0 with $3,000 and bare tiles, 78% of slots were this rung, and the policy was
+            # therefore trained to CONTINUE an elite opening and deployed to MAKE one. Both
+            # measurements were right and disagreed: the rung read wr 0.59-0.72 while the same
+            # checkpoint from `J.reset` ended on $1,104 of a $3,000 stake.
+            #
+            # `mirror`, `behind` and `symmetric` are all no-ops here by construction: a pristine
+            # board is already identical on both seats, so there is no richer seat to inherit and
+            # nothing to mirror.
+            pools.append(J.reset(n))
+            continue
         if not mirror:
             pools.append(states_at_day(n, day=day, seed=day_seed, min_bank=min_bank, top=top,
                                        root=root, behind=behind, max_bank=max_bank))
