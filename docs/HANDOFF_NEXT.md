@@ -1,3 +1,9 @@
+> **SUPERSEDED by `docs/HANDOFF_2026-08-02-evening.md`.** Read that first.
+> The diagnosis in this file (decode, priors, curriculum) was not the cause. The cause was
+> **temporal** -- maintenance ops need a walk back and `_end_of_day` wipes position, crew and
+> inventory every night -- and it is fixed by `kagg/rl/commit.py`. Everything below is kept for
+> the measurements it records, several of which are still the only source for their numbers.
+
 # Short handoff — 2026-08-02, end of session
 
 Read `CLAUDE.md`, then `docs/HANDOFF_2026-08-02.md` (full detail, current through commit `dae2a23`).
