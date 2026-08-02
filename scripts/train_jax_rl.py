@@ -1012,6 +1012,32 @@ def main():
                          "-- about nine repeats of one recorded game per slot over 33 updates, "
                          "which trains against a memorised set rather than a distribution. 0 keeps "
                          "the old build-on-day-change-only behaviour.")
+    ap.add_argument("--curriculum-symmetric", action="store_true",
+                    help="give BOTH seats seat 0's entire position -- cash, crops, animals, units, "
+                         "land, tiles -- so the only difference between the players is what they DO. "
+                         "By default both seats come from the same recorded turn, which means a real "
+                         "strong player against their real opponent and the trainee inheriting the "
+                         "richer side: a win can then be inherited rather than earned and no win rate "
+                         "can tell the two apart. Levelling only the CASH would not fix it, because "
+                         "at day 25 the gap is mostly assets (16 animals against 4) while the banks "
+                         "differ ~13%% ($69k against $61,440). Both sides remain a real, internally "
+                         "consistent board, so this cannot trigger the empty-opponent tie bug -- but "
+                         "no recorded game had two identical farms, so the PAIRING is synthetic even "
+                         "though each board is real. Makes `vs idle` a real test: idle then holds the "
+                         "same rich farm we do and its crops die after two unwatered days, so failing "
+                         "to beat it proves we are not maintaining a farm. Needs --curriculum-mix.")
+    ap.add_argument("--curriculum-mirror", action="store_true",
+                    help="play every seeded board from BOTH sides: half the batch inherits the "
+                         "richer of the two recorded seats and half the poorer, on the same boards. "
+                         "Both seats come from one recorded turn, so a seeded game is never "
+                         "symmetric -- and by default the trainee always gets the richer side, which "
+                         "means a win can be inherited rather than earned and a win rate cannot tell "
+                         "the two apart. Mirroring cancels that in the aggregate WITHOUT editing the "
+                         "board: equalising the two seats' money would fabricate a position no "
+                         "recorded game produced, and an inconsistent two-seat board is what made "
+                         "the scripted farmer decline to act and scored every episode a 0.5 tie. "
+                         "Measured symptom this exists for: 0.77 against an opponent that takes no "
+                         "actions at all, from the richer seat. Ignored without --curriculum-mix.")
     ap.add_argument("--curriculum-behind", action="store_true",
                     help="seed the trainee into the POORER of the two recorded seats. Both seats "
                          "come from one recorded turn either way, so this only chooses which side "
@@ -1101,7 +1127,8 @@ def main():
     if cur_mix:
         seed_states = curriculum.states_at_mix(
             args.batch, cur_mix, seed=args.seed, behind=args.curriculum_behind,
-            min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank)
+            min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
+            mirror=args.curriculum_mirror, symmetric=args.curriculum_symmetric)
         state = seed_states
         seats = "poorer" if args.curriculum_behind else "richer"
         counts = curriculum.mix_counts(args.batch, cur_mix)
@@ -1112,7 +1139,11 @@ def main():
         shares = "  ".join(f"day {d}: {counts[d]} slots ({100 * counts[d] / args.batch:.0f}%), "
                            f"~{100 * eps[d] / tot:.0f}% of terminal episodes"
                            for d in sorted(counts, reverse=True))
-        print(f"curriculum: MIXED seeding ({seats} seat), no annealing -- shift the mix on the "
+        seat_desc = ("SYMMETRIC seats (both sides get seat 0's whole position; only actions differ)"
+                     if args.curriculum_symmetric else
+                     "MIRRORED seats (half richer, half poorer, same boards)" if args.curriculum_mirror
+                     else f"{seats} seat on every board -- a win can be INHERITED")
+        print(f"curriculum: MIXED seeding, {seat_desc}, no annealing -- shift the mix on the "
               f"value probe\n  {shares}", flush=True)
 
         # Same trap as the single-day path, but the binding day is the LATEST in the mix: a slot
@@ -1327,7 +1358,9 @@ def main():
             if args.curriculum_resample and it % args.curriculum_resample == 0:
                 seed_states = curriculum.states_at_mix(
                     args.batch, cur_mix, seed=args.seed + it, behind=args.curriculum_behind,
-                    min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank)
+                    min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
+                    mirror=args.curriculum_mirror,
+                    symmetric=args.curriculum_symmetric)
                 days = ", ".join(str(d) for d in sorted(cur_mix, reverse=True))
                 print(f"         curriculum: reseeding mixed pool (days {days})"
                       f"{' (trainee in the poorer seat)' if args.curriculum_behind else ''}",

@@ -212,3 +212,88 @@ def test_sixty_percent_of_slots_is_needed_for_a_fifth_of_episodes():
     counts = curriculum.mix_counts(batch, {25: 0.4, 0: 0.6})
     eps = {d: n * horizon / ((30 - d) * J.TURNS_PER_DAY) for d, n in counts.items()}
     assert eps[0] / sum(eps.values()) == pytest.approx(0.20, abs=0.03)
+
+
+# --------------------------------------------------------------------------- mirrored seats
+
+
+def test_mirroring_plays_the_same_boards_from_both_sides():
+    """The point of mirroring: half the batch inherits the richer seat and half the poorer, on the
+    SAME boards, so the advantage of a seeded lead cancels in the aggregate.
+
+    Checked by construction rather than by a win rate: the unmirrored pool at the same seed is the
+    `behind=False` half, and the mirrored pool's other half must be that same set of boards with the
+    two seats exchanged -- i.e. seat 0's money in one equals seat 1's money in the other.
+    """
+    rich = curriculum.states_at_day(4, day=25, seed=25_000, behind=False)
+    poor = curriculum.states_at_day(4, day=25, seed=25_000, behind=True)
+    r, p = np.asarray(rich.farm.money), np.asarray(poor.farm.money)
+    assert np.array_equal(r[:, 0], p[:, 1]), (r, p)
+    assert np.array_equal(r[:, 1], p[:, 0]), (r, p)
+
+
+def test_a_mirrored_mix_is_half_rich_and_half_poor():
+    """Aggregated over the batch, the trainee's seat must not be systematically the richer one."""
+    plain = curriculum.states_at_mix(8, {25: 1.0}, seed=0, shuffle=False, mirror=False)
+    mirrored = curriculum.states_at_mix(8, {25: 1.0}, seed=0, shuffle=False, mirror=True)
+    pm = np.asarray(plain.farm.money)
+    mm = np.asarray(mirrored.farm.money)
+    # Unmirrored: the trainee (seat 0) holds the ranked seat on every board.
+    assert (pm[:, 0] >= pm[:, 1]).mean() > 0.6
+    # Mirrored: the first half is rich-seated, the second half is its mirror.
+    assert np.array_equal(mm[:4, 0], mm[4:, 1])
+    assert np.array_equal(mm[:4, 1], mm[4:, 0])
+
+
+def test_an_odd_count_gives_the_leftover_slot_to_the_poorer_seat():
+    """A rounding artefact must bias against us, never for us -- the opposite of the bias mirroring
+    exists to remove."""
+    m = curriculum.states_at_mix(5, {25: 1.0}, seed=0, shuffle=False, mirror=True)
+    money = np.asarray(m.farm.money)
+    assert money.shape[0] == 5
+    # 2 rich + 2 mirrored + 1 extra poor -> the trainee is not ahead on a majority of boards.
+    assert (money[:, 0] > money[:, 1]).sum() <= 2
+
+
+def test_mirroring_preserves_the_batch_size_and_the_day_mix():
+    m = curriculum.states_at_mix(8, {25: 0.5, 0: 0.5}, seed=1, mirror=True)
+    days = np.asarray(m.step_index) // J.TURNS_PER_DAY
+    assert len(days) == 8
+    assert (days >= 20).sum() == 4 and (days <= 2).sum() == 4
+
+
+# --------------------------------------------------------------------------- symmetric starts
+
+
+def test_symmetric_gives_both_seats_the_identical_position():
+    """The point: the only difference between the two players is what they DO.
+
+    Checked field by field over the whole state rather than on money alone -- levelling the cash
+    while leaving 16 animals against 4 would look fair and would not be, and money is the field most
+    likely to be special-cased by hand.
+    """
+    st = curriculum.states_at_mix(6, {25: 1.0}, seed=0, symmetric=True, shuffle=False)
+    for name in st.farm._fields:
+        arr = np.asarray(getattr(st.farm, name))
+        if arr.ndim >= 2 and arr.shape[1] == 2:
+            assert np.array_equal(arr[:, 0], arr[:, 1]), f"farm.{name} differs between seats"
+    for name in st.tiles._fields:
+        arr = np.asarray(getattr(st.tiles, name))
+        if arr.ndim >= 2 and arr.shape[1] == 2:
+            assert np.array_equal(arr[:, 0], arr[:, 1]), f"tiles.{name} differs between seats"
+
+
+def test_symmetric_boards_are_still_real_and_not_empty():
+    """Two copies of one real seat, not two blank farms. An empty board at a late day is the bug
+    `states_at_day` warns about: the scripted farmer refuses to plant and every episode ties at 0.5."""
+    st = curriculum.states_at_mix(6, {25: 1.0}, seed=0, symmetric=True, shuffle=False)
+    money = np.asarray(st.farm.money)
+    assert (money > 1000).all(), money
+    days = np.asarray(st.step_index) // J.TURNS_PER_DAY
+    assert ((days >= 24) & (days <= 26)).all(), days
+
+
+def test_symmetric_is_off_by_default_so_nothing_changes_silently():
+    st = curriculum.states_at_mix(6, {25: 1.0}, seed=0, shuffle=False)
+    money = np.asarray(st.farm.money)
+    assert not np.array_equal(money[:, 0], money[:, 1])

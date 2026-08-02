@@ -197,6 +197,40 @@ def states_at_day(batch, day, seed=0, min_bank=None, top=200, root="data", behin
     return _stack(states[:batch])
 
 
+def _duplicate_seat(state, seat=0):
+    """Copy one real seat's whole position onto BOTH sides, so the start is exactly symmetric.
+
+    **Why this and not equalising the cash.** Both seats come from the same recorded turn, so a
+    seeded game is a real strong player against their real opponent -- and at day 25 the gap between
+    them is mostly *assets*, not cash: one side carries 16 animals and 20 crops against the other's 4
+    and 8, while the banks differ by about 13% ($69k against the scripted farmer's $61,440). Levelling
+    the cash alone would look fair and would not be, because the farm is worth far more than the
+    difference in the bank.
+
+    **Why it is safe where a hand-built board is not.** Every field is copied from one seat that
+    really existed at that turn, so both sides are internally consistent and the day counter matches
+    the contents. That is the property `states_at_day` protects: the bug it warns about is a *real*
+    seat facing a *synthetic empty* one, which makes `jax_heuristic` refuse to plant (it gates on
+    `day <= LAST_PLANT_DAY`) and scores every episode a 0.5 tie. Two copies of one real board cannot
+    trigger that -- neither side is empty and both are legal.
+
+    The market and the PRNG key are left alone: they are per-game, not per-seat.
+    """
+    import jax.numpy as jnp
+
+    def dup(x):
+        # Per-seat arrays are [batch, 2, ...]; anything else (per-game) is returned untouched.
+        if getattr(x, "ndim", 0) >= 2 and x.shape[1] == 2:
+            return jnp.repeat(x[:, seat:seat + 1], 2, axis=1)
+        return x
+
+    return state._replace(
+        tiles=jax.tree_util.tree_map(dup, state.tiles),
+        farm=jax.tree_util.tree_map(dup, state.farm),
+        inventory=dup(state.inventory),
+    )
+
+
 def parse_mix(spec):
     """`"25:0.8,0:0.2"` -> `{25: 0.8, 0: 0.2}`, validated.
 
@@ -258,7 +292,7 @@ def mix_counts(batch, mix):
 
 
 def states_at_mix(batch, mix, seed=0, min_bank=None, top=200, root="data", behind=False,
-                  max_bank=None, shuffle=True):
+                  max_bank=None, shuffle=True, mirror=False, symmetric=False):
     """A batched `State` drawn from several game-days at once, in the proportions `mix` asks for.
 
     **Why a mix rather than walking the day back.** Pure backward annealing arrives at day 0 last,
@@ -285,10 +319,43 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=200, root="data", behin
     invisible. Permuting costs one gather and makes the class of bug unreachable.
     """
     counts = mix_counts(batch, mix)
-    pools = [states_at_day(n, day=day, seed=seed + 1000 * day, min_bank=min_bank, top=top,
-                           root=root, behind=behind, max_bank=max_bank)
-             for day, n in sorted(counts.items(), reverse=True) if n]
+    pools = []
+    for day, n in sorted(counts.items(), reverse=True):
+        if not n:
+            continue
+        day_seed = seed + 1000 * day
+        if not mirror:
+            pools.append(states_at_day(n, day=day, seed=day_seed, min_bank=min_bank, top=top,
+                                       root=root, behind=behind, max_bank=max_bank))
+            continue
+        # **Mirrored pairs: the same boards played from both sides.** `states_at_day` draws its
+        # replay order and its turn index from `np.random.default_rng(seed)`, and `behind` only
+        # decides which seat the trainee ends up in -- so two calls with the SAME seed and the same
+        # count return the same boards with the seats exchanged. The advantage of inheriting the
+        # richer seat therefore cancels in the aggregate, without editing a single field.
+        #
+        # This is the alternative to equalising the two seats' money, which would fabricate a
+        # position no recorded game produced -- and `states_at_day`'s own docstring records that an
+        # inconsistent two-seat board is what made the scripted farmer decline to act, scoring every
+        # episode as a 0.5 tie and costing a session.
+        half = n // 2
+        if half:
+            pools.append(states_at_day(half, day=day, seed=day_seed, min_bank=min_bank, top=top,
+                                       root=root, behind=False, max_bank=max_bank))
+            pools.append(states_at_day(half, day=day, seed=day_seed, min_bank=min_bank, top=top,
+                                       root=root, behind=True, max_bank=max_bank))
+        # An odd count cannot be mirrored exactly. The leftover slot goes to the POORER seat, so a
+        # rounding artefact can only ever understate the win rate -- the opposite bias to the one
+        # this flag exists to remove.
+        if n % 2:
+            pools.append(states_at_day(1, day=day, seed=day_seed + 7, min_bank=min_bank, top=top,
+                                       root=root, behind=True, max_bank=max_bank))
     stacked = _stack(pools) if len(pools) > 1 else pools[0]
+    if symmetric:
+        # Both sides get seat 0's position, so the ONLY difference between the players is what they
+        # do. This makes the win rate directly interpretable, which it is not by default: the trainee
+        # inherits the richer seat and a win can therefore be inherited rather than earned.
+        stacked = _duplicate_seat(stacked, seat=0)
     if not shuffle:
         return stacked
 
