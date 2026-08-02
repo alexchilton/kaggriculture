@@ -17,9 +17,12 @@ Log: `/home/alex/kagg/data/logs/run.log` — `kagg-log` follows exactly that fil
 --curriculum-mix length:0:0.6,10:0.1,15:0.1,20:0.1,25:0.1   --curriculum-symmetric
 --opponent-frac 0.45 --farm-frac 0.25 --ranch-frac 0.20 --idle-frac 0.10   (self = 0)
 --pool-size 16 --pool-every 25
---hand-prior 0.05 --spend-prior 0.05 --kl-prior <mix5-20260802-120823/latest.pkl>
+--hand-prior 0.05 --spend-prior 0 --kl-prior <mix5-20260802-120823/latest.pkl>
 --ent-coef 0.01 --lr 3e-5 --batch 256 --horizon 32
 ```
+
+`--spend-prior 0` is set in the unit and takes effect on the next restart; the process running at
+the time of writing still has 0.05.
 
 Resumed through a chain: `commit4` → `day0flip` → `day0flip2` → `ranch1` → `league1` → (this).
 
@@ -92,10 +95,8 @@ The failure has inverted again: against an inert policy a 5% shape prior is a **
 from below.
 Third instance of "a decision to skip a fix can expire when the problem changes".
 
-**Note on `hire`, correcting the reasoning used to include it.** 5% is a *tighter* target than the
-BC prior's 6.3%, and measured `hire` is 7.3%, above both.
-Including `hire` neither releases nor meaningfully constrains it.
-The ~0.42 a crew of ten needs will not come from either prior.
+**Superseded within the hour: there is no shared spend rate, so `--spend-prior` is now `0`.**
+See "The crew, and why one spend rate cannot fit four heads" below.
 
 ### 3. Logged `entropy` is summed over every head
 
@@ -132,6 +133,80 @@ Revert-as-no-effect: commit flat and move still >=70%, meaning the prior is not 
 constraint and the problem is credit assignment (`ev_signal` 0.27-0.38 failing to propagate across
 the four-turn delay) — do **not** respond by pushing the prior weight higher.
 Revert-as-overcorrection: commit share past 40% or `op_entropy` collapsing without feed/care rising.
+
+## The crew, and why one spend rate cannot fit four heads
+
+**Crew is not cost-limited. It never was.**
+`_hire_cost(n) = FARM_HAND_COST_MULT * fib(n)` with `mult = 1`, so the nth hire of the day costs
+`1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233`.
+**A crew of ten costs $143 for the whole day**, against a median bank of $2,400-6,000, and hands
+are dismissed each night with no ongoing wage — that is the entire cost.
+The scripted farmer runs ten and banks $23,783, so it plainly pays.
+
+The constraint is the action space's arithmetic and nothing else.
+HIRE is **atomic, one per turn** by the reference rule; a day is 24 turns; `hires_today` and
+`n_units` both reset nightly, so the crew is rebuilt from scratch daily.
+Crew of ten therefore *requires* HIRE on ten of 24 turns — `hire_rate = 0.42`.
+
+### Measured off a leader replay, which settles the prior question
+
+`prvsiyan/kaggle-frontier-lab-strategy-improvement` cell 11 embeds `ACTION_SUMMARY_ROWS`, a per-day
+verb census from public episode **89517103**.
+HIRE per day: `4, 6, 6, 6, 6, 7, 6, 8, 10, 11, 12, 12, 12 ... 12, 11, 10, 9` — mean 10.1, plateau
+12, **implied `hire_rate` 0.422**, confirming the arithmetic above from an actual winner.
+Note the ramp: 4-8/day through day 7, plateau by day 10.
+
+Converted to per-turn rates over 720 turns, against the flat 5% that was briefly live:
+
+| head | leader, per turn | flat prior | error |
+|---|---|---|---|
+| `hire` | **42%** | 5% | **8x too low** |
+| `buy_seed` | 7.1% (51/game) | 5% | about right |
+| `buy_animal` | 1.9% (14/game) | 5% | 2.6x too high |
+| `buy_land` | **0.3% (2/game)** | 5% | **17x too high** |
+
+`BUY_LAND` happens **twice in an entire 30-day game** — three unlocked quadrants, and `N_LAND = 3`
+with `LAND_PRICES = [1000, 2000, 4000]` bounds it anyway, so a 5% prior cannot run away there; it
+only buys them earlier.
+So a single rate is wrong in *both* directions and off by ~140x between the extremes.
+**A shared 5% is not a neutral shape — it is a strong and false claim that the four transact
+alike.**
+
+**The fix is `--spend-prior 0`, not per-head numbers.**
+With `spend_p = 0` the four heads fall to *uniform*, which encodes no target at all:
+`KL(p||uniform) = -H(p) + const`, so each keeps exactly the plain entropy regularisation it would
+otherwise have and PPO finds the rates itself.
+Writing the leader's measured rates in instead would be reading numbers off a replay and calling
+them a prior — the policy-prior `CLAUDE.md` forbids, and what capped the ceiling in Orbit Wars.
+This works **only because** `HAND_PRIOR_HEADS_WITH_BC` now contains `SPEND_HEADS`: without that,
+`--spend-prior 0` silently means "use the day-2 clone" (`buy_land` 0.0%, `buy_animal` 0.1%), a
+*tighter* cap than the one being removed, arriving with no flag to explain it.
+Pinned by `test_spend_heads_take_no_shared_target_and_do_not_fall_back_to_the_clone`.
+
+### The same census, on the op mix
+
+Leader per-command shares against ours:
+
+| | leader | ours |
+|---|---|---|
+| movement N/W/S/E | **48.0%** | ~75% |
+| WATER | 9.48% | 3.9% |
+| FEED | 3.88% | **0.11-0.31%** |
+| COLLECT_FERTILIZER | 3.82% | 0.24-0.78% |
+| CARE | 3.73% | 0.19-0.50% |
+| HARVEST | 3.62% | 0.46-1.5% |
+| PLANT | 1.19% | 0.16-0.9% |
+
+Two readings.
+Elite movement is **48%, not near zero** — so 84% walking is bad but the achievable target is ~48%,
+and any plan predicated on driving movement to single digits is aiming at the wrong number.
+And **PLANT is the one op already in range**: the entire gap is in the maintenance ops that need a
+walk (FEED 12-35x, CARE 7-20x, COLLFERT 5-16x), which is exactly the temporal problem `commit.py`
+exists for and exactly what `COMMIT_PRIOR_SHARE` is aimed at.
+
+Caveats: one replay of the eight, day-2-of-62 meta, and their per-command shares are not the same
+unit as our per-turn market rates.
+Running the census across all eight tapes for a spread rather than a point estimate is not done.
 
 ## The pool: a working regression check and a useless difficulty source
 

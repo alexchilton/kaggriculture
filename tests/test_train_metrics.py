@@ -578,3 +578,58 @@ def test_the_op_prior_does_not_flat_weight_commit_macros_against_primitives():
     assert prims.std() == pytest.approx(0.0, abs=1e-9), "within primitives the prior stays flat"
     assert p.sum() == pytest.approx(1.0, abs=1e-6)
     assert p[O.NOOP] == pytest.approx(noop_p, abs=1e-6)
+
+
+def test_spend_heads_take_no_shared_target_and_do_not_fall_back_to_the_clone():
+    """With `--spend-prior 0` the four spend heads get *uniform*, not the BC prior.
+
+    **Why no shared number.** One rate cannot fit all four. Measured off leader replay 89517103,
+    per turn: `hire` ~42% (HIRE is atomic, one per turn, and `_end_of_day` dismisses every hand, so
+    a crew is rebuilt daily -- the replay ramps 4/day to a plateau of 12, mean 10.1), `buy_seed`
+    ~7%, `buy_animal` ~2%, `buy_land` ~0.3% -- two purchases in a whole game, and bounded anyway by
+    `N_LAND = 3`. A single 5% target is wrong in both directions and off by ~140x between the
+    extremes, so it is not a neutral shape: it is a strong and false claim that the four transact
+    alike.
+
+    Writing each head's measured rate in instead would be worse -- that is reading numbers off a
+    replay and calling them a prior, which is the policy-prior `CLAUDE.md` forbids and which capped
+    the ceiling in Orbit Wars. Uniform encodes no target: `KL(p||uniform) = -H(p) + const`, so each
+    head keeps exactly the plain entropy regularisation it would otherwise have and PPO finds the
+    rates itself.
+
+    The second assertion is the half that has already been a bug once. `hand_prior_heads` returns
+    uniform for heads it does not shape, but the *merge* decides whether that uniform survives: if
+    the spend heads are not in `HAND_PRIOR_HEADS_WITH_BC`, then `--spend-prior 0` silently means
+    "use the day-2 clone" -- `buy_land` 0.0%, `buy_animal` 0.1% -- a tighter cap than the 5% being
+    removed, arriving with no flag to explain it.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    from kagg.sim import ops as O
+
+    mod = _load()
+    binary = ("hire", "buy_animal", "buy_land")
+    heads = {"op": jnp.zeros((1, 1, O.N_OPS))}
+    masks = {"op": jnp.ones((1, 1, O.N_OPS), dtype=bool)}
+    for k in binary:
+        heads[k] = jnp.zeros((1, 1, 2))
+        masks[k] = jnp.ones((1, 1, 2), dtype=bool)
+
+    prior = mod.hand_prior_heads(heads, masks, noop_p=0.05, spend_p=0.0)
+
+    # Normalised the way `kl_to_prior` consumes it. `hand_prior_heads` returns log-probabilities
+    # for the heads it shapes and raw zero *logits* for the ones it leaves alone, and both are run
+    # through `log_softmax` at the point of use -- so an un-normalised read here compares the two
+    # branches in different units and reports 1.000 for a head that is in fact uniform.
+    for k in binary:
+        norm = jax.nn.log_softmax(jnp.where(masks[k], prior[k], -jnp.inf), axis=-1)
+        p_act = float(jnp.exp(norm)[0, 0, 1])
+        assert p_act == pytest.approx(0.5, abs=1e-6), (
+            f"{k} prior targets {p_act:.3f} rather than being untargeted; a shared rate cannot fit "
+            f"heads whose natural frequencies differ by ~140x")
+
+    for k in mod.SPEND_HEADS:
+        assert k in mod.HAND_PRIOR_HEADS_WITH_BC, (
+            f"{k} would fall through to the BC prior, so '--spend-prior 0' would silently mean "
+            f"'use the day-2 clone' rather than 'no target'")
