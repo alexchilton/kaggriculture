@@ -1218,6 +1218,30 @@ def main():
         shares = "  ".join(f"day {d}: {counts[d]} slots ({100 * counts[d] / args.batch:.0f}%), "
                            f"~{100 * eps[d] / tot:.0f}% of terminal episodes"
                            for d in sorted(counts, reverse=True))
+        # **What each rung actually STARTS with, because `vs idle` is unreadable without it.**
+        #
+        # Under symmetric seats the idle opponent holds its opening money for the whole episode, so
+        # "beat idle" means "end above the number below" -- and those numbers span $612 at day 0 to
+        # $53,373 at day 25, an 87x spread. One aggregate `vs idle` averages five different games.
+        #
+        # Worse, the day-0 SEEDED board is a recorded seat that has already spent ~$2,400 of its
+        # opening $3,000 on seed, so it starts at $612 holding 7.5 seeds. A real Kaggle game starts
+        # at $3,000 holding none. A policy can therefore beat idle on the day-0 rung while ending
+        # BELOW its starting money in a real game -- which is exactly what a turn-0 replay showed
+        # while `vs idle` read 1.000.
+        try:
+            starts = []
+            for d in sorted(counts, reverse=True):
+                probe = curriculum.states_at_mix(
+                    8, {d: 1.0}, seed=args.seed, behind=args.curriculum_behind,
+                    min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
+                    mirror=args.curriculum_mirror, symmetric=args.curriculum_symmetric,
+                    top=args.curriculum_top or None)
+                starts.append(f"day {d}: ${float(jnp.mean(probe.farm.money[:, 0])):,.0f}")
+            print("         seeded START money (idle holds this all episode):  "
+                  + "   ".join(starts), flush=True)
+        except Exception as exc:                                   # noqa: BLE001
+            print(f"         (could not probe seeded start money: {exc})", flush=True)
         seat_desc = ("SYMMETRIC seats (both sides get seat 0's whole position; only actions differ)"
                      if args.curriculum_symmetric else
                      "MIRRORED seats (half richer, half poorer, same boards)" if args.curriculum_mirror
@@ -1906,6 +1930,24 @@ def main():
             # worth reading when early-game envs are on.
             mix += ("\n         full-season only  "
                     + " ".join(f"{n}:{cf[O_NAMES.index(n)] / tf:.2%}" for n in chain))
+        # **Per-seed-day win rates, in the HUMAN log and not only the JSON.**
+        #
+        # These have existed in `log.jsonl` for a while and were left there, which made the one
+        # number people actually read -- the aggregate `wr` -- a day-25 number wearing a mix's
+        # name. It is what hid four dead rungs sitting at 0.50 for 200 updates.
+        #
+        # Built as a plain string here rather than inline in the `print` below: the previous
+        # attempt at this line was written as an f-string plus a conditional expression inside the
+        # implicit concatenation, which broke and was reverted rather than fixed.
+        day_bits = []
+        for d in sorted(cur_mix or {}, reverse=True):
+            g = row.get(f"games_day{d}", 0)
+            if g:
+                day_bits.append(f"d{d}:{row[f'wr_day{d}']:.3f}/{int(g)}x")
+            else:
+                day_bits.append(f"d{d}: n/a")
+        day_line = ("         by seed day  " + "  ".join(day_bits) + "\n") if day_bits else ""
+
         print(
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f} "
             f"tstd {row['terminal_ret_std']:.3f}  "
@@ -1919,7 +1961,8 @@ def main():
                 f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x/d{row[f'draws_{k}']:.0%}"
                 if row[f"games_{k}"] else f"{k}: n/a"
                 for k in ("idle", "trade", "farm", "pool")) + "\n"
-            f"         ops {mix}\n"
+            + day_line
+            + f"         ops {mix}\n"
             # `trade` is the coordinating latent for both conditioned market heads, so its spread
             # is the first thing to read: near-uniform is healthy, one mode near 1.00 is the
             # collapse that would make `buy` structurally unreachable rather than merely rare.
