@@ -16,6 +16,55 @@ This file is just the state and the next three moves.
 WSL2 when the SSH connection closes (`deploy_train.sh:92`) and writes to a log the tooling does not
 read.
 
+## READ FIRST: mix5d is REGRESSING, and four of its five rungs are dead
+
+Measured at update 211 (2026-08-02). This is the answer to move 1 below, and it is not the
+hoped-for one.
+
+```
+upd  wr_farm  wr_pool   ev    ent   clip   money_med
+ 40   0.652    0.996   0.124  6.6  0.116     32,651
+ 80   0.603    0.863   0.092  6.0  0.112     25,902
+120   0.587    0.784   0.222  6.4  0.142     38,970
+160   0.589    0.757   0.118  5.3  0.153     32,188
+211   0.589    0.753   0.206  5.5  0.115     32,282
+```
+
+**`vs farm` peaked at 0.652 around update 40 and has sat at ~0.589 ever since -- below the
+0.659 baseline this run was launched to beat.** `vs pool` fell 0.996 -> 0.753. It is not
+climbing back.
+
+Per seed day, which is exactly what the per-day logging was added to expose:
+
+```
+day25: 11,697 games   wr 0.612
+day20:     988 games  wr 0.523
+day15:     695 games  wr 0.491
+day10:     496 games  wr 0.484
+day 0:     423 games  wr 0.528
+```
+
+**Day 25 is carrying four dead days.** Every other rung is at chance. And the mix is not
+delivering what it was configured for: `0:0.1` asks for 10% of *slots*, but day-0 episodes are
+~6x longer, so day 0 supplies 423 of 14,299 finished episodes -- about **3%**. Day 25 gets 28x
+more games than day 0.
+
+Two consequences for the plan:
+
+- **The aggregate `wr` is still a day-25 number wearing a mix's name**, even with the mix. Quote
+  the per-day rates or nothing.
+- **`best.pkl` for this run is near-certainly an early update** (the peak was ~40), which is the
+  trap already recorded below. Prefer `latest.pkl` and check.
+
+Untested hypotheses, in the order worth trying: the day-share is wrong in *episodes* rather than
+slots and needs weighting by episode length; and the opponent pool still contains nobody who uses
+the animal economy, which no curriculum change addresses. Do not add a third delta before
+measuring one of these.
+
+**The op-axis decode does not address this.** It refines *which item* a unit picks given it has
+already chosen PICKUP; it cannot help a policy that has not learned to plant, water and harvest
+from an empty farm. It was also measured as no detectable change offline. See below.
+
 ## The two changes that matter from today
 
 **1. Symmetric starts (`--curriculum-symmetric`).** Both seats get seat 0's *entire* position -- cash,
@@ -165,21 +214,18 @@ second half of the same solution. `CLAUDE.md` records that it was struck off for
 question -- it was assessed against the spawn deadlock, when its author built it for **action-space
 explosion**, which this project independently has and had measured three times.
 
-**The template already exists in the codebase.** `condition_on_trade` in `jax_act.py` does exactly this
-for `sell` and `buy_product`: the network emits a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis, `trade` is
-drawn first, and the products are scored on the selected slice -- making `p(trade) * prod p(product|trade)`
-exact rather than mean-field. Mirror it:
+**But the two halves are not equally valuable, and the measurement says so.** `condition_on_trade`
+-- the market half, already shipped -- fixes a failure with numbers attached: argmax over nine
+per-product marginals emits zero orders, independent sampling banks $1, and the marginals
+themselves discriminate 12:1. `condition_on_op` -- the unit half, built 2026-08-02 -- was measured
+as **no detectable change**, because only PICKUP and PLACE ever share a head and PICKUP outnumbers
+PLACE 7.8:1. Read the section above before spending anything on the unit half.
 
-1. `jax_policy.py` -- give `crop`, `item`, `qty` an op axis: `[.., N_OPS, K]`.
-2. `jax_act.py` -- add `condition_on_op(heads, op)` mirroring `condition_on_trade`.
-3. `sample()` -- draw `op` first, condition, then draw `crop`/`item`/`qty` from the selected slice.
-4. `evaluate()` -- condition on the **stored** op, for the same reason the trade mode is: scoring
-   under a different slice puts a different distribution in the PPO ratio's numerator than the one
-   that generated the data.
-5. Consider the same for `buy_seed`/`buy_animal`/`hire`/`buy_land` on `trade`.
-
-**Test it before trusting it:** the ratio must be 1.0 at the first epoch of the first minibatch when
-params have not moved. If it is not, `sample` and `evaluate` disagree and every subsequent number lies.
+**Step 5 of the original spec was never done and is the one still worth considering:**
+`buy_seed`/`buy_animal`/`hire`/`buy_land` on `trade`. Those are the *spend* heads, and the failure
+mode `hand_prior_heads` documents -- `buy_seed` firing on 29.1% of turns, bank at $0 by day five --
+is a joint-decode failure of exactly the kind conditioning fixes. Unlike the unit heads, four
+distinct heads share the one `trade` latent there, so the averaging is real.
 
 ## Superseded: the turn-0 result as originally written
 
@@ -257,12 +303,16 @@ update 38 on one run whose settled rate came much later. For anchoring a follow-
 
 0. **Re-run `scripts/play_checkpoint.py` on every checkpoint you evaluate.** It is the only thing that
    caught the above, and it takes five minutes. A seeded win rate cannot see a policy that banks $2,998.
-1. **Read the per-day rates once `mix5d` has a few hundred games per day.** Day 25 accumulates ~6x
-   faster than day 0 (episode length), so give it time. The question: are the middle rungs
-   contributing, or is day 25 carrying four dead days?
-2. **The opponent pool is the untouched suspect.** No opponent in it uses the animal economy -- the
-   scripted farmer has no FEED, no CARE and `buy_animal=zeros`, and loses 16 inherited animals in four
-   game-days, 32/32. No curriculum change addresses that. If win rate stalls, go here.
+1. ~~**Read the per-day rates.**~~ **DONE at update 211, and the answer is "day 25 is carrying four
+   dead days" -- see the top of this file.** `vs farm` is also *below* the 0.659 baseline and has
+   been flat at ~0.589 for 170 updates. Whatever comes next, it is not "let mix5d keep running".
+2. **The opponent pool is the untouched suspect, and is now the leading one.** No opponent in it
+   uses the animal economy -- the scripted farmer has no FEED, no CARE and `buy_animal=zeros`, and
+   loses 16 inherited animals in four game-days, 32/32. No curriculum change addresses that, and
+   the curriculum has now been changed three times without moving `vs farm`.
+2b. **The mix is specified in slots but spends in episodes.** `0:0.1` delivered ~3% of finished
+   episodes, not 10%, because day-0 episodes are ~6x longer. If the day-0 share is the lever, it
+   has never actually been set to what it says. This is a one-line measurement before it is a fix.
 3. **`--curriculum-resample 8`** plus the now-wider seat pool, as one board-diversity delta. A
    restarting slot re-enters `seed_states[i]` by index, so at resample 25 each slot replays its own
    board ~7 times. Cost ~1-2% throughput. The clean fix is permuting slot->board on *restart*, which
