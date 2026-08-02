@@ -79,14 +79,61 @@ anticipates -- "a decision to skip a fix can expire when the problem changes". `
 cleanly falsified once, on an *inert* policy where spending was not the leak. This policy is
 hyperactive and spending **is** the leak.
 
+### What the commitment run actually proved, and what it did not
+
+`commit4` (hand prior on `op`, BC prior on every other head, `--init` restored) reached these
+**seeded** numbers by update 67:
+
+| | mix5d | commit4 |
+|---|---|---|
+| vs farm | 0.589 | **0.707** |
+| vs idle | 0.990 | 1.000 |
+| all five rungs | four dead at ~0.50 | **0.573-0.670, all live** |
+| bank median | $32 | $30,665 |
+
+**And the turn-0 replay is still 0/0/32.** Bank $3,000 -> $2,150 against the farmer's $30,292. So
+the seeded numbers and the replay disagree again -- the fourth time this project has hit that, and
+the reason the replay rule exists.
+
+**The bank is FLAT all season, and the reason is production scale, not the market.** Measured over
+a full turn-0 season:
+
+```
+        planted tiles   shed products   final bank
+policy       4.8              9.4          $1,517
+farmer      16.0              0.0         $23,783   (sells everything, shed ends empty)
+```
+
+There is nothing to sell. A 10.6% wheat sell rate is a fine rate at which to sell almost nothing.
+Fable's addition, which is sharper than the above: **movement + NOOP is still 79% of every unit's
+turn budget.** Commitment fixed whether a walk *completes*; it did not reduce how much of a unit's
+life is spent walking, so there is barely any turn budget left for production at scale.
+
+`harv/plant 4.05` is therefore **cheap** -- most of it is earned on day-25 boards harvesting crops
+the policy never had to grow. Do not quote it as a headline.
+
+### Two metric traps to fix in the dashboard, not just remember
+
+- **The day-0 RUNG is not the turn-0 REPLAY.** The rung (0.608) is a *symmetric mirror match* --
+  beating a clone of itself from the same recorded board. The replay (0/32) is against the scripted
+  farmer from an empty farm. Someone skimming the rung table will read "day0 0.608" as turn-0
+  progress. It is not. Relabel it.
+- **Seeded win rates are a regression floor, not a progress signal.** From here the turn-0 replay
+  gates every claim of progress. `vs farm 0.589 -> 0.707` would have been written up as a win.
+
 ### Running now
 
-`commit2-20260802-155553`, `--hand-prior 0.15 --spend-prior 0.05`, curriculum unchanged from
-`mix5d` so commitments remain the only delta against the 0.589 baseline.
+`day0flip-20260802-165342` -- the curriculum flip, `length:0:0.6,10:0.1,15:0.1,20:0.1,25:0.1`, so
+**60% of finished EPISODES start at day 0** against ~3% before. Everything else identical to
+`commit4`. This attacks the confound under every number above: 83% of training happened on boards
+where growing-something-from-nothing never has to happen.
 
-Watch, in order: FEED/CARE/COLLFERT stay off zero; `harv/plant` climbs past 0.63; `vs idle` recovers
-from 0.000. **If harv/plant does not pass ~1.0 by update 50**, that is a more serious finding than
-this mechanism can fix -- it would mean even a *single* delayed decision is not being reinforced.
+Known cost, measured: the flip **cuts animal-op exposure ~3x** (day-0 boards have no animals, so
+CARE/COLLFERT/FEED are legal 0.00% at spawn). Judged acceptable because the animal economy is
+downstream of having a farm at all -- but if the animal ops die again, this is why.
+
+**Gate it on the turn-0 replay, not the rungs.** Watch: planted tiles above 4.8, shed inventory
+climbing, and the bank showing the farmer's d10->d15 jump shape.
 
 ### Still open
 
