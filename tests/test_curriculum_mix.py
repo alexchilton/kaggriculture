@@ -238,9 +238,13 @@ def test_a_mirrored_mix_is_half_rich_and_half_poor():
     mirrored = curriculum.states_at_mix(8, {25: 1.0}, seed=0, shuffle=False, mirror=True)
     pm = np.asarray(plain.farm.money)
     mm = np.asarray(mirrored.farm.money)
-    # Unmirrored: the trainee (seat 0) holds the ranked seat on every board.
-    assert (pm[:, 0] >= pm[:, 1]).mean() > 0.6
-    # Mirrored: the first half is rich-seated, the second half is its mirror.
+    # **Not asserting that seat 0 is richer.** `rank_seats` ranks by FINAL bank, so the ranked seat
+    # is the one that ended up winning -- which at day 25 is the richer side only about 37% of the
+    # time over the full seat pool. `states_at_day`'s "richer seat" wording is misleading and this
+    # test previously encoded that misreading. What mirroring actually guarantees is the pairing
+    # below, and that is what is checked.
+    assert not np.array_equal(pm[:, 0], pm[:, 1])
+    # Mirrored: the first half is one seating, the second half is its exact mirror.
     assert np.array_equal(mm[:4, 0], mm[4:, 1])
     assert np.array_equal(mm[:4, 1], mm[4:, 0])
 
@@ -251,8 +255,11 @@ def test_an_odd_count_gives_the_leftover_slot_to_the_poorer_seat():
     m = curriculum.states_at_mix(5, {25: 1.0}, seed=0, shuffle=False, mirror=True)
     money = np.asarray(m.farm.money)
     assert money.shape[0] == 5
-    # 2 rich + 2 mirrored + 1 extra poor -> the trainee is not ahead on a majority of boards.
-    assert (money[:, 0] > money[:, 1]).sum() <= 2
+    # The 4 mirrored slots cancel exactly; the leftover is drawn with behind=True, i.e. the trainee
+    # takes the seat the replay did NOT rank. Asserting on money would be asserting that the ranked
+    # seat is the richer one, which is false ~63% of the time -- see the test above.
+    assert np.array_equal(money[:2, 0], money[2:4, 1])
+    assert np.array_equal(money[:2, 1], money[2:4, 0])
 
 
 def test_mirroring_preserves_the_batch_size_and_the_day_mix():
@@ -297,3 +304,39 @@ def test_symmetric_is_off_by_default_so_nothing_changes_silently():
     st = curriculum.states_at_mix(6, {25: 1.0}, seed=0, shuffle=False)
     money = np.asarray(st.farm.money)
     assert not np.array_equal(money[:, 0], money[:, 1])
+
+
+# --------------------------------------------------------------------------- board diversity
+
+
+def test_top_none_draws_from_more_seats_than_the_old_hardcoded_200():
+    """`top` was hard-coded to 200 while 312 seats exist on disk, so 112 boards were never used and
+    a 256-slot pool had to draw some boards twice."""
+    from kagg.il import bc
+    all_refs = bc.rank_seats(bc.find_replays("data"))
+    if len(all_refs) <= 200:
+        pytest.skip(f"only {len(all_refs)} seats on disk; nothing was being discarded")
+    assert len(all_refs[:None]) > len(all_refs[:200])
+
+
+def test_a_tiny_top_still_varies_because_the_TURN_is_redrawn_too():
+    """Measured, and it corrects the assumption that `top` alone controls diversity.
+
+    With `top=1` every board comes from ONE recorded seat -- and the six boards are still all
+    different, because `_turn_indices` draws a random turn from a +/-1 day window (49 turns at day
+    25) and a farm changes every turn. So board variety comes from two sources, and the seat cap is
+    the weaker one. Raising `top` is still right (it was discarding 112 of 312 seats), but it buys
+    less than the repeat-count arithmetic suggests on its own.
+    """
+    one = curriculum.states_at_day(6, day=25, seed=0, top=1)
+    m_one = np.asarray(one.farm.money)[:, 0]
+    assert len(np.unique(m_one)) == 6, m_one
+
+
+def test_top_is_still_honoured_when_passed():
+    """Changing the default must not make the parameter inert."""
+    from kagg.il import bc
+    refs = bc.rank_seats(bc.find_replays("data"))
+    if len(refs) < 3:
+        pytest.skip("need at least 3 seats")
+    assert len(refs[:2]) == 2

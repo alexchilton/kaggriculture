@@ -1005,6 +1005,15 @@ def main():
                          "pure crop play; $35-70k gives median 16 but 15/48 low-animal, i.e. MIXED. "
                          "The mixed band is the one where the policy chooses a strategy rather than "
                          "inheriting ours.")
+    ap.add_argument("--curriculum-top", type=int, default=0,
+                    help="cap the number of recorded seats the seed pool is drawn from. 0 (default) "
+                         "means ALL of them. This was hard-coded to 200 while 312 seats exist on "
+                         "disk, so 112 boards were never used and a --batch 256 pool had to draw "
+                         "some boards twice. Fewer distinct boards is an overfitting surface: a "
+                         "restarting slot goes back into seed_states[i] by index, so with "
+                         "--curriculum-resample 25 and ~4-update day-25 episodes each slot replays "
+                         "ITS OWN board about 7 times before the pool changes. Lower --curriculum-"
+                         "resample and raise this together; they are the same knob, board diversity.")
     ap.add_argument("--curriculum-resample", type=int, default=25,
                     help="updates between redrawing the seed pool, even when the schedule's day has "
                          "not moved. The pool is indexed elementwise on restart, so without this a "
@@ -1128,7 +1137,8 @@ def main():
         seed_states = curriculum.states_at_mix(
             args.batch, cur_mix, seed=args.seed, behind=args.curriculum_behind,
             min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
-            mirror=args.curriculum_mirror, symmetric=args.curriculum_symmetric)
+            mirror=args.curriculum_mirror, symmetric=args.curriculum_symmetric,
+            top=args.curriculum_top or None)
         state = seed_states
         seats = "poorer" if args.curriculum_behind else "richer"
         counts = curriculum.mix_counts(args.batch, cur_mix)
@@ -1360,7 +1370,7 @@ def main():
                     args.batch, cur_mix, seed=args.seed + it, behind=args.curriculum_behind,
                     min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
                     mirror=args.curriculum_mirror,
-                    symmetric=args.curriculum_symmetric)
+                    symmetric=args.curriculum_symmetric, top=args.curriculum_top or None)
                 days = ", ".join(str(d) for d in sorted(cur_mix, reverse=True))
                 print(f"         curriculum: reseeding mixed pool (days {days})"
                       f"{' (trainee in the poorer seat)' if args.curriculum_behind else ''}",

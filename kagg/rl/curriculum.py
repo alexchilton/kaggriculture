@@ -126,7 +126,7 @@ def _stack(states):
     )
 
 
-def states_at_day(batch, day, seed=0, min_bank=None, top=200, root="data", behind=False,
+def states_at_day(batch, day, seed=0, min_bank=None, top=None, root="data", behind=False,
                   max_bank=None):
     """A batched `jax_sim.State` of `batch` real boards from around game-day `day`.
 
@@ -155,6 +155,13 @@ def states_at_day(batch, day, seed=0, min_bank=None, top=200, root="data", behin
     # all), and 30 of 124 seats above $60k sit in the bottom quartile for feeding. Bank correlates
     # with feed count at only 0.227. So there are at least two viable strategies on disk and the
     # default pool contains essentially one of them.
+    # **`top=None` means every seat on disk, and the old default of 200 was leaving boards unused.**
+    # There are 312 seats recorded (`rank_seats`: "The 312 seats on disk are heavily skewed strong --
+    # 207 of them clear $70k"), so `top=200` discarded 112 of them while `--batch 256` was drawing
+    # from a 200-board pool -- which means some boards appeared twice in the same batch. Combined with
+    # a restarting slot going back into `seed_states[i]` by index, the effective diversity was ~200
+    # distinct boards each replayed ~7 times per resample window, and the handoff calls the unbounded
+    # version of exactly that "an overfitting surface rather than a curriculum".
     refs = bc.rank_seats(bc.find_replays(root), min_bank=min_bank, max_bank=max_bank)[:top]
     if not refs:
         raise SystemExit("no replays to seed from")
@@ -291,7 +298,7 @@ def mix_counts(batch, mix):
     return counts
 
 
-def states_at_mix(batch, mix, seed=0, min_bank=None, top=200, root="data", behind=False,
+def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behind=False,
                   max_bank=None, shuffle=True, mirror=False, symmetric=False):
     """A batched `State` drawn from several game-days at once, in the proportions `mix` asks for.
 
