@@ -37,7 +37,63 @@ for d in (25,20,15,10,0): print(d, r.get(f\"games_day{d}\"), r.get(f\"wr_day{d}\
 "'
 ```
 
-## READ THIS FIRST: the policy does nothing from turn 0
+## READ THIS FIRST: the decode was destroying the evaluation, and one conclusion here was wrong
+
+`play_checkpoint.py` defaulted to **per-head argmax**. On one checkpoint, same 32 games:
+
+| | greedy (old default) | **sampled** |
+|---|---|---|
+| WATER | 0% | **5.62%** |
+| PLANT | 0% | **2.50%** |
+| HARVEST | 0% | 0.76% |
+| raw FEED | **0** | **18** |
+| bank | $2,998, median=mean=min=max, **zero variance** | $1,305 (min 54, max 3,534) |
+| W/D/L | 0/0/16 | 0/0/16 |
+
+**The marginals contain the behaviour; argmax over independent per-head marginals destroys it.** Same
+mechanism `CLAUDE.md` already records for market orders -- nine independent "probably not" decisions
+compose into "never". `play_checkpoint.py`'s own `_greedy` docstring warned about this and was not read.
+
+**Sampling is now the default** (`47c86b2`); `--greedy` reproduces the comparison.
+
+**But the decode is not the whole story, and this is the part to keep.** Sampled decode still loses
+0/0/16 and the bank *falls* $3,000 -> $1,494. So the policy does produce actions from turn 0 -- just
+not competent ones. It plants and waters a little, then bleeds money. A conclusion written earlier in
+this session, that it "does nothing but walk", was an artifact of the greedy decode and is **wrong**.
+
+## The one thing left, and it is an architecture change
+
+Fable's first recommendation: **autoregressive / jointly-renormalised decode instead of independent
+per-head sampling.** NOT DONE. It requires new head shapes, so every existing checkpoint becomes
+incompatible and training restarts from scratch -- flagged rather than done, per the standing rule
+about never changing architecture without explicit approval. Approval was given; the work was not
+attempted because it was late in a long session and this is the one change where a subtle error
+silently corrupts the PPO ratio.
+
+**Why it is the same technique as Ender's, not a new idea.** Billy Bradley's 8th-place `ender` used
+two things: KL-to-prior instead of an entropy bonus (**adopted today, and it is the fix that reversed
+the decline for the first time in this project's history**) and autoregressive micro-steps. This is the
+second half of the same solution. `CLAUDE.md` records that it was struck off for answering the wrong
+question -- it was assessed against the spawn deadlock, when its author built it for **action-space
+explosion**, which this project independently has and had measured three times.
+
+**The template already exists in the codebase.** `condition_on_trade` in `jax_act.py` does exactly this
+for `sell` and `buy_product`: the network emits a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis, `trade` is
+drawn first, and the products are scored on the selected slice -- making `p(trade) * prod p(product|trade)`
+exact rather than mean-field. Mirror it:
+
+1. `jax_policy.py` -- give `crop`, `item`, `qty` an op axis: `[.., N_OPS, K]`.
+2. `jax_act.py` -- add `condition_on_op(heads, op)` mirroring `condition_on_trade`.
+3. `sample()` -- draw `op` first, condition, then draw `crop`/`item`/`qty` from the selected slice.
+4. `evaluate()` -- condition on the **stored** op, for the same reason the trade mode is: scoring
+   under a different slice puts a different distribution in the PPO ratio's numerator than the one
+   that generated the data.
+5. Consider the same for `buy_seed`/`buy_animal`/`hire`/`buy_land` on `trade`.
+
+**Test it before trusting it:** the ratio must be 1.0 at the first epoch of the first minibatch when
+params have not moved. If it is not, `sample` and `evaluate` disagree and every subsequent number lies.
+
+## Superseded: the turn-0 result as originally written
 
 `scripts/play_checkpoint.py` on `mix5-20260802-120823/latest.pkl` (update 50), 16 games per seating:
 
