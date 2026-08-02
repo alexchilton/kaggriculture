@@ -299,7 +299,7 @@ def mix_counts(batch, mix):
 
 
 def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behind=False,
-                  max_bank=None, shuffle=True, mirror=False, symmetric=False):
+                  max_bank=None, shuffle=True, mirror=False, symmetric=False, with_days=False):
     """A batched `State` drawn from several game-days at once, in the proportions `mix` asks for.
 
     **Why a mix rather than walking the day back.** Pure backward annealing arrives at day 0 last,
@@ -326,11 +326,18 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behi
     invisible. Permuting costs one gather and makes the class of bug unreachable.
     """
     counts = mix_counts(batch, mix)
+    # Per-slot seed day, built in the SAME order the pools are concatenated and permuted with the
+    # same permutation. Returned rather than re-derived, because a second copy of this ordering
+    # logic could drift from the first and the symptom would be per-day win rates attributed to the
+    # wrong day -- correct-looking numbers measuring nothing, which is the failure mode this project
+    # has hit repeatedly.
+    day_labels = []
     pools = []
     for day, n in sorted(counts.items(), reverse=True):
         if not n:
             continue
         day_seed = seed + 1000 * day
+        day_labels.extend([day] * n)
         if not mirror:
             pools.append(states_at_day(n, day=day, seed=day_seed, min_bank=min_bank, top=top,
                                        root=root, behind=behind, max_bank=max_bank))
@@ -358,25 +365,29 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behi
             pools.append(states_at_day(1, day=day, seed=day_seed + 7, min_bank=min_bank, top=top,
                                        root=root, behind=True, max_bank=max_bank))
     stacked = _stack(pools) if len(pools) > 1 else pools[0]
+    days = np.asarray(day_labels, dtype=np.int32)
     if symmetric:
         # Both sides get seat 0's position, so the ONLY difference between the players is what they
         # do. This makes the win rate directly interpretable, which it is not by default: the trainee
         # inherits the richer seat and a win can therefore be inherited rather than earned.
         stacked = _duplicate_seat(stacked, seat=0)
     if not shuffle:
-        return stacked
+        return (stacked, days) if with_days else stacked
 
     import jax.numpy as jnp
 
-    order = jnp.asarray(np.random.default_rng(seed).permutation(batch))
+    np_order = np.random.default_rng(seed).permutation(batch)
+    days = days[np_order]
+    order = jnp.asarray(np_order)
     take = lambda x: jnp.take(x, order, axis=0)                              # noqa: E731
-    return stacked._replace(
+    out = stacked._replace(
         step_index=take(stacked.step_index),
         tiles=jax.tree_util.tree_map(take, stacked.tiles),
         farm=jax.tree_util.tree_map(take, stacked.farm),
         inventory=take(stacked.inventory),
         unlock_day=take(stacked.unlock_day),
     )
+    return (out, days) if with_days else out
 
 
 def schedule(update, updates_per_step, start_day, end_day=0):

@@ -1116,6 +1116,7 @@ def main():
     # the rollout used to build inline; with one it is real recorded boards, rebuilt whenever the
     # schedule's day changes.
     cur_day = 0
+    seed_days = None
     # **The mix is deliberately not annealable.** Its whole premise is that the composition moves on
     # the value probe rather than on the update counter, so a flag that walked it on the clock would
     # reintroduce exactly what it exists to avoid. Combining it with --curriculum-day would also
@@ -1134,11 +1135,11 @@ def main():
             "replaces. Shift the mix by relaunching with new fractions once the probe justifies it.")
 
     if cur_mix:
-        seed_states = curriculum.states_at_mix(
+        seed_states, seed_days = curriculum.states_at_mix(
             args.batch, cur_mix, seed=args.seed, behind=args.curriculum_behind,
             min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
             mirror=args.curriculum_mirror, symmetric=args.curriculum_symmetric,
-            top=args.curriculum_top or None)
+            top=args.curriculum_top or None, with_days=True)
         state = seed_states
         seats = "poorer" if args.curriculum_behind else "richer"
         counts = curriculum.mix_counts(args.batch, cur_mix)
@@ -1316,6 +1317,7 @@ def main():
     flat_n = args.horizon * n_seats
     wins, games = 0.0, 0.0
     # Cumulative, per opponent type, in the same units as `wins`/`games` above.
+    day_wins, day_games = {}, {}
     opp_wins = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
     opp_games = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
     opp_draws = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
@@ -1366,11 +1368,12 @@ def main():
             # the reuse is worse, because a slot would be pinned to one board AND one game-day for
             # the whole run.
             if args.curriculum_resample and it % args.curriculum_resample == 0:
-                seed_states = curriculum.states_at_mix(
+                seed_states, seed_days = curriculum.states_at_mix(
                     args.batch, cur_mix, seed=args.seed + it, behind=args.curriculum_behind,
                     min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank,
                     mirror=args.curriculum_mirror,
-                    symmetric=args.curriculum_symmetric, top=args.curriculum_top or None)
+                    symmetric=args.curriculum_symmetric, top=args.curriculum_top or None,
+                    with_days=True)
                 days = ", ".join(str(d) for d in sorted(cur_mix, reverse=True))
                 print(f"         curriculum: reseeding mixed pool (days {days})"
                       f"{' (trainee in the poorer seat)' if args.curriculum_behind else ''}",
@@ -1473,6 +1476,28 @@ def main():
             # own terms and unable to answer the question being asked of it.
             by_opp[f"draw_{_name}"] = jnp.where(
                 _rows, (traj["reward"] == 0.5).astype(jnp.float32), 0.0).sum()
+
+        # **Per-SEED-DAY win rate, which the aggregate cannot show.** With
+        # `--curriculum-mix 25:0.6,20:0.1,15:0.1,10:0.1,0:0.1` the day-25 slots supply ~83% of
+        # terminal episodes, so `wr` and even `wr_farm` are day-25 numbers wearing a mix's name: the
+        # four middle rungs could improve dramatically or die entirely and neither would move.
+        #
+        # The seed day is a CONSTANT per slot -- a restarting slot goes back into `seed_states[i]` by
+        # index -- so no scan carry is needed and this is computed here, outside jit, on the same
+        # rows `by_opp` uses: the live policy's own seat, in a finished game. `traj` rows are
+        # [horizon, batch * 2], so the batch axis has to be exposed before the day mask can apply;
+        # a mask broadcast against the flat axis would silently attribute rows to the wrong day.
+        by_day = {}
+        if seed_days is not None:
+            _n = args.batch
+            _shape = (-1, _n, 2)
+            _rows_all = (traj["trainable"] & traj["done"]).reshape(_shape)
+            _rew_all = traj["reward"].reshape(_shape)
+            _days = jnp.asarray(seed_days)[None, :, None]
+            for _d in sorted(set(int(x) for x in seed_days), reverse=True):
+                _m = _rows_all & (_days == _d)
+                by_day[f"done_d{_d}"] = _m.sum()
+                by_day[f"rew_d{_d}"] = jnp.where(_m, _rew_all, 0.0).sum()
 
         # Terminal rows carry return == reward, so their spread should be ~0.25 and `ev_signal`
         # should always be computable. It reported n/a on half the updates, so count them.
@@ -1680,10 +1705,15 @@ def main():
             "role_counts": role_counts,
             "seed_rate": seed_rate, "hire_rate": hire_rate, "land_rate": land_rate,
             **by_opp,
+            **by_day,
             **{k: v for k, v in metrics.items()},
         })
         wins += float(stats["reward_sum"])
         games += float(stats["done_count"])
+        for _k in [k for k in stats if k.startswith("done_d")]:
+            _d = _k[len("done_d"):]
+            day_games[_d] = day_games.get(_d, 0.0) + float(stats[_k])
+            day_wins[_d] = day_wins.get(_d, 0.0) + float(stats[f"rew_d{_d}"])
         for _name in opp_wins:
             opp_wins[_name] += float(stats[f"rew_{_name}"])
             opp_games[_name] += float(stats[f"done_{_name}"])
@@ -1741,6 +1771,9 @@ def main():
             **{f"wr_{k}": (float(opp_wins[k] / opp_games[k]) if opp_games[k] else float("nan"))
                for k in opp_wins},
             **{f"games_{k}": int(opp_games[k]) for k in opp_games},
+            **{f"wr_day{d}": (day_wins[d] / day_games[d] if day_games[d] else float("nan"))
+               for d in day_games},
+            **{f"games_day{d}": int(day_games[d]) for d in day_games},
             **{f"draws_{k}": (float(opp_draws[k] / opp_games[k]) if opp_games[k] else float("nan"))
                for k in opp_draws},
             # **Turns produced by *this process*, over the time this process has been running.**
