@@ -340,3 +340,46 @@ def test_top_is_still_honoured_when_passed():
     if len(refs) < 3:
         pytest.skip("need at least 3 seats")
     assert len(refs[:2]) == 2
+
+
+# --------------------------------------------------------------------------- length weighting
+
+
+def test_length_weighting_gives_every_day_an_equal_share_of_terminal_episodes():
+    """The property the whole helper exists for. Slot share is deliberately UNequal; what must be
+    equal is the share of finished episodes, because that is what the gradient consumes."""
+    mix = curriculum.length_weighted_mix([25, 20, 15, 10, 5, 0])
+    batch, horizon = 3000, 32
+    eps = {d: f * batch * horizon / ((30 - d) * J.TURNS_PER_DAY) for d, f in mix.items()}
+    tot = sum(eps.values())
+    for d, e in eps.items():
+        assert e / tot == pytest.approx(1 / len(mix), rel=0.02), (d, e / tot)
+
+
+def test_length_weighting_puts_more_SLOTS_on_the_early_days():
+    """Equal episode share requires unequal slots: a day-0 episode is 6x a day-25 one."""
+    mix = curriculum.length_weighted_mix([25, 0])
+    assert mix[0] > mix[25]
+    assert mix[0] == pytest.approx(30 / 35) and mix[25] == pytest.approx(5 / 35)
+
+
+def test_uniform_day_sampling_would_be_dominated_by_the_last_days():
+    """Pins the motivation, so the docstring's numbers cannot drift from the arithmetic: sampling
+    days uniformly gives day 29 ~25% of terminal episodes and day 0 under 1%."""
+    days = list(range(30))
+    eps = {d: (1 / 30) / (30 - d) for d in days}
+    tot = sum(eps.values())
+    assert eps[29] / tot == pytest.approx(0.25, abs=0.01)
+    assert eps[0] / tot < 0.01
+
+
+def test_the_length_prefix_parses_and_sums_to_one():
+    mix = curriculum.parse_mix("length:25,20,15,10,0")
+    assert set(mix) == {25, 20, 15, 10, 0}
+    assert sum(mix.values()) == pytest.approx(1.0)
+    assert mix[0] > mix[25]
+
+
+def test_a_length_spec_with_an_out_of_season_day_is_refused():
+    with pytest.raises(ValueError, match="outside"):
+        curriculum.parse_mix("length:30,0")

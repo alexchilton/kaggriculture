@@ -238,6 +238,37 @@ def _duplicate_seat(state, seat=0):
     )
 
 
+def length_weighted_mix(days, season_days=30):
+    """`{day: fraction}` weighted so every day contributes the SAME share of terminal episodes.
+
+    **The problem it fixes.** A day-`d` episode is `(season_days - d)` game-days long, and every slot
+    emits the same `--horizon` turns per update, so terminal episodes from day `d` arrive in
+    proportion to `1 / (season_days - d)`. Sampling days uniformly therefore hands the last few days
+    almost all of the gradient: over `d = 0..29` the share is `1/(30-d)` normalised by
+    `sum(1/k, k=1..30) ~= 3.995`, which gives **day 29 about 25% of all terminal outcomes and day 0
+    about 0.8%** -- and a day-29 episode is one game-day, essentially already decided.
+
+    **The fix is one line: weight the day by remaining season length.** With `P(d) ~ (season_days - d)`
+    the two biases cancel exactly, because episodes ~ `P(d) / (season_days - d)` = constant. So each
+    requested day supplies an equal share of terminal episodes, which is the unit the gradient
+    actually consumes.
+
+    Measured motivation from the run this replaced: at `25:0.6,20:0.1,15:0.1,10:0.1,0:0.1` the day-25
+    slots had 748 finished games by update 16 while day 20 had 36 and days 15, 10 and 0 had **zero** --
+    a day-0 episode needs ~22 updates to finish even one. The middle and early rungs were not
+    contributing weakly; they were contributing nothing.
+    """
+    days = sorted({int(d) for d in days}, reverse=True)
+    if not days:
+        raise ValueError("no days given")
+    for d in days:
+        if d < 0 or d >= season_days:
+            raise ValueError(f"day {d} is outside 0..{season_days - 1}")
+    weights = {d: float(season_days - d) for d in days}
+    total = sum(weights.values())
+    return {d: w / total for d, w in weights.items()}
+
+
 def parse_mix(spec):
     """`"25:0.8,0:0.2"` -> `{25: 0.8, 0: 0.2}`, validated.
 
@@ -245,6 +276,12 @@ def parse_mix(spec):
     whose composition is not the one asked for, and this project's standing rule is that a feature
     which silently runs as something other than what was requested is worse than one that fails.
     """
+    # `length:25,20,15,10,0` asks for equal TERMINAL-EPISODE share per day rather than equal slots.
+    # Spelled as a prefix rather than a separate flag so the two cannot both be set and disagree.
+    text = str(spec).strip()
+    if text.lower().startswith("length:"):
+        return length_weighted_mix(int(x) for x in text.split(":", 1)[1].split(",") if x.strip())
+
     mix = {}
     for part in str(spec).split(","):
         part = part.strip()
