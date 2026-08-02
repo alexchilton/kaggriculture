@@ -671,3 +671,34 @@ def test_idle_is_confined_to_the_day_zero_rung():
     far = seed_days.index(25)
     assert p[far, mod.ROLE_FARM] > p[0, mod.ROLE_FARM], \
         "idle's freed share must go back to the real opponents on non-day-0 slots"
+
+
+def test_outstanding_jobs_counts_work_the_policy_could_actually_do():
+    """`jobs_med` must move with the board, or logging it beside `crew` answers nothing.
+
+    The point of the metric is to decide whether `hire` is a prior problem or a credit-assignment
+    one: if crew tracks work, hiring is fine and the crew cannot convert work into money; if crew is
+    flat while work swings, the policy is not connecting its hiring to the outcome. A count that
+    cannot move -- because it only ever looks at one crop's seed, say -- would answer "flat" every
+    time and look like evidence.
+    """
+    import numpy as np
+
+    from kagg.rl import jax_heuristic as HEUR
+    from kagg.sim import jax_sim as J
+
+    fresh = J.reset(3)
+    jobs = np.asarray(HEUR.outstanding_jobs(fresh))
+
+    assert jobs.shape == (3, 2), "one count per seat per game"
+    # A pristine board has empty tiles but no seed, so there is nothing plantable and nothing
+    # planted -- zero work is the correct answer and a non-zero one would mean it is counting
+    # tiles rather than jobs.
+    assert jobs.max() == 0, f"a fresh board has no doable work, got {jobs.max()}"
+
+    # Give one seat seed and the count must rise: empty tiles become plantable work.
+    seeded = fresh._replace(
+        farm=fresh.farm._replace(seeds=fresh.farm.seeds.at[:, 0, 0].set(5)))
+    jobs2 = np.asarray(HEUR.outstanding_jobs(seeded))
+    assert jobs2[:, 0].min() == 5, f"5 seeds on empty tiles is 5 jobs, got {jobs2[:, 0]}"
+    assert jobs2[:, 1].max() == 0, "the other seat was not given seed and must be unchanged"

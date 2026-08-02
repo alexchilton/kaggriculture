@@ -2118,6 +2118,16 @@ def main():
             # The bank itself, seat 0 = the live policy. The most direct statement of the leak
             # there is: a season that ends on $0 has spent its whole stake and earned nothing.
             "money_med": float(np.median(np.asarray(jax.device_get(state.farm.money))[:, 0])),
+            # **Outstanding work on the live policy's own board, logged beside `crew`.**
+            #
+            # `hire` tripled to 0.331 the moment its prior target was removed, while every farming
+            # op collapsed and `bank med` fell to $527 -- so the open question is whether the crew
+            # is sized to anything at all. Deliberately logged rather than enforced: a prior that
+            # asserted "hire in proportion to work" would be a ratio read off what happens to work,
+            # which is the policy-prior `CLAUDE.md` forbids, and it would also make this question
+            # permanently unanswerable by construction.
+            "jobs_med": float(np.median(
+                np.asarray(jax.device_get(HEUR.outstanding_jobs(state)))[:, 0])),
             "money_max": float(np.asarray(jax.device_get(state.farm.money))[:, 0].max()),
             # **Over the trainable policy's own rows, not every row in the rollout.**
             # `unit_exists` spans both seats of every game, so with `--farm-frac 0.30` this was
@@ -2323,7 +2333,8 @@ def main():
                 f"{n}:{x:.0%}" for n, x in zip(ROLE_NAMES, _norm(row['role_counts'])))
             + f"  |  spend seed:{row['seed_rate']:.3f} hire:{row['hire_rate']:.3f} "
               f"land:{row['land_rate']:.3f}"
-            + f"  bank med ${row['money_med']:,.0f} max ${row['money_max']:,.0f}",
+            + f"  bank med ${row['money_med']:,.0f} max ${row['money_max']:,.0f}"
+            f"  jobs {row['jobs_med']:.0f}",
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:

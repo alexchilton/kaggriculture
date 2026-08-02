@@ -83,6 +83,38 @@ def _nth_nearest(pos, candidate, rank):
     return jnp.where(ok, idx, -1)
 
 
+def outstanding_jobs(state):
+    """Tiles wanting work, per seat: `[B, P]`. Crop-agnostic, so it reads any policy's board.
+
+    **This is a measurement, not a rule.** `actions` below sizes its own crew as
+    `1 + jobs // 2` and that is fine -- it is a scripted agent and is allowed strategy. The learned
+    policy is not given that relationship, because a prior asserting "hire in proportion to work"
+    is a ratio read off what happens to work, the same species as "buy land on day 10", and it
+    would cap the ceiling at whatever ratio was picked.
+
+    What the trainer does with this is *log* it beside `crew`, which answers a question that was
+    otherwise unanswerable: `hire` tripled to 0.331 the moment its prior target was removed, while
+    every farming op collapsed and the bank fell to $527. If crew tracks this number, hiring is not
+    the problem and the crew simply cannot convert work into money. If crew is flat while this
+    swings, the policy cannot connect an eight-hires-a-day habit to a bad ending thirty days later
+    through a critic at `ev_signal ~ 0.3` -- which is credit assignment, and pushing the prior
+    harder would only have hidden it.
+
+    Deliberately *not* the same expression `actions` uses: that one counts melon seed only, because
+    it is a melon agent. This counts every crop's seed, because the policy plants whatever it likes
+    and a melon-only count would read as "no work available" on a board full of carrots.
+    """
+    t, farm = state.tiles, state.farm
+    day = (state.step_index // J.TURNS_PER_DAY)[:, None, None]
+    is_plant = t.kind == PLANT
+    ripe = is_plant & (day - t.planted_day >= _FIRST_YIELD[jnp.maximum(t.crop, 0)]) \
+        & (t.yield_units > 0)
+    dry = is_plant & ~t.watered_today
+    free = t.kind == EMPTY
+    return (dry.sum(axis=-1) + ripe.sum(axis=-1)
+            + jnp.minimum(free.sum(axis=-1), farm.seeds.sum(axis=-1)))
+
+
 def actions(state):
     """A `jax_sim.Actions` for both seats. Only seat selection decides who actually uses it."""
     t, farm = state.tiles, state.farm
