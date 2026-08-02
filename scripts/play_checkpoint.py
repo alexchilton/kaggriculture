@@ -67,7 +67,7 @@ def _greedy(heads, masks):
     return out
 
 
-def play(params, model, batch, key, swap, greedy=True, turns=EPISODE_TURNS):
+def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS):
     """Policy vs the scripted farmer for a full season.
 
     Returns `(money [B, 2], money_trace [DAYS, B, 2], op_counts [N_OPS], unit_turns)`.
@@ -131,9 +131,19 @@ def main():
     ap.add_argument("checkpoint")
     ap.add_argument("--games", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--greedy", action="store_true",
+                    help="decode with per-head argmax instead of sampling. NOT the default any "
+                         "more, and the reason is measured: on the same checkpoint, greedy emitted "
+                         "WATER 0%%, PLANT 0%%, HARVEST 0%%, raw FEED 0 and a bank of exactly $2,998 "
+                         "in all 32 games (zero variance), while sampling gave WATER 5.62%%, PLANT "
+                         "2.50%%, HARVEST 0.76%% and raw FEED 18. The marginals contain the "
+                         "behaviour; argmax over independent per-head marginals destroys it, which "
+                         "is the same mechanism CLAUDE.md records for market orders -- nine "
+                         "independent 'probably not' decisions compose into 'never'. So argmax is "
+                         "not a cleaner score, it is a score of a different and much worse policy. "
+                         "Kept only for reproducing that comparison.")
     ap.add_argument("--sample", action="store_true",
-                    help="sample instead of argmax; argmax is the default because a score "
-                         "should not include exploration noise")
+                    help="deprecated no-op; sampling is now the default")
     args = ap.parse_args()
 
     with pathlib.Path(args.checkpoint).open("rb") as fh:
@@ -152,7 +162,7 @@ def main():
     for swap in (False, True):
         key, sub = jax.random.split(key)
         money, trace, counts, unit_turns = play(
-            params, model, args.games, sub, swap, greedy=not args.sample)
+            params, model, args.games, sub, swap, greedy=args.greedy)
         w, d, ll, me, them = report(money, swap)
         seat = 1 if swap else 0
         print(f"--- policy in seat {seat} vs scripted farmer ---")
