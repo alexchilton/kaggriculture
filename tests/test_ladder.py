@@ -71,5 +71,11 @@ def test_the_waste_detector_finds_a_deliberately_reintroduced_no_op():
     finally:
         converter._ripe = original
 
-    assert broken["wasted"] > clean["wasted"], (
-        f"detector blind to the known bug: clean {clean['wasted']} vs broken {broken['wasted']}")
+    # **The RATE, not the count.** Asserting on `wasted` fails on a bug this severe: the harvest
+    # no-op loop starves everything below it (WATER, FEED, CARE and PICKUP all go to zero), the farm
+    # dies, and total actions collapse 4,043 -> 540. So the absolute count of wasted actions *falls*
+    # (164 -> 149) while the fraction wasted rises 4.1% -> 27.6%. A catastrophic bug can always
+    # lower an absolute count by leaving less to do, which is precisely why the count is the wrong
+    # quantity for a detector test to assert on.
+    assert broken["waste"] > clean["waste"], (
+        f"detector blind to the known bug: clean {clean['waste']:.4f} vs broken {broken['waste']:.4f}")
