@@ -2036,10 +2036,28 @@ def main():
 
         n_chunks = max(1, flat_n // args.minibatch_size)
         key, ekey = jax.random.split(key)
+        prev_params = params
         params, opt_state, metrics = run_epochs(
             params, opt_state, batch_data_full, ekey,
             epochs=args.epochs, n_chunks=n_chunks, chunk=args.minibatch_size,
             reg_coef=reg_coef)
+        # **How far the weights actually moved this update, relative to their own size.**
+        #
+        # `approx_kl`, `clip_frac` and `grad_norm` all describe the *behaviour* change or the
+        # gradient before the optimiser touches it. None of them says whether the network is
+        # effectively frozen. A run can show a healthy `grad_norm` and a sane `approx_kl` while the
+        # learning rate is too small for anything to move -- and at `--lr 3e-5` on a 727k-parameter
+        # net that is a live possibility, not a hypothetical.
+        #
+        # `||dtheta|| / ||theta||` is one pass over the parameters per update and is scale-free, so
+        # it is comparable across runs and architectures. Rough reading: ~1e-3 is ordinary
+        # progress, sustained ~1e-5 means the net is standing still and the lr is the binding
+        # constraint, and ~1e-1 means it is being thrown around and something upstream is wrong.
+        _leaves_new = jax.tree_util.tree_leaves(params)
+        _leaves_old = jax.tree_util.tree_leaves(prev_params)
+        _delta = jnp.sqrt(sum(jnp.sum((a - b) ** 2) for a, b in zip(_leaves_new, _leaves_old)))
+        _scale = jnp.sqrt(sum(jnp.sum(a ** 2) for a in _leaves_new))
+        param_drift = _delta / jnp.maximum(_scale, 1e-12)
         target_params = ema_update(target_params, params, args.target_ema)
 
         # One transfer per update, of scalars only.
@@ -2126,6 +2144,7 @@ def main():
             # asserted "hire in proportion to work" would be a ratio read off what happens to work,
             # which is the policy-prior `CLAUDE.md` forbids, and it would also make this question
             # permanently unanswerable by construction.
+            "param_drift": float(jax.device_get(param_drift)),
             "jobs_med": float(np.median(
                 np.asarray(jax.device_get(HEUR.outstanding_jobs(state)))[:, 0])),
             "money_max": float(np.asarray(jax.device_get(state.farm.money))[:, 0].max()),
@@ -2334,7 +2353,7 @@ def main():
             + f"  |  spend seed:{row['seed_rate']:.3f} hire:{row['hire_rate']:.3f} "
               f"land:{row['land_rate']:.3f}"
             + f"  bank med ${row['money_med']:,.0f} max ${row['money_max']:,.0f}"
-            f"  jobs {row['jobs_med']:.0f}",
+            f"  jobs {row['jobs_med']:.0f}  dW {row['param_drift']:.2e}",
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
