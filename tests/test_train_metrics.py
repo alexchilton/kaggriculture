@@ -457,3 +457,124 @@ def test_the_declared_feature_widths_match_the_arrays():
         f"UNIT_FEATURES says {jax_obs.UNIT_FEATURES}, arrays are {units.shape[-1]}")
     assert glob.shape[-1] == jax_obs.GLOBAL_FEATURES, (
         f"GLOBAL_FEATURES says {jax_obs.GLOBAL_FEATURES}, arrays are {glob.shape[-1]}")
+
+
+def test_the_spend_prior_survives_a_behaviour_cloned_prior():
+    """`--spend-prior` must govern the spend heads even when `--kl-prior` supplies a BC prior.
+
+    **Theory under test: it does not.** `merge_priors` keeps the hand prior for `op` alone, so every
+    head `--spend-prior` exists to shape -- `buy_seed`, `buy_animal`, `buy_land`, `hire` -- falls
+    through to the BC prior. A run can pass `--spend-prior 0.05`, have it echoed back in its own
+    args line, and have it apply to nothing.
+
+    Measured in `league1-20260802-175612`, every spend rate sits *on* the BC prior rather than above
+    it -- buy_land 0.000 against 0.0%, buy_animal 0.0002 against 0.1%, buy_seed 0.012 against 0.9%,
+    hire 0.073 against 6.3%. `CLAUDE.md` names that exact reading as the test that a prior has
+    capped the ceiling: "trained spend rates finish above the prior, not pinned to it".
+
+    This pins the flag's contract, not the choice of prior value. Whatever `spend_p` is set to, it
+    must reach the heads it names.
+    """
+    import importlib.util
+    import pathlib
+
+    import jax.numpy as jnp
+
+    from kagg.sim import ops as O
+
+    spec = importlib.util.spec_from_file_location(
+        "t", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train_jax_rl.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    spend_p = 0.05
+    # `buy_land` is the starkest case: binary, and the BC checkpoint puts 0.0% on buying.
+    heads = {"op": jnp.zeros((1, 1, O.N_OPS)), "buy_land": jnp.zeros((1, 1, 2))}
+    masks = {"op": jnp.ones((1, 1, O.N_OPS), dtype=bool),
+             "buy_land": jnp.ones((1, 1, 2), dtype=bool)}
+
+    hand = mod.hand_prior_heads(heads, masks, noop_p=0.3, spend_p=spend_p)
+    assert float(jnp.exp(hand["buy_land"])[0, 0, 1]) == pytest.approx(spend_p, abs=1e-6), \
+        "precondition: the hand prior really does put spend_p on buying"
+
+    # A collapsed clone, which is what the measured BC checkpoint is on this head.
+    bc = {"op": jnp.zeros((1, 1, O.N_OPS)),
+          "buy_land": jnp.log(jnp.asarray([[[1.0 - 1e-4, 1e-4]]]))}
+
+    merged = mod.merge_priors(hand, bc)
+    p_buy = float(jnp.exp(merged["buy_land"])[0, 0, 1])
+
+    assert p_buy == pytest.approx(spend_p, abs=1e-6), (
+        f"--spend-prior {spend_p} was discarded: the head is governed by the BC prior at "
+        f"{p_buy:.1e}, a {spend_p / p_buy:.0f}x tighter constraint the flag never asked for")
+
+
+def _load():
+    import importlib.util
+    import pathlib
+    spec = importlib.util.spec_from_file_location(
+        "t", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "train_jax_rl.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_op_census_counts_commit_tokens():
+    """Every COMMIT draw was being counted as nothing at all.
+
+    `jax.nn.one_hot` returns a zero row for an out-of-range index rather than raising, so
+    one-hotting the *policy* op over `O.N_OPS` silently dropped tokens 18-22 -- the five COMMIT
+    macros, which are the behaviour the whole run exists to test. The printed percentages then
+    normalise by the primitive total, making them shares of primitive draws wearing the label
+    "share of unit-turns".
+    """
+    import jax.numpy as jnp
+
+    from kagg.rl import commit as CM
+    from kagg.sim import ops as O
+
+    mod = _load()
+    # Two live unit-turns: one ordinary WATER, one COMMIT_PICKUP (the highest token).
+    op_rows = jnp.asarray([[O.WATER, CM.N_POLICY_OPS - 1]])
+    live = jnp.ones((1, 2), dtype=bool)
+
+    counts = mod.op_census(op_rows, live)
+
+    assert float(counts.sum()) == pytest.approx(2.0), (
+        f"census total {float(counts.sum()):.0f} of 2 live unit-turns: the COMMIT token was "
+        f"dropped, so commit share is unobservable and every printed op rate is renormalised")
+    assert len(counts) == CM.N_POLICY_OPS, "census must span the policy op space, not the sim's"
+    assert float(counts[CM.N_POLICY_OPS - 1]) == pytest.approx(1.0)
+
+
+def test_the_op_prior_does_not_flat_weight_commit_macros_against_primitives():
+    """The COMMIT class takes `COMMIT_PRIOR_SHARE` of non-noop mass, not its flat per-token share.
+
+    Flat-over-legal weights one COMMIT_WATER equal to one N, despite `MAX_COMMIT_TURNS = 4` meaning
+    the commit stands in for up to four primitive draws whose intermediate turns are excluded from
+    the PPO density. That is a granularity mismatch, not a claim about good play -- the split is
+    over the two classes and says nothing about which commit or which primitive.
+    """
+    import jax.numpy as jnp
+
+    from kagg.rl import commit as CM
+    from kagg.sim import ops as O
+
+    mod = _load()
+    noop_p = 0.05
+    heads = {"op": jnp.zeros((1, 1, CM.N_POLICY_OPS))}
+    masks = {"op": jnp.ones((1, 1, CM.N_POLICY_OPS), dtype=bool)}
+
+    prior = mod.hand_prior_heads(heads, masks, noop_p=noop_p)["op"]
+    p = np.asarray(jnp.exp(prior))[0, 0]
+
+    commit_share = p[O.N_OPS:].sum()
+    want = mod.COMMIT_PRIOR_SHARE * (1.0 - noop_p)
+    assert commit_share == pytest.approx(want, abs=1e-6), (
+        f"commit class holds {commit_share:.3f} of the mass, not {want:.3f}: it is being "
+        f"flat-weighted per token ({CM.N_COMMIT}/{CM.N_POLICY_OPS - 1} of non-noop)")
+
+    prims = p[1:O.N_OPS]
+    assert prims.std() == pytest.approx(0.0, abs=1e-9), "within primitives the prior stays flat"
+    assert p.sum() == pytest.approx(1.0, abs=1e-6)
+    assert p[O.NOOP] == pytest.approx(noop_p, abs=1e-6)

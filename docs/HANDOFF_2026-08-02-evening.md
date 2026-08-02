@@ -10,21 +10,189 @@ Today is **day 3 of 62**, which matters for how you read every "teacher" number 
 
 ## Running right now
 
-`league1-20260802-175612`, systemd service `kagg-train` on the Windows box.
-Log: `/home/alex/kagg/data/logs/run.log`, pull with `./scripts/deploy_train.sh getlog`.
+`league1`, systemd service `kagg-train` on the Windows box, resumed from **update 300**.
+Log: `/home/alex/kagg/data/logs/run.log` — `kagg-log` follows exactly that file.
 
 ```
 --curriculum-mix length:0:0.6,10:0.1,15:0.1,20:0.1,25:0.1   --curriculum-symmetric
 --opponent-frac 0.45 --farm-frac 0.25 --ranch-frac 0.20 --idle-frac 0.10   (self = 0)
 --pool-size 16 --pool-every 25
---hand-prior 0.15 --spend-prior 0.05 --kl-prior <mix5-20260802-120823/latest.pkl>
+--hand-prior 0.05 --spend-prior 0.05 --kl-prior <mix5-20260802-120823/latest.pkl>
 --ent-coef 0.01 --lr 3e-5 --batch 256 --horizon 32
 ```
 
-Resumed through a chain: `commit4` → `day0flip` → `day0flip2` → `ranch1` → `league1`.
-Always launch via `./scripts/deploy_train.sh train`; a hand-started run gets reaped when SSH closes.
+Resumed through a chain: `commit4` → `day0flip` → `day0flip2` → `ranch1` → `league1` → (this).
+
+**Two launch paths exist and they are not the same one. This cost an hour.**
+
+| path | mechanism | writes to | survives session loss |
+|---|---|---|---|
+| systemd unit `kagg-train` | `systemctl start kagg-train` | `data/logs/run.log` | yes |
+| `/usr/local/bin/kagg-train` | tmux session `kagg` | `data/logs/train.log` | yes |
+
+`kagg-log` reads `run.log`, so a run started the *other* way is invisible to it and looks dead.
+The unit's `ExecStart` holds the full arg list including `--resume`, so **redeploying means editing
+the unit and `daemon-reload`**, not passing new flags somewhere.
+A hand-rolled `nohup` launch is a third way and is wrong twice over: it writes to neither log, and
+`train_jax_rl.py` lives in `scripts/` so Python puts *that* directory on `sys.path` and `import
+kagg` fails without `PYTHONPATH=/home/alex/kagg`.
 
 ---
+
+## LATER THE SAME EVENING: three measurement bugs, and what they invalidate
+
+All three are the same species already named in `CLAUDE.md` — a number correct per row whose label
+does not describe what it is being read as.
+All three now have a failing-first test in `tests/test_train_metrics.py` (22 pass).
+
+### 1. The op census dropped every COMMIT token, from the moment they were introduced
+
+`op_counts` one-hotted the **policy** op over `O.N_OPS`.
+Policy op space is `commit.N_POLICY_OPS = O.N_OPS + 5`, and `jax.nn.one_hot` returns a zero row for
+an out-of-range index rather than raising.
+So tokens 18-22 — the five `COMMIT_*` macros, the entire behaviour under test — were counted as
+nothing at all.
+
+**What this invalidates.** `total_ops` normalises by the sum of the census, so every op percentage
+this project has printed since commitments landed is a *share of primitive draws*, not a share of
+unit-turns.
+The "movement + NOOP is 79%" figure in the section below, and the 84% measured later, are both
+inflated by however much commit share actually existed.
+The post-commit result table below (`HARVEST 0.44% -> 6.2%` and the rest) counted **resolved
+arrival ops only** and never once saw a commit draw.
+
+Fixed by `op_census()`, which takes the width as a named argument so a test can pin it, and the
+printed line now carries `commit N.NN% = cWATER: cHARV: cFEED: cPLANT: cPICK:`.
+
+### 2. `--spend-prior` was silently inert whenever `--kl-prior` was set
+
+When both priors are supplied the merge kept the hand prior for `op` **and discarded it for every
+other head**, so all four `SPEND_HEADS` fell through to the BC prior.
+A run could pass `--spend-prior 0.05`, have it echoed back in its own args line, and have it govern
+nothing.
+Extracted to `merge_priors()` for that reason: as an inline dict comprehension the choice was
+invisible and unassertable.
+
+Measured against the BC prior's implied P(act), which is where it matters:
+
+| head | BC prior | measured | genuinely pinned? |
+|---|---|---|---|
+| `buy_land` | 0.0% | 0.000 | **yes** |
+| `buy_animal` | 0.1% | 0.0002 | **yes** |
+| `buy_seed` | 0.9% | 0.012 | no — already drifting above |
+| `hire` | 6.3% | 0.073 | no — already above |
+
+So only land and animals were actually held at zero, and KL taxes mass where the prior has none —
+the policy was being charged for *trying* to buy land.
+`HAND_PRIOR_HEADS_WITH_BC` is now `("op",) + SPEND_HEADS`.
+
+**Why this is not the known-bad entry below re-suggested.** `--spend-prior` was rejected "as a
+bankruptcy fix on an *inert* policy" when the failure was hyperactivity.
+The failure has inverted again: against an inert policy a 5% shape prior is a **floor**, pulling
+from below.
+Third instance of "a decision to skip a fix can expire when the problem changes".
+
+**Note on `hire`, correcting the reasoning used to include it.** 5% is a *tighter* target than the
+BC prior's 6.3%, and measured `hire` is 7.3%, above both.
+Including `hire` neither releases nor meaningfully constrains it.
+The ~0.42 a crew of ten needs will not come from either prior.
+
+### 3. Logged `entropy` is summed over every head
+
+So it cannot separate "commit share rising as intended" from "the op head collapsing onto one
+commit token it now spams" — both move the total the same way.
+`op_entropy` is now computed and logged separately.
+It is a metric only and is not in the objective.
+
+### Prior values changed, with the argument
+
+- `--hand-prior` **0.15 -> 0.05**. Measured noop is 5-6%, already *below* the 0.15 target, so the
+  KL was spending part of its budget pulling the policy back **up** toward more noop. Deliberately
+  *not* moved toward Ender's 0.9: his 0.9 is safe because his game punishes standing still, and
+  here an idle farm banks its opening money and can win outright, so a high noop prior pushes into
+  the same basin the spend bug was already pushing into. Expect no direct effect on the movement
+  figure — noop is 5-6 of those points, the rest is movement.
+- `COMMIT_PRIOR_SHARE = 0.40` of non-noop mass when at least one commit is legal, primitives split
+  the remaining 60%, unchanged when no commit is legal. **A class split, not a per-op marginal** —
+  it says nothing about which commit or which primitive, so there is no strategy in it to inherit.
+  Rests on `MAX_COMMIT_TURNS = 4` (one commit draw stands in for up to four primitive draws whose
+  intermediate turns are excluded from the PPO density) and on legality asymmetry (movement is
+  legal nearly every turn, a commit only when a target is in range) — both structural, both
+  pushing the same way. 0.40 against a raw flat share of 5/23 = 21.7%; the multiplier should
+  eventually come from measured realised walk length rather than assertion.
+
+Flat-over-legal is the "mostly walk" fragment at the opposite frequency extreme to the one the
+known-bad list already names: nobody wrote "prefer walking", the legality shape wrote it.
+Reweighting *within* primitives to fix that would be the forbidden per-op marginal relabelled, so
+the class boundary is the only place the correction belongs.
+
+**Pass/revert, over ~50 updates.** Pass: commit share rises toward 15-25% *while* move share falls
+in the same window — either alone is ambiguous.
+Revert-as-no-effect: commit flat and move still >=70%, meaning the prior is not the binding
+constraint and the problem is credit assignment (`ev_signal` 0.27-0.38 failing to propagate across
+the four-turn delay) — do **not** respond by pushing the prior weight higher.
+Revert-as-overcorrection: commit share past 40% or `op_entropy` collapsing without feed/care rising.
+
+## The pool: a working regression check and a useless difficulty source
+
+Both readings were in play — "the league cannot teach" versus "beating old selves is a regression
+check and is supposed to pass".
+The opponent x seed-day cross-tab settles it, because it removes the curriculum confound.
+
+At **day 0**, the hard rung, matched difficulty:
+
+| opponent | day-0 win rate |
+|---|---|
+| pool | **1.00 / 14** |
+| idle | 1.00 / 5 |
+| farm | 0.50 / 4 |
+| ranch | **0.22 / 9** |
+
+We beat every past self on the hard rung and lose 78% to a hand-written ranch bot on the same rung.
+Both are true, neither is a bug, and the pool is therefore doing the job it can do and not the one
+it was hoped to do.
+Counts are small; this firms up as the cross-tab accumulates.
+
+**Seat advantage: investigated and largely dismissed. Do not re-run this.**
+`play_checkpoint.py`'s docstring says seat 0 wins every contested tie, which reads alarming because
+`train_jax_rl.py` never swaps seats — the live policy is always seat 0.
+But `_process_market` states plainly that *"Both seats quoted from the same pre-commit inventory,
+before either commits"*, so there is **no price advantage**; seat order decides only the atomic
+orders (`HIRE`, `BUY_LAND`, which "resolve once, in seat order, and then the slot is spent") and
+exhaustion cases.
+With `land_rate` at 0.000 and per-product sell rates of 0.6-6%, contested slots are rare — and this
+file already records 300 full-length episodes in which both players never once sold the same
+product.
+It also cannot explain any *between-opponent* gap, because pool, farm, ranch and idle all sit in
+seat 1 and any seat effect cancels.
+
+## Corrected op mix (the previous numbers used a mislabelled name table)
+
+`O_NAMES` order is `noop, N, S, E, W, water, harv, plant, dig, pick, drop, place, feed, care, ...`
+— `water`/`plant` and `pick`/`drop` are not in the order they are often assumed to be.
+
+Over updates 101-224, as a share of primitive draws:
+
+| op | upd 101 | upd 224 | correlation with money (312 seats) |
+|---|---|---|---|
+| water | 11.2% | 3.9% | **-0.276** |
+| plant | 1.6% | 0.16% | **-0.358** |
+| feed | 1.35% | **0.26%** | **+0.452** |
+| care | 1.25% | **0.50%** | **+0.441** |
+
+The work budget goes to the two ops that anti-correlate with winning, and the two that correlate
+most have **drifted down 5x and 2.5x** over the run.
+That answers item 4 of "what to check next" below with a clear no.
+`harv/plant` reads 8.52, above the 4.05 recorded below, but the HARVEST mask is
+`ripe_plant | (has_animal & units_held > 0)` so animal collection counts as harvest.
+
+## Known-failing test, pre-existing, unrelated
+
+`tests/test_curriculum.py::test_the_behind_dial_actually_puts_the_trainee_in_the_poorer_seat`
+fails: trainee bank **behind=32,616 is not below ahead=25,498**, i.e. the `--curriculum-behind` dial
+is inverted and puts the trainee in the *richer* seat.
+`--curriculum-behind` is not in the live args, so it cannot affect the current run.
+Not fixed — out of scope for this session, but it should not be discovered a third time.
 
 ## THE FINDING: the failure was temporal, and it was in the codebase all along
 

@@ -68,6 +68,17 @@ RUN_DIR = pathlib.Path("data/jax_rl_runs")
 O_NAMES = ("noop", "N", "S", "E", "W", "water", "harv", "plant", "dig", "pick", "drop",
            "place", "feed", "care", "fert+", "fert!", "coop", "pasture")
 
+# **The census runs over the POLICY op space, which is wider than the simulator's.**
+#
+# `commit.N_POLICY_OPS` is `O.N_OPS + 5`; tokens 18-22 are the `COMMIT_*` macros and are translated
+# to primitives before `jax_sim` ever sees them. The census one-hotted over `O.N_OPS`, and
+# `jax.nn.one_hot` returns all-zeros for an out-of-range index, so **every COMMIT draw was counted
+# as nothing at all** -- the behaviour under test was the one behaviour missing from the log that
+# exists to judge it. Worse than a gap: the printed percentages normalise by the primitive total,
+# so they were shares of primitive draws wearing the label "share of unit-turns".
+COMMIT_O_NAMES = ("cWATER", "cHARV", "cFEED", "cPLANT", "cPICK")
+POLICY_O_NAMES = O_NAMES + COMMIT_O_NAMES
+
 # The scripted wheat trader. Buy early, hold, sell late -- measured at $3,989 from a $3,000 start
 # with zero crew actions, against a price path that rose $25 -> $46 monotonically because the town
 # drains wheat all season and wheat's glut curve is `log`, so it never floors.
@@ -182,8 +193,21 @@ ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH = range(6)
 N_ROLES = 6
 ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch")
 
+# One list, because the per-opponent census and the opponent-by-day cross-tab have to agree on
+# both the names and the order or the two views of the same rows disagree silently.
+OPPONENT_FLAGS = (("idle", "vs_idle"), ("trade", "vs_trade"), ("farm", "vs_farm"),
+                  ("ranch", "vs_ranch"), ("pool", "vs_pool"))
+OPPONENT_NAMES = tuple(n for n, _ in OPPONENT_FLAGS)
+
 PRODUCT_NAMES = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
                  "EGG", "MILK", "WOOL", "FERTILIZER")
+
+# `market.py` builds `ITEMS = PRODUCTS + ANIMALS` in exactly this order, and `jax_sim.N_ITEMS`
+# is that same length, so the PICKUP census and the `item` action head share one index space.
+# The pickup line printed twelve bare decimals against that space, which is unreadable in the
+# only place the wheat-versus-animal question can be answered.
+ANIMAL_NAMES = ("GOOSE", "COW", "SHEEP")
+ITEM_NAMES = PRODUCT_NAMES + ANIMAL_NAMES
 
 # **Teacher market rates -- a reference column, explicitly NOT a target.**
 #
@@ -574,6 +598,17 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     return rollout
 
 
+def op_census(op_rows, live, n_ops=CM.N_POLICY_OPS):
+    """Count chosen ops over `live` rows, one bin per op in the space `n_ops` describes.
+
+    Extracted so the width is a named argument that a test can pin. Inline it was
+    `jax.nn.one_hot(op_rows, O.N_OPS)`, and the silent truncation of every token >= `O.N_OPS` was
+    invisible at the call site -- `one_hot` does not raise on an out-of-range index, it returns a
+    zero row, so the count simply went missing with nothing to read as wrong.
+    """
+    return (jax.nn.one_hot(op_rows, n_ops, dtype=jnp.float32) * live[..., None]).sum(axis=(0, 1))
+
+
 def _norm(counts):
     """Counts -> shares. All-zero stays all-zero rather than becoming NaN, because "this head was
     never exercised" is a reading worth seeing rather than a blank."""
@@ -585,6 +620,33 @@ def _norm(counts):
 # `hand_prior_heads` -- and deliberately *not* including `sell`, which brings money in, or `trade`,
 # whose near-uniform spread is healthy and is the coordinating latent the product heads read.
 SPEND_HEADS = ("buy_seed", "buy_animal", "buy_land", "hire")
+
+# **Share of the non-noop op mass the COMMIT class takes, when at least one commit is legal.**
+#
+# A class-level split, and the distinction from a per-op marginal is the whole point: this says
+# nothing about *which* commit or *which* primitive, so there is no strategy in it to inherit. The
+# `CLAUDE.md` entry that forbids a per-op prior forbids "feed 8%, water 2%" -- a claim about what a
+# good farmer does. This is a claim about action *granularity*, which is a property of the action
+# space rather than of good play, and it rests on two measured structural facts:
+#
+#   - `MAX_COMMIT_TURNS = 4`. One commit draw stands in for up to four primitive move draws, and
+#     those intermediate turns are excluded from the PPO density entirely. Flat-per-token weights
+#     one COMMIT_WATER equal to one N despite roughly 4x the behavioural footprint per draw.
+#   - Legality is asymmetric in the same direction. Movement is legal nearly every turn; a commit
+#     is legal only when a valid target is in range. So flat-over-legal under-serves the commit
+#     class twice over, on footprint and on frequency, and both push the same way.
+#
+# 0.40 against a raw flat share of 5/23 = 21.7%, i.e. about 2x, from "an average commit replaces
+# ~2 primitive draws". The multiplier should eventually be set from the measured realised walk
+# length under an active commit rather than asserted; 0.40 is the starting point, not a result.
+#
+# **Why this is not the "mostly walk" fragment in reverse.** Flat-over-legal is not neutral here:
+# because movement is legal almost always and the specialist ops rarely are, a flat scheme spends
+# most of its mass on movement on a typical turn -- nobody wrote "prefer walking", the legality
+# shape wrote it. That is the same policy-fragment failure the known-bad entry describes, at the
+# opposite frequency extreme. Reweighting *within* the primitives to fix it would be the forbidden
+# per-op marginal relabelled, so the class boundary is the only place the correction belongs.
+COMMIT_PRIOR_SHARE = 0.40
 
 
 def hand_prior_heads(heads, masks, noop_p, spend_p=0.0):
@@ -668,13 +730,76 @@ def hand_prior_heads(heads, masks, noop_p, spend_p=0.0):
             out[k] = jnp.zeros_like(logits)
             continue
         m = masks[k]
-        n_legal = jnp.maximum(m.sum(axis=-1, keepdims=True), 1)
-        # log p for the non-noop options, so that noop takes `noop_p` and the rest split the
-        # remainder. Written in log space directly rather than as logits to normalise.
-        others = jnp.log((1.0 - noop_p) / jnp.maximum(n_legal - 1, 1))
-        is_noop = jnp.arange(logits.shape[-1]) == O.NOOP
-        out[k] = jnp.where(is_noop, jnp.log(noop_p), others)
+        # noop takes `noop_p`; the remainder is split between the two op CLASSES and then flat
+        # within each. See `COMMIT_PRIOR_SHARE` for why the class boundary is the only structural
+        # correction available without becoming a per-op marginal. Written in log space directly
+        # rather than as logits to normalise.
+        idx = jnp.arange(logits.shape[-1])
+        is_noop = idx == O.NOOP
+        is_commit = idx >= O.N_OPS
+        n_commit = (m & is_commit).sum(axis=-1, keepdims=True)
+        n_prim = (m & ~is_commit & ~is_noop).sum(axis=-1, keepdims=True)
+        rest = 1.0 - noop_p
+        # With no commit legal this turn the class does not exist and primitives take the lot --
+        # the split must never invent mass for an option the board cannot offer.
+        commit_mass = jnp.where(n_commit > 0, COMMIT_PRIOR_SHARE * rest, 0.0)
+        prim_mass = rest - commit_mass
+        # Floored before the log. `jnp.log(0.0)` is `-inf`, and an `-inf` sitting in a masked-out
+        # slot has already taken a run to NaN in this file once -- see the `noop_p <= 0.0` note
+        # above. The floor is far below any reachable probability, so it changes nothing legal.
+        commit_each = jnp.log(jnp.maximum(commit_mass, 1e-30) / jnp.maximum(n_commit, 1))
+        prim_each = jnp.log(jnp.maximum(prim_mass, 1e-30) / jnp.maximum(n_prim, 1))
+        out[k] = jnp.where(is_noop, jnp.log(noop_p),
+                           jnp.where(is_commit, commit_each, prim_each))
     return out
+
+
+# Heads the *hand* prior keeps when a BC prior is also supplied. Everything else takes the BC
+# prior. Extracted from `loss_fn` so the choice is testable: as an inline dict comprehension it was
+# invisible, and its consequence -- that `--spend-prior` was accepted and then silently discarded
+# whenever `--kl-prior` was set -- could not be asserted anywhere.
+#
+# **`SPEND_HEADS` was added here on 2026-08-02, and the reason is that the problem inverted.**
+#
+# `--spend-prior` was built to cap a *hyperactive* policy: `buy_seed` firing on 29.1% of turns, the
+# bank at $0 by game-day five. It was then correctly recorded as known-bad "as a bankruptcy fix on
+# an inert policy". The policy is now the opposite failure -- measured on `league1`, every spend
+# rate sits *on* the BC prior rather than above it:
+#
+#     head          BC prior implies    measured
+#     buy_land           0.0%            0.000
+#     buy_animal         0.1%            0.0002
+#     buy_seed           0.9%            0.012
+#     hire               6.3%            0.073
+#
+# which is exactly the reading `CLAUDE.md` names as the test that a prior has capped the ceiling.
+# Against an inert policy a 5% shape prior is a FLOOR, not a cap: it pulls from below, which is the
+# direction now wanted. Same flag, same value, opposite effect, because the policy moved -- which
+# is the "a decision to skip a fix can expire when the problem changes" entry, a third time.
+#
+# `hire` is included deliberately rather than left on the BC prior. It is the worst-affected head
+# -- ~0.42 is needed for a crew of ten against a measured 0.073 -- so protecting it from the shape
+# prior would protect the head that most needs releasing. A 5% pull from below still beats a 6.3%
+# pin, and if 5% later proves too tight for `hire` specifically that is a value question, not a
+# reason to leave it glued to a day-2 checkpoint.
+HAND_PRIOR_HEADS_WITH_BC = ("op",) + SPEND_HEADS
+
+
+def merge_priors(hand_prior, bc_prior, hand_heads=HAND_PRIOR_HEADS_WITH_BC):
+    """Pick, per head, which of the two priors governs it.
+
+    Neither prior is right everywhere. The BC prior has the market heads roughly right and the `op`
+    head wrong -- it predates commitments, so its zero-padded commit logits hold 2.4% of op mass
+    against 21.7% uniform, a 9x suppression of the behaviour under test. The hand prior is the
+    reverse: correct about `op`, and *uniform* on every head it does not shape, which pushes those
+    heads toward buying on 40-75% of turns.
+
+    **The trap this makes visible.** `--spend-prior` shapes `buy_seed`, `buy_animal`, `buy_land` and
+    `hire`, and every one of them is outside `hand_heads`, so supplying `--kl-prior` discards all
+    four without a word. A run can pass `--spend-prior 0.05`, log it in its own args line, and have
+    it govern nothing.
+    """
+    return {k: (hand_prior[k] if k in hand_heads else bc_prior[k]) for k in hand_prior}
 
 
 def kl_to_prior(heads, prior_heads, masks):
@@ -750,6 +875,20 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         ) * w).sum() / w_sum
         entropy_loss = -(entropy * w).sum() / w_sum
 
+        # **Op-head entropy on its own. A metric only -- it is not in the objective.**
+        #
+        # The logged `entropy` is a sum over every head, and a sum cannot separate the two ways the
+        # commit-class prior split can fail: the class share rising because commits are being used
+        # (intended) and the op head collapsing onto one commit token it now spams (a new policy
+        # fragment) can move the total the same way. Without this isolated number, "working" and
+        # "revert" are the same reading.
+        _op_mask = batch_data["masks"]["op"]
+        _op_logp = jax.nn.log_softmax(jnp.where(_op_mask, heads["op"], -jnp.inf), axis=-1)
+        # `p * logp` is `0 * -inf = nan` on a masked slot, so the masked terms are zeroed rather
+        # than relied on to vanish -- the same NaN shape this file has already been bitten by.
+        _op_ent = -jnp.where(_op_mask, jnp.exp(_op_logp) * _op_logp, 0.0).sum(axis=-1)
+        op_entropy = (_op_ent.reshape(w.shape[0], -1).mean(axis=-1) * w).sum() / w_sum
+
         # **Seat-sum consistency: V(seat 0) + V(seat 1) = 1.**
         #
         # The two seats of a game are the same board seen from opposite sides, so their win
@@ -810,7 +949,7 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
                 bc_heads, _pv = model.apply(prior_params, tiles, units, glob)
                 bc_cond = A.condition_all(
                     jax.lax.stop_gradient(bc_heads), batch_data["actions"])
-                prior = {k: (prior[k] if k == "op" else bc_cond[k]) for k in prior}
+                prior = merge_priors(prior, bc_cond)
             kl_prior = kl_to_prior(cond, prior, batch_data["masks"])
         elif prior_params is not None and kl_coef:
             prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
@@ -851,7 +990,8 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
         clip_frac = ((jnp.abs(ratio - 1.0) > clip).astype(jnp.float32) * w).sum() / w_sum
         return loss, dict(policy_loss=policy_loss, value_loss=value_loss, seat_loss=seat_loss,
-                          entropy=entropy.mean(), approx_kl=approx_kl, clip_frac=clip_frac,
+                          entropy=entropy.mean(), op_entropy=op_entropy,
+                          approx_kl=approx_kl, clip_frac=clip_frac,
                           kl_prior=kl_prior)
 
     @jax.jit
@@ -1469,9 +1609,12 @@ def main():
     wins, games = 0.0, 0.0
     # Cumulative, per opponent type, in the same units as `wins`/`games` above.
     day_wins, day_games = {}, {}
-    opp_wins = {k: 0.0 for k in ("idle", "trade", "farm", "ranch", "pool")}
-    opp_games = {k: 0.0 for k in ("idle", "trade", "farm", "ranch", "pool")}
-    opp_draws = {k: 0.0 for k in ("idle", "trade", "farm", "ranch", "pool")}
+    opp_wins = {k: 0.0 for k in OPPONENT_NAMES}
+    opp_games = {k: 0.0 for k in OPPONENT_NAMES}
+    opp_draws = {k: 0.0 for k in OPPONENT_NAMES}
+    # Cumulative opponent-by-day cells, keyed `"{opponent}_d{day}"`. Cumulative because a single
+    # update splits ~10 finished games across up to 25 cells, and a per-update cell rate is noise.
+    opp_day_wins, opp_day_games = {}, {}
     t_start = time.time()
 
     # Loud, because a silent exit here is exactly what could not be diagnosed: the process wrote
@@ -1609,8 +1752,7 @@ def main():
         # because a few games an update is a noisy estimate and a bare 0.33 hides whether it came
         # from one game or thirty -- the same mistake `wr` made before its count was printed.
         by_opp = {}
-        for _name, _flag in (("idle", "vs_idle"), ("trade", "vs_trade"),
-                             ("farm", "vs_farm"), ("ranch", "vs_ranch"), ("pool", "vs_pool")):
+        for _name, _flag in OPPONENT_FLAGS:
             _rows = traj["trainable"] & traj[_flag] & traj["done"]
             by_opp[f"done_{_name}"] = _rows.sum()
             by_opp[f"rew_{_name}"] = jnp.where(_rows, traj["reward"], 0.0).sum()
@@ -1639,6 +1781,16 @@ def main():
         # [horizon, batch * 2], so the batch axis has to be exposed before the day mask can apply;
         # a mask broadcast against the flat axis would silently attribute rows to the wrong day.
         by_day = {}
+        # **Opponent CROSSED with seed day, because neither margin can be read on its own.**
+        #
+        # `wr_farm` averages over whatever day mix the curriculum happened to be serving, and
+        # `wr_day0` averages over whatever opponent mix it happened to be serving. When
+        # `--curriculum-resample` moves the mix, a *constant* policy shows a moving `wr_farm` --
+        # this run's farm rate fell 0.73 -> 0.03 across the update-125 resample purely because the
+        # day-0 share of finished games went 0% -> 70%, and read as a collapse. Neither existing
+        # margin can distinguish that from a real one; the cross-tab can, because opponent and day
+        # are both held fixed inside a cell.
+        by_opp_day = {}
         if seed_days is not None:
             _n = args.batch
             _shape = (-1, _n, 2)
@@ -1649,6 +1801,14 @@ def main():
                 _m = _rows_all & (_days == _d)
                 by_day[f"done_d{_d}"] = _m.sum()
                 by_day[f"rew_d{_d}"] = jnp.where(_m, _rew_all, 0.0).sum()
+                # Same rows the margin above counts, split once more by opponent. Cells are
+                # individually small -- a 25-cell split of ~10 finished games an update -- so
+                # every cell is logged with its own count and read cumulatively, never as a
+                # single-update rate.
+                for _name, _flag in OPPONENT_FLAGS:
+                    _mo = _m & traj[_flag].reshape(_shape)
+                    by_opp_day[f"done_{_name}_d{_d}"] = _mo.sum()
+                    by_opp_day[f"rew_{_name}_d{_d}"] = jnp.where(_mo, _rew_all, 0.0).sum()
 
         # Terminal rows carry return == reward, so their spread should be ~0.25 and `ev_signal`
         # should always be computable. It reported n/a on half the updates, so count them.
@@ -1714,8 +1874,7 @@ def main():
         unit_exists = batch_data_full["obs"][1][..., 0] > 0.5      # `live` is unit feature 0
         live_units = batch_data_full["trainable"][:, None] & unit_exists
         op_rows = batch_data_full["actions"]["op"]
-        op_counts = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
-                     * live_units[..., None]).sum(axis=(0, 1))
+        op_counts = op_census(op_rows, live_units)
 
         # **Split the census by whether the row can reach a harvest at all.**
         #
@@ -1729,8 +1888,7 @@ def main():
             jnp.asarray((np.arange(args.batch) % 2) == 0), 2)[None, :],
             (args.horizon, 1)).reshape(-1)
         full_live = live_units & full_rows[:, None]
-        op_counts_full = (jax.nn.one_hot(op_rows, O.N_OPS, dtype=jnp.float32)
-                          * full_live[..., None]).sum(axis=(0, 1))
+        op_counts_full = op_census(op_rows, full_live)
 
         # **The market heads have never been logged, and FEED has never once fired.**
         #
@@ -1860,6 +2018,7 @@ def main():
             "seed_rate": seed_rate, "hire_rate": hire_rate, "land_rate": land_rate,
             **by_opp,
             **by_day,
+            **by_opp_day,
             **{k: v for k, v in metrics.items()},
         })
         wins += float(stats["reward_sum"])
@@ -1872,6 +2031,15 @@ def main():
             opp_wins[_name] += float(stats[f"rew_{_name}"])
             opp_games[_name] += float(stats[f"done_{_name}"])
             opp_draws[_name] += float(stats[f"draw_{_name}"])
+        # Keyed off the cell names the rollout actually produced, so a day rung that the
+        # curriculum is not currently serving simply never appears rather than logging a zero
+        # that would read as "played it and lost every time".
+        for _cell in by_opp_day:
+            if not _cell.startswith("done_"):
+                continue
+            _key = _cell[len("done_"):]
+            opp_day_games[_key] = opp_day_games.get(_key, 0.0) + float(stats[_cell])
+            opp_day_wins[_key] = opp_day_wins.get(_key, 0.0) + float(stats[f"rew_{_key}"])
 
         # **Record how this opponent did, or the priority weights never change.**
         #
@@ -1930,6 +2098,12 @@ def main():
             **{f"games_day{d}": int(day_games[d]) for d in day_games},
             **{f"draws_{k}": (float(opp_draws[k] / opp_games[k]) if opp_games[k] else float("nan"))
                for k in opp_draws},
+            # Opponent x seed day. Only cells with games are emitted, and each rate ships beside
+            # its own count -- a cell at 0.00 over 3 games and one at 0.00 over 300 are different
+            # claims and the rate alone cannot tell them apart.
+            **{f"wr_{k}": (opp_day_wins[k] / opp_day_games[k]) if opp_day_games[k] else float("nan")
+               for k in opp_day_games},
+            **{f"games_{k}": int(opp_day_games[k]) for k in opp_day_games},
             # **Turns produced by *this process*, over the time this process has been running.**
             # `(it + 1)` counts from update 0, so on a resume it credited every pre-resume turn
             # against post-resume wall-clock and printed 13,082 t/s on a card doing about 1,100.
@@ -1938,7 +2112,7 @@ def main():
             "sps": float((it + 1 - start_update) * args.horizon * args.batch
                          / (time.time() - t_start)),
             **{k: float(stats[k]) for k in
-                 ("loss", "policy_loss", "value_loss", "seat_loss", "entropy",
+                 ("loss", "policy_loss", "value_loss", "seat_loss", "entropy", "op_entropy",
                   "approx_kl", "clip_frac", "grad_norm", "kl_prior")},
         }
         with log_path.open("a") as fh:
@@ -1977,6 +2151,15 @@ def main():
         mix += f"  | noop:{counts[0] / total_ops:.0%}"
         moves = sum(counts[O_NAMES.index(n)] for n in ("N", "S", "E", "W"))
         mix += f" move:{moves / total_ops:.0%} crew:{row['mean_units']:.1f}"
+        # **The COMMIT class, aggregated, because it is the pass/fail number for the prior split.**
+        # A chosen commit mechanically removes up to four future move draws for that unit, so the
+        # signature to watch is commit share rising *while* move share falls in the same window --
+        # either alone is ambiguous. Printed per-token too: the class rising because one token is
+        # being spammed is a new policy fragment, not the intended effect.
+        cm_counts = [counts[len(O_NAMES) + i] for i in range(CM.N_COMMIT)]
+        mix += (f"\n         commit {sum(cm_counts) / total_ops:.2%} = "
+                + " ".join(f"{n}:{c / total_ops:.2%}"
+                           for n, c in zip(COMMIT_O_NAMES, cm_counts)))
         cf = row["op_counts_full"]
         tf = max(1.0, sum(cf))
         if args.early_limit:
@@ -2001,6 +2184,45 @@ def main():
             else:
                 day_bits.append(f"d{d}: n/a")
         day_line = ("         by seed day  " + "  ".join(day_bits) + "\n") if day_bits else ""
+
+        # **The opponent-by-day grid, which is the only un-confounded win rate in this log.**
+        #
+        # Printed as a grid and not a flat run of `farm_d0:0.09/121x` tokens because every
+        # question asked of it is a comparison -- one opponent across days, or one day across
+        # opponents -- and a flat list makes both directions unreadable. A cell with no games
+        # prints `--`, never `0.00`: "did not play this" and "played and lost every time" are
+        # different claims and the whole point of this block is to stop conflating things.
+        grid_line = ""
+        _days_desc = sorted(cur_mix or {}, reverse=True)
+        _live_opps = [o for o in OPPONENT_NAMES
+                      if any(row.get(f"games_{o}_d{d}") for d in _days_desc)]
+        if _live_opps:
+            def _cell(o, d):
+                g = int(row.get(f"games_{o}_d{d}") or 0)
+                return f"{row[f'wr_{o}_d{d}']:.2f}/{g}" if g else "--"
+            grid_line = (
+                "         wr by opponent x seed day  (cumulative, rate/games)\n"
+                + f"         {'':>7}" + "".join(f"{'d' + str(d):>12}" for d in _days_desc) + "\n"
+                + "\n".join(f"         {o:>7}" + "".join(f"{_cell(o, d):>12}" for d in _days_desc)
+                            for o in _live_opps) + "\n")
+
+        # **PICKUP by item name, and only the items actually picked up.**
+        #
+        # This printed twelve bare decimals over the `ITEMS` index space, so the one question the
+        # census exists to answer -- are units picking up WHEAT to FEED with, or picking up the
+        # animals they then PLACE -- meant counting commas against a name list kept somewhere
+        # else. Zero-share items are dropped rather than shown as 0.00: with twelve slots and two
+        # or three ever used, the zeros are the noise and the survivors are the whole signal.
+        _picks = row["item_counts"]
+        _pick_total = sum(_picks)
+        _pick_hits = sorted((i for i, x in enumerate(_picks) if x > 0), key=lambda i: -_picks[i])
+        pickup_line = (
+            "         pickup "
+            + ("  ".join(f"{ITEM_NAMES[i]}:{_picks[i] / _pick_total:.2f}" for i in _pick_hits)
+               if _pick_hits else "none")
+            + f"  ({_pick_total:,.0f} total)  |  buyanimal "
+            + "  ".join(f"{n}:{x:.3f}" for n, x in zip(ANIMAL_NAMES, row["buy_animal_rate"]))
+            + "\n")
 
         # **Market lines with product names and the teacher's rate beside ours.**
         #
@@ -2029,7 +2251,7 @@ def main():
         print(
             f"[{it:5d}] ret {row['ret_mean']:+.4f}+/-{row['ret_std']:.4f} "
             f"tstd {row['terminal_ret_std']:.3f}  "
-            f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f}  "
+            f"ev {ev:+.3f} (signal {sig})  ent {row['entropy']:.1f} (op {row['op_entropy']:.2f})  "
             f"clip {row['clip_frac']:.3f}  kl {row['approx_kl']:+.4f}  "
             f"wr {row['win_rate']:.3f}/{int(games)}x  term {int(stats['n_terminal'])}  "
             f"{vnet}V {row['value_mean']:.3f} {vnet}sum {row['seat_sum']:.3f} "
@@ -2040,18 +2262,22 @@ def main():
                 if row[f"games_{k}"] else f"{k}: n/a"
                 for k in ("idle", "trade", "farm", "ranch", "pool")) + "\n"
             + day_line
+            + grid_line
             + f"         ops {mix}\n"
             # `trade` is the coordinating latent for both conditioned market heads, so its spread
             # is the first thing to read: near-uniform is healthy, one mode near 1.00 is the
             # collapse that would make `buy` structurally unreachable rather than merely rare.
             f"         trade {'/'.join(f'{x:.2f}' for x in _norm(row['trade_counts']))}"
-            f"  crop {'/'.join(f'{x:.2f}' for x in _norm(row['crop_counts']))}\n"
+            # Crops named for the same reason PICKUP is: five bare decimals against an index
+            # order held in another file is not readable, and rotation is the thing being judged.
+            + "  crop " + "  ".join(
+                f"{PRODUCT_NAMES[i][:5]}:{x:.2f}"
+                for i, x in enumerate(_norm(row['crop_counts']))) + "\n"
             + buy_line + sell_line
             # PICKUP is the link between wheat sitting in the shed and a unit able to FEED.
-            + f"         pickup {'/'.join(f'{x:.2f}' for x in _norm(row['item_counts']))}"
-            f"  buyanimal {'/'.join(f'{x:.4f}' for x in row['buy_animal_rate'])}\n"
+            + pickup_line
             # Realised seat-1 mix. Sticky roles are sampled, so this is measured, not guaranteed.
-            f"         roles " + "  ".join(
+            + "         roles " + "  ".join(
                 f"{n}:{x:.0%}" for n, x in zip(ROLE_NAMES, _norm(row['role_counts'])))
             + f"  |  spend seed:{row['seed_rate']:.3f} hire:{row['hire_rate']:.3f} "
               f"land:{row['land_rate']:.3f}"
