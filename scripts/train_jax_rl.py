@@ -51,6 +51,7 @@ import numpy as np
 import optax
 
 from kagg.rl import (commit as CM, curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
+                     jax_rancher as RANCH,
                      jax_policy as P, league)
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
@@ -177,9 +178,9 @@ def ema_update(target, params, decay):
 # Shares are now sampled rather than partitioned exactly, which gives up the exactness the strided
 # permutation was written for -- at batch 256 the realised share of a p=0.30 role has an s.d. of
 # ~2.9%, and `role_counts` logs what actually happened so this is checked rather than assumed.
-ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE = range(5)
-N_ROLES = 5
-ROLE_NAMES = ("self", "pool", "farm", "trade", "idle")
+ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH = range(6)
+N_ROLES = 6
+ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch")
 
 PRODUCT_NAMES = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
                  "EGG", "MILK", "WOOL", "FERTILIZER")
@@ -231,6 +232,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             use_farm = roles == ROLE_FARM
             use_trade = roles == ROLE_TRADE
             use_idle = roles == ROLE_IDLE
+            use_ranch = roles == ROLE_RANCH
 
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
@@ -288,7 +290,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                     take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
                 actions)
             take_opp = take_opp | take_idle | jnp.broadcast_to(
-                (use_trade | use_farm)[:, None] & (seat == 1), (batch, 2)).reshape(-1)
+                (use_trade | use_farm | use_ranch)[:, None] & (seat == 1),
+                (batch, 2)).reshape(-1)
 
             # **Commitments are resolved here, between the policy and the simulator.**
             #
@@ -357,6 +360,24 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # $3,000, and it runs natively here rather than through a callback -- see
             # `kagg/rl/jax_heuristic.py`. The idle and trader seats are beatable by a fixed amount,
             # so they are a floor; this one has actual play in it.
+            # **The only opponent in the pool that uses the animal economy.**
+            #
+            # `jax_rancher` banks $12,078 against the scripted farmer's $23,783, so it is the
+            # WEAKER opponent on money -- and that is not the point. Every other seat in this
+            # rollout has FEED, CARE and COLLECT_FERT at exactly 0.00%, so nothing the policy ever
+            # faces is punished for ignoring the half of the game that `CLAUDE.md` measures as the
+            # half that wins (FEED +0.452, CARE +0.441 over 312 real seats). A trainee can climb
+            # the whole pool without ever meeting a herd.
+            #
+            # It has existed, JAX-native and jit-safe, since 2026-08-01 and was wired only into
+            # `bc_dagger`. This is the first run that plays against it.
+            ranch_seat = jnp.broadcast_to(use_ranch[:, None] & (seat == 1), (batch, 2))
+            ranch = RANCH.actions(state)
+            sim_actions = jax.tree_util.tree_map(
+                lambda mine, theirs: jnp.where(
+                    ranch_seat.reshape(ranch_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
+                sim_actions, ranch)
+
             farm_seat = jnp.broadcast_to(use_farm[:, None] & (seat == 1), (batch, 2))
             heur = HEUR.actions(state)
             sim_actions = jax.tree_util.tree_map(
@@ -480,7 +501,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
                 # of a cross-play game, so the live policy's side of one can be picked out.
                 crossplay=jnp.broadcast_to(
-                    (use_opp | use_idle | use_trade | use_farm)[:, None],
+                    (use_opp | use_idle | use_trade | use_farm | use_ranch)[:, None],
                     (batch, 2)).reshape(-1),
                 # Games against a *pool checkpoint* specifically. `crossplay` covers every scripted
                 # seat too, which is right for the win-rate metric and wrong for deciding how hard
@@ -494,6 +515,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 vs_idle=jnp.broadcast_to(use_idle[:, None], (batch, 2)).reshape(-1),
                 vs_trade=jnp.broadcast_to(use_trade[:, None], (batch, 2)).reshape(-1),
                 vs_farm=jnp.broadcast_to(use_farm[:, None], (batch, 2)).reshape(-1),
+                vs_ranch=jnp.broadcast_to(use_ranch[:, None], (batch, 2)).reshape(-1),
                 roles=roles,
                 # **Which unit-turns were the policy's own decision**, in network-flat layout.
                 # False on the intermediate turns of a commitment: the unit was walking a path it
@@ -1020,6 +1042,16 @@ def main():
                          "than drawing. That removes the 0.5 payoff for inaction, which is the "
                          "actual fixed point -- our idle farm is a stable $3,000 forever, where "
                          "Ender's game punished standing still on its own. 0 disables.")
+    ap.add_argument("--ranch-frac", type=float, default=0.0,
+                    help="fraction of games whose seat 1 is `jax_rancher`. It banks $12,078 "
+                         "against the scripted farmer's $23,783, so it is the WEAKER opponent -- "
+                         "and that is not why it is here. Every other seat in the rollout runs "
+                         "FEED, CARE and COLLECT_FERT at exactly 0.00%%, so nothing the policy "
+                         "ever faces is punished for ignoring the animal economy, which is the "
+                         "half of the game that wins (FEED +0.452, CARE +0.441 over 312 real "
+                         "seats). A trainee can climb the entire opponent pool without once "
+                         "meeting a herd. `jax_rancher` has been JAX-native and jit-safe since "
+                         "2026-08-01 and was wired only into bc_dagger until now.")
     ap.add_argument("--idle-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 passes every turn and banks its opening "
                          "$3,000. A frozen past self shares the policy's failures, so self-play "
@@ -1415,10 +1447,10 @@ def main():
     # Role probabilities, in `ROLE_NAMES` order. Self-play is the remainder, as it always was, but
     # now explicitly rather than by falling through a partition.
     role_p = np.array([0.0, args.opponent_frac, args.farm_frac,
-                       args.trade_frac, args.idle_frac], dtype=np.float64)
+                       args.trade_frac, args.idle_frac, args.ranch_frac], dtype=np.float64)
     if role_p[1:].sum() > 1.0:
         raise SystemExit(
-            f"opponent/farm/trade/idle fracs sum to {role_p[1:].sum():.2f} > 1.0")
+            f"opponent/farm/trade/idle/ranch fracs sum to {role_p[1:].sum():.2f} > 1.0")
     role_p[ROLE_SELF] = 1.0 - role_p[1:].sum()
     print("seat-1 roles, sticky per episode: "
           + "  ".join(f"{n}:{p:.0%}" for n, p in zip(ROLE_NAMES, role_p)))
@@ -1437,9 +1469,9 @@ def main():
     wins, games = 0.0, 0.0
     # Cumulative, per opponent type, in the same units as `wins`/`games` above.
     day_wins, day_games = {}, {}
-    opp_wins = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
-    opp_games = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
-    opp_draws = {k: 0.0 for k in ("idle", "trade", "farm", "pool")}
+    opp_wins = {k: 0.0 for k in ("idle", "trade", "farm", "ranch", "pool")}
+    opp_games = {k: 0.0 for k in ("idle", "trade", "farm", "ranch", "pool")}
+    opp_draws = {k: 0.0 for k in ("idle", "trade", "farm", "ranch", "pool")}
     t_start = time.time()
 
     # Loud, because a silent exit here is exactly what could not be diagnosed: the process wrote
@@ -1578,7 +1610,7 @@ def main():
         # from one game or thirty -- the same mistake `wr` made before its count was printed.
         by_opp = {}
         for _name, _flag in (("idle", "vs_idle"), ("trade", "vs_trade"),
-                             ("farm", "vs_farm"), ("pool", "vs_pool")):
+                             ("farm", "vs_farm"), ("ranch", "vs_ranch"), ("pool", "vs_pool")):
             _rows = traj["trainable"] & traj[_flag] & traj["done"]
             by_opp[f"done_{_name}"] = _rows.sum()
             by_opp[f"rew_{_name}"] = jnp.where(_rows, traj["reward"], 0.0).sum()
@@ -2006,7 +2038,7 @@ def main():
             f"         vs " + "  ".join(
                 f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x/d{row[f'draws_{k}']:.0%}"
                 if row[f"games_{k}"] else f"{k}: n/a"
-                for k in ("idle", "trade", "farm", "pool")) + "\n"
+                for k in ("idle", "trade", "farm", "ranch", "pool")) + "\n"
             + day_line
             + f"         ops {mix}\n"
             # `trade` is the coordinating latent for both conditioned market heads, so its spread
