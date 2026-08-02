@@ -248,11 +248,29 @@ def migrate_params(old, template):
         raise ValueError(
             f"checkpoint does not match this architecture; missing {missing}, unexpected {extra}")
 
-    out, expanded = {}, []
+    out, expanded, padded = {}, [], []
     for path, new_leaf in flat_new.items():
         o = jnp.asarray(flat_old[path])
         if o.shape == new_leaf.shape:
             out[path] = o
+        elif (o.ndim == new_leaf.ndim and o.shape[:-1] == new_leaf.shape[:-1]
+                and o.shape[-1] < new_leaf.shape[-1]
+                and new_leaf.shape[-1] % o.shape[-1] != 0
+                and o.shape[-1] in (O.N_OPS, O.N_OPS * J.N_CROPS,
+                                    O.N_OPS * J.N_ITEMS,
+                                    O.N_OPS * len(UNIT_QTY_BUCKETS))):
+            # **The op head grew when commitments were added, and the new columns are zeroed.**
+            #
+            # A checkpoint trained before `kagg.rl.commit` existed has 18 op logits against the
+            # current 23. The five extra are actions its teacher could not take, so there is
+            # nothing to transfer -- and zero is the value the heads are *initialised* to for
+            # exactly this reason (`jax_policy` zero-inits every head so the policy starts uniform
+            # rather than spending its first million steps unlearning arbitrary preferences). A
+            # commitment therefore starts neither favoured nor suppressed relative to the trained
+            # ops, which is the only honest starting point for an action nobody has data on.
+            pad = jnp.zeros(new_leaf.shape[:-1] + (new_leaf.shape[-1] - o.shape[-1],), o.dtype)
+            out[path] = jnp.concatenate([o, pad], axis=-1)
+            padded.append("/".join(path))
         elif (o.ndim == new_leaf.ndim and o.shape[:-1] == new_leaf.shape[:-1]
                 and new_leaf.shape[-1] == o.shape[-1] * N_OPS):
             # `[.., K] -> [.., N_OPS * K]`, laid out as op-major so that flat index `op * K + k`
@@ -263,10 +281,17 @@ def migrate_params(old, template):
             raise ValueError(
                 f"cannot migrate {'/'.join(path)}: {o.shape} -> {new_leaf.shape}")
 
-    if len(expanded) != N_OP_EXPANDED_LEAVES:
+    if expanded and len(expanded) != N_OP_EXPANDED_LEAVES:
         raise ValueError(
             f"expected to expand {N_OP_EXPANDED_LEAVES} leaves onto the op axis, expanded "
             f"{len(expanded)}: {sorted(expanded)}. The checkpoint is not a pre-op-axis one.")
+    # `padded` is the op head's kernel and bias -- two leaves, or none if the op space is unchanged.
+    if padded and len(padded) != 2:
+        raise ValueError(
+            f"expected to widen exactly the op head (kernel + bias), widened {len(padded)}: "
+            f"{sorted(padded)}")
+    if not expanded and not padded:
+        raise ValueError("nothing was migrated; the checkpoint already matches this architecture")
     return unflatten_dict(out)
 
 

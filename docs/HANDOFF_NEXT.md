@@ -16,7 +16,88 @@ This file is just the state and the next three moves.
 WSL2 when the SSH connection closes (`deploy_train.sh:92`) and writes to a log the tooling does not
 read.
 
-## READ FIRST: mix5d is REGRESSING, and four of its five rungs are dead
+## READ FIRST: the real diagnosis was TEMPORAL, and commitments fixed the symptom in 11 updates
+
+Everything below this section was written before the actual cause was found. Read this first.
+
+**The failure was never the decode, the prior, the curriculum or overspending.** It was that every
+*maintenance* action needs a walk back to a tile on a later turn, and `jax_sim._end_of_day` returns
+every unit to spawn, **dismisses every hired hand** and **empties every unit's inventory**. So the
+walk is re-motivated from scratch each dawn: four independent draws that must all land, for a payoff
+days away, under a critic at `ev_signal < 0.3`. `jax_obs.py` had the numbers all along -- over
+412,992 owned-unit actions the policy placed 4,591 animals and **fed 12**, planted 13,439 crops and
+**harvested 98**.
+
+Setup ops (PLANT, PLACE -- one action, on the tile you already occupy) the policy did *more* than
+the teacher. Every op needing a walk collapsed to ~zero. **It did not fail to learn farming; it
+learned exactly the subset of farming that survives a one-step credit horizon.**
+
+Measured legality, which is what killed the "it can't do them" theory: on day-25 seeded boards --
+**83% of finished episodes** -- COLLFERT is legal on **15.1%** of unit-slots and CARE on **11.2%**.
+The policy had chosen COLLFERT **zero times in 23,684 episodes**. Legal often, never taken.
+
+### `kagg/rl/commit.py` -- one decision spans the walk
+
+A `COMMIT_*` token sits in the same categorical as every primitive op. Drawn, it freezes a target;
+the unit walks it and fires the arrival op on contact. **Intermediate turns are excluded from the
+PPO density** -- not scored as probability 1 -- reusing the mask `active_unit_heads` already applies,
+so `exp(0-0) = 1` for those slots by construction. Five categories, one per `_target()` geometry
+feature: WATER, HARVEST, FEED, PLANT, PICKUP. Offered **uniformly on purpose** -- picking only the
+ops with dramatic gaps is selective attention, which is the quality judgment `CLAUDE.md` forbids.
+
+Result after **11 updates** (`commit1`), against the numbers that had been stuck for a day:
+
+| op | before | with commitments |
+|---|---|---|
+| COLLFERT / FERTIL | **0.00%** (never, ever) | 2.01% |
+| CARE | 0.07% | 1.98% |
+| PICKUP | 0.63% | 3.58% |
+| FEED | 0.02% | 0.19% |
+| HARVEST | 0.44% | 1.14% |
+| **harv/plant** | **0.18** | **0.63** (teacher 2.28) |
+
+### The trap that follows, and it cost a run
+
+`commit1` then read `vs idle 0.000` -- losing to a do-nothing opponent -- with bank median **$4**
+and `seed_rate 0.434`. The cause is in `hand_prior_heads`:
+
+```python
+if k != "op" or noop_p <= 0.0:
+    out[k] = jnp.zeros_like(logits)   # uniform over legal
+```
+
+**`--hand-prior` shapes ONLY the `op` head. Every other head, including all four spend heads, gets a
+UNIFORM prior** -- and `KL(p||uniform) = -H(p) + const`, so the spend heads are actively pushed
+toward uniform, which over `buy_seed`'s four buckets means ~75% "buy something". Observed 0.43.
+
+The BC prior had been holding those heads near the teacher's low spend rates. Dropping it was right
+for the `op` head (a pre-commit checkpoint zero-pads the new tokens, so KL can only pull *away* from
+the behaviour under test) and wrong for the other nine, which nobody checked.
+
+**Fix: `--spend-prior 0.05` alongside `--hand-prior`.** This is exactly the case `CLAUDE.md`
+anticipates -- "a decision to skip a fix can expire when the problem changes". `--spend-prior` was
+cleanly falsified once, on an *inert* policy where spending was not the leak. This policy is
+hyperactive and spending **is** the leak.
+
+### Running now
+
+`commit2-20260802-155553`, `--hand-prior 0.15 --spend-prior 0.05`, curriculum unchanged from
+`mix5d` so commitments remain the only delta against the 0.589 baseline.
+
+Watch, in order: FEED/CARE/COLLFERT stay off zero; `harv/plant` climbs past 0.63; `vs idle` recovers
+from 0.000. **If harv/plant does not pass ~1.0 by update 50**, that is a more serious finding than
+this mechanism can fix -- it would mean even a *single* delayed decision is not being reinforced.
+
+### Still open
+
+The commitment covers **one leg of nine op chains** -- only watering is fully collapsed into a single
+decision. FEED now needs the policy to learn `COMMIT_PICKUP` -> `COMMIT_FEED` across two turns
+(measured: with `COMMIT_FEED` alone, FEED fired 629 times and only **144 units, 22.9%, carried
+wheat**; night empties inventories). That chaining is the bet, and it is untested.
+
+---
+
+## mix5d (SUPERSEDED, killed at update ~260): regressing, four of five rungs dead
 
 Measured at update 211 (2026-08-02). This is the answer to move 1 below, and it is not the
 hoped-for one.
