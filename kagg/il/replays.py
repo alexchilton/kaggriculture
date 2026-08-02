@@ -119,13 +119,25 @@ def encode_action(action, n_units):
             "hire": hire, "buy_land": buy_land}
 
 
-def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True):
+def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True, seats=None,
+               with_index=False):
     """Yield `(shared_obs, privates, action, seat)` for each recorded turn of one replay.
+
+    `with_index` appends the observation's **recorded step index** to each tuple. It is needed
+    because `obs["step"]` is `None` in some replays -- `adapter.state_from_obs` then defaults it to
+    0, and a caller that seeds an episode from a mid-season board would get day-15 tile contents
+    carrying a day-0 counter. Every crop and animal rule reads `step_index // TURNS_PER_DAY`, so
+    that board would be run under the wrong rules with nothing to indicate it. Pinned by
+    `tests/test_curriculum.py::test_the_step_index_matches_the_day_it_claims`.
 
     `winners_only` keeps the seat that finished with more money. `min_bank` keeps any seat that
     finished above a threshold instead, which is usually the better filter: in 89197802 the *losing*
     seat still banked $106,091, and discarding it throws away a teacher because of who it happened
     to be drawn against.
+
+    `seats` names the seats to keep outright, for a caller that has already ranked every seat in
+    every replay and wants exactly the ones it chose (`kagg.il.bc.rank_seats`). It overrides both
+    filters above.
 
     **`hide_opponent` blanks the other seat's private state, and it must stay on.** A replay records
     both players' sheds, seeds and carried inventory, but a real agent only ever sees its own -- the
@@ -140,27 +152,53 @@ def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True):
     best = int(np.argmax(rewards))
 
     def wanted(seat):
+        if seats is not None:
+            return seat in seats
         if min_bank is not None:
             return rewards[seat] >= min_bank
         return seat == best if winners_only else True
 
     blank = {"shed": {}, "seeds": {}, "inventories": [{}]}
 
-    for step in steps:
-        if len(step) < 2:
+    # **`steps[t]["observation"]` is the state that `steps[t]["action"]` already produced**, so the
+    # state a teacher decided from is the one recorded at `t - 1`. Pairing them at the same index --
+    # which this did -- puts the label's own effect in its features.
+    #
+    # It is not a mild leak. WATER, PLANT, FEED, CARE and COLLECT_FERTILIZER all act on the tile the
+    # unit is standing on, and the recorded observation shows that tile *already watered, already
+    # planted, already fed*. Measured over 18,000 rows of the top 25 seats, the teacher's own label
+    # was illegal under the rebuilt masks on 100% of WATER (0 of 14,009), PLANT (0 of 2,297) and
+    # FEED (0 of 9,097) rows, while NOOP read 100% legal and movement 90%. Those ops were dropped
+    # from the loss entirely, which is why a run could report a falling loss and predict FEED on
+    # 0.00% of slots against a teacher rate of 7.78%.
+    #
+    # It is also the most likely explanation for the parked BC track's headline symptom. From a
+    # post-action observation "what did you do?" is largely readable off the state, so offline
+    # accuracy flatters and on-policy play collapses -- and at spawn a PASS leaves the state
+    # unchanged, which is the `P(noop) = 0.9920` that gated it.
+    #
+    # Verified two independent ways over 9,166 moves and 11,504 turns in `tests/test_bc_replay.py`:
+    # a MOVE at `t` explains `obs[t-1] -> obs[t]` on 100% of turns away from the nightly respawn
+    # (against 27.9% the other way), and the number of hand actions matches the crew in `obs[t-1]`
+    # on 100% of turns (against 87.4%).
+    #
+    # `steps[0]`'s action is dropped: the state it was chosen from is before the recording starts.
+    for t, (prev, step) in enumerate(zip(steps, steps[1:])):
+        if len(step) < 2 or len(prev) < 2:
             continue
         for seat in range(2):
             if not wanted(seat):
                 continue
-            entry = step[seat]
-            obs, action = entry.get("observation"), entry.get("action")
+            obs = prev[seat].get("observation")
+            action = step[seat].get("action")
             if not obs or not action or not obs.get("farms"):
                 continue
             mine = obs.get("private") or dict(blank)
             privates = [mine if p == seat else dict(blank) for p in range(2)] if hide_opponent \
-                else [step[p].get("observation", {}).get("private") or dict(blank)
+                else [prev[p].get("observation", {}).get("private") or dict(blank)
                       for p in range(2)]
-            yield obs, privates, action, seat
+            # `t` indexes `prev`, which is the state the action was decided from.
+            yield (obs, privates, action, seat, t) if with_index else (obs, privates, action, seat)
 
 
 def replay_summary(path):

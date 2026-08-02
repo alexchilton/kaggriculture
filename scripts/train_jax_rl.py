@@ -50,7 +50,8 @@ from jax import lax
 import numpy as np
 import optax
 
-from kagg.rl import jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
+from kagg.rl import (curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
+                     jax_policy as P, league)
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
@@ -73,10 +74,8 @@ TRADER_BUY_UNTIL = 12
 TRADER_SELL_FROM = 20
 TRADER_LOT = 5
 
-# League priority, ported from Ender's `_select_league_opponent`.
-POOL_PRIORITY_FLOOR = 0.1
-POOL_PRIORITY_TEMP = 1.0
-POOL_PRIORITY_ALPHA = 0.2
+# League priority (Ender's `_select_league_opponent`) lives in `kagg/rl/league.py`, with the pool
+# itself. It was duplicated here as three loose constants alongside three parallel lists.
 TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
@@ -199,7 +198,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
 
     @functools.partial(jax.jit, static_argnums=())
     def rollout(params, value_params, opp_params, roles, role_logp, virgin,
-                early_limit, state, key):
+                early_limit, state, key, seed_states):
         def one_turn(carry, _):
             state, roles, virgin, key = carry
             key, sub = jax.random.split(key)
@@ -380,7 +379,27 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # Only the per-game fields are selected. `key` and `unlock_day` are not per game --
             # the PRNG key is a single [2] array for the whole state -- so a blanket tree_map over
             # the State tries to broadcast a [B] mask against it and fails.
-            fresh = J.reset(batch)
+            # **What a restarting slot restarts INTO.** Without a curriculum this is `J.reset`,
+            # an empty farm at turn 0. With one it is a real recorded board part-way through a
+            # winner's season, and the difference is the whole experiment.
+            #
+            # It is passed in rather than built here because building it parses replay JSON on the
+            # host, which cannot happen inside a jitted scan -- and because the schedule changes it
+            # only every few hundred updates, so rebuilding per update would dominate the run.
+            #
+            # The reward is untouched: still win/lose at the end of the season. What changes is the
+            # state distribution, not the signal. That distinction is the reason this is not the
+            # banned thing -- potential-based shaping is provably equivalent to initialising the
+            # value function (Wiewiora 2003), so importing a hand-designed intermediate value would
+            # be shaping through another API; changing where episodes begin is not, because the
+            # agent still has to win from wherever it lands and is judged only on whether it did.
+            #
+            # Measured property that makes this work: seeded at day 15 and left alone, a board goes
+            # from 22 crops and 19 animals to zero of each within three game-days -- crops die after
+            # two unwatered days and animals escape after two unfed ones. So a seeded position
+            # cannot be held by standing still, which is exactly what a weak scripted opponent
+            # would have allowed.
+            fresh = seed_states
             restart = just_done | truncate
             pick = lambda new, old: jnp.where(                       # noqa: E731
                 restart.reshape((-1,) + (1,) * (old.ndim - 1)), new, old)
@@ -854,8 +873,17 @@ def main():
                          "in either direction -- he had runaway action and biased toward halting, "
                          "we reach 95%% NOOP and want the opposite. Regularising toward a sensible "
                          "prior is the general form, and a cloned $100k agent is a better prior "
-                         "than any guess. Set --ent-coef 0 when using this: it replaces the "
-                         "entropy bonus rather than joining it.")
+                         "than any guess. "
+                         "**DO NOT set --ent-coef 0 with this.** The KL REPLACES the entropy term "
+                         "but SHARES its coefficient (`reg_coef = args.ent_coef`, and "
+                         "`regulariser = reg_coef * kl_prior`), matching Ender's structure -- so "
+                         "zeroing --ent-coef zeroes the KL too and the run trains with no "
+                         "regulariser at all. This exact instruction was already in this help text "
+                         "once, cost two runs, was fixed for --kl-coef, and survived here.\n"
+                         "Measured motivation: on `ppo-20260802-085329` entropy climbed 13.35 -> "
+                         "26.70 while the win rate fell 0.525 -> 0.291 over 66 updates, with "
+                         "clip_frac flat at 0.23-0.31 and ev_signal RISING to +0.293. The critic "
+                         "was learning; the entropy bonus was eating the policy.")
     ap.add_argument("--hand-prior", type=float, default=0.0,
                     help="P(noop) for a hand-specified KL prior, e.g. 0.3. This is what Ender "
                          "actually used -- he ran no imitation learning at all and his prior was "
@@ -930,6 +958,68 @@ def main():
                     help="updates between checkpoints. In UPDATES, not steps: a previous run in "
                          "this project saved nothing across 448k steps because the trigger was in "
                          "a unit nobody was watching.")
+    ap.add_argument("--curriculum-day", type=int, default=0,
+                    help="seed episodes from REAL recorded boards at this game-day instead of from "
+                         "an empty farm at turn 0, walking the day down to 0 over "
+                         "--curriculum-anneal updates. 0 disables. Motivation, measured: every "
+                         "opponent currently returns a CONSTANT outcome (0.000 vs idle and the "
+                         "farmer, 0.060 vs the trader, 89%% draws vs a frozen self, because two "
+                         "bankrupt farms tie exactly), and a constant has no gradient at any model "
+                         "size. A day-15 board carries ~18 animals and ~$9k, so outcomes vary at "
+                         "once -- and it cannot be held by standing still: left alone, 22 crops and "
+                         "19 animals go to zero within three game-days. The reward is unchanged.")
+    ap.add_argument("--curriculum-anneal", type=int, default=0,
+                    help="updates per one-day step of --curriculum-day toward 0. 0 holds the day "
+                         "fixed. Clock-driven on purpose: advancing the schedule on win rate makes "
+                         "the metric that judges the curriculum the metric that advances it.")
+    ap.add_argument("--curriculum-mix", type=str, default=None,
+                    help="seed from SEVERAL game-days at once, as 'day:frac,day:frac' summing to 1 "
+                         "-- e.g. '25:0.8,0:0.2'. Mutually exclusive with --curriculum-day and with "
+                         "--curriculum-anneal. Why this rather than annealing the day: pure backward "
+                         "annealing reaches day 0 LAST, with the least exposure, on weights "
+                         "specialised for maintenance, and when the schedule steps off day 25 that "
+                         "distribution is gone from the data -- re-anchoring a KL prior preserves "
+                         "the behaviour partially, nothing preserves the data. A mix removes both by "
+                         "construction. What a small day-0 share buys, stated so it is not "
+                         "over-claimed: episodes are ~120 turns at day 25 and 719 at day 0 and every "
+                         "slot emits --horizon turns per update, so a 20%% SLOT share is about a 4%% "
+                         "share of terminal EPISODES, each carrying its reward over ~22 horizon "
+                         "segments instead of ~4. So it does not buy policy credit on the opening. "
+                         "It buys COVERAGE -- opening states stay in the distribution so the critic "
+                         "can learn to value them -- and that has to come first, because policy "
+                         "gradient on an opening is worth nothing until the critic separates a good "
+                         "one from a bad one. Shift the mix on the value probe "
+                         "(scripts/diagnose_policy.py, section 4: V spread within early-day boards), "
+                         "NOT on the update count, which is why there is deliberately no flag that "
+                         "anneals the mix automatically.")
+    ap.add_argument("--curriculum-min-bank", type=float, default=None,
+                    help="lower bound on a seed board's seat final bank")
+    ap.add_argument("--curriculum-max-bank", type=float, default=None,
+                    help="upper bound, and this is the anti-bias dial. Ranking by final bank and "
+                         "taking the top gives a pool that is almost one strategy: of 48 day-25 "
+                         "boards, 46 carry five or more animals, median 17. The seats are not "
+                         "uniform though -- one banked $86,206 with FEED ZERO (163 plants, 1,256 "
+                         "waterings) and 30 of 124 seats above $60k are bottom-quartile feeders; "
+                         "bank correlates with feed count at only 0.227. Measured pools: "
+                         "$15-35k gives median 0 animals (45/48 boards under five) and is nearly "
+                         "pure crop play; $35-70k gives median 16 but 15/48 low-animal, i.e. MIXED. "
+                         "The mixed band is the one where the policy chooses a strategy rather than "
+                         "inheriting ours.")
+    ap.add_argument("--curriculum-resample", type=int, default=25,
+                    help="updates between redrawing the seed pool, even when the schedule's day has "
+                         "not moved. The pool is indexed elementwise on restart, so without this a "
+                         "fixed --curriculum-day reuses the SAME board per slot for the whole run "
+                         "-- about nine repeats of one recorded game per slot over 33 updates, "
+                         "which trains against a memorised set rather than a distribution. 0 keeps "
+                         "the old build-on-day-change-only behaviour.")
+    ap.add_argument("--curriculum-behind", action="store_true",
+                    help="seed the trainee into the POORER of the two recorded seats. Both seats "
+                         "come from one recorded turn either way, so this only chooses which side "
+                         "it inherits. Default (richer seat) makes the position beatable on the "
+                         "seed alone, which is the fastest route to a non-constant outcome and is "
+                         "also indistinguishable in a win rate from having learned anything -- the "
+                         "tell is a bank curve flat from the seed day rather than rising. This flag "
+                         "is the check: a win from the poorer seat has to be earned.")
     ap.add_argument("--resume", default=None, help="path to a checkpoint .pkl to continue from")
     ap.add_argument("--init", default=None,
                     help="warm-start PARAMS ONLY from a BC checkpoint (scripts/bc_dagger.py), "
@@ -986,6 +1076,86 @@ def main():
     if args.batch % args.n_phases:
         raise SystemExit(f"--batch {args.batch} must be divisible by --n-phases {args.n_phases}")
     state = staggered_states(args.batch, args.n_phases, seed=args.seed)
+
+    # The pool a restarting slot restarts into. Without a curriculum it is the same empty-farm reset
+    # the rollout used to build inline; with one it is real recorded boards, rebuilt whenever the
+    # schedule's day changes.
+    cur_day = 0
+    # **The mix is deliberately not annealable.** Its whole premise is that the composition moves on
+    # the value probe rather than on the update counter, so a flag that walked it on the clock would
+    # reintroduce exactly what it exists to avoid. Combining it with --curriculum-day would also
+    # leave two sources of truth for what a restarting slot restarts into.
+    cur_mix = curriculum.parse_mix(args.curriculum_mix) if args.curriculum_mix else None
+    if cur_mix and args.curriculum_day:
+        raise SystemExit(
+            "--curriculum-mix and --curriculum-day both set. The mix already names every day it "
+            f"seeds from ({', '.join(str(d) for d in sorted(cur_mix, reverse=True))}); "
+            "--curriculum-day would be a second, conflicting answer to what a restarting slot "
+            "restarts into.")
+    if cur_mix and args.curriculum_anneal:
+        raise SystemExit(
+            "--curriculum-mix with --curriculum-anneal. The mix exists so the composition shifts on "
+            "the value probe, not the update count; annealing it on the clock is the thing it "
+            "replaces. Shift the mix by relaunching with new fractions once the probe justifies it.")
+
+    if cur_mix:
+        seed_states = curriculum.states_at_mix(
+            args.batch, cur_mix, seed=args.seed, behind=args.curriculum_behind,
+            min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank)
+        state = seed_states
+        seats = "poorer" if args.curriculum_behind else "richer"
+        counts = curriculum.mix_counts(args.batch, cur_mix)
+        # Terminal episodes per update per day, so the log states the share that actually matters
+        # rather than the slot share, which over-reads the early days by about six-fold.
+        eps = {d: n * args.horizon / max(1, (30 - d) * TURNS_PER_DAY) for d, n in counts.items()}
+        tot = sum(eps.values()) or 1.0
+        shares = "  ".join(f"day {d}: {counts[d]} slots ({100 * counts[d] / args.batch:.0f}%), "
+                           f"~{100 * eps[d] / tot:.0f}% of terminal episodes"
+                           for d in sorted(counts, reverse=True))
+        print(f"curriculum: MIXED seeding ({seats} seat), no annealing -- shift the mix on the "
+              f"value probe\n  {shares}", flush=True)
+
+        # Same trap as the single-day path, but the binding day is the LATEST in the mix: a slot
+        # seeded at day 25 truncates against a limit of 288 whatever the other slots do, and a mix
+        # containing day 0 would otherwise pass a check written against the minimum.
+        latest_turn = max(cur_mix) * TURNS_PER_DAY
+        if args.early_limit and args.early_limit <= latest_turn:
+            raise SystemExit(
+                f"--early-limit {args.early_limit} is at or below turn {latest_turn} (game-day "
+                f"{max(cur_mix)}, the latest in the mix), so those slots would truncate immediately "
+                f"and never finish an episode. Use --early-limit 0 with a curriculum.")
+    elif args.curriculum_day:
+        # Update 0, not `start_update`: the loop re-derives the day on its first iteration and
+        # rebuilds the pool if a resume lands further down the schedule, so this only has to be a
+        # valid starting board.
+        cur_day = curriculum.schedule(0, args.curriculum_anneal, args.curriculum_day)
+        seed_states = curriculum.states_at_day(args.batch, day=cur_day, seed=args.seed,
+                                               behind=args.curriculum_behind,
+                                               min_bank=args.curriculum_min_bank,
+                                               max_bank=args.curriculum_max_bank)
+        # Seeded slots start on a real board too, not just restart onto one -- otherwise the first
+        # episode of every slot is the empty-board game the curriculum exists to avoid.
+        state = seed_states
+        seats = "poorer" if args.curriculum_behind else "richer"
+        print(f"curriculum: seeding from real boards at game-day {cur_day} ({seats} seat), "
+              f"annealing one day per {args.curriculum_anneal or 'never'} updates", flush=True)
+
+        # **`--early-limit` is an absolute turn number and a seeded episode starts past it.**
+        # Truncation fires on `step_index >= early_limit`, so a slot seeded at day 15 (turn 360)
+        # against a limit of 288 truncates on its first turn, restarts to turn 360, and truncates
+        # again -- forever. Half the batch (the even envs) then produces no episodes at all, which
+        # shows up as `wr nan` and `tstd 0.000` rather than as an error.
+        #
+        # The flag's purpose is to train the opening more often than once a season; a curriculum
+        # already shortens every episode, so the two do not compose.
+        start_turn = args.curriculum_day * TURNS_PER_DAY
+        if args.early_limit and args.early_limit <= start_turn:
+            raise SystemExit(
+                f"--early-limit {args.early_limit} is at or below the curriculum's start turn "
+                f"{start_turn} (game-day {args.curriculum_day}), so every early env would truncate "
+                f"immediately and never finish an episode. Use --early-limit 0 with a curriculum.")
+    else:
+        seed_states = J.reset(args.batch)
     tiles, units, glob = jax_obs.encode(state)
     params = model.init(sub, A._flat(tiles), A._flat(units), A._flat(glob))
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
@@ -1022,7 +1192,12 @@ def main():
         print(f"KL prior loaded from {args.kl_prior} (coef {args.kl_coef}, "
               f"ent_coef {args.ent_coef})", flush=True)
 
-    pool = [jax.device_get(params)]
+    # **One list of records, not three lists indexed in parallel.** It was `pool`, `pool_wr` and
+    # `pool_games`, kept in step by hand at four call sites, and eviction updated only the first --
+    # which killed a run at update 250 with `ValueError: a and p must have same size` and, before
+    # that, silently attributed every win-rate EMA to the wrong checkpoint. See `kagg/rl/league.py`.
+    pool = league.Pool(max_size=args.pool_size)
+    pool.add(jax.device_get(params))
     # **Opponents are sampled by how well they do against us, not round-robin.**
     #
     # Ender: "prioritised based on recent winrate, with more difficult checkpoints being played
@@ -1030,15 +1205,11 @@ def main():
     # `pool[it % len(pool)]`, which plays the random initialisation exactly as often as the best
     # checkpoint in the pool -- a lottery rather than a curriculum.
     #
-    # `pool_wr[i]` is an EMA of the *opponent's* win rate, so a checkpoint that beats us has a high
+    # `Member.wr` is an EMA of the *opponent's* win rate, so a checkpoint that beats us has a high
     # value and gets picked more. His weights, ported directly:
     #     weight = floor + winrate ** temperature,  plus 0.25 while a member is unplayed
-    pool_wr = [0.5]
-    pool_games = [0]
     if prior_params is not None:
-        pool.append(jax.device_get(prior_params))
-        pool_wr.append(0.5)
-        pool_games.append(0)
+        pool.add(jax.device_get(prior_params))
 
     start_update = 0
     best_wr = -1.0
@@ -1140,16 +1311,48 @@ def main():
         #     opponents per season and no measurement of any of them was valid.
         #
         # See the block comment above `make_rollout` for what that cost.
-        w = np.array([POOL_PRIORITY_FLOOR + max(wr, 1e-6) ** POOL_PRIORITY_TEMP
-                      + (0.25 if g <= 0 else 0.0)
-                      for wr, g in zip(pool_wr, pool_games)], dtype=np.float64)
-        opp_idx = int(np.random.default_rng((args.seed, it)).choice(
-            len(pool), p=w / w.sum()))
-        opp_params = pool[opp_idx]
+        opp_idx = pool.select(args.seed, it)
+        opp_params = pool.params(opp_idx)
+
+        # The curriculum's start day walks down on the update clock, and the seed pool is rebuilt
+        # only when it changes -- building it parses replay JSON, so per-update would dominate.
+        # Deliberately clock-driven rather than win-rate-driven: a schedule advanced by the same
+        # metric that judges it is self-confirming, and a curriculum advancing because outcomes
+        # went degenerate would look identical to one advancing because the policy improved.
+        if cur_mix:
+            # No day to re-derive: the mix is fixed for the run by design. Only the resample fires,
+            # and it must, for the same elementwise-reuse reason as the single-day path -- with a mix
+            # the reuse is worse, because a slot would be pinned to one board AND one game-day for
+            # the whole run.
+            if args.curriculum_resample and it % args.curriculum_resample == 0:
+                seed_states = curriculum.states_at_mix(
+                    args.batch, cur_mix, seed=args.seed + it, behind=args.curriculum_behind,
+                    min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank)
+                days = ", ".join(str(d) for d in sorted(cur_mix, reverse=True))
+                print(f"         curriculum: reseeding mixed pool (days {days})"
+                      f"{' (trainee in the poorer seat)' if args.curriculum_behind else ''}",
+                      flush=True)
+        elif args.curriculum_day:
+            want_day = curriculum.schedule(it, args.curriculum_anneal, args.curriculum_day)
+            # **Resample even when the day has not moved.** The pool is indexed elementwise on
+            # restart (`fresh = seed_states`), so slot `i` restarts into `seed_states[i]` every
+            # time. Rebuilding only on a day change meant that with `--curriculum-anneal 0` the
+            # same `batch` boards were reused for the entire run -- roughly nine repeats of one
+            # recorded game per slot over 33 updates, which is an overfitting surface rather than
+            # a curriculum. Costs a few seconds of replay parsing per rebuild.
+            if want_day != cur_day or (args.curriculum_resample
+                                       and it % args.curriculum_resample == 0):
+                cur_day = want_day
+                seed_states = curriculum.states_at_day(
+                    args.batch, day=cur_day, seed=args.seed + it, behind=args.curriculum_behind,
+                    min_bank=args.curriculum_min_bank, max_bank=args.curriculum_max_bank)
+                print(f"         curriculum: seeding from game-day {cur_day}"
+                      f"{' (trainee in the poorer seat)' if args.curriculum_behind else ''}",
+                      flush=True)
 
         state, roles, virgin, key, traj, advantages, returns = rollout(
             params, target_params, opp_params, roles, role_logp, virgin,
-            jnp.asarray(args.early_limit, dtype=jnp.int32), state, sub)
+            jnp.asarray(args.early_limit, dtype=jnp.int32), state, sub, seed_states)
 
         # Episode bookkeeping is reduced **on device** to three scalars. Pulling the full `done`
         # and `reward` arrays back to the host, as this did, forces a synchronisation on every
@@ -1446,16 +1649,10 @@ def main():
         # **Record how this opponent did, or the priority weights never change.**
         #
         # `reward_sum / done_count` is the *live policy's* win rate on cross-play rows this update,
-        # so the opponent's is one minus that. Only updated when this update actually finished games
-        # against it -- terminal rows are ~0.14% of rows, so an update can legitimately see none,
-        # and folding a zero-sample estimate into the EMA would drag every member toward 0.5 and
-        # flatten the curriculum back into the round-robin this replaces.
+        # so the opponent's is one minus that. `Pool.record` ignores a zero-sample update itself.
         n_done = float(stats["pool_done"])
         if n_done > 0:
-            opp_wr = 1.0 - float(stats["pool_reward"]) / n_done
-            a = POOL_PRIORITY_ALPHA
-            pool_wr[opp_idx] = (1 - a) * pool_wr[opp_idx] + a * opp_wr
-            pool_games[opp_idx] += int(n_done)
+            pool.record(opp_idx, 1.0 - float(stats["pool_reward"]) / n_done, n_done)
         ev = float(stats["ev"])
         ev_signal = float(stats["ev_signal"])
 
@@ -1536,7 +1733,15 @@ def main():
         # as "it only knows how to walk" and is wrong.
         counts = row["op_counts"]
         total_ops = max(1.0, sum(counts))
-        chain = ("plant", "water", "harv", "drop", "pick")
+        # **Both chains, because the animal one is the one being worked on.** This listed only the
+        # crop chain, so `feed`, `care`, `place` and `pasture` never appeared -- and "FEED leaving
+        # zero" is the committed gate for the whole BC warm-start. The gate was unreadable in the
+        # log it is meant to be read from, which is the same class of mistake as a rate computed
+        # over `MAX_UNITS`: not wrong arithmetic, just not showing the thing being decided on.
+        # Six of the top seven ops by correlation with money are the wheat -> animal -> product
+        # pipeline, so the animal chain is if anything the more important half.
+        chain = ("plant", "water", "harv", "drop", "pick",
+                 "place", "feed", "care", "fert+", "pasture")
         mix = " ".join(
             f"{n}:{counts[O_NAMES.index(n)] / total_ops:.2%}" for n in chain)
         mix += f"  | noop:{counts[0] / total_ops:.0%}"
@@ -1582,17 +1787,10 @@ def main():
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
-            pool.append(jax.device_get(params))
-            pool_wr.append(0.5)
-            pool_games.append(0)
-            if len(pool) > args.pool_size:
-                # Drop from the *middle*, never the ends. Evicting the oldest would leave a pool of
-                # near-identical recent snapshots -- which is how self-play starts cycling: the
-                # policy forgets strategies it used to beat, rediscovers a counter to its recent
-                # self, loses to something from ten thousand updates ago, and every local win rate
-                # looks healthy throughout. Keeping the first entry preserves an anchor that cannot
-                # drift, and keeping the newest preserves the frontier.
-                pool.pop(len(pool) // 2)
+            # `Pool.add` evicts from the middle, keeping the anchor and the frontier, and carries
+            # each member's win-rate record with it. See `kagg/rl/league.py`.
+            pool.add(jax.device_get(params))
+            print(f"         pool {len(pool)}: {pool.summary()}", flush=True)
 
         if it % args.ckpt_every == 0:
             save_checkpoint(latest_ckpt, params, opt_state, it, args, best=best_wr)

@@ -1219,3 +1219,403 @@ kagg-train <same flags> --init data/bc_runs/<stamp>/latest.pkl
 
 Success is not "the BC checkpoint plays well". It is **FEED leaving zero in the PPO run**, and
 `bank med` leaving $0.
+
+---
+
+## Session 7 — 2026-08-01, night
+
+BC from the replays is built and trained.
+Two bugs came out of it, and **both were silent in a way that made a healthy-looking log wrong**.
+The RL run on the box is dead and needs restarting with the second fix.
+
+### A replay observation is the state *after* its own action
+
+`steps[t]["observation"]` is what `steps[t]["action"]` already produced, and `iter_turns` paired them
+at the same index.
+So every teacher label was accompanied by features showing the label's own effect.
+
+It is not a mild leak.
+WATER, PLANT, FEED, CARE and COLLECT_FERTILIZER all act on the tile the unit is standing on, and the
+recorded observation shows that tile **already watered, already planted, already fed** -- which is
+exactly the state where the mask says the op is illegal.
+Measured over 18,000 rows of the top 25 seats, under the rebuilt masks:
+
+| op | label legal before | after |
+|---|---|---|
+| FEED | **0.0%** (0 of 9,097) | 99.9% |
+| WATER | **0.0%** (0 of 14,009) | 99.9% |
+| PLANT | **0.0%** (0 of 2,297) | 99.6% |
+| CARE | 0.2% | 100.0% |
+| COLLECT_FERT | 0.4% | 100.0% |
+| NOOP | 100.0% | 100.0% |
+| overall | 65.2% | **98.7%** |
+
+The legality gate then dropped every one of those rows from the loss, so those ops **could not be
+learned at all** -- `FEED predicted 0.00%` against a teacher rate of 7.78%, with a loss falling
+smoothly the whole time.
+NOOP and movement were unaffected, which is why nothing looked wrong.
+
+**It is also the most likely explanation for the parked BC track's `P(noop) = 0.9920`.**
+From a post-action observation "what did you do?" is largely readable off the state, so offline
+accuracy flatters and on-policy play collapses -- and at spawn a PASS leaves the state identical.
+That was written up as ordinary covariate shift. Some of it was; this was underneath it.
+
+Verified two independent ways before changing anything, over 12 replays and both seats:
+a MOVE at `t` explains `obs[t-1] -> obs[t]` on **100%** of turns away from the nightly respawn
+(against 27.9% the other way), and the number of hand actions matches the crew in `obs[t-1]` on
+**100%** of 11,504 turns (against 87.4%).
+Every one of the 166 residual mismatches was at turn-of-day 0, where the crew is dismissed and the
+farmer respawns.
+Pinned by `tests/test_bc_replay.py::test_a_replay_observation_is_the_state_after_its_own_action`.
+
+**The transferable rule: before trusting a supervised label, check that its own effect is not
+already in its features.** The cheap test is whether the label is *legal* in the state it is paired
+with. A label the environment would refuse is a label describing a different state.
+
+### The RL run died at update 250, and the crash was the lucky half
+
+`ValueError: a and p must have same size`, in league opponent selection.
+`pool`, `pool_wr` and `pool_games` were three lists indexed in parallel, kept in step by hand at four
+call sites, and eviction updated exactly one:
+
+```python
+pool.pop(len(pool) // 2)        # pool_wr and pool_games keep the evicted member's entry
+```
+
+Reproduced standalone: it crashes at update **251**, which is where the box died.
+
+**The silent half is worse.** After any eviction `pool_wr[opp_idx]` names a *different checkpoint
+than the one that played*, so the priority EMA -- the entire reason for sampling by difficulty rather
+than round-robin -- is attributed to the wrong member from that point on. Nothing about that reads as
+wrong in a log, and it had been running that way since the first eviction at update 250.
+
+Fixed by making it one list of records (`kagg/rl/league.py`), so eviction is a single `pop` that
+cannot desynchronise. Three lists indexed in parallel was the defect, not the `pop`.
+`tests/test_league.py` pins both halves: the length invariant that crashed, and that a surviving
+member keeps *its own* record rather than a neighbour's.
+Verified end to end -- 40 updates, 13 evictions, exit 0.
+
+### BC results
+
+`scripts/bc_replay.py`, cloning the top 25 seats ($112,754-$132,245, median $118,828), 17,975 rows.
+The label census reproduces the independently-measured winner playbook, which is the check that the
+encoder is reading the right thing:
+
+| op | BC labels | measured top decile of 312 seats |
+|---|---|---|
+| FEED | 5.27% | 5.02% |
+| CARE | 5.28% | 5.02% |
+| COLLECT_FERT | 3.67% | 3.40% |
+| PICKUP | 2.48% | 2.32% |
+| PLANT | 1.38% | 1.27% |
+
+`FEED predicted 9.2-9.6% against a teacher 7.88%` -- against **0.00%** before the pairing fix.
+ACTED accuracy 0.368 -> 0.53 over ten epochs and still climbing; the old 20-epoch run reached ~0.54
+but had no legality gate at all, so it was scoring labels the policy could not emit.
+
+Three things this loss does that `bc_dagger.py` does not, all in `kagg/il/bc.py` and each tested:
+conditioned heads are cloned under **every** trade mode rather than only mode 0 (the mode is sampled
+at play time, so two turns in three would otherwise be untrained noise while the offline loss
+reported success on the slice it trained); only the unit heads the chosen op actually reads are
+scored (a `crop` label on a FEED slot is a zero from the encoder, and scoring it trains every
+non-PLANT slot toward crop index 0, which is WHEAT); and label smoothing is on by default.
+
+Also: `data/` holds **two** replay naming conventions and a `[0-9]*.json` glob found 126 of 156.
+`bc.find_replays` matches both. Ranked seats went 252 -> 312, which is the count this file already
+records.
+
+### What the BC checkpoint actually does when it plays
+
+Offline accuracy says nothing about play, so it was replayed rather than scored -- the project's own
+rule, and the parked BC track had respectable offline numbers while banking $0.
+
+```
+policy vs scripted farmer, 16 games each seating, sampled
+  W/D/L        0 / 0 / 32
+  policy $     median $4 (seat 0), $0 (seat 1)      farmer $ 30,292
+  bank by day  d0 1,800  d5 36  d10 7  d20 4  d29 0
+  ops          NOOP 22.9%  W 18.8%  N 12.4%  PICKUP 7.6%  PLACE 4.6%  WATER 2.8%
+               FEED 0.81%  CARE 0.92%  PASTURE 2.5%   raw FEED count 182
+```
+
+**It does not play well and it is not supposed to be judged on that.** What matters is that it is a
+different failure from the parked track: NOOP is 22.9% rather than 99.2%, and **FEED fires 182 times
+against exactly zero in every RL run this project has ever done**. Animals reach the board, which is
+what unmasks FEED and breaks the `no animals -> FEED masked -> animals never fed` loop.
+
+**The real defect is that it spends $3,000 to $0 by day five and cannot sustain anything.** That is
+the thing to watch in the PPO run: the risk is that terminal reward teaches it to stop spending
+again, which is the collapse-to-cheapest shape this file records twice already.
+
+### The warm start worked, and PPO unlearned it in fifty updates
+
+`ppo-20260801-234204`, warm-started from the BC checkpoint. Full-season rows:
+
+| update | 4 | 20 | 27 | 43 | 50 | 59 |
+|---|---|---|---|---|---|---|
+| **feed** | 0.61% | 0.21% | 0.08% | 0.04% | 0.02% | **0.01%** |
+| water | -- | 4.46% | 4.85% | 2.58% | 2.55% | 1.80% |
+| harv | -- | 0.40% | 0.30% | 0.22% | 0.26% | 0.09% |
+| **wr** | -- | -- | 0.342 | 0.289 | 0.243 | **0.210** |
+| bank med | $12 | $4 | $4 | $0 | $0 | **$0** |
+
+Monotonic, roughly 60x, and the **win rate falls with it** -- it is getting worse, not merely failing
+to improve. So BC *can* put FEED into the policy, which nothing else in this project has managed;
+it does not survive contact with PPO.
+
+**The diagnostic detail is `pasture`, the one op going up:** 1.97% -> 4.00%, while `place` falls
+1.00% -> 0.63% and `feed` -> 0.01%. `BUILD_PASTURE` is masked on `kind == EMPTY` with **no cost
+check at all** -- the confound this file already records. The policy keeps the free half of the
+animal chain and discards every step that costs money.
+
+**That is not failed exploration. It is a correct response to a chain that never pays.**
+BC cloned the winners' *actions* but not their *solvency*: it hires and plants at teacher rates
+without teacher revenue (`harv` 0.09%), so the bank is $0 by day five and stays there. No money
+means no wheat, and FEED is `has_animal & ~fed & carrying_wheat`, so the animal escapes at
+`unfed >= 2` and every purchase is the deterministic loss recorded above. Dropping FEED is right.
+
+**The blocker is insolvency, not exploration.** That reframes the whole animal-economy problem: the
+question is not how to make the policy try FEED -- it did -- but how to make it still have money on
+day eight.
+
+`ev_signal` is +0.01 to +0.08 against the committed 0.5 bar, which `CLAUDE.md` says means the frame
+is wrong rather than the hyperparameters. Held to ~150 updates before calling it only because
+`is_ripe` turned at update 42 and **both** thresholds set in advance for judging it were wrong.
+
+### Verdict at 1,300 updates: the kill criterion is met, and there was no late reversal
+
+| updates | feed | wr | ev_signal |
+|---|---|---|---|
+| 0-99 | 0.119% | -- | +0.025 |
+| 100-199 | **0.004%** | 0.154 | +0.040 |
+| 500-599 | 0.019% | 0.136 | +0.093 |
+| 900-999 | 0.005% | 0.135 | +0.158 |
+| 1200-1299 | **0.002%** | **0.132** | +0.178 |
+
+FEED collapsed inside the first hundred updates and stayed flat for **1,200 more**. `wr` declines
+monotonically 0.154 -> 0.132 over 4,687 games: more training makes it worse. `ev_signal` climbs to
+0.178 and never approaches 0.5.
+
+**That last pair is the informative one. The critic improves steadily while the policy degrades** --
+it is learning to predict its own consistent losing accurately, which is what a rising explained
+variance means when the win rate is falling. A climbing `ev` is not evidence of progress on its own.
+
+The replay of the update-1300 checkpoint is unambiguous:
+
+```
+bank by day   d0:2,268  d5:0  d10:0  d15:0  d20:0  d25:0  d29:0
+W/D/L 0/0/32   policy $0   farmer $30,292
+FEED raw count 0    HARV 0.03%
+NOOP:27.1%  N:12.8%  DIG:10.7%  W:8.8%  PICKUP:7.8%  PASTURE:4.8%  DROP:4.4%
+```
+
+**Broke on day five and exactly $0 for twenty-four of thirty days, in every game.** Not low -- zero.
+
+**The op mix is the whole finding in one line: the policy has converged onto the ops that cost
+nothing.** NOOP 27%, movement ~35%, DIG 10.7%, BUILD_PASTURE 4.8% -- and every op that spends money
+at or near zero. `DIG` at 10.7% is new since update 59 and is the same shape as `pasture` was: another
+free op absorbing the action budget. This is not an exploration failure. A bankrupt farm *cannot*
+legally do most of the things that make money, so the free ops are what is left.
+
+**1,300 updates of PPO produced a policy strictly worse than the BC checkpoint it started from:**
+BC banked $4 with 182 FEEDs; this banks $0 with zero.
+
+### What this rules in and out
+
+- **Ruled out: that PPO cannot discover FEED because it never tries it.** It was handed FEED at
+  0.61% and discarded it. The exploration framing is dead.
+- **Ruled out: more compute.** 1,300 updates, ~30M turns, no reversal, monotonic decline.
+- **Ruled in: solvency is the binding constraint.** Every measurement points at the same place --
+  bank $0 from day five, free ops dominating, FEED masked by `carrying_wheat` which requires money.
+
+The open question is no longer "how do we get it to try FEED". It is **"how does it still have money
+on day eight"**, and that is a different problem from the one this track has been solving.
+Note that reward shaping is not on the table (`CLAUDE.md`), so the answer has to be in the frame --
+the state distribution, the opponent, or the initialisation -- not in the reward.
+
+### The gate was not readable in the log it is meant to be read from
+
+`train_jax_rl.py`'s op census printed `chain = ("plant", "water", "harv", "drop", "pick")` -- the
+crop chain only. So `feed`, `care`, `place` and `pasture` never appeared, and "FEED leaving zero" was
+uncheckable in the training log. Six of the top seven ops by correlation with money are the
+wheat -> animal -> product pipeline, so the missing half was the more important one.
+Now prints both chains. Logging only; no effect on the loss.
+
+## Session 8 — 2026-08-02, morning
+
+Three things were tried. Two are answered, one is running. **Two of this file's own claims turned
+out to be wrong when measured, and both had been steering decisions.**
+
+### The trader is not a rung. Our policy destroys it.
+
+`wr_trade` rose 0.06 -> 0.31 under `--spend-prior` and was written up here as the first real upward
+movement in the project. It is not. Played directly:
+
+```
+policy  median $0   max $3
+trader  median $2            (it banks $3,368 against an idle seat)
+policy wins 6%   draws 6%   loses 88%
+```
+
+**The trader's entire strategy is the wheat market -- buy days 0-12, sell from day 20 -- and our
+policy trades the same wheat.** `_process_market` re-quotes after every unit, so the policy wrecks
+the price path the trader depends on and the trader finishes on **$2 instead of $3,368**. A win rate
+of 0.31 is two bankrupt agents comparing pocket change.
+
+It also explains the asymmetry nobody had accounted for: `wr_farm` stays pinned at 0.000 while
+`wr_trade` moves, because the farmer earns from crops on its own board and cannot be reached, while
+the trader can be demolished.
+
+**The general rule, and it constrains any future opponent ladder: a scripted opponent that depends
+on the shared market is not a stable rung.** The trainee can destroy it and then "win" at $0 against
+$2. A rung has to earn from its own board. The crop farmer qualifies; the trader does not.
+
+### `--spend-prior`: clean falsification
+
+It had never been on (`klP 0.000` on all 1,300 lines of the previous run) and its own help text
+describes this exact failure. Turned on at 0.02 over 60 updates:
+
+| | update 0 | update 56 |
+|---|---|---|
+| klP | 1.038 | 0.303 (live) |
+| seed rate | 0.073 | 0.034 |
+| hire rate | 0.072 | 0.039 |
+| **bank med** | **$16** | **$8** |
+
+**Spending halved and the bank did not move.** Purchasing was not the leak.
+
+The reason was already visible in the seeded-board table and had been missed: **the winners also end
+day 0 nearly broke** -- $395 against our $85. They spend just as hard. The difference is that they
+have 12.4 living crops to show for it and we have none that survive. "It spends too fast" was never
+the right diagnosis.
+
+### Curriculum: seeding episodes from real recorded boards
+
+`kagg/rl/curriculum.py` + `tests/test_curriculum.py` (9 tests). `--curriculum-day N` seeds every
+episode -- and every restart inside the scan -- from a real replay board at game-day N instead of
+from an empty farm at turn 0. Both seats come from the same recorded turn, so the two farms, both
+sheds, both seed inventories and the shared market are mutually consistent.
+
+**The property that makes this work, and it was measured before committing to it.** Seed at day 15
+and take no action:
+
+| game-day | bank | crops | animals | weeds |
+|---|---|---|---|---|
+| 15 | $13,183 | 22.1 | 19.2 | 0.8 |
+| 17 | $13,183 | 3.9 | 9.8 | 19.0 |
+| 18 | $13,183 | **0.0** | **0.0** | 22.9 |
+
+**Three days of inaction destroys the entire farm.** Crops die after two unwatered days and animals
+escape after two unfed ones, so a seeded position *cannot be held by standing still*. That is the
+flaw in the otherwise-attractive "give it a hopeless opponent it can beat" idea: a waster that ends
+at $0 is beaten by a policy that does nothing at all, which rewards the exact attractor the project
+is stuck in. Seeding punishes inaction by construction, inside the real game, with the reward
+untouched.
+
+**First census, update 0, against the previous run's update 0:**
+
+| op | old | curriculum | real top decile |
+|---|---|---|---|
+| feed | 0.09% | **4.75%** | 5.02% |
+| care | -- | **5.31%** | 5.02% |
+| fert+ | -- | **5.05%** | 3.40% |
+| water | 1.72% | 7.56% | 7.59% |
+| harv | 0.00% | **1.56%** | -- |
+
+FEED is 50x its old value and at the rate real $120k players run. This is the same policy -- what
+changed is that the board now has animals to feed.
+
+**What must be checked before believing any of it.** A rising win rate here is ambiguous: the trainee
+is seeded into the *richer* of the two recorded seats, so it can win by inheriting a lead.
+`--curriculum-behind` puts it in the poorer seat, where a win has to be earned. **Read the bank curve
+from the seed day, not the win rate** -- flat means the position was handed over, rising means
+something was earned, and a cliff at day 2-3 of the episode means the collapse simply moved inside a
+shorter horizon.
+
+### THE ENTROPY BONUS WAS EATING THE POLICY — the first mechanism this project has isolated with the alternatives excluded by data
+
+Seeding at day 25 made episodes ~4 game-days, which fixed the signal problem outright:
+
+| | turn-0 runs | day-25 curriculum |
+|---|---|---|
+| terminal games per update | 10-12 | **150-170** |
+| bank_med | $0 | $66,000 |
+| terminal_ret_std | 0.0-0.4 | 0.49 |
+| wr vs scripted farmer | **0.000** for 1,300 updates | **0.301** |
+| wr vs idle | **0.000** for 1,300 updates | **0.422** |
+
+**Every previous failure here could be blamed on missing signal. That excuse is gone.** And PPO still
+destroyed the policy, monotonically, on six metrics at once:
+
+| update | 0 | 24 | 48 | 80 |
+|---|---|---|---|---|
+| **entropy** | **13.35** | 20.13 | 24.94 | **27.06** |
+| **win rate** | **0.525** | 0.409 | 0.329 | **0.281** |
+| feed | 3.47 | 2.37 | 1.0 | **0.61** |
+| dig | 1.44 | 1.49 | 3.2 | **4.55** |
+| bank_med | $66,397 | $55,516 | $40,018 | **$33,202** |
+| clip_frac | 0.250 | 0.310 | 0.227 | 0.211 |
+| ev_signal | -0.031 | +0.134 | +0.238 | **+0.305** |
+
+**Entropy doubles while the win rate halves.** The BC clone opens at **0.525** -- genuinely competitive
+on a real board -- and 80 updates of PPO take it to 0.281.
+
+The alternatives are excluded by the same table, which is why this is a diagnosis rather than a
+hypothesis:
+
+- **Not step size.** `clip_frac` 0.21-0.31 and `approx_kl` flat at +0.02 throughout. `CLAUDE.md`'s own
+  warning threshold is ~0.3 and it is only briefly touched.
+- **Not the critic.** `ev_signal` climbs -0.031 -> **+0.305**, the highest ever recorded here (previous
+  best 0.178). The critic is learning well. It is getting better at predicting a policy getting worse.
+- **Not the reward, not exploration, not the horizon** -- all three were changed and the signal
+  metrics all improved.
+
+**The mechanism.** `regulariser = reg_coef * entropy_loss` with `klP 0.000` on every line, so the only
+fixed pull on the policy is toward **uniform over legal actions** -- and that distribution *is* the
+failure: the policy's op choice correlates **0.854** with pure legality-availability, where NOOP is
+legal on 100% of unit-turns, movement 88-95%, DIG 42%, BUILD_PASTURE 45%, but WATER only **7.3%** and
+FEED **under 3%**. Useful ops are only legal at the *end* of a correct sequence, so pushing toward
+uniform-over-legal is pushing toward walking and digging.
+
+**Why this never showed before.** The handoff records raising `ent_coef` 6.7x for no measurable
+effect -- but that was measured on a policy already at 95% NOOP, i.e. already sitting at the entropy
+bonus's own fixed point, with nothing left to push against. A competent policy is the opposite
+starting condition. Same lever, tested at two different distances from its target.
+
+**This retires this file's objection to a KL anchor.** That was written when the clone was collapsed
+and an anchor "would punish PPO for the one behaviour it needs to discover". A clone opening at 0.525
+is not collapsed -- it is the thing worth protecting. `ppo-20260802-091956` runs `--kl-prior` against
+the BC checkpoint; first two updates show entropy **falling** 13.97 -> 11.80 where the old run rose,
+with `klP` live at 0.009-0.020.
+
+### `--kl-prior`'s help text carried the bug that already cost two runs
+
+It said "Set --ent-coef 0 when using this". `reg_coef = args.ent_coef` and
+`regulariser = reg_coef * kl_prior`, so following that instruction gives **no regulariser at all**.
+This is the identical error recorded earlier in this file for `--kl-coef` -- fixed there, and it
+survived here. It had never fired only because nobody had used `--kl-prior` until now.
+
+### Two bugs the tests caught before a run wasted hours
+
+- **`obs["step"]` is `None` in some replays**, and `adapter.state_from_obs` defaults a missing step
+  to 0 -- so a day-15 board would carry a day-0 counter. Every crop and animal rule reads
+  `step_index // TURNS_PER_DAY`, so that board runs under the wrong rules with nothing to indicate
+  it. `iter_turns(with_index=True)` now returns the recorded index and the curriculum forces it.
+- **A batch larger than the reference pool could never be filled.** The attempt cap was a multiple
+  of the reference count, which also capped how many states could be built, so a 256-game run died
+  having built 240. The guard that is actually wanted is *consecutive* misses.
+
+### Start here
+
+1. **Restart the box run.** It is dead, and the working tree has the league fix it needs.
+   Sync `kagg/rl/league.py`, `scripts/train_jax_rl.py` and `kagg/il/replays.py`, then start with
+   `--init` from `data/bc_runs/<stamp>/latest.pkl`.
+   Widths are 27/28/59 and `--init` refuses a mismatch.
+2. **The gate is unchanged and is not a number `bc_replay.py` prints.**
+   It is FEED leaving zero in the PPO run, and `bank med` leaving $0.
+3. **Re-examine anything the old pairing produced.** `data/il/shard_*.npz` and `dagger_*.npz` were
+   built through `iter_turns` and carry the off-by-one. `scripts/train_bc.py` also has no legality
+   gate, so its accuracy figures are not comparable to `bc_replay.py`'s.
+4. `HANDOFF.md`'s "**`PLANT` carries NO crop argument**" is wrong -- it carries one in every replay
+   and the reference refuses a PLANT without it (`if len(action) < 2: return`). Believing otherwise
+   trains every PLANT toward crop 0, WHEAT. Pinned by `test_plant_actions_carry_their_crop`.
