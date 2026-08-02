@@ -47,23 +47,25 @@ OP_NAMES = ("NOOP", "N", "S", "E", "W", "WATER", "HARV", "PLANT", "DIG",
 
 
 def _greedy(heads, masks):
-    """Argmax over legal options, **conditioning the product heads on `trade` first**.
+    """Argmax over legal options, **conditioning on `trade` and `op` first**.
 
-    `sell` and `buy_product` carry a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis, so they cannot be
-    masked or argmaxed until a trade mode has been chosen -- `A.condition_on_trade` is what
-    collapses that axis. `eval_policy.py:41` still argmaxes the raw head and therefore cannot run
-    at all since the autoregressive decode landed; this is that bug, not a new one.
+    `sell` and `buy_product` carry a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis and
+    `crop`/`item`/`qty` a `[.., MAX_UNITS, N_OPS, K]` one, so neither can be masked or argmaxed
+    until its conditioning variable has been chosen -- `A.condition_all` is what collapses those
+    axes. `eval_policy.py:41` still argmaxes the raw heads and therefore cannot run at all; that
+    predates this change and is still open.
 
     Note the greedy decode is exactly what `CLAUDE.md` records as emitting **zero** market orders,
     because nine independent "probably not sell" marginals compose into "never sell". Conditioning
-    on `trade` fixes the products' joint, not that per-product argmax bias, so read the market rows
-    of a greedy playthrough with that in mind and use `--sample` to see trading behaviour.
+    fixes the joint, not that per-product argmax bias, so read the market rows of a greedy
+    playthrough with that in mind. Sampling is the default for exactly this reason.
     """
-    trade = jnp.argmax(P._masked_logits(heads["trade"], masks["trade"]), axis=-1)
-    conditioned = A.condition_on_trade(heads, trade)
+    cond = {k: jnp.argmax(P._masked_logits(heads[k], masks[k]), axis=-1)
+            for k in A.CONDITION_HEADS}
+    conditioned = A.condition_all(heads, cond)
     out = {k: jnp.argmax(P._masked_logits(conditioned[k], masks[k]), axis=-1)
            for k in A.ALL_HEADS}
-    out["trade"] = trade
+    out["trade"] = cond["trade"]
     return out
 
 
@@ -148,13 +150,19 @@ def main():
 
     with pathlib.Path(args.checkpoint).open("rb") as fh:
         ck = pickle.load(fh)
-    params = jax.device_put(ck["params"])
     saved = ck.get("args", {})
     # The checkpoint stores `args`, whose names are the CLI's (`heads`, `layers`), while the module
     # fields are `n_heads`/`n_layers`. `eval_policy.py:128` does the same translation.
     model = P.Policy(d_model=saved.get("d_model", 128),
                      n_heads=saved.get("heads", 4),
                      n_layers=saved.get("layers", 3))
+    # Pre-op-axis checkpoints are tiled onto the current argument heads rather than refused --
+    # replaying the old ones is the whole point of this script, and refusing them would make every
+    # result before the op axis unreproducible. See `jax_policy.migrate_params`.
+    _s = J.reset(1)
+    _t, _u, _g = jax_obs.encode(_s)
+    _template = model.init(jax.random.PRNGKey(0), A._flat(_t), A._flat(_u), A._flat(_g))
+    params = jax.device_put(P.load_or_migrate(ck["params"], _template))
     print(f"checkpoint {args.checkpoint}")
     print(f"  saved at update {ck.get('update')}   games {args.games} per seating\n")
 

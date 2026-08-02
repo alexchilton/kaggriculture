@@ -150,10 +150,13 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
 
     def loss_fn(params, batch_data):
         heads, _v = model.apply(params, *batch_data["obs"])
-        cond = A.condition_on_trade(heads, batch_data["labels"]["trade"])
+        # Both conditioning steps, keyed on the *teacher's* own trade mode and op -- the same
+        # slices `jax_act.evaluate` will score at rollout time. `condition_all` returns every head,
+        # conditioned or not, so there is no per-head branch to keep in step here.
+        cond = A.condition_all(heads, batch_data["labels"])
         total, n = 0.0, 0.0
         for h in SCORED_HEADS:
-            src = cond[h] if h in A.CONDITIONED_HEADS else heads[h]
+            src = cond[h]
             lab = batch_data["labels"][h]
             mask = batch_data["masks"][h]
             logp, _ent = P.eval_head(src, mask, lab)

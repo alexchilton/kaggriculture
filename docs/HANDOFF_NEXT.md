@@ -61,14 +61,102 @@ compose into "never". `play_checkpoint.py`'s own `_greedy` docstring warned abou
 not competent ones. It plants and waters a little, then bleeds money. A conclusion written earlier in
 this session, that it "does nothing but walk", was an artifact of the greedy decode and is **wrong**.
 
-## The one thing left, and it is an architecture change
+## The autoregressive decode: DONE
 
-Fable's first recommendation: **autoregressive / jointly-renormalised decode instead of independent
-per-head sampling.** NOT DONE. It requires new head shapes, so every existing checkpoint becomes
-incompatible and training restarts from scratch -- flagged rather than done, per the standing rule
-about never changing architecture without explicit approval. Approval was given; the work was not
-attempted because it was late in a long session and this is the one change where a subtle error
-silently corrupts the PPO ratio.
+**Status: implemented, tested, and smoke-run.** `crop`, `item` and `qty` now carry a
+`[.., MAX_UNITS, N_OPS, K]` axis and are read through `jax_act.condition_on_op`, mirroring what
+`condition_on_trade` already did for `sell`/`buy_product`. The op is drawn first and the argument
+heads are scored on the slice it selects.
+
+**Checkpoints did NOT have to be thrown away, and the earlier claim here that training "restarts
+from scratch" was wrong.** Only three kernels change shape; the trunk, `op`, the value head and
+every market head are untouched. `jax_policy.migrate_params` tiles the old `[K]` kernel across the
+new op axis, which sets `p(arg | op)` to the old marginal `p(arg)` for **every** op -- that is
+exactly the mean-field policy the checkpoint was trained as, so day-one behaviour is identical and
+the op axis learns the deviation from a warm start.
+
+That mattered more than convenience: `--kl-prior` loads a *second* network of the same
+architecture, so without a migration the op-axis change would have silently cost us the KL anchor,
+which is the one change that has ever reversed this project's decline. Verified end to end -- a
+deliberately shrunk pre-op-axis checkpoint passed to both `--kl-prior` and `--init` trains with a
+non-zero `klP`.
+
+### What was verified, and what that does and does not prove
+
+- `tests/test_jax_act.py` -- 7 tests. The named gate, **`ratio == 1.0` before the params move**,
+  passes. Also: the op axis exists; `condition_on_op` really selects a different slice per op; and
+  scoring under the *wrong* op slice changes the answer, with `actions` held fixed so the active
+  set and the op's own log-prob cannot account for the difference.
+- `tests/test_param_migration.py` -- 5 tests, including that every op slice of a migrated
+  checkpoint carries the identical distribution, and that a migrated checkpoint still passes the
+  ratio gate.
+- Two short PPO runs on CPU completed: `data/logs/opaxis_smoke.log` (clean, `clip 0.000` at
+  update 0) and `data/logs/opaxis_migrate.log` (migrated prior + init, `klP 0.002`).
+
+**This does not prove the decode helps.** It proves the factorisation is coherent and nothing is
+silently lying. The runs above are `d_model=32`, one layer, sixteen turns, and exist only to prove
+the pipeline executes.
+
+### It was then measured offline, and the answer is: no detectable difference
+
+Two BC runs per architecture on the same 17,975-row cache, seeds 0 and 1, six epochs. Held-out NLL
+on the `item` and `qty` heads over PICKUP and PLACE slots (270 slots), lower is better:
+
+| | seed 0 | seed 1 |
+|---|---|---|
+| `item` effect (op-axis minus control) | +0.015 worse | **-0.028 better** |
+| `qty` effect | +0.079 worse | **-0.041 better** |
+
+**The effect changes sign between seeds, and within-architecture seed spread (0.037-0.079) is as
+large as the effect.** So the unit-head half of this change is not measurably better or worse. An
+earlier version of this section reported the seed-0 numbers alone as "net worse" and recommended
+reverting; that was noise read as a finding, off a single 899-row holdout. Withdrawn.
+
+**Where the change is inert by construction, which is not a seed result.** The op axis only buys
+something where two or more ops read the same head:
+
+- `crop` is read by PLANT alone, and `active_unit_heads` already restricted it to PLANT slots, so
+  the old single head was *already* `p(crop | PLANT)`. Confirmed after retraining: the PLANT slice
+  moves, every other slice sits at exactly uniform 0.200. An earlier claim here and in the source
+  -- that PLANT drew its crop from a distribution averaged over seventeen irrelevant ops -- was
+  simply wrong.
+- `item`/`qty` are read by both PICKUP and PLACE, whose teacher distributions differ at total
+  variation 0.900. That averaging is real, but PICKUP outnumbers PLACE 7.8:1 (4,332 vs 555 slots),
+  so the split slice has the least data exactly where pooling hurt most. Net: a wash, as measured.
+
+**The market heads are where this technique actually paid**, and that shipped earlier as
+`condition_on_trade`. `CLAUDE.md` records the numbers: argmax over nine per-product marginals emits
+zero orders, independent sampling banks $1, and the marginals themselves discriminate 12:1. Nothing
+in this section bears on that; do not read a null result on the unit heads as a verdict on the
+market ones.
+
+**So the durable value here is the scaffolding, not the unit-head conditioning:** the
+`ratio == 1.0` gate catches a silently corrupted PPO update, and `migrate_params` means an
+architecture change no longer costs every checkpoint and the KL anchor.
+
+### If you anchor a KL prior to a MIGRATED checkpoint, read this first
+
+A tiled checkpoint has all 18 op slices identical, and `kl_to_prior` scores the *conditioned* heads
+-- so `KL(policy || prior)` is minimised exactly at op-independence and pulls against the
+specialisation the axis exists to learn. Measured: KL 0.000 / 0.026 / 0.099 / 0.315 as
+specialisation rises. `--kl-coef` defaults to 1.0 and `--kl-anneal` to 0, so it does not decay, and
+the running `mix5d` passes neither flag. Retrain BC with the op-conditioned loss rather than anchor
+to a tiled prior. Not shown: that this would actually prevent learning. That needs a run.
+
+### The one design choice worth knowing about
+
+`sample` and `evaluate` now share a single scoring function, `jax_act._score`. That is deliberate:
+two copies of that loop is precisely how the ratio drifts, and the failure is silent -- no error,
+no NaN, just a gradient pointing somewhere arbitrary. The test pins the property; the shared code
+path is why it stays true.
+
+### Not done, and pre-existing
+
+`scripts/eval_policy.py:41` and `scripts/train_bc.py`'s loss both argmax / cross-entropy the **raw**
+heads. Both have been broken since the *trade* axis landed -- they cannot broadcast a
+`[N, 9, K]` mask against a `[N, 9, 3, K]` head -- and this change does not make them worse or
+better. `kagg/agents/neural.py` had the identical bug and **was** fixed here, because it is the
+submission path and shipping a decode change that leaves it unrunnable is not defensible.
 
 **Why it is the same technique as Ender's, not a new idea.** Billy Bradley's 8th-place `ender` used
 two things: KL-to-prior instead of an entropy bonus (**adopted today, and it is the fix that reversed
@@ -122,6 +210,25 @@ opening is entirely unlearned and is the whole problem. And the flat animal gap 
 symmetry artifact; there is no animal behaviour to measure. Before any more curriculum tuning, decide
 whether a policy trained on seeded maintenance can ever transfer to turn 0, or whether the opening
 needs its own training signal.
+
+## A pre-existing test failure, found in passing and NOT caused by the decode work
+
+`tests/test_curriculum.py::test_the_behind_dial_actually_puts_the_trainee_in_the_poorer_seat`
+fails at `HEAD`. Verified pre-existing: it fails identically with the op-axis changes stashed.
+
+```
+assert b[:, 0].mean() < a[:, 0].mean()
+E  assert 32615.9 < 25498.2      # the "behind" seat is RICHER by $7k
+```
+
+The dial is **inverted or dead**: asking for the poorer seat hands the trainee the richer one. Read
+that test's own docstring before dismissing it -- seeding the trainee into the richer seat makes the
+position winnable on the seed alone, which is *indistinguishable from having learned anything* in a
+win rate. This file already records four numbers that turned out to measure the setup rather than
+the policy; this is a fifth waiting to happen.
+
+Note the handoff previously recorded "382 pass, 2 xfailed", so this broke somewhere in the
+symmetric-starts / seat-pool work (`9a65b92`, `d08cdcb`, `dae2a23`). It is not diagnosed.
 
 ## Both critic-side gates are dead — do not use them
 

@@ -32,6 +32,16 @@ ALL_HEADS = UNIT_HEADS + MARKET_HEADS
 # and spent its bank on noise under independent sampling.
 CONDITIONED_HEADS = ("sell", "buy_product")
 
+# Heads that carry a per-op axis and are read through `condition_on_op`: the arguments an op takes.
+# A unit picks an op and *then* what to do it with, so `p(crop)` averaged over all 18 ops is not a
+# distribution any unit acts from.
+OP_CONDITIONED_HEADS = ("crop", "item", "qty")
+
+# The conditioning variables themselves, drawn before the heads that read them. `op` is per unit
+# and `trade` is per seat, but they play the same role and are stored in `actions` for exactly the
+# same reason: `evaluate` cannot reconstruct the slice the behaviour policy used without them.
+CONDITION_HEADS = ("trade", "op")
+
 
 def _flat(x):
     """[B, P, ...] -> [B*P, ...]; both seats run through the network as one batch."""
@@ -96,6 +106,22 @@ def _reduce(x, active=None):
     return x.reshape(x.shape[0], -1).sum(axis=-1)
 
 
+def _select_slice(heads, keys, index):
+    """Gather each named head's slice at `index` along its second-to-last axis.
+
+    Shared by both conditioning steps because they are the same operation: a head shaped
+    `[.., C, K]` carries one length-`K` distribution per value of a conditioning variable, and once
+    that variable is drawn the conditional distribution is the corresponding slice. `index` must
+    broadcast against `heads[k].shape[:-2]`.
+    """
+    out = dict(heads)
+    for k in keys:
+        idx = jnp.broadcast_to(index, heads[k].shape[:-2])[..., None, None]
+        idx = jnp.broadcast_to(idx, heads[k].shape[:-2] + (1, heads[k].shape[-1]))
+        out[k] = jnp.take_along_axis(heads[k], idx, axis=-2)[..., 0, :]
+    return out
+
+
 def condition_on_trade(heads, trade):
     """Select each product head's slice for the sampled trade mode.
 
@@ -104,12 +130,68 @@ def condition_on_trade(heads, trade):
     the factorisation `p(trade) * prod_i p(product_i | trade)` exact rather than mean-field -- the
     per-product decisions share one coordinating variable, which is how a teacher actually trades.
     """
-    idx = trade[..., None, None, None]                    # [.., 1, 1, 1]
-    out = dict(heads)
-    for k in CONDITIONED_HEADS:
-        out[k] = jnp.take_along_axis(heads[k], jnp.broadcast_to(
-            idx, heads[k].shape[:-2] + (1, heads[k].shape[-1])), axis=-2)[..., 0, :]
-    return out
+    # `trade` is one value per seat, `[N]`, against heads whose leading axes are `[N, N_PRODUCTS]`:
+    # every product in a seat reads the same mode, which is the entire point of a coordinating
+    # latent, so it broadcasts across the product axis.
+    return _select_slice(heads, CONDITIONED_HEADS, trade[..., None])
+
+
+def condition_on_op(heads, op):
+    """Select each argument head's slice for the sampled op, per unit.
+
+    `crop`, `item` and `qty` carry a `[.., MAX_UNITS, N_OPS, K]` axis. Unlike `trade` the
+    conditioning variable is **per unit**, not per seat -- each unit picks its own op and reads its
+    own argument distribution -- so `op` is `[N, MAX_UNITS]` and indexes elementwise rather than
+    broadcasting.
+
+    **Why this is not redundant with `active_unit_heads`, and how much it actually buys.** That
+    function decides *whether* a head counts; this one decides *which distribution* it is. But it
+    only buys something where **two or more ops read the same head**, and that is worth stating
+    precisely, because the first version of this docstring got it wrong:
+
+    - `crop` is read by PLANT alone. `active_unit_heads` already confined it to PLANT slots, so
+      the old single head was *already* `p(crop | PLANT)` and the op axis adds nothing but
+      untrained slices. Measured after a BC retrain: the PLANT slice moves, every other slice sits
+      at exactly uniform. This head is along for the ride.
+    - `item` and `qty` are read by **both** PICKUP and PLACE, and those two teacher distributions
+      are nearly disjoint (total variation 0.900 -- you pick up what is on the ground and place
+      what is in hand). A single head has to average them. That averaging is the real thing this
+      function removes.
+
+    So the claim to make for the unit heads is narrow: it is a fix for `item`/`qty`, not for
+    `crop`. The broader argument for autoregressive decode still rests on the market heads, where
+    nine products share one head and the decode was measurably destroying the joint.
+    """
+    return _select_slice(heads, OP_CONDITIONED_HEADS, op)
+
+
+def condition_all(heads, actions):
+    """Apply both conditioning steps, in the order the variables are drawn.
+
+    One function so that no caller can remember one step and forget the other -- and there are now
+    five call sites outside this module, including the KL prior and two offline decoders.
+    """
+    return condition_on_op(condition_on_trade(heads, actions["trade"]), actions["op"])
+
+
+def _score(conditioned, masks, actions):
+    """Log-prob and entropy of `actions` under already-conditioned heads, summed per seat.
+
+    **`sample` and `evaluate` both come through here, and that is deliberate.** The PPO ratio is
+    only a ratio of one distribution if the update scores the stored action under the same
+    factorisation the behaviour policy sampled from. Two copies of this loop is how that drifts:
+    the divergence produces no error and no NaN, just a gradient pointing somewhere arbitrary and a
+    training curve that looks healthy. `tests/test_jax_act.py` pins `ratio == 1.0` at init, but a
+    single code path is the reason it stays true rather than the reason we would find out.
+    """
+    active = active_unit_heads(actions["op"])
+    logps, entropies = [], []
+    for k in ALL_HEADS + ("trade",):
+        lp, ent = P.eval_head(conditioned[k], masks[k], actions[k])
+        a = active.get(k)
+        logps.append(_reduce(lp, a))
+        entropies.append(_reduce(ent, a))
+    return sum(logps), sum(entropies)
 
 
 def sample(key, heads, masks):
@@ -118,26 +200,28 @@ def sample(key, heads, masks):
     Every head is sampled, because the simulator reads a value from every slot. Only the heads the
     chosen op actually consults are *scored* -- see `active_unit_heads`.
 
-    **`trade` is drawn first and the product heads are conditioned on it.** Sampling them
-    independently is what produced an agent that banked $1: nine calibrated marginals drawn
-    separately give combinations the joint never contains.
+    **The two conditioning variables are drawn first, and the heads that read them are conditioned
+    before they are sampled.** `trade` before the per-product quantities, `op` before the `crop` /
+    `item` / `qty` arguments. Sampling the products independently is what produced an agent that
+    banked $1 -- nine calibrated marginals drawn separately give combinations the joint never
+    contains -- and the same argument applies to `item`/`qty`, which PICKUP and PLACE both read and
+    which a single head therefore has to average across two nearly disjoint distributions.
     """
     keys = jax.random.split(key, len(ALL_HEADS) + 1)
-    actions = {"trade": P.sample_head(keys[-1], heads["trade"], masks["trade"])[0]}
-    conditioned = condition_on_trade(heads, actions["trade"])
+    # `op` is ALL_HEADS[0], so it consumes keys[0] here and is skipped in the loop below: the key
+    # assignment is unchanged from when it was drawn inline, and no key is used twice.
+    actions = {
+        "trade": P.sample_head(keys[-1], heads["trade"], masks["trade"])[0],
+        "op": P.sample_head(keys[0], heads["op"], masks["op"])[0],
+    }
+    conditioned = condition_all(heads, actions)
 
     for k, sub in zip(ALL_HEADS, keys):
+        if k in CONDITION_HEADS:
+            continue
         actions[k] = P.sample_head(sub, conditioned[k], masks[k])[0]
 
-    active = active_unit_heads(actions["op"])
-    logps, entropies = [], []
-    for k in ALL_HEADS + ("trade",):
-        src = conditioned[k] if k in CONDITIONED_HEADS else heads[k]
-        lp, ent = P.eval_head(src, masks[k], actions[k])
-        a = active.get(k)
-        logps.append(_reduce(lp, a))
-        entropies.append(_reduce(ent, a))
-    return actions, sum(logps), sum(entropies)
+    return actions, *_score(conditioned, masks, actions)
 
 
 def evaluate(heads, masks, actions):
@@ -147,23 +231,16 @@ def evaluate(heads, masks, actions):
     heads were part of the decision. Deriving it from anything else would make the ratio a ratio of
     two different distributions.
 
-    **The trade mode is conditioned on for the same reason and it is not optional.** The behaviour
-    policy drew its products from the slice its sampled mode selected, so scoring them under a
-    different slice -- or under a marginal over modes -- would put a different distribution in the
-    numerator of the PPO ratio than the one that generated the data. `p(trade)` is scored too, so
-    the density is the full `p(trade) * prod_i p(product_i | trade)` and the ratio stays a ratio of
-    the same object.
+    **Both conditioning variables are read from storage for the same reason, and neither is
+    optional.** The behaviour policy drew its products from the slice its sampled trade mode
+    selected and its crop from the slice its sampled op selected. Scoring either under a different
+    slice -- or under a marginal over the conditioning variable -- would put a different
+    distribution in the numerator of the PPO ratio than the one that generated the data. `p(trade)`
+    and `p(op)` are scored too, so the density is the full
+    `p(trade) * p(op) * prod p(product|trade) * prod p(arg|op)` and the ratio stays a ratio of the
+    same object.
     """
-    active = active_unit_heads(actions["op"])
-    conditioned = condition_on_trade(heads, actions["trade"])
-    logps, entropies = [], []
-    for k in ALL_HEADS + ("trade",):
-        src = conditioned[k] if k in CONDITIONED_HEADS else heads[k]
-        lp, ent = P.eval_head(src, masks[k], actions[k])
-        a = active.get(k)
-        logps.append(_reduce(lp, a))
-        entropies.append(_reduce(ent, a))
-    return sum(logps), sum(entropies)
+    return _score(condition_all(heads, actions), masks, actions)
 
 
 def to_sim_actions(actions, batch):

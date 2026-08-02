@@ -689,21 +689,25 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         # one costs nothing and behaves exactly as before.
         # **The KL is taken over the *conditioned* heads, not the raw ones.**
         #
-        # `sell` and `buy_product` carry a trade-mode axis that the masks do not, so the raw heads
-        # are `[N, N_PRODUCTS, N_TRADE_MODES, K]` against a `[N, N_PRODUCTS, K]` mask and the
-        # broadcast simply fails. More importantly, the distribution the policy actually acted from
-        # is the slice its sampled mode selected -- a KL against a marginal over modes would
-        # regularise something the policy never sampled from.
+        # `sell` and `buy_product` carry a trade-mode axis, and `crop`/`item`/`qty` an op axis, that
+        # the masks do not: the raw heads are `[N, N_PRODUCTS, N_TRADE_MODES, K]` and
+        # `[N, MAX_UNITS, N_OPS, K]` against `[N, N_PRODUCTS, K]` and `[N, MAX_UNITS, K]` masks, and
+        # the broadcast simply fails. More importantly, the distribution the policy actually acted
+        # from is the slice its sampled conditioning variable selected -- a KL against a marginal
+        # over modes or ops would regularise something the policy never sampled from.
+        #
+        # `A.condition_all` applies both steps, so this cannot drift out of step with `A.evaluate`
+        # above by remembering one and forgetting the other.
         if kl_coef:
-            cond = A.condition_on_trade(heads, batch_data["actions"]["trade"])
+            cond = A.condition_all(heads, batch_data["actions"])
         if kl_coef and (hand_noop_p or spend_p):
             kl_prior = kl_to_prior(
                 cond, hand_prior_heads(cond, batch_data["masks"], hand_noop_p, spend_p),
                 batch_data["masks"])
         elif prior_params is not None and kl_coef:
             prior_heads, _pv = model.apply(prior_params, tiles, units, glob)
-            prior_cond = A.condition_on_trade(
-                jax.lax.stop_gradient(prior_heads), batch_data["actions"]["trade"])
+            prior_cond = A.condition_all(
+                jax.lax.stop_gradient(prior_heads), batch_data["actions"])
             kl_prior = kl_to_prior(cond, prior_cond, batch_data["masks"])
         else:
             kl_prior = jnp.asarray(0.0, dtype=jnp.float32)
@@ -1230,7 +1234,12 @@ def main():
     prior_params = None
     if args.kl_prior:
         with open(args.kl_prior, "rb") as fh:
-            prior_params = jax.device_put(pickle.load(fh)["params"])
+            raw = pickle.load(fh)["params"]
+        # A pre-op-axis checkpoint is tiled onto the new argument heads rather than rejected. See
+        # `jax_policy.migrate_params`: the tiling reproduces the checkpoint's own marginal on every
+        # op slice, so the prior it anchors to is behaviourally the checkpoint, not an approximation
+        # of it. Without this the op-axis change would silently cost us the KL anchor.
+        prior_params = jax.device_put(P.load_or_migrate(raw, params))
         print(f"KL prior loaded from {args.kl_prior} (coef {args.kl_coef}, "
               f"ent_coef {args.ent_coef})", flush=True)
 
@@ -1267,7 +1276,7 @@ def main():
             raise SystemExit(
                 f"--init checkpoint was trained on observation widths {got}, this build is {want}. "
                 f"Retrain BC against the current observation.")
-        params = jax.device_put(bc["params"])
+        params = jax.device_put(P.load_or_migrate(bc["params"], params))
         print(f"warm-started params from {args.init} "
               f"(teacher: {bc.get('args', {}).get('teacher', '?')}); optimiser is fresh")
     if args.resume:

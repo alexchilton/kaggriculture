@@ -261,9 +261,28 @@ def loss_terms(heads, batch, smooth=0.0):
     Unit heads are weighted by live slots **and** by whether the teacher's op actually reads them.
     `MAX_UNITS` is 24 against a crew of about twelve, and a `crop` label on a FEED slot is a zero
     from the encoder rather than a decision -- scoring either makes the loss mostly constant.
+
+    **`crop`/`item`/`qty` are cloned on the slice the teacher's own op selects, and that is the
+    difference between them and `sell`/`buy_product` below.** The trade mode is a latent the replay
+    does not record, so `conditioned_term` has to train every one of its slices. The op *is*
+    recorded, so the right target is the conditional the policy will actually act from, fitted on
+    the turns the teacher used that op.
+
+    **What this does and does not buy, stated precisely.** It matters only where two ops share a
+    head. `crop` is read by PLANT alone and the `active` weighting below already restricted it to
+    PLANT slots, so that head was already conditional and the op axis changes nothing for it. The
+    gain is `item` and `qty`, which PICKUP and PLACE both read: their teacher distributions differ
+    at total variation 0.900, and a single head had to average them into something that suited
+    neither. Note PLACE is ~8x rarer than PICKUP, so it is both the case that pooling hurt most and
+    the case where a split slice has least data to learn from.
     """
     live = jnp.asarray(batch["live"], dtype=jnp.float32)
-    active = A.active_unit_heads(jnp.asarray(batch["y_op"]))
+    y_op = jnp.asarray(batch["y_op"])
+    active = A.active_unit_heads(y_op)
+    # Same call `jax_act.evaluate` makes, so the offline objective and the online density are the
+    # same object. Slots where the op ignores the argument are weighted out by `active` below, so
+    # the slice chosen there is irrelevant rather than wrong.
+    heads = A.condition_on_op(heads, y_op)
 
     parts = {}
     for h in SCORED_HEADS:

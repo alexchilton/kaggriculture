@@ -170,8 +170,15 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
     import jax.numpy as jnp
 
     with Path(checkpoint).open("rb") as fh:
-        params = pickle.load(fh)["params"]
+        raw = pickle.load(fh)["params"]
     model = P.Policy()
+    # Pre-op-axis checkpoints are tiled onto the current argument heads. See
+    # `jax_policy.migrate_params` -- the tiling is behaviour-preserving, so this does not change
+    # what an older submission checkpoint plays.
+    from kagg.sim import jax_sim as _J
+    _t, _u, _g = jax_obs.encode(_J.reset(1))
+    params = P.load_or_migrate(raw, model.init(
+        jax.random.PRNGKey(0), A._flat(_t), A._flat(_u), A._flat(_g)))
     thresholds = calibrate(params, model)
     if threshold is not None:
         thresholds = {k: threshold for k in MARKET_HEADS}
@@ -184,9 +191,24 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
         heads, _value = model.apply(params, A._flat(tiles), A._flat(units), A._flat(glob))
         masks = A.masks_for(state)
 
+        # **Conditioning comes first, and without it this function cannot run at all.**
+        #
+        # `sell`/`buy_product` carry a trade-mode axis and `crop`/`item`/`qty` an op axis that the
+        # masks do not, so `jnp.where(masks[k], heads[k], -inf)` on a raw head is a broadcast error
+        # -- `[N, 9, K]` against `[N, 9, 3, K]`. This loop used to iterate `heads.items()` and had
+        # been broken since the trade axis landed; it is the same bug still open in
+        # `eval_policy.py:41`.
+        #
+        # The conditioning variables are decoded greedily. That is the right call for `op`, whose
+        # classes are genuinely exclusive, and it is the standing compromise for `trade`, which the
+        # per-product `_fire` thresholds then work within.
+        choice = {k: jnp.argmax(jnp.where(masks[k], heads[k], -jnp.inf), axis=-1)
+                  for k in A.CONDITION_HEADS}
+        conditioned = A.condition_all(heads, choice)
+
         picked = {}
-        for k, v in heads.items():
-            logits = jnp.where(masks[k], v, -jnp.inf)
+        for k in A.ALL_HEADS:
+            logits = jnp.where(masks[k], conditioned[k], -jnp.inf)
             if k in MARKET_HEADS:
                 picked[k] = _fire(np.asarray(jax.nn.softmax(logits, axis=-1)),
                                   thresholds.get(k, 0.5))

@@ -11,11 +11,23 @@ directly while a convolution has to rediscover it.
 ## Why the action space is factored, not joint
 
 A unit picks an op (18), and PLANT/PICKUP/PLACE need a crop (5), an item (12) and a quantity (4).
-Jointly that is over 4000 outcomes per unit and 24 units per turn. Factoring into independent heads
-turns it into 18+5+12+4 logits, which is the difference between a tractable policy and the action
-space blow-up that `docs/rl_postmortem_and_fix_plan.md` blames for the last collapse. The heads are
-conditionally independent given the state, so the joint log-prob is the sum -- exact, not an
-approximation, because we sample every head every turn.
+Jointly that is over 4000 outcomes per unit and 24 units per turn. Factoring the heads turns it
+into a few hundred logits, which is the difference between a tractable policy and the action space
+blow-up that `docs/rl_postmortem_and_fix_plan.md` blames for the last collapse.
+
+**The factorisation is autoregressive, not independent, and that distinction was load-bearing.**
+This file used to claim the heads were "conditionally independent given the state, so the joint
+log-prob is the sum -- exact, not an approximation". That is true for *scoring* a log-prob and
+false for *producing* an action, and `CLAUDE.md` records the cost: argmax over independent
+marginals emits zero market orders, because nine separate "probably not" decisions compose into
+"never", while independent sampling from those same marginals fires combinations the joint never
+contains. The marginals were never the problem -- they discriminate 12:1 -- the decode was.
+
+So the conditioning variables are drawn first and the dependent heads read the slice they select:
+`trade` before the per-product quantities, and `op` before the `crop` / `item` / `qty` arguments
+that op takes. `p(op) * p(crop|op)` is an exact factorisation of a joint containing the dominant
+correlation, and it still costs one forward pass, because each conditioning variable has few enough
+values to emit every slice at once. See `jax_act.condition_on_op` and `condition_on_trade`.
 
 ## Why the market head does not learn slot ordering
 
@@ -129,9 +141,30 @@ class Policy(nn.Module):
         D = dict(kernel_init=zero, dtype=DTYPE, param_dtype=DTYPE)
         heads = {
             "op": nn.Dense(N_OPS, **D)(utok),
-            "crop": nn.Dense(J.N_CROPS, **D)(utok),
-            "item": nn.Dense(J.N_ITEMS, **D)(utok),
-            "qty": nn.Dense(len(UNIT_QTY_BUCKETS), **D)(utok),
+            # **The unit argument heads are conditioned on the op, not independent of it.**
+            #
+            # This is the same correction as the market heads below, applied to the other half of
+            # the action space, and it is the second half of Ender's solution -- whose first half,
+            # KL-to-prior, is what reversed this project's decline. A unit picks an op and then the
+            # argument that op takes; `p(crop)` marginalised over all 18 ops is not a distribution
+            # any unit ever acts from. PLANT wants a crop the shed has seed for, PICKUP wants an
+            # item that is on the ground, PLACE wants one that is in hand -- and a single marginal
+            # has to average those into something that suits none of them.
+            #
+            # The failure it produces is quieter than the market one, because `active_unit_heads`
+            # already zeroes these heads for ops that ignore them. So the damage is confined to the
+            # PLANT / PICKUP / PLACE slots: exactly the productive ops, and exactly the ones a
+            # replay shows the policy failing to use.
+            #
+            # Cost is one slice per op on three small heads -- about 46k parameters, and no extra
+            # forward pass, because the conditioning variable is drawn from a head this same pass
+            # already produced.
+            "crop": nn.Dense(N_OPS * J.N_CROPS, **D)(utok)
+                      .reshape(-1, n_units, N_OPS, J.N_CROPS),
+            "item": nn.Dense(N_OPS * J.N_ITEMS, **D)(utok)
+                      .reshape(-1, n_units, N_OPS, J.N_ITEMS),
+            "qty": nn.Dense(N_OPS * len(UNIT_QTY_BUCKETS), **D)(utok)
+                      .reshape(-1, n_units, N_OPS, len(UNIT_QTY_BUCKETS)),
             # **The market heads are conditioned on a coarse `trade` decision, not independent.**
             #
             # Emitting nine per-product distributions and reading them as a joint is a mean-field
@@ -172,6 +205,74 @@ class Policy(nn.Module):
         # A sigmoid makes the impossible unreachable, and costs nothing when the estimate is honest.
         value = nn.sigmoid(nn.Dense(1, dtype=DTYPE, param_dtype=DTYPE)(gtok)[..., 0])
         return heads, value
+
+
+# ---- checkpoint migration ----------------------------------------------------------------------
+
+# Kernel and bias for each of `crop`, `item`, `qty` -- the only leaves the op axis can touch.
+N_OP_EXPANDED_LEAVES = 2 * len(("crop", "item", "qty"))
+
+
+def migrate_params(old, template):
+    """Load pre-op-axis params into the current architecture, tiling the argument heads.
+
+    **Why this exists rather than "retrain from scratch".** Giving `crop`/`item`/`qty` an op axis
+    changes three kernels, and nothing else: the trunk, `op`, the value head and every market head
+    keep their shapes. A straight `pickle.load` still fails, which would strand every BC checkpoint
+    -- and, more seriously, `--kl-prior`, which loads a *second* network of the same architecture.
+    The KL-to-prior anchor is the change that reversed this project's decline; losing it to a decode
+    fix would be a bad trade.
+
+    **Tiling is exact, not an approximation.** The new head reads slice `op` of a flat
+    `[N_OPS * K]` output, so writing the old `[K]` kernel into every slice initialises
+    `p(arg | op)` to the old marginal `p(arg)` for every op -- which *is* the mean-field policy the
+    checkpoint was trained as. Day-one behaviour is therefore identical, and the op axis starts
+    learning the deviation from a warm point rather than from zero.
+
+    The migration is shape-driven rather than keyed on Flax's `Dense_7`-style autonames, because
+    those renumber silently if a head is ever added above them. It asserts that exactly
+    `N_OP_EXPANDED_LEAVES` leaves were expanded, so a partial migration cannot pass quietly.
+    """
+    from flax.traverse_util import flatten_dict, unflatten_dict
+
+    flat_old, flat_new = flatten_dict(old), flatten_dict(template)
+    if set(flat_old) != set(flat_new):
+        missing = sorted("/".join(p) for p in set(flat_new) - set(flat_old))
+        extra = sorted("/".join(p) for p in set(flat_old) - set(flat_new))
+        raise ValueError(
+            f"checkpoint does not match this architecture; missing {missing}, unexpected {extra}")
+
+    out, expanded = {}, []
+    for path, new_leaf in flat_new.items():
+        o = jnp.asarray(flat_old[path])
+        if o.shape == new_leaf.shape:
+            out[path] = o
+        elif (o.ndim == new_leaf.ndim and o.shape[:-1] == new_leaf.shape[:-1]
+                and new_leaf.shape[-1] == o.shape[-1] * N_OPS):
+            # `[.., K] -> [.., N_OPS * K]`, laid out as op-major so that flat index `op * K + k`
+            # is slice `op`'s entry `k`. `tile` repeats the whole K-block, which is exactly that.
+            out[path] = jnp.tile(o, (1,) * (o.ndim - 1) + (N_OPS,))
+            expanded.append("/".join(path))
+        else:
+            raise ValueError(
+                f"cannot migrate {'/'.join(path)}: {o.shape} -> {new_leaf.shape}")
+
+    if len(expanded) != N_OP_EXPANDED_LEAVES:
+        raise ValueError(
+            f"expected to expand {N_OP_EXPANDED_LEAVES} leaves onto the op axis, expanded "
+            f"{len(expanded)}: {sorted(expanded)}. The checkpoint is not a pre-op-axis one.")
+    return unflatten_dict(out)
+
+
+def load_or_migrate(raw, template):
+    """`raw` params as-is when they already fit, migrated when they are pre-op-axis."""
+    from flax.traverse_util import flatten_dict
+
+    flat_raw, flat_new = flatten_dict(raw), flatten_dict(template)
+    if set(flat_raw) == set(flat_new) and all(
+            jnp.shape(flat_raw[p]) == jnp.shape(v) for p, v in flat_new.items()):
+        return raw
+    return migrate_params(raw, template)
 
 
 # ---- distribution helpers ----------------------------------------------------------------------
