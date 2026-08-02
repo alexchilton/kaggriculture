@@ -10,19 +10,19 @@ Today is **day 3 of 62**, which matters for how you read every "teacher" number 
 
 ## Running right now
 
-`league1`, systemd service `kagg-train` on the Windows box, resumed from **update 300**.
+`league1`, systemd service `kagg-train` on the Windows box, resumed from **update 350**.
 Log: `/home/alex/kagg/data/logs/run.log` — `kagg-log` follows exactly that file.
 
 ```
 --curriculum-mix length:0:0.6,10:0.1,15:0.1,20:0.1,25:0.1   --curriculum-symmetric
---opponent-frac 0.45 --farm-frac 0.25 --ranch-frac 0.20 --idle-frac 0.10   (self = 0)
+--opponent-frac 0.45 --farm-frac 0.25 --ranch-frac 0.20 --idle-frac 0.05   (self = 0)
 --pool-size 16 --pool-every 25
 --hand-prior 0.05 --spend-prior 0 --kl-prior <mix5-20260802-120823/latest.pkl>
 --ent-coef 0.01 --lr 3e-5 --batch 256 --horizon 32
 ```
 
-`--spend-prior 0` is set in the unit and takes effect on the next restart; the process running at
-the time of writing still has 0.05.
+Everything below is live as of this deploy. The startup line to check it took is
+`day 0: $3,000` — it read `$623` before.
 
 Resumed through a chain: `commit4` → `day0flip` → `day0flip2` → `ranch1` → `league1` → (this).
 
@@ -41,6 +41,127 @@ A hand-rolled `nohup` launch is a third way and is wrong twice over: it writes t
 kagg` fails without `PYTHONPATH=/home/alex/kagg`.
 
 ---
+
+## READ THIS FIRST: two bugs that made day-0 and the pool describe the wrong thing
+
+Both are fixed and deployed (`f1130ca`). Both had the same shape as everything else in this file: a
+number that was correct per row and was read as something it did not measure.
+
+### The pool opponent changed identity every 32 turns
+
+`opp_idx = pool.select(seed, it)` was drawn inside the **update** loop.
+An episode is 719 turns; a `--horizon 32` update advances 32 of them.
+So seat 1 was played by **~23 different frozen checkpoints per game**, swapping every 32 turns.
+
+An opponent stitched from 23 checkpoints restarts its strategy 23 times a season and plays far
+worse than any single member of the pool.
+That is the whole explanation for `wr_pool 0.990`, and for every member's own record sitting at
+0.01-0.15 — none of them had ever played a whole game, and `pool.record` credited whichever one
+held the seat on the final update.
+
+`CLAUDE.md` already names this exact failure for the per-opponent win rate ("the opponent was
+re-drawn every update while a game spans ~22.5 of them").
+Sticky roles fixed it for the opponent **type** and left the member identity redrawn — the same bug
+survived in the same file, half fixed.
+
+`Pool.select` now takes `hold=`, and the loop derives it from the horizon: `league.hold_updates` is
+`ceil(719 / horizon)` = 23.
+**Residual, stated rather than hidden:** a game straddling a window boundary still sees two
+opponents, not one. Exact would need per-slot opponent parameters, and the rollout applies one
+parameter set to the whole batch, so that costs either a forward pass per member or a batch-sized
+copy of the params. Two-at-worst for free is the trade.
+
+### Day 0 was somebody else's opening, not ours
+
+`states_at_day(.., day=0)` snapshots a **recorded elite replay** at a turn drawn from
+`_turn_indices(.., 0)` = turns **1..48**, median ~turn 24 — a full game-day in.
+And `lo = max(1, (0 - DAY_WINDOW) * 24)` means **turn 0 was never drawn at all**.
+Measured at startup, that rung began on **$623**, because by turn ~24 the recorded player had
+converted ~$2,400 of its $3,000 into seed and put it in the ground.
+
+**Symmetric seats made this fair, and fairness was never the problem.** Both sides get the same
+position and whoever ends richer wins; the training signal was sound.
+What was missing is **coverage**. The competition starts at turn 0 with $3,000 and bare tiles, and
+**78% of slots are the day-0 rung** — so the policy was trained to *continue* an elite opening and
+deployed to *make* one.
+
+Both measurements were right and disagreed for that reason:
+
+| | measures | reads |
+|---|---|---|
+| day-0 rung `wr` | continue a position, fairly | 0.59-0.72 |
+| `eval_policy` from `J.reset` | make the opening yourself | $3,000 -> **$1,104** |
+
+It also made `vs idle` unreadable at that rung: idle inherits $623, sits on it, and its unwatered
+crops die — so "beat idle" meant "extract more than $0 from an inherited half-built farm", not
+"turn $3,000 into more than $3,000".
+
+Day 0 is now `J.reset`: $3,000, bare tiles, turn 0.
+`mirror`, `behind` and `symmetric` are no-ops on it by construction — a pristine board is already
+identical on both seats.
+
+**Open consequence, decide deliberately.** All 200 day-0 slots now start at turn 0 together, so
+they terminate together: terminal rewards may arrive in bursts every ~23 updates rather than spread
+out. `J.reset` takes a `phase` argument that would stagger them, but a phased pristine board is
+"day 10, empty farm" — a different and much harder state, not the opening. Not chosen either way
+yet; watch whether the bursting actually hurts before acting.
+
+### State at the first update after the deploy (351), so drift is measurable from here
+
+```
+[  351]  klP 3.119   ent 5.8 (op 0.20)   term 0   wr nan/0x   bank med $2,899   V 0.868  sum 1.736
+   commit 24.29% = cWATER:4.62% cHARV:2.95% cFEED:3.01% cPLANT:3.20% cPICK:10.51%   move:56%
+   buyanimal GOOSE:0.000  COW:0.000  SHEEP:0.001
+   spend seed:0.021  hire:0.167  land:0.000
+```
+
+- `bank med $2,899` confirms the day-0 rung is a real start end to end.
+- `klP` jumped 0.41 -> 3.119: the spend heads are now far from their new uniform prior, so the KL is
+  pulling hard on exactly the heads that need to move. That is the mechanism; it needs updates.
+- `seat_sum 1.736` against a target of 1.0 is the value head being wrong about a board distribution
+  it has never seen. Expect it to come back; if it does not, the critic is not learning the new
+  rung.
+- **`term 0` and `wr nan/0x` are the burst, arriving immediately.** No terminal episodes and no win
+  rates for ~23 updates, so predictions 1 and 2 below cannot be read before then. Do not conclude
+  anything from `n/a`.
+- Buys have **not** moved yet. One update is not evidence either way.
+
+## WHAT TO WATCH, WITH PREDICTIONS
+
+Written as predictions on purpose, so the next session can tell a fix from a story.
+If one of these does not move, the diagnosis behind it was wrong and should be dropped rather than
+explained away.
+
+| # | watch | prediction | if it does not happen |
+|---|---|---|---|
+| 1 | `vs pool` | falls **hard** from 0.990 | the chimera bug was not the explanation; the 0.990 needs a different cause and the `hold=` change bought nothing |
+| 2 | `wr` at day 0 | drops a long way from 0.59-0.72 | the new rung is not actually harder, so the replay-vs-reset gap was not the train/deploy mismatch it looks like |
+| 3 | `spend land:` / `buyanimal` | **> 0 at all**, ever | removing the 5% shared target did not free them, so the binding constraint is not the prior — look at whether the *advantage* for buying is genuinely negative (an unfed animal is a certain loss, not a bad bet) |
+| 4 | `spend seed:` and `hire:` | rise toward the leader's 7.1% and 42% | same as 3 |
+| 5 | `bank med` on day-0 | starts near $3,000; direction from there is the real signal | if it collapses immediately the policy is destroying the stake in the opening, which is the thing the whole rung exists to expose |
+| 6 | `commit N.NN%` vs `move:` | commit rises **while** move falls, same window | either alone is ambiguous; commit flat and move >=70% after 50 updates means the prior is not binding and the problem is credit assignment, so do **not** push the prior weight higher |
+| 7 | `ent (op N.NN)` | stays off the floor | it read 0.24 nats against `ln(23) = 3.14` before the deploy — near-deterministic. Collapse here with commit share spiking is the overcorrection case, i.e. a new policy fragment |
+| 8 | `terminal_ret_std` | non-zero on most updates | it was **0 on 45% of updates** before — every finished game that update had the same outcome, so no outcome signal at all |
+
+**Signal budget, measured before the deploy, and the reason items 1 and 8 matter most.**
+Bernoulli variance `p(1-p)` times share of games:
+
+| opponent | wr | var | share | share of all signal |
+|---|---|---|---|---|
+| farm | 0.215 | 0.169 | 25% | 46.0% |
+| ranch | 0.263 | 0.194 | 20% | 42.3% |
+| idle | 0.854 | 0.125 | 5% | 6.8% |
+| pool | 0.990 | 0.010 | 45% | **4.9%** |
+
+**pool + idle were 50% of the games producing 12% of the signal.**
+If item 1 lands, the pool's 45% starts paying for itself; if it does not, that 45% should be moved
+to farm/ranch, which is a `--opponent-frac` change and nothing more.
+
+**The stop-everything guard cannot see any of this.** It reads
+`if games > 50 and row["ret_std"] == 0.0`, and `ret_std` is over *all* rows and sits near 0.055
+because bootstrapped values vary. The variable that was actually zero on 45% of updates is
+`terminal_ret_std`. Same species of bug as the rest: correct per row, watching the wrong thing.
+Worth pointing the guard at `terminal_ret_std` before trusting it again.
 
 ## LATER THE SAME EVENING: three measurement bugs, and what they invalidate
 
@@ -208,7 +329,20 @@ Caveats: one replay of the eight, day-2-of-62 meta, and their per-command shares
 unit as our per-turn market rates.
 Running the census across all eight tapes for a spread rather than a point estimate is not done.
 
-## The pool: a working regression check and a useless difficulty source
+## SUPERSEDED — The pool: a working regression check and a useless difficulty source
+
+> **This conclusion was wrong, and the section is kept only so the reasoning is not re-run.**
+> The day-0 cross-tab below is real and the numbers are real, but the explanation is not: `wr_pool
+> 0.990` was the chimera bug at the top of this file — seat 1 played by ~23 different checkpoints
+> per game — not a genuine skill gap between the policy and its own history. Prediction 1 in "What
+> to watch" is the test. If `vs pool` does not fall after the `hold=` fix, come back here.
+>
+> Two other readings in this section were also wrong and are corrected above: seat advantage is
+> marginal (both seats quote from the same pre-commit inventory; seat order decides only atomic
+> `HIRE`/`BUY_LAND` and exhaustion), and "everything destroys value so a win means burning slower"
+> over-reached — the $1,104-from-$3,000 result is real but it is a *separate* finding about the
+> train/deploy mismatch, not the explanation for 0.990.
+
 
 Both readings were in play — "the league cannot teach" versus "beating old selves is a regression
 check and is supposed to pass".
