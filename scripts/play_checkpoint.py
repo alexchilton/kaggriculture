@@ -345,8 +345,15 @@ def main():
         top = np.argsort(-c)[:9]
         print("  ops (share of the policy's own live-unit actions)")
         print("    " + "  ".join(f"{OP_NAMES[i]}:{c[i] / total:.2%}" for i in top))
+        # FERTILIZE is printed explicitly for the same reason FEED is: it sits outside the top-N
+        # slice above, so "not in the list" was being read as "zero". The policy buys FERTILIZER on
+        # 19.3% of turns and sells on 24.5%, and whether any of it reaches a plant -- FERTILIZE
+        # doubles a watered plant's yield for three days -- decides whether that is sound melon play
+        # or a wash trade paying the spread twice.
         print(f"    FEED:{c[O.FEED] / total:.4%}  CARE:{c[O.CARE] / total:.4%}  "
-              f"HARV:{c[O.HARVEST] / total:.4%}  raw FEED count {c[O.FEED]:,.0f}\n")
+              f"HARV:{c[O.HARVEST] / total:.4%}  raw FEED count {c[O.FEED]:,.0f}")
+        print(f"    FERTILIZE:{c[O.FERTILIZE] / total:.4%} (raw {c[O.FERTILIZE]:,.0f})  "
+              f"COLLECT_FERT:{c[O.COLLECT_FERT] / total:.4%} (raw {c[O.COLLECT_FERT]:,.0f})\n")
 
 
 if __name__ == "__main__":

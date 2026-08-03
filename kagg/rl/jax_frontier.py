@@ -36,6 +36,12 @@ wrong.
 **Constants are measured here, not imported from the meta.** `scripts/bench_jax_agents.py` shows two
 of the three public numbers do *not* transfer to a two-player sandbox:
 
+> **VOID -- the table below was measured with `weed_chance=0`.** That is `J.step`'s default, and with
+> weeds off every game in a batch produces the *identical* final bank: 8 games, 8 identical values,
+> unchanged across seeds. Each figure here is one deterministic board reported as a median over 48.
+> With `--weeds 0.02` the same 8 games span $16,056 to $33,690, and `farm` beats `ranch` 76% rather
+> than 100%. Re-measure before acting on any of it.
+
 | | public meta | measured here |
 |---|---|---|
 | hands | 12 | no effect 8-14; `jax_heuristic` sizes its own crew from job count, so the cap never binds |

@@ -28,7 +28,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-OPPONENTS = ("idle", "carrot", "farm", "ranch", "pool")
+# Every role that has ever held a seat, not the ones a given run happens to use. A run with
+# `--idle-frac 0` logs `wr_idle` as nan and the panel simply omits it; a role missing from this
+# tuple is invisible instead, which is how `carrot` went unplotted after it was added to the pool.
+OPPONENTS = ("idle", "carrot", "farm", "ranch", "home", "pool")
 DAYS = (0, 10, 15, 20, 25)
 
 

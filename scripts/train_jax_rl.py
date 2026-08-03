@@ -2181,6 +2181,20 @@ def main():
         ret_d = batch_data_full["returns"]
         val_d = flatten(traj["value"])
         ev_d = 1.0 - (ret_d - val_d).var() / jnp.maximum(ret_d.var(), 1e-8)
+
+        # **Shaping diagnostics.** `traj["reward"]` holds terminal + shaping; the terminal part is
+        # non-zero only on `done` rows, so differencing gives the shaping contribution without
+        # carrying a second array through the scan.
+        _r = flatten(traj["reward"])
+        _terminal_part = jnp.where(flatten(traj["done"]), _r, 0.0)
+        _shape_part = _r - _terminal_part
+        shape_abs_mean = jnp.abs(_shape_part).mean()
+        shape_share = jnp.abs(_shape_part).sum() / jnp.maximum(jnp.abs(_r).sum(), 1e-8)
+        # The critic's representable range. `rescale_value` maps a sigmoid onto [-margin, 1+margin],
+        # so a return outside that band cannot be predicted and the value loss is bounded below by
+        # the overshoot -- while `ev` stays high, because the predictions remain self-consistent.
+        _lo, _hi = -args.value_margin, 1.0 + args.value_margin
+        ret_clipped = ((ret_d < _lo) | (ret_d > _hi)).mean()
         done_d = batch_data_full["trainable"] & flatten(traj["done"])
         w = done_d.astype(jnp.float32)
         n = jnp.maximum(w.sum(), 1.0)
@@ -2398,6 +2412,20 @@ def main():
             "value_mean": flatten(traj["value"]).mean(),
             "rewarded_frac": rewarded_frac, "ev": ev_d, "ev_signal": ev_sig_d,
             "ret_mean": ret_d.mean(), "ret_std": ret_d.std(),
+            # **Is the shaping doing anything, and is the critic able to represent it.**
+            #
+            # `shape_share` is the share of total absolute reward that came from shaping rather than
+            # from the win/loss. Near 0 means the coefficient is too small to matter; near 1 means it
+            # has become the objective, which invariance does NOT protect against -- the theorem
+            # fixes the optimum, not what PPO does with clipping and finite samples.
+            #
+            # `ret_clipped` is the fraction of GAE returns falling outside `[-margin, 1 + margin]`,
+            # i.e. outside what the sigmoid head can express. **This is the important one.** A clipped
+            # critic looks exactly like a confident one: `explained_variance` stays high because the
+            # predictions are self-consistent, and the error is invisible. Any non-zero reading here
+            # means `--value-margin` is too small and every conclusion from the run is suspect.
+            "shape_share": shape_share, "shape_abs_mean": shape_abs_mean,
+            "ret_clipped": ret_clipped, "ret_min": ret_d.min(), "ret_max": ret_d.max(),
             "terminal_ret_std": terminal_ret_std, "op_counts": op_counts,
             "term_loss_share": term_loss_share, "term_row_share": term_row_share,
             "term_leverage": term_leverage,
@@ -2451,6 +2479,10 @@ def main():
             "update": it,
             "turns": (it + 1) * args.horizon * args.batch,
             "ret_mean": float(stats["ret_mean"]), "ret_std": float(stats["ret_std"]),
+            "shape_share": float(stats["shape_share"]),
+            "shape_abs_mean": float(stats["shape_abs_mean"]),
+            "ret_clipped": float(stats["ret_clipped"]),
+            "ret_min": float(stats["ret_min"]), "ret_max": float(stats["ret_max"]),
             "explained_variance": ev,
             "ev_signal": ev_signal,
             "rewarded_frac": float(stats["rewarded_frac"]),
@@ -2689,11 +2721,21 @@ def main():
             f"lev {row['term_leverage']:.1f}x   "
             f"near{NEAR_TERMINAL_TURNS} rows {row['near_row_share']:.2%} "
             f"vloss {row['near_loss_share']:.2%}\n"
+            # Shaping, and whether the critic can represent what shaping did to the returns.
+            # `CLIP` is printed loudly because a clipped critic reads as a confident one -- `ev`
+            # stays high on self-consistent predictions and nothing else in the log would show it.
+            + (f"         shape {row['shape_share']:.1%} of |r|  mean {row['shape_abs_mean']:.2e}  "
+               f"ret [{row['ret_min']:+.3f}, {row['ret_max']:+.3f}] vs head "
+               f"[{-args.value_margin:+.2f}, {1 + args.value_margin:+.2f}]"
+               + (f"   ** CLIPPED {row['ret_clipped']:.2%} OF ROWS -- RAISE --value-margin **"
+                  if row["ret_clipped"] > 0 else "") + "\n"
+               if args.shaping_coef else "")
             # `OPPONENT_NAMES`, not a hand-written tuple. The literal that was here listed
+            # (the `+` is load-bearing: the block above ends an implicit-concatenation run.)
             # ("idle", "trade", "farm", "ranch", "pool") and had silently dropped `carrot` since it
             # was added -- a seat can be 20% of the batch and invisible on the scoreboard, which is
             # the same species as the census that could not emit FEED and so could not fail on it.
-            f"         vs " + "  ".join(
+            + "         vs " + "  ".join(
                 f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x/d{row[f'draws_{k}']:.0%}"
                 if row[f"games_{k}"] else f"{k}: n/a"
                 for k in OPPONENT_NAMES) + "\n"

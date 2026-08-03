@@ -12,6 +12,14 @@ each other.
 seat order, so seat 0 has an edge on contested trades (`eval_policy.py`'s docstring). Every pair is
 played twice with the seats exchanged.
 
+**Weeds ON, and this is not optional.** `J.step`'s `weed_chance` defaults to 0, and with it off
+every game in a batch produces the *identical* final bank -- 8 games, 8 identical values, unchanged
+across seeds, because the only per-game variation left is the shop schedule and it does not move a
+melon farmer's revenue. A benchmark run that way reports "median over 48 games" while holding one
+sample. At `weed_chance=0.02` the same 8 games span $16,056 to $33,690, a 2x spread, which is the
+distribution any agent comparison has to resolve against. `CLAUDE.md`: *"Seed variance is ~15%.
+Always quote the seed range."*
+
 **`reset_with_shops`, never plain `reset`.** `jax_sim.py:371-377` records that a frozen town buys 140
 wheat a season against the reference's 698, holding end-of-season wheat at $37 instead of $51 and
 milk at $263 instead of $340. A benchmark on a frozen town measures a different game.
@@ -53,7 +61,7 @@ def _zeros_like_actions(a):
     return jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), a)
 
 
-def play(fn_a, fn_b, games, seed):
+def play(fn_a, fn_b, games, seed, weeds=0.02):
     """Seat 0 plays `fn_a`, seat 1 plays `fn_b`. Returns final `[games, 2]` money."""
     state = J.reset_with_shops(games, seed=seed)
 
@@ -72,7 +80,7 @@ def play(fn_a, fn_b, games, seed):
             return jnp.where(m, x, y)
 
         merged = jax.tree_util.tree_map(pick, a, b)
-        return J.step(st, merged), None
+        return J.step(st, merged, weed_chance=weeds), None
 
     state, _ = jax.lax.scan(turn, state, None, length=EPISODE_TURNS)
     return np.asarray(jax.device_get(state.farm.money))
@@ -83,6 +91,10 @@ def main():
     ap.add_argument("--games", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--agents", default=",".join(AGENTS))
+    ap.add_argument("--seeds", type=int, default=3, help="independent boards per pair")
+    ap.add_argument("--weeds", type=float, default=0.02,
+                    help="weed spawn chance. 0 makes every game in a batch identical -- see the "
+                         "module docstring. Only set it to 0 to reproduce a deterministic trace.")
     args = ap.parse_args()
 
     names = [n.strip() for n in args.agents.split(",") if n.strip() in AGENTS]
@@ -97,10 +109,14 @@ def main():
     print(hdr)
     print("-" * len(hdr))
     for a, b in itertools.combinations(names, 2):
-        m0 = play(AGENTS[a], AGENTS[b], args.games, args.seed)              # a in seat 0
-        m1 = play(AGENTS[b], AGENTS[a], args.games, args.seed)              # seats swapped
-        a_money = np.concatenate([m0[:, 0], m1[:, 1]])
-        b_money = np.concatenate([m0[:, 1], m1[:, 0]])
+        am, bm = [], []
+        for sd in range(args.seeds):
+            m0 = play(AGENTS[a], AGENTS[b], args.games, sd, args.weeds)     # a in seat 0
+            m1 = play(AGENTS[b], AGENTS[a], args.games, sd, args.weeds)     # seats swapped
+            am += [m0[:, 0], m1[:, 1]]
+            bm += [m0[:, 1], m1[:, 0]]
+        a_money = np.concatenate(am)
+        b_money = np.concatenate(bm)
         wins = float((a_money > b_money).mean())
         draws = float((a_money == b_money).mean())
         n = len(a_money)
