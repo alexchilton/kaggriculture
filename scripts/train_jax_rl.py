@@ -52,7 +52,7 @@ import optax
 
 from kagg.rl import (commit as CM, curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
                      jax_carrot as CARROT, jax_homestead as HOME, jax_rancher as RANCH,
-                     jax_policy as P, league)
+                     jax_policy as P, league, net_worth)
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
@@ -274,7 +274,7 @@ TEACHER_BUY = (0.455, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.000)
 TEACHER_SELL = (0.367, 0.021, 0.002, 0.019, 0.023, 0.001, 0.070, 0.093, 0.179)
 
 
-def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
+def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coef=0.0):
     """Build the jitted rollout: `horizon` turns of self-play across all phase groups, plus GAE.
 
     `gamma` and `gae_lambda` are pinned to float32. A bare Python float promotes to float64 under
@@ -536,6 +536,29 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # slot has yet completed a genuine reset-to-turn-0 episode.
             reward = jnp.where(
                 (just_done & ~virgin)[:, None], won + 0.5 * tie, 0.0).astype(jnp.float32)
+
+            # **Potential-based shaping on net worth, filling the zeros the terminal reward leaves.**
+            #
+            # There is no new pathway here: `reward` is already a per-turn `[B, 2]` slot that happens
+            # to hold 0.0 on 718 of 719 turns, and GAE already consumes it every turn. This fills it.
+            #
+            # `F(s, s') = gamma * PHI(s') - PHI(s)` leaves the optimal policy **provably** unchanged
+            # (Ng, Harada & Russell 1999); at gamma 1.0 the terms telescope to `PHI(end) - PHI(start)`,
+            # so it cannot pay for a detour. That is what makes it categorically different from the
+            # per-step bank delta `CLAUDE.md` marks NO LONGER IN FORCE -- that one *was* the reward and
+            # changed the objective to margin maximisation, which an Elo ladder does not score.
+            #
+            # Net worth rather than cash, because a cash potential punishes the animal chain at the
+            # moment of investment -- see `kagg/rl/net_worth.py`. At `shaping_coef 0.0` this term is
+            # byte-exactly zero and the run is identical to one made before it existed.
+            #
+            # **Suppressed on the terminal turn**, for the same reason the terminal reward is
+            # suppressed on a virgin slot: `nxt` there is the *reset* board, so `PHI(after)` would be
+            # the opening stake and the difference would book the whole season's net worth as a loss on
+            # its last turn. The telescoping still holds within an episode; only the seam is dropped.
+            if shaping_coef:
+                shaped = net_worth.net_worth_shaping(state, nxt, coef=shaping_coef)
+                reward = reward + jnp.where(just_done[:, None], 0.0, shaped).astype(jnp.float32)
 
             # Restart inside the scan, per group. Resetting only in Python after the rollout lets
             # the simulator keep stepping past turn 719 into a season that does not exist, and
@@ -1300,6 +1323,20 @@ def main():
                          "rows (batch 512, horizon 128, 4 minibatches) would be ~128 GiB. That is "
                          "how the first GPU run OOMed. 256 rows is ~1 GiB and leaves room for the "
                          "rollout buffers alongside.")
+    ap.add_argument("--shaping-coef", type=float, default=0.0,
+                    help="weight on potential-based NET WORTH shaping (`kagg/rl/net_worth.py`). "
+                         "0.0 is byte-exactly off. This is NOT the per-step bank delta CLAUDE.md "
+                         "retired: `F = gamma*PHI(s') - PHI(s)` telescopes to PHI(end)-PHI(start) at "
+                         "gamma 1.0, so the optimal policy is provably unchanged (Ng, Harada & "
+                         "Russell 1999) and only the TIMING of credit moves. Net worth rather than "
+                         "cash because a cash potential punishes the animal chain at the moment of "
+                         "investment. Set --value-margin alongside it or the critic clips.")
+    ap.add_argument("--value-margin", type=float, default=0.0,
+                    help="how far outside [0, 1] the value head may reach. The head is a sigmoid on "
+                         "purpose -- an unbounded critic was measured at 1.315 while ev read +0.98 -- "
+                         "but with shaping a return is terminal + coef*(PHI(end)-PHI(s)), which "
+                         "exceeds those bounds. Widens the guard rather than removing it. Rule of "
+                         "thumb: --shaping-coef times PHI's working range (~0.25 for a $28k season).")
     ap.add_argument("--gamma-per-day", type=float, default=0.97,
                     help="discount per GAME DAY; converted to per-turn internally")
     ap.add_argument("--gae-lambda", type=float, default=0.95)
@@ -1607,7 +1644,8 @@ def main():
         print("  WARNING: estimate is close to the card. Lower --minibatch-size or --horizon.")
     print(f"run dir: {run}")
 
-    model = P.Policy(d_model=args.d_model, n_heads=args.heads, n_layers=args.layers)
+    model = P.Policy(d_model=args.d_model, n_heads=args.heads, n_layers=args.layers,
+                     value_margin=args.value_margin)
     key = jax.random.PRNGKey(args.seed)
     key, sub = jax.random.split(key)
 
@@ -1865,7 +1903,7 @@ def main():
     print(f"tail: scripts/deploy_train.sh watch", flush=True)
 
     rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda,
-                           args.n_phases)
+                           args.n_phases, shaping_coef=args.shaping_coef)
     update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
                                      args.max_grad_norm, optimiser, seat_coef=args.seat_coef,
                                      kl_coef=args.kl_coef, prior_params=prior_params,
@@ -2525,8 +2563,15 @@ def main():
         # over `MAX_UNITS`: not wrong arithmetic, just not showing the thing being decided on.
         # Six of the top seven ops by correlation with money are the wheat -> animal -> product
         # pipeline, so the animal chain is if anything the more important half.
+        # `fert!` (FERTILIZE) was missing here while `fert+` (COLLECT_FERT) was present, so the
+        # census could show the policy *acquiring* fertiliser and never show it *spending* any.
+        # It buys FERTILIZER on 19.3% of turns and sells on 24.5% with the teacher at 0.0/17.9%,
+        # and whether a single unit of it ever reached a plant was not a question the log could
+        # answer. FERTILIZE doubles a watered plant's yield for three days, so the difference
+        # between "sound melon play" and "buy-and-resell churn paying the spread" was invisible.
+        # Third omission of this shape today, after `carrot` and `home` in the opponent scoreboard.
         chain = ("plant", "water", "harv", "drop", "pick",
-                 "place", "feed", "care", "fert+", "pasture")
+                 "place", "feed", "care", "fert+", "fert!", "pasture")
         mix = " ".join(
             f"{n}:{counts[O_NAMES.index(n)] / total_ops:.2%}" for n in chain)
         mix += f"  | noop:{counts[0] / total_ops:.0%}"

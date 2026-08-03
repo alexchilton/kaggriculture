@@ -85,6 +85,17 @@ BUY_BUCKETS = jnp.asarray([0, 1, 2, 5], dtype=jnp.int32)
 UNIT_QTY_BUCKETS = jnp.asarray([1, 2, 5, 10], dtype=jnp.int32)
 
 
+def rescale_value(v, margin):
+    """Map a sigmoid output onto `[-margin, 1 + margin]`, monotone, fixing the midpoint at 0.5.
+
+    Monotone so it cannot reorder states, and midpoint-fixing so a freshly initialised net still
+    predicts 0.5 -- widening the head must not move the initialisation. A module-level function rather
+    than a method so `tests/test_value_head_range.py` can check the endpoints directly instead of
+    hunting for a saturated input.
+    """
+    return v * (1.0 + 2.0 * margin) - margin
+
+
 class Block(nn.Module):
     """Pre-LN transformer block. Pre-LN because post-LN needs a warmup to stay stable."""
 
@@ -111,6 +122,9 @@ class Policy(nn.Module):
     d_model: int = 128
     n_heads: int = 4
     n_layers: int = 3
+    # Half-width of the extra range the value head may reach outside [0, 1]. Ships at 0, which is the
+    # current head exactly; raise it to `--shaping-coef`'s worst-case contribution when shaping is on.
+    value_margin: float = 0.0
 
     @nn.compact
     def __call__(self, tiles, units, glob):
@@ -209,7 +223,16 @@ class Policy(nn.Module):
         # is self-consistently wrong explains its own targets perfectly.
         #
         # A sigmoid makes the impossible unreachable, and costs nothing when the estimate is honest.
-        value = nn.sigmoid(nn.Dense(1, dtype=DTYPE, param_dtype=DTYPE)(gtok)[..., 0])
+        #
+        # **`value_margin` widens the guard instead of removing it.** With potential shaping on, a
+        # state's return is `terminal + coef * (PHI(end) - PHI(s))`, which can sit above 1 (a win with
+        # net worth still climbing) or below 0 (a loss with net worth falling from here). A plain
+        # sigmoid cannot represent either and would silently clip at the bound -- the worst failure
+        # available, because clipping reads as confident prediction rather than as an error. At
+        # `margin = 0.0` this is byte-identical to the head above.
+        value = rescale_value(
+            nn.sigmoid(nn.Dense(1, dtype=DTYPE, param_dtype=DTYPE)(gtok)[..., 0]),
+            self.value_margin)
         return heads, value
 
 
