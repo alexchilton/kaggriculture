@@ -31,6 +31,7 @@ import jax.numpy as jnp                       # noqa: E402
 import numpy as np                            # noqa: E402
 
 from kagg.rl import jax_carrot as CARROT      # noqa: E402
+from kagg.rl import jax_frontier as FRONT     # noqa: E402
 from kagg.rl import jax_heuristic as HEUR     # noqa: E402
 from kagg.rl import jax_homestead as HOME     # noqa: E402
 from kagg.rl import jax_rancher as RANCH      # noqa: E402
@@ -39,6 +40,7 @@ from kagg.sim import jax_sim as J             # noqa: E402
 EPISODE_TURNS = 719          # matches `train_jax_rl.py:81` and `play_checkpoint.py:60`
 
 AGENTS = {
+    "frontier": FRONT.actions,
     "homestead": HOME.actions,
     "farm": HEUR.actions,
     "ranch": RANCH.actions,
