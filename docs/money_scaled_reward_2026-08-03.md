@@ -146,15 +146,81 @@ It also delivers Alex's requirement as an **emergent trajectory** rather than a 
 stays worth 0, $100k ends up worth far more, and the policy is never asked to climb a wall it cannot
 see the bottom of.
 
+## The objection that changes the recommendation
+
+Alex: *"if it learns to win v 100 or 1000 it just learns move and do nothing or bank and do nothing.
+its then hard to learn do something."*
+
+**This is correct and it is the strongest argument against everything above.** Against `idle@$100` the
+winning strategy is: spend nothing, hold the opening $3,000, win. That is one bit, it is immediately
+findable, and it is an **absorbing basin** — once entropy has collapsed onto NOOP, reaching a $12,078
+opponent requires spending money, which makes the policy temporarily *worse* before any revenue
+arrives. The ladder would teach the wrong skill and then make the right one harder to reach.
+
+### The codebase has already been here
+
+`train_jax_rl.py:388-405` exists for exactly this reason. The `trade` opponent PASSes every unit,
+buys wheat early and sells it late, and banks **$3,989** against a $3,000 start using zero crew
+actions — because `BUY_PRODUCT` and `SELL` settle in the market phase and cost nothing a farmer could
+otherwise be doing. Its stated purpose:
+
+> *"a do-nothing policy now **loses** to this seat rather than drawing with it, which is the whole
+> point: it removes the 0.5 payoff for inaction instead of trying to regularise around it."*
+
+**`--trade-frac 0.00` in the live run.** The existing counter to the exact trap the graded ladder
+would dig is switched off.
+
+### The general form: money is the wrong axis for a curriculum
+
+There are two routes to "more money at the end":
+
+| route | difficulty | when it pays |
+|---|---|---|
+| **do not spend** | one bit | immediately |
+| **produce** | a plant → water → wait → harvest → sell chain | hundreds of turns later |
+
+Any ladder graded on *final money* pays the first one first, because it is strictly easier and
+strictly sooner. That is not a flaw in the stake distribution — it is a property of the axis. Making
+the ladder finer, convex, or adaptive does not change it.
+
+**Time-to-payoff is the right axis.** Resume an episode near a ripening crop and the reward for
+acting arrives inside GAE's ~20-turn reach, so "do something" is what gets paid. That is P2b, sourced
+from the policy's own rollouts.
+
+So this objection argues its way back to P2b, and correctly. It also inverts the ranking I gave
+earlier today, which put P2b last on the grounds that it adds a third mechanism before the first two
+are measured. That ranking was made before we knew the reward was constant over the occupied range —
+P2b is not a third mechanism competing for credit, it is the only proposal on the table that grades
+difficulty on the axis where acting is what pays.
+
+### What survives of the stake idea
+
+Graded stakes are still useful, but **the support must sit above what inaction achieves**, so
+do-nothing never wins:
+
+$$S \sim \mathcal{D} \text{ on } [\$3{,}989,\ \$100{,}000] \qquad \text{not } [\$0,\ \$3{,}000]$$
+
+That grades the difficulty of *earning* rather than the difficulty of *thrift*, and it is where the
+convexity Alex asked for belongs — a $5 win cannot occur at all, and $100k is worth far more than
+$4k. But it yields no gradient until the policy can earn *something*, which is precisely what P2b
+supplies.
+
+They compose, in this order: **P2b makes earning reachable; graded stakes above $3,989 grade how much
+earning is required.**
+
 ## Recommendation
 
 1. **Do not scale the terminal reward with money.** It optimises margin, which the ladder does not
    score, and it pays for hoarding against opponents we cannot yet beat.
-2. **Use a graded-stake `idle` instead** if the 30M read shows the step function is real. Start with
-   uniform $[0, 3000]$ because it is one line and closes the measured gap; move to a stake drawn from
-   the trainee's own recent `bank_final` if and when $3,000 becomes the new plateau. Same gradient a
-   money-scaled reward would give, correct saturation, no change to the loss, reversible by a flag.
-3. **Keep per-step bank delta in reserve, not off the table.** It is policy-invariant and the
+2. **Turn `trade` on now, regardless of anything else.** It is implemented, it costs a flag, and it
+   is the existing mechanism for removing the 0.5 payoff for inaction. Leaving it at 0% while
+   discussing how to avoid teaching inaction is the wrong way round.
+3. **Do not grade stakes below $3,989.** Anything under what do-nothing achieves teaches thrift and
+   digs the absorbing basin. If graded stakes are used, put the support above it, where the
+   convexity Alex asked for actually belongs.
+4. **P2b moves up the list, not down.** It is the only proposal that grades difficulty on
+   time-to-payoff rather than on final money, which is the axis where acting is what gets paid.
+5. **Keep per-step bank delta in reserve, not off the table.** It is policy-invariant and the
    objection to it is a decision rather than a refutation. If the graded opponent lands and the
    policy still cannot cross $3,410 → $12,078 — the gap that needs real farming — a potential-based
    money term over that interval is the next thing worth arguing about, and it should be argued then,
