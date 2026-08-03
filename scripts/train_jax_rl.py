@@ -51,7 +51,7 @@ import numpy as np
 import optax
 
 from kagg.rl import (commit as CM, curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
-                     jax_carrot as CARROT, jax_rancher as RANCH,
+                     jax_carrot as CARROT, jax_homestead as HOME, jax_rancher as RANCH,
                      jax_policy as P, league)
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
@@ -232,14 +232,16 @@ def ema_update(target, params, decay):
 # Shares are now sampled rather than partitioned exactly, which gives up the exactness the strided
 # permutation was written for -- at batch 256 the realised share of a p=0.30 role has an s.d. of
 # ~2.9%, and `role_counts` logs what actually happened so this is checked rather than assumed.
-ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH, ROLE_CARROT = range(7)
-N_ROLES = 7
-ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch", "carrot")
+(ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH, ROLE_CARROT,
+ ROLE_HOME) = range(8)
+N_ROLES = 8
+ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch", "carrot", "home")
 
 # One list, because the per-opponent census and the opponent-by-day cross-tab have to agree on
 # both the names and the order or the two views of the same rows disagree silently.
 OPPONENT_FLAGS = (("idle", "vs_idle"), ("trade", "vs_trade"), ("farm", "vs_farm"),
-                  ("ranch", "vs_ranch"), ("carrot", "vs_carrot"), ("pool", "vs_pool"))
+                  ("ranch", "vs_ranch"), ("carrot", "vs_carrot"), ("home", "vs_home"),
+                  ("pool", "vs_pool"))
 OPPONENT_NAMES = tuple(n for n, _ in OPPONENT_FLAGS)
 
 PRODUCT_NAMES = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
@@ -300,6 +302,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             use_idle = roles == ROLE_IDLE
             use_ranch = roles == ROLE_RANCH
             use_carrot = roles == ROLE_CARROT
+            use_home = roles == ROLE_HOME
 
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
@@ -357,7 +360,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                     take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
                 actions)
             take_opp = take_opp | take_idle | jnp.broadcast_to(
-                (use_trade | use_farm | use_ranch | use_carrot)[:, None] & (seat == 1),
+                (use_trade | use_farm | use_ranch | use_carrot | use_home)[:, None]
+                & (seat == 1),
                 (batch, 2)).reshape(-1)
 
             # **Commitments are resolved here, between the policy and the simulator.**
@@ -459,6 +463,18 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 lambda mine, theirs: jnp.where(
                     ranch_seat.reshape(ranch_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
                 sim_actions, ranch)
+
+            # **The only seat that farms and ranches at once.** Every other opponent is a
+            # specialist, so a trainee can climb the whole pool without meeting a board that both
+            # contests the crop market and keeps livestock. It is composed from the two above rather
+            # than ported -- weaker than `farm` on bank ($24,957 vs $30,292, 0/48) and here for its
+            # strategy class, not its strength. See `kagg/rl/jax_homestead.py`.
+            home_seat = jnp.broadcast_to(use_home[:, None] & (seat == 1), (batch, 2))
+            home = HOME.actions(state)
+            sim_actions = jax.tree_util.tree_map(
+                lambda mine, theirs: jnp.where(
+                    home_seat.reshape(home_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
+                sim_actions, home)
 
             farm_seat = jnp.broadcast_to(use_farm[:, None] & (seat == 1), (batch, 2))
             heur = HEUR.actions(state)
@@ -602,7 +618,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # of a cross-play game, so the live policy's side of one can be picked out.
                 crossplay=jnp.broadcast_to(
                     (use_opp | use_idle | use_trade | use_farm | use_ranch
-                     | use_carrot)[:, None],
+                     | use_carrot | use_home)[:, None],
                     (batch, 2)).reshape(-1),
                 # Games against a *pool checkpoint* specifically. `crossplay` covers every scripted
                 # seat too, which is right for the win-rate metric and wrong for deciding how hard
@@ -618,6 +634,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 vs_farm=jnp.broadcast_to(use_farm[:, None], (batch, 2)).reshape(-1),
                 vs_ranch=jnp.broadcast_to(use_ranch[:, None], (batch, 2)).reshape(-1),
                 vs_carrot=jnp.broadcast_to(use_carrot[:, None], (batch, 2)).reshape(-1),
+                vs_home=jnp.broadcast_to(use_home[:, None], (batch, 2)).reshape(-1),
                 roles=roles,
                 # **Which unit-turns were the policy's own decision**, in network-flat layout.
                 # False on the intermediate turns of a commitment: the unit was walking a path it
@@ -1375,6 +1392,17 @@ def main():
                          "It is the only opponent in the pool that can punish a bad farm: the other "
                          "two are beatable by a fixed amount, so they are a floor, while this one "
                          "has real play in it. 0 disables.")
+    ap.add_argument("--homestead-frac", type=float, default=0.0,
+                    help="fraction of games whose seat 1 is `jax_homestead`, the only opponent that "
+                         "farms AND ranches at once. Measured head to head (bench_jax_agents.py): "
+                         "it banks $24,957 against `jax_heuristic`'s $30,292 and loses to it 0/48, "
+                         "so it is NOT the strongest seat available and is not here to be one. It "
+                         "is here because every other opponent is a specialist -- `farm` has no "
+                         "FEED, no CARE and `buy_animal=zeros`, `ranch` grows nothing and buys all "
+                         "295 of its wheat orders -- so a trainee can climb the whole pool without "
+                         "ever meeting a seat that contests the crop market AND punishes ignoring "
+                         "livestock. The public meta runs 8 cows, 5 sheep, 5 strawberry plots and "
+                         "12 hands (`docs/public_meta_2026-08-03.md`); nothing in this pool did.")
     ap.add_argument("--carrot-frac", type=float, default=0.0,
                     help="fraction of games whose seat 1 is `jax_carrot`, a port of the public "
                          "baseline `makimakiai/kaggriculture-carrot-fleet-simple-python-baseline`. "
@@ -1833,10 +1861,11 @@ def main():
     # now explicitly rather than by falling through a partition.
     role_p = np.array([0.0, args.opponent_frac, args.farm_frac,
                        args.trade_frac, args.idle_frac, args.ranch_frac,
-                       args.carrot_frac], dtype=np.float64)
+                       args.carrot_frac, args.homestead_frac], dtype=np.float64)
     if role_p[1:].sum() > 1.0:
         raise SystemExit(
-            f"opponent/farm/trade/idle/ranch/carrot fracs sum to {role_p[1:].sum():.2f} > 1.0")
+            "opponent/farm/trade/idle/ranch/carrot/homestead fracs sum to "
+            f"{role_p[1:].sum():.2f} > 1.0")
     role_p[ROLE_SELF] = 1.0 - role_p[1:].sum()
     print("seat-1 roles, sticky per episode: "
           + "  ".join(f"{n}:{p:.0%}" for n, p in zip(ROLE_NAMES, role_p)))
@@ -2600,10 +2629,14 @@ def main():
             f"lev {row['term_leverage']:.1f}x   "
             f"near{NEAR_TERMINAL_TURNS} rows {row['near_row_share']:.2%} "
             f"vloss {row['near_loss_share']:.2%}\n"
+            # `OPPONENT_NAMES`, not a hand-written tuple. The literal that was here listed
+            # ("idle", "trade", "farm", "ranch", "pool") and had silently dropped `carrot` since it
+            # was added -- a seat can be 20% of the batch and invisible on the scoreboard, which is
+            # the same species as the census that could not emit FEED and so could not fail on it.
             f"         vs " + "  ".join(
                 f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x/d{row[f'draws_{k}']:.0%}"
                 if row[f"games_{k}"] else f"{k}: n/a"
-                for k in ("idle", "trade", "farm", "ranch", "pool")) + "\n"
+                for k in OPPONENT_NAMES) + "\n"
             + day_line
             + grid_line
             + f"         ops {mix}\n"

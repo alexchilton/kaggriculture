@@ -265,9 +265,21 @@ terminal_blind = pytest.mark.xfail(
 
 
 @needs_ckpt
-@terminal_blind
 def test_a_hopeless_position_one_turn_from_the_bell_is_valued_near_zero():
-    """$0 against $30,000 with one turn left is a loss with probability 1. Measured: 0.169."""
+    """$0 against $30,000 with one turn left is a loss with probability 1. Measured: 0.169.
+
+    **The `terminal_blind` marker was removed on 2026-08-03 because this began passing**, which is
+    what the marker's own reason instructed. It went `[XPASS(strict)]` against
+    `day0-long-20260803-140326` at update 750 -- the same run that took `wr_farm` from 0.000 to 0.254
+    and `bank_final_med` from $0 to $18,332.
+
+    Nothing was done to the critic to achieve this. No terminal-row upweighting was ever shipped;
+    P1's intervention was never built. The `seat_loss`/discount fix (`--gamma-per-day 1.0`,
+    `docs/seat_sum_fights_the_discount_2026-08-03.md`) removed a regulariser that was demanding an
+    impossible sum, and the critic then learned the clock on its own given enough turns. That is the
+    honest causal story and it is weaker than "the fix worked": the run also had a different learning
+    rate and 6M more turns than the checkpoint the failure was measured on.
+    """
     model = _model()
     v = _value(model, _load(model), _position(LAST_TURN, (0.0, 30_000.0)))
     assert v[0] < 0.05, f"V(hopeless, final turn) = {v[0]:.3f}; the game is over and lost"
