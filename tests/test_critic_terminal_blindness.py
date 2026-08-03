@@ -63,13 +63,21 @@ def _architecture(raw):
     return layers, d_model, n_heads
 
 
+# A critic below this many updates says nothing about terminal blindness -- it has barely left its
+# initialisation, and asserting anything about its calibration measures the init, not the training.
+# Matching on architecture alone was not enough: a local smoke run takes the default `--d-model`, so
+# it *is* production-shaped, and a 20-update smoke checkpoint was selected over a real run and duly
+# failed the seat-sum assertion. Shape is not maturity.
+MIN_TRAINED_UPDATES = 500
+
+
 def _production_checkpoint():
-    """The newest checkpoint built at the *production* architecture, or None.
+    """The newest mature checkpoint at the *production* architecture, or None.
 
     Deliberately not a fixed run name -- these assertions are meant to hold against whatever the
     project's current critic is, and a hard-coded path would quietly stop testing anything the
-    moment training moved on. `KAGG_CRITIC_CKPT` overrides, which is how the run on the training box
-    is pointed at without copying it down.
+    moment training moved on. `KAGG_CRITIC_CKPT` overrides and bypasses both filters, which is how
+    the run on the training box is pointed at without copying it down.
     """
     import os
 
@@ -80,8 +88,12 @@ def _production_checkpoint():
     for path in sorted(RUNS.glob("*/latest.pkl"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             with open(path, "rb") as fh:
-                if _architecture(pickle.load(fh)["params"]) == want:
-                    return path
+                ck = pickle.load(fh)
+            if _architecture(ck["params"]) != want:
+                continue
+            if int(ck.get("update", 0)) < MIN_TRAINED_UPDATES:
+                continue
+            return path
         except (KeyError, EOFError, pickle.UnpicklingError):
             continue
     return None
@@ -290,9 +302,23 @@ def test_the_same_lead_is_worth_more_at_the_bell_than_at_the_opening():
 
 
 @needs_ckpt
+@pytest.mark.xfail(
+    strict=False,
+    reason="P1: holds on some terminal-blind critics and inverts on others -- see the docstring")
 def test_a_certain_outcome_is_valued_further_from_a_toss_up_than_an_uncertain_one():
-    """Ordering only -- no thresholds. Even a badly calibrated critic must get this right, so a
-    failure here says the day feature is not reaching the decision at all."""
+    """Ordering only -- no thresholds. I wrote this expecting even a badly calibrated critic to get it
+    right, so that a failure would mean the day feature was not reaching the decision at all.
+
+    **That expectation was wrong, and the wrongness is the finding.** `league1-20260803-054444` passes
+    it; `ppo-20260801-234204` (1,300 updates, same architecture) *inverts* it and values a hopeless
+    position higher at the bell than at the opening. So the sign of the clock's effect is not even
+    stable across checkpoints of the same lineage -- which is a stronger statement than "the magnitude
+    is small", and consistent with the clock contributing noise rather than signal.
+
+    Non-strict `xfail` for exactly that reason: strict would fail on the checkpoints where it happens
+    to hold, and "it depends which broken critic you look at" is the honest status. It becomes a real
+    assertion again once the critic is fixed.
+    """
     model = _model()
     params = _load(model)
     crushed = _value(model, params, _position(LAST_TURN, (0.0, 30_000.0)))[0]
