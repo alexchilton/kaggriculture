@@ -71,11 +71,52 @@ stake = IDLE_STAKE[drawn]                       # $3,000 for every non-graded ro
 fresh_money = fresh.farm.money.at[:, 1].set(stake)
 ```
 
-**Separate roles, not one role with a random stake.** A single `ROLE_IDLE` with a sampled stake would
-collapse all five rungs into one `wr_idle` and hide exactly the ladder we are trying to watch. Five
-roles costs entries in `ROLE_NAMES`, `role_p`, the CLI fracs and the `wr_*`/`draws_*`/`games_*` log
-fields — mechanical, but it is five places and `CLAUDE.md`'s rule about adding an op to `SCRIPT_OPS`
-and `_dense_actions` in the same commit is the same species of rule.
+**Separate roles, not one role with a random stake — but only at five rungs.** A single `ROLE_IDLE`
+with a sampled stake collapses the rungs into one `wr_idle` and hides the ladder. Five roles costs
+entries in `ROLE_NAMES`, `role_p`, the CLI fracs and the `wr_*`/`draws_*`/`games_*` log fields —
+mechanical, but it is five places each.
+
+## Granularity, and why the limit of it is the best version
+
+Alex: *"could also make it more granular if needed."* It should be, and the limit case is the one
+worth building, because it removes the step function entirely rather than replacing it with a finer
+staircase.
+
+Draw the stake **uniformly on $[0, 3{,}000]$** per episode instead of from a fixed set. Then for a
+trainee finishing on bank $B$ in that range:
+
+$$\mathbb{E}[\text{reward}] = P(B > S) = \frac{B}{3{,}000}, \qquad S \sim U[0, 3{,}000]$$
+
+**The expected terminal reward becomes exactly linear in final bank across the whole dead interval.**
+Every dollar not burned raises expected reward by a measurable amount. That is dense credit
+assignment on the money axis, obtained from a strictly terminal win/loss reward, with no shaping and
+no change to the loss function — `won = money > money[:, ::-1]` is untouched.
+
+Compare the three options over $[0, \$3{,}000]$:
+
+| stake scheme | expected reward as a function of final bank |
+|---|---|
+| today (fixed $3,000) | one step, at $3,000. Zero gradient everywhere below. |
+| five fixed rungs | a five-step staircase. Gradient only at five points. |
+| **uniform $[0, 3{,}000]$** | **a straight line. Gradient everywhere.** |
+
+It is also *less* code than five roles: one `ROLE_IDLE`, one extra `jax.random.uniform` beside the
+existing `jax.random.categorical`, and no new entries in `ROLE_NAMES`, `role_p` or the CLI. The
+per-rung visibility is recovered by bucketing the log — record the drawn stake per game and report
+`wr_idle` in, say, six buckets. Bucketing a logged scalar is a reporting change, not a training one.
+
+**The policy can act on it, because it can see it.** `opp_money` is in the observation (`:306`), so
+the trainee knows its bar at turn 0 of every episode: coast when the bar is $80, play for revenue
+when it is $2,900. That is strictly more informative than a fixed bar, and it is the behaviour we
+want anyway.
+
+Two things to watch:
+
+- A random bar adds outcome variance. Here that is the point — the run's problem is that variance is
+  *absent* — but it does add noise to the advantage, so `ev_signal` should be read against the
+  bucketed win rates rather than alone.
+- The interval is a choice. $U[0, 3{,}000]$ makes the reward linear over exactly the range the policy
+  occupies today. If it clears $3,000 and stalls, widen the upper end rather than adding rungs.
 
 ## Checks that do *not* break
 
