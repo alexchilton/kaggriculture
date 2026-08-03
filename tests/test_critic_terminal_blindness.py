@@ -139,6 +139,51 @@ def _position(turn, money):
     )
 
 
+# ---- the seat-sum constraint against the discount --------------------------------------------
+
+
+def _seat_sum_target(gamma_per_day, turn):
+    """What `V(seat0) + V(seat1)` must equal, from the reward definition alone.
+
+    The reward is terminal and binary and exactly one seat wins, so
+    `V0 + V1 = gamma^(turns remaining) * (P(seat0 wins) + P(seat1 wins)) = gamma^(turns remaining)`
+    for every state, decided or not.
+    """
+    return (gamma_per_day ** (1.0 / J.TURNS_PER_DAY)) ** (LAST_TURN + 1 - turn)
+
+
+def test_the_seat_sum_regulariser_targets_one_which_only_gamma_one_can_reach():
+    """**`seat_loss` is not merely insufficient -- at gamma < 1 it is wrong.**
+
+    `train_jax_rl.py:1044` is `square(pairs.sum(-1) - 1.0)` on every row, at `--seat-coef 1.0`. The
+    default `--gamma-per-day` is 0.97, so the achievable sum runs 0.402 at turn 0 up to 1.0 at the
+    bell, and the regulariser demands 1.0 throughout -- injecting a 0.598 error where most rows are.
+    Sitting near 0.5/0.5 and flat is the least-loss response, which is exactly the observed failure.
+
+    See `docs/seat_sum_fights_the_discount_2026-08-03.md`. This test pins the arithmetic so the
+    inconsistency cannot be reintroduced by changing the gamma default alone.
+    """
+    assert _seat_sum_target(1.0, 0) == pytest.approx(1.0), "gamma 1.0 is the case seat_loss assumes"
+    assert _seat_sum_target(1.0, LAST_TURN) == pytest.approx(1.0)
+
+    # The shipped default, which no launch script has ever overridden.
+    assert _seat_sum_target(0.97, 0) == pytest.approx(0.402, abs=0.002)
+    assert _seat_sum_target(0.97, LAST_TURN) == pytest.approx(0.999, abs=0.002)
+
+
+def test_a_discounted_run_must_not_also_use_the_seat_sum_regulariser():
+    """The guard the launch scripts lacked, stated as a rule rather than a hope.
+
+    Either resolution is fine -- gamma 1.0 with the constraint, or a discount with the target changed
+    to `gamma^(turns remaining)` -- but the combination shipped by default is neither.
+    """
+    for gamma in (0.97, 0.99, 0.995):
+        early = _seat_sum_target(gamma, 0)
+        assert early < 0.95, (
+            f"gamma-per-day {gamma} puts the true seat sum at {early:.3f} on turn 0, so a "
+            "seat_loss targeting 1.0 is pushing the critic away from the truth")
+
+
 # ---- the head is not the limitation ----------------------------------------------------------
 #
 # These need no checkpoint. They exist so that nobody reaches for an architecture change: the bound
