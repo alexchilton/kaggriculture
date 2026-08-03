@@ -6,7 +6,7 @@ the from-scratch baseline, from the trainer's own startup banner. Run stopped af
 
 ## The two lines
 
-`train_jax_rl.py:1044`
+`train_jax_rl.py:1094`
 
 ```python
 seat_loss = jnp.square(pairs.sum(axis=-1) - 1.0).mean()
@@ -14,7 +14,7 @@ seat_loss = jnp.square(pairs.sum(axis=-1) - 1.0).mean()
 
 applied to **every row**, at `--seat-coef 1.0` — the same order as the value loss at `--vf-coef 0.5`.
 
-`train_jax_rl.py:1236`
+`train_jax_rl.py:1286`
 
 ```python
 ap.add_argument("--gamma-per-day", type=float, default=0.97, ...)
@@ -94,6 +94,13 @@ constraint is exactly correct at every turn, which is presumably the assumption 
    failing test first, and contradicts a decision on record.
 
 Do not do both. They are alternatives.
+
+**Resolution taken:** (1), passed as `--gamma-per-day 1.0` on the command line.
+The code default at `:1286` is still `0.97` and was deliberately left alone — changing it would
+silently alter every historical launch script, and the flag makes the choice visible in the run's own
+banner.
+Both arms of the learning-rate probe (`docs/lr_probe_2026-08-03.md`) carry it, so every number in
+that comparison is measured against the corrected loss.
 
 ## What this does to P1
 
