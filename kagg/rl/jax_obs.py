@@ -30,6 +30,11 @@ _YS = jnp.arange(J.BOARD * J.BOARD) // J.BOARD
 N_CROPS = J.N_CROPS
 N_ANIMAL_KINDS = len(J.ANIMAL_STRUCTURE)
 
+# The trailing `opponent` block of `glob`: the other seat's board summary. Named because three
+# separate things below are expressed relative to it, and a literal 14 in each is three chances to
+# drift apart.
+_OPPONENT_WIDTH = N_KINDS + N_CROPS + N_ANIMAL_KINDS          # 14
+
 # **These three are asserted against the real arrays by
 # `tests/test_train_metrics.py::test_the_declared_feature_widths_match_the_arrays`.** All three had
 # gone stale -- UNIT_FEATURES said 16 against an actual 28, unchanged since the nearest-job geometry
@@ -38,12 +43,34 @@ N_ANIMAL_KINDS = len(J.ANIMAL_STRUCTURE)
 # that lies is the kind of thing that gets trusted later.
 TILE_FEATURES = N_KINDS + N_CROPS + N_ANIMAL_KINDS + 13      # 27
 UNIT_FEATURES = 4 + J.N_ITEMS + 4 * 3                        # 28
-GLOBAL_FEATURES = 3 + 2 + J.N_PRODUCTS * 2 + N_CROPS + J.N_ITEMS + 3 + 2 + 14   # 59
+# The `+ 3` before the opponent block is `land_afford`, `hire_afford` and `rehire_afford` -- the
+# third arrived with P3 and moved this from 59 to 60. Written as `_OPPONENT_WIDTH` rather than a
+# literal 14 so the next feature cannot make this constant lie again.
+GLOBAL_FEATURES = (3 + 2 + J.N_PRODUCTS * 2 + N_CROPS + J.N_ITEMS + 3 + 3
+                   + _OPPONENT_WIDTH)                        # 60
 
 # Fixed scales. Chosen from measured ranges, and frozen so checkpoints stay comparable.
 MONEY_SCALE = 50_000.0
 PRICE_SCALE = 250.0
 INVENTORY_SCALE = 500.0
+
+# **Cost to rebuild a crew of N from the lone farmer every night leaves you with.**
+#
+# `HIRE_REBUILD_COST[n] == sum(HIRE_COST[:n - 1])`, so index by `n_units` directly. Built as a
+# prefix sum rather than computed inline because the quantity is a *table lookup* on the simulator's
+# own cost ladder -- deriving it in the encoder would leave two expressions that could drift.
+# `[0]` and `[1]` are both 0: a farm with one unit has nothing to re-hire.
+HIRE_REBUILD_COST = jnp.concatenate([
+    jnp.zeros((1,), dtype=jnp.float32),
+    jnp.cumsum(jnp.concatenate([jnp.zeros((1,), dtype=jnp.float32),
+                                J.HIRE_COST.astype(jnp.float32)]))[:-1],
+])
+
+# Column offsets from the END of `glob`, so inserting a feature above them cannot shift them and
+# silently repoint a test or a diagnostic at the wrong number. `opponent` is the trailing block.
+REHIRE_AFFORD_INDEX = -(1 + _OPPONENT_WIDTH)
+HIRE_AFFORD_INDEX = -(2 + _OPPONENT_WIDTH)
+LAND_AFFORD_INDEX = -(3 + _OPPONENT_WIDTH)
 
 
 def _one_hot(x, n):
@@ -246,6 +273,33 @@ def encode(state):
     next_hire = J.HIRE_COST[jnp.minimum(farm.hires_today, J.MAX_UNITS)]
     hire_afford = jnp.minimum(next_hire / safe_money, 4.0)
 
+    # **What the crew already owned costs to KEEP, as a share of the bank.**
+    #
+    # There is no upkeep line in this game -- `_end_of_day` and `_night` move no money -- but
+    # `_night` does `n_units = ones_like(n_units)` (`jax_sim.py:1138`), so the crew is dismissed
+    # every night and a crew of N is *rented* at `sum(HIRE_COST[:N-1])` every morning. `HIRE_COST`
+    # is Fibonacci: $33/day at eight units, $54 at nine, $143 at eleven, $376 at thirteen.
+    #
+    # **Measured, this is the largest single drain in the game.** On the stopped `league1`
+    # checkpoint the per-day hire column reads -54, -88, -88, -116, -143, -88, -143 through the back
+    # half of the season -- crews of 9, 10 and 11 rebuilt each morning -- totalling **-$2,122**
+    # against the season's entire gross sales of $2,300. It did not move when the frozen-market bug
+    # was fixed, so it is not a pricing artifact.
+    #
+    # **`hire_afford` above cannot express it, and not by a small margin.** It reads
+    # `HIRE_COST[hires_today]`, and `hires_today` resets each morning, so at the moment the day's
+    # hiring decision is taken `next_hire` is `HIRE_COST[0]` = **$1** -- identical for a lone farmer
+    # and for a crew of eleven. That is a true statement about the *first* hire and says nothing
+    # about the $143 the day's programme costs, nor that the same bill falls again tomorrow and
+    # every day to the bell.
+    #
+    # A fact, not a judgment: it states the price of a position already held and expresses no
+    # opinion about whether to hold it -- the same side of `CLAUDE.md`'s line as `land_afford`.
+    # Clipped at 4.0 like both neighbours, so one ratio cannot dominate the global token when the
+    # bank approaches zero; above 4x the bank the crew is unaffordable either way.
+    rehire_afford = jnp.minimum(
+        HIRE_REBUILD_COST[jnp.clip(farm.n_units, 0, J.MAX_UNITS)] / safe_money, 4.0)
+
     glob = jnp.concatenate(
         [
             (farm.money / MONEY_SCALE).astype(jnp.float32)[..., None],
@@ -263,6 +317,7 @@ def encode(state):
             (farm.hires_today / 12.0).astype(jnp.float32)[..., None],
             land_afford.astype(jnp.float32)[..., None],
             hire_afford.astype(jnp.float32)[..., None],
+            rehire_afford.astype(jnp.float32)[..., None],
             opponent,
         ],
         axis=-1,

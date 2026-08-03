@@ -248,11 +248,29 @@ def migrate_params(old, template):
         raise ValueError(
             f"checkpoint does not match this architecture; missing {missing}, unexpected {extra}")
 
-    out, expanded, padded = {}, [], []
+    out, expanded, padded, widened_input = {}, [], [], []
     for path, new_leaf in flat_new.items():
         o = jnp.asarray(flat_old[path])
         if o.shape == new_leaf.shape:
             out[path] = o
+        elif (o.ndim == 2 and new_leaf.ndim == 2
+                and o.shape[1:] == new_leaf.shape[1:]
+                and o.shape[0] < new_leaf.shape[0]):
+            # **An observation gained a feature, so an input projection's LEADING axis grew.**
+            #
+            # Every other branch here handles growth on the *trailing* axis -- the op head widening,
+            # the op-axis tiling. A `glob`/`tiles`/`units` feature instead grows `kernel` from
+            # `[F_old, d_model]` to `[F_new, d_model]`, and without this branch nothing loads at all:
+            # not the BC checkpoints, and not `--kl-prior`, which the project records as the change
+            # that reversed its decline. That trap is what made P3 the expensive half of the feature.
+            #
+            # **Zero rows, so day-one behaviour is bit-identical.** The new feature contributes
+            # `0 * x = 0` to the projection until it is trained, which is the same argument the op
+            # head's zero padding rests on: an input nobody has data on starts neither favoured nor
+            # suppressed. The trained rows are copied untouched, so no learned weight moves.
+            pad = jnp.zeros((new_leaf.shape[0] - o.shape[0],) + o.shape[1:], o.dtype)
+            out[path] = jnp.concatenate([o, pad], axis=0)
+            widened_input.append("/".join(path))
         elif (o.ndim == new_leaf.ndim and o.shape[:-1] == new_leaf.shape[:-1]
                 and o.shape[-1] < new_leaf.shape[-1]
                 and new_leaf.shape[-1] % o.shape[-1] != 0
@@ -290,7 +308,13 @@ def migrate_params(old, template):
         raise ValueError(
             f"expected to widen exactly the op head (kernel + bias), widened {len(padded)}: "
             f"{sorted(padded)}")
-    if not expanded and not padded:
+    # An observation change touches exactly one kernel per widened input block. More than that means
+    # something other than a feature addition is being silently reshaped.
+    if len(widened_input) > 3:
+        raise ValueError(
+            f"widened {len(widened_input)} input projections: {sorted(widened_input)}. At most one "
+            f"per observation block (tiles, units, glob) can grow from adding features.")
+    if not expanded and not padded and not widened_input:
         raise ValueError("nothing was migrated; the checkpoint already matches this architecture")
     return unflatten_dict(out)
 
