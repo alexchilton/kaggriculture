@@ -45,6 +45,7 @@ import numpy as np
 
 from kagg.il import bc, replays
 from kagg.sim import jax_sim as J
+from kagg.sim import tiles as T
 
 # Sampled turns are drawn from a window around the target day rather than from the exact turn, so a
 # schedule step does not present one board repeatedly across the batch.
@@ -124,6 +125,74 @@ def _stack(states):
         unlock_day=cat("unlock_day"),
         key=states[0].key,
     )
+
+
+def chain_states(n, wheat=12, plots=6, herd=3, crop=0, start_day=25):
+    """A pristine board with the production chain already half-built, late in the season.
+
+    **The problem, measured.** The policy will not buy animals or land, and over a full night those
+    rates *fell* -- animals 0.0048 -> 0.0012, land 0.0014 -> 0.0006. That is not stubbornness, it is
+    correct. Buying an animal is a certain loss unless PLACE, PICKUP and FEED all follow: an animal
+    escapes after two unfed nights and first yield is 4-8 days out. Every prefix of the chain is
+    punished, so PPO cannot discover a five-step sequence whose every initial segment loses money.
+    What it learnt instead was frugality -- a full season against `jax_carrot` went 3,000 -> 2,988,
+    dead flat, FEED firing zero times. It preserves capital and produces nothing, which beats an
+    idle seat and can never beat the farmer's $23,783.
+
+    **The fix is what `commit.py` already did, applied to the economic chain instead of the spatial
+    one.** Commitment did not teach the policy to walk better; it shortened the credit horizon so a
+    walk could pay off inside it. This does the same for production: animals already placed, wheat
+    already in the shed, crops already planted and watered and carrying yield. FEED then pays off in
+    ONE step rather than five, and HARVEST is legal immediately rather than after surviving
+    plant -> water -> wait.
+
+    **`start_day` is the other half, and arguably the more important one.** A half-built farm at
+    turn 0 still asks the policy to hold the chain together for thirty days. At day 25 there are ~5
+    game-days left, so the episode is ~120 turns against day 0's 719 -- six times shorter -- and the
+    only thing that fits in the window is the last link: feed what you have, harvest what is in the
+    ground, sell before the bell. Nothing else is learnable there, which is the point. It also makes
+    terminals ~6x cheaper per slot, which this run is separately short of.
+
+    **This is a shortened horizon, not a demonstration.** It says nothing about which animal, which
+    crop, when to buy, or how big a herd -- all readable off the replays, all strategy the policy
+    would inherit rather than discover. It asserts only that a half-built farm is a state worth
+    being able to value, which is a claim about credit assignment. Money is left at the full $3,000
+    deliberately: the assets are the gift, so if the policy still cannot convert them into a win,
+    the problem was never capital.
+    """
+    import jax.numpy as jnp
+
+    st = J.reset(n, phase=np.full(n, int(start_day) * J.TURNS_PER_DAY, dtype=np.int64))
+    tiles, farm = st.tiles, st.farm
+
+    # Only tiles that start unlocked and empty; the locked quadrants stay locked.
+    free = np.flatnonzero(np.asarray(tiles.kind[0, 0]) == T.EMPTY)
+    plot_ix, herd_ix = free[:plots], free[plots:plots + herd]
+
+    kind = np.asarray(tiles.kind).copy()
+    crop_a = np.asarray(tiles.crop).copy()
+    watered = np.asarray(tiles.watered_today).copy()
+    yield_u = np.asarray(tiles.yield_units).copy()
+    animal = np.asarray(tiles.animal).copy()
+
+    # Crops in the ground, watered today, already carrying yield -- HARVEST is legal on turn one.
+    kind[:, :, plot_ix] = T.PLANT
+    crop_a[:, :, plot_ix] = crop
+    watered[:, :, plot_ix] = 1
+    yield_u[:, :, plot_ix] = 1
+    # A placed herd, fed today, so the two-night escape window is open rather than already lost.
+    kind[:, :, herd_ix] = T.PASTURE
+    animal[:, :, herd_ix] = 1                      # COW
+
+    shed = np.asarray(farm.shed).copy()
+    shed[:, :, 0] += wheat                         # WHEAT is item 0 -- what FEED consumes
+
+    return st._replace(
+        tiles=tiles._replace(
+            kind=jnp.asarray(kind), crop=jnp.asarray(crop_a),
+            watered_today=jnp.asarray(watered), yield_units=jnp.asarray(yield_u),
+            animal=jnp.asarray(animal)),
+        farm=farm._replace(shed=jnp.asarray(shed)))
 
 
 def states_at_day(batch, day, seed=0, min_bank=None, top=None, root="data", behind=False,
@@ -410,6 +479,11 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behi
             continue
         day_seed = seed + 1000 * day
         day_labels.extend([day] * n)
+        if day < 0:
+            # Negative keys are SYNTHETIC rungs, not recorded ones: -1 is the half-built chain at
+            # day 25. Kept out of the positive-day space so a mix string still reads as game days.
+            pools.append(chain_states(n))
+            continue
         if day == 0:
             # **Day 0 is the actual start of a game, not a snapshot of somebody else's.**
             #
