@@ -1777,7 +1777,16 @@ def main():
     # which killed a run at update 250 with `ValueError: a and p must have same size` and, before
     # that, silently attributed every win-rate EMA to the wrong checkpoint. See `kagg/rl/league.py`.
     pool = league.Pool(max_size=args.pool_size)
-    pool.add(jax.device_get(params))
+    # **Seeded AFTER `--resume`, not here.** This used to be `pool.add(params)` on the line below,
+    # thirty lines before the resume block replaces `params` with the checkpoint's -- so every
+    # resumed run spent `--opponent-frac` of its batch playing a *randomly initialised network*.
+    # Measured when it finally bit: `wr_pool` read **1.000 over 80 games** while `bank_final_med`
+    # halved from $18,332 to $6,783 and `wr_farm` went from 0.254 to 0/141 in 75 updates. Nearly
+    # half the policy's experience was against an opponent that cannot teach anything, and the
+    # policy drifted toward beating it.
+    #
+    # Nothing about it was visible: a fresh run seeds the pool from its own init, which is correct,
+    # so the bug only exists on the resume path and only shows up as "the pool got easy".
     # **Opponents are sampled by how well they do against us, not round-robin.**
     #
     # Ender: "prioritised based on recent winrate, with more difficult checkpoints being played
@@ -1840,6 +1849,12 @@ def main():
         start_update = ck["update"] + 1
         best_wr = ck.get("best") or -1.0
         print(f"resumed from {args.resume} at update {start_update}")
+
+    # The pool's first member is the policy we are actually starting from. On a fresh run that is
+    # the initialisation; on a resume it is the checkpoint. Seeding it before the resume block made
+    # every resumed run play a random network for `--opponent-frac` of its batch -- see the comment
+    # where `pool` is constructed.
+    pool.add(jax.device_get(params))
 
     latest_ckpt = run / "latest.pkl"
     best_ckpt = run / "best.pkl"
