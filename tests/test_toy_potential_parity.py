@@ -60,4 +60,4 @@ def test_both_share_the_same_constants():
     """A parity test on values is useless if one side is later retuned and the other is not."""
     assert S.potential_np(MP.FLOOR) == 0.0
     assert S.potential_np(MP.FLOOR + MP.SCALE) == pytest.approx(1.0)
-    assert S.potential_np.__defaults__ == (MP.FLOOR, MP.SCALE, MP.EXPONENT)
+    assert S.potential_np.__defaults__ == (MP.FLOOR, MP.SCALE, MP.EXPONENT, MP.CAP)

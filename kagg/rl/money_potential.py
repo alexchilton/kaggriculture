@@ -41,10 +41,26 @@ it.
 
 import jax.numpy as jnp
 
-# Every farm opens on $3,000 (`jax_sim.reset`). This is the bank that doing nothing achieves, so it
-# is where the potential must be zero -- otherwise standing still is paid for, which is the fixed
-# point `train_jax_rl.py:392` warns about.
-FLOOR = 3_000.0
+# **Was $3,000, the opening stake. Moved to 0 on 2026-08-03, and the reason is measured.**
+#
+# The floor existed so hoarding earns nothing: clawing the stake back is thrift, not production. That
+# reason is right and the mechanism was wrong, because the **convexity already does it**, far more
+# sharply than a hard floor. At `EXPONENT = 2` a $3,000 bank is worth 1.1% of a $28,168 season and a
+# $1,856 bank is worth 0.4%. Thrift is already worthless.
+#
+# What the hard floor added was a **dead zone**. `day0-long-20260803-200350` saw `bank_final_med` fall
+# $20,655 -> $1,856 over 300 updates, so the policy spends whole seasons entirely below $3,000 where
+# `PHI` is identically zero -- no gradient in precisely the region that needs one. Alex's requirement
+# was "0 for 0, much much more for 100k", and `FLOOR = 0` satisfies it literally.
+FLOOR = 0.0
+
+# **The cap.** `PHI` was unbounded, so at $110,000 it read 1.21 and at `--shaping-coef 6` contributed
+# 7.3 against a terminal reward of 1.0. Invariance does not protect against that: Ng's theorem fixes
+# the optimum, not what PPO does with a term that swamps the objective, and the sigmoid value head
+# cannot represent it either. `SCALE` was already chosen so a top-of-leaderboard season lands near 1.0,
+# so the cap binds nowhere we can currently reach and makes `--value-margin` computable rather than
+# guessed. Clipping is safe: `F = gamma*PHI(s') - PHI(s)` telescopes for *any* PHI.
+CAP = 1.0
 
 # $100,000 above the stake, close to the $106k and $113k the top two agents banked in episode
 # 89197802 (`CLAUDE.md`). Normalising there puts a realistic winning season at PHI ~ 1, the same
@@ -67,7 +83,7 @@ def potential(money, floor=FLOOR, scale=SCALE, k=EXPONENT):
     to in the graded-opponent proposal and the reason that proposal was dropped below $3,000.
     """
     above = jnp.maximum(jnp.asarray(money, jnp.float32) - floor, 0.0)
-    return (above / scale) ** k
+    return jnp.minimum((above / scale) ** k, CAP)
 
 
 def shaping(money_before, money_after, coef=DEFAULT_COEF, **kw):

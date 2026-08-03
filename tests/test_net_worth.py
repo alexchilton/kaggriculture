@@ -175,11 +175,19 @@ def test_fertilizing_is_not_punished_once_the_yield_lands(state):
     assert float(NW.net_worth(doubled)[0, 0]) > float(NW.net_worth(holding)[0, 0])
 
 
-def test_the_potential_is_zero_at_the_opening_stake(state):
-    """Every farm opens on $3,000, so that is what doing nothing achieves and where `PHI` must be
-    zero -- otherwise standing still is paid for."""
-    assert float(NW.potential(jnp.asarray(3_000.0))) == pytest.approx(0.0)
+def test_the_opening_stake_is_worth_a_rounding_error(state):
+    """Alex's requirement is "0 for 0", and standing still on the $3,000 stake must earn effectively
+    nothing.
+
+    **This asserted `PHI(3_000) == 0` exactly until the floor moved to $0 on 2026-08-03.** The hard
+    floor turned out to be a dead zone: `bank_final_med` fell to $1,856, so whole seasons sat where the
+    gradient was identically zero. The convexity does the same job -- the stake is 1.1% of a $28k
+    season -- without deleting the signal. See `tests/test_potential_floor_and_cap.py`.
+    """
     assert float(NW.potential(jnp.asarray(0.0))) == pytest.approx(0.0)
+    stake = float(NW.potential(jnp.asarray(3_000.0)))
+    season = float(NW.potential(jnp.asarray(28_168.0)))
+    assert stake >= 0.0 and stake / season < 0.02
 
 
 def test_the_potential_is_convex_above_the_stake():

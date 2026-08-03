@@ -40,14 +40,28 @@ def _m(*vals):
 
 def test_the_potential_is_zero_at_the_starting_stake():
     """**Alex's condition.** $3,000 is what doing nothing achieves, so it must be worth nothing."""
-    assert float(MP.potential(_m(START))[0]) == pytest.approx(0.0)
+    # **The floor moved to $0 on 2026-08-03** because a hard floor at the stake created a dead zone
+    # exactly where the policy was operating (`bank_final_med` had fallen to $1,856). The convexity
+    # already makes hoarding worthless -- see `tests/test_potential_floor_and_cap.py`. What must still
+    # hold is Alex's requirement, "0 for 0", and that the stake is worth a rounding error.
+    assert float(MP.potential(_m(0.0))[0]) == pytest.approx(0.0)
+    assert float(MP.potential(_m(START))[0]) / float(MP.potential(_m(28_168.0))[0]) < 0.02
 
 
-def test_the_potential_is_zero_below_the_starting_stake_not_negative():
-    """Clipped, not signed. A signed potential would pay the policy to claw back its stake, which is
-    thrift -- the exact incentive Alex objected to in the graded-opponent proposal."""
-    for m in (0.0, 1.0, 1500.0, 2999.0):
-        assert float(MP.potential(_m(m))[0]) == pytest.approx(0.0), f"bank ${m:,.0f}"
+def test_the_potential_is_negligible_below_the_starting_stake_and_never_negative():
+    """Clipped at zero, not signed, so a broke farm is never *paid* -- and below the opening stake the
+    convexity makes the value a rounding error rather than a hard zero.
+
+    **This test asserted an exact 0.0 until 2026-08-03**, which was the hard floor. It became a dead
+    zone: `bank_final_med` fell to $1,856 and the whole season sat where the gradient was identically
+    zero. What must hold is that thrift is not a strategy, which is a statement about *magnitude*.
+    """
+    season = float(MP.potential(_m(28_168.0))[0])
+    assert float(MP.potential(_m(0.0))[0]) == pytest.approx(0.0)
+    for m in (1.0, 1500.0, 2999.0):
+        v = float(MP.potential(_m(m))[0])
+        assert v >= 0.0, f"bank ${m:,.0f} must never be negative"
+        assert v / season < 0.02, f"bank ${m:,.0f} is {v / season:.1%} of a season"
 
 
 def test_the_potential_rises_above_the_starting_stake():
@@ -82,11 +96,17 @@ def test_standing_still_is_worth_exactly_zero():
     assert float(jnp.abs(MP.shaping(money[:-1], money[1:], coef=1.0)).sum()) == pytest.approx(0.0)
 
 
-def test_burning_the_stake_is_also_worth_exactly_zero():
-    """Below the floor the potential is flat, so going broke is not *punished* either -- it is simply
-    not paid. Punishing it would reintroduce thrift as a goal."""
+def test_burning_the_stake_costs_almost_nothing():
+    """Going broke is barely punished, which is the point -- punishing it would make hoarding the goal.
+
+    Was an exact zero under the hard floor. Now it telescopes to `-PHI(START)`, which is 1.1% of a
+    real season, so the incentive to sit on the stake is still negligible.
+    """
     money = jnp.asarray(np.linspace(START, 0.0, 12, dtype=np.float32))
-    assert float(jnp.abs(MP.shaping(money[:-1], money[1:], coef=1.0)).sum()) == pytest.approx(0.0)
+    total = float(MP.shaping(money[:-1], money[1:], coef=1.0).sum())
+    season = float(MP.potential(_m(28_168.0))[0])
+    assert total <= 0.0
+    assert abs(total) / season < 0.02
 
 
 def test_spending_then_earning_back_the_same_bank_nets_to_zero():
@@ -107,7 +127,10 @@ def test_the_shaping_telescopes_so_only_the_endpoints_matter():
     a = float(MP.shaping(direct[:-1], direct[1:], coef=1.0).sum())
     b = float(MP.shaping(scenic[:-1], scenic[1:], coef=1.0).sum())
     assert a == pytest.approx(b, abs=1e-6)
-    assert a == pytest.approx(float(MP.potential(_m(START + 20_000))[0]), abs=1e-6)
+    # The telescoped total is `PHI(end) - PHI(start)`. This used to be written as `PHI(end)` alone,
+    # which was only true while the floor sat at the opening stake and made `PHI(START)` exactly zero.
+    endpoints = float((MP.potential(_m(START + 20_000)) - MP.potential(_m(START)))[0])
+    assert a == pytest.approx(endpoints, abs=1e-6)
 
 
 def test_a_harvest_pays_on_the_turn_it_happens():
@@ -167,4 +190,7 @@ def test_the_two_seats_are_treated_independently():
     after = jnp.asarray(np.array([[START + 10_000, START - 3_000]], np.float32))
     got = MP.shaping(before, after, coef=1.0)
     assert float(got[0, 0]) > 0.0
-    assert float(got[0, 1]) == pytest.approx(0.0)
+    # Seat 1 lost its stake. Under the old hard floor that was exactly 0.0; now it is a small
+    # negative, and what the test is really about is that the two seats did not mix.
+    assert float(got[0, 1]) < 0.0
+    assert abs(float(got[0, 1])) < abs(float(got[0, 0]))

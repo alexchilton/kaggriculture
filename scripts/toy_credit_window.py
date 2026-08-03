@@ -38,8 +38,11 @@ from kagg.rl import toy as T
 # test rather than a silently wrong experiment.
 
 
-def potential_np(money, floor=3_000.0, scale=100_000.0, k=2.0):
-    return (max(float(money) - floor, 0.0) / scale) ** k
+def potential_np(money, floor=0.0, scale=100_000.0, k=2.0, cap=1.0):
+    # Mirrors `money_potential.potential` exactly, including the 2026-08-03 move of the floor
+    # from $3,000 to 0 and the cap at 1.0. `tests/test_toy_potential_parity.py` is what caught
+    # the drift when only the jax side was changed -- which is the whole reason it exists.
+    return min((max(float(money) - floor, 0.0) / scale) ** k, cap)
 
 MONEY_STEP = 100                       # every price in the toy is a multiple of this
 MONEY_LO, MONEY_HI = 0, 8_000

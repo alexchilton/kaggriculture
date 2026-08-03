@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from kagg.search import executor as X
-from kagg.search.plan import CROP_NAMES, N_CROPS, decode
+from kagg.search.plan import CROP_NAMES, N_CROPS, decode, pad_genome
 
 DEFAULT_PLAN = Path(__file__).with_name("best_plan.json")
 
@@ -130,8 +130,15 @@ def make_agent(genome):
 
 
 def load_best(path=None):
+    """Load a saved genome, migrating it if it predates a later gene block.
+
+    `pad_genome` is applied *here*, at the one boundary where a genome enters the process from disk,
+    rather than inside `decode` -- so a length mismatch anywhere else is still a loud error. The file
+    on disk holds 277 genes from before the livestock blocks were appended on 2026-08-04; without this
+    the shipped default plan raises on load and the submission agent does not start.
+    """
     with open(path or plan_path()) as handle:
-        return np.array(json.load(handle)["genome"], dtype=np.int64)
+        return pad_genome(np.array(json.load(handle)["genome"], dtype=np.int64))
 
 
 def save_best(genome, meta=None, path=None):

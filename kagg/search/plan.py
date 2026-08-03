@@ -96,9 +96,50 @@ NEVER = np.int16(999)
 LAND_DAYS = np.array([0, 3, 6, 9, 12, 15, 18, 21, NEVER], dtype=np.int16)
 DUMP_DAYS = np.array([20, 22, 24, 26, 28, NEVER], dtype=np.int16)
 
+# ---- livestock -----------------------------------------------------------------------------------
+#
+# **Added 2026-08-04. The search space could not express the strategy that is winning.**
+# `docs/episode_teardown_2026-08-03.md`: the top three agents all submit the same plan -- COW 8,
+# SHEEP 6, GOOSE 0, 14 pastures, 0 coops, 967 units of wheat bought as feed -- and draw 34.9% of
+# revenue from milk and wool plus ~6% from reselling fertiliser collected free off the animals.
+# `crop_of` had six categories, five crops and fallow, so a tile could not hold a structure and CEM
+# was searching the crop-only subspace we have already measured losing.
+
+# A tile's *use* is one decision, so structures are extra `crop_of` categories rather than a second
+# competing gene block. Gene values: 0 = fallow, 1..5 = crop, 6 = coop, 7 = pasture.
+CROP_GENE_COOP = N_CROPS + 1
+CROP_GENE_PASTURE = N_CROPS + 2
+NO_STRUCTURE, COOP, PASTURE = 0, 1, 2
+
+ANIMAL_NAMES = ["GOOSE", "COW", "SHEEP"]
+N_ANIMALS = len(ANIMAL_NAMES)
+
+# Target headcount per species. The measured meta is COW 8 / SHEEP 6, so the ladder brackets both
+# and reaches well past them -- a search that cannot exceed the known point cannot improve on it.
+HERD_LEVELS = np.array([0, 2, 4, 6, 8, 10, 12, 16], dtype=np.int16)
+
+# Day to start stocking. Animals pay from `ANIMAL_FIRST_YIELD_DAY` (goose 4, sheep 6, cow 8) and a
+# structure is free to build (`jax_sim.py:613`), so the only cost of going early is the cash.
+STOCK_DAYS = np.array([0, 2, 4, 6, 8, 12, 16, NEVER], dtype=np.int16)
+
+# Units of wheat to hold *per animal* for feeding. `jax_masks.py:96` gates FEED on `carrying_wheat`,
+# and an animal unfed two nights escapes with the whole purchase price. The leaders bought 967 units
+# for 14 animals over a season.
+FEED_WHEAT = np.array([0, 1, 2, 4, 8], dtype=np.int16)
+
+# What to do with fertiliser. COLLECT_FERTILIZER is free -- no action cost, one per animal per day --
+# and FERTILIZE doubles a watered plant's yield for three days (`jax_sim.py:1096`). The leaders do
+# both: 318 collects, 107 fertilises, and 406 units sold for ~$21,900.
+FERT_SELL, FERT_APPLY, FERT_APPLY_THEN_SELL = 0, 1, 2
+N_FERT_POLICIES = 3
+
 # (name, number of genes, number of categories)
+# **Append-only.** Inserting a block would repoint every gene after it and silently change what
+# `best_plan.json` means -- `agent.py` loads that file as the default plan. `pad_genome` migrates a
+# genome saved before the livestock blocks existed, and `tests/test_plan_animals.py` pins that it
+# decodes to exactly the same plan it did before.
 SPEC = (
-    ("crop_of", TILES, N_CROPS + 1),
+    ("crop_of", TILES, N_CROPS + 3),          # + coop, + pasture
     ("phase", TILES, 5),
     ("stop_plant", 1, len(STOP_PLANT_DAYS)),
     ("harvest_par", N_CROPS, len(HARVEST_DELTA)),
@@ -109,6 +150,11 @@ SPEC = (
     ("seed_reserve", 1, len(SEED_RESERVES)),
     ("land_day", 3, len(LAND_DAYS)),
     ("dump_day", 1, len(DUMP_DAYS)),
+    # --- livestock, appended 2026-08-04 ---
+    ("herd", N_ANIMALS, len(HERD_LEVELS)),
+    ("stock_day", 1, len(STOCK_DAYS)),
+    ("feed_wheat", 1, len(FEED_WHEAT)),
+    ("fert_policy", 1, N_FERT_POLICIES),
 )
 
 N_GENES = sum(n for _, n, _ in SPEC)
@@ -135,6 +181,7 @@ class Plan:
     """
 
     crop_of: np.ndarray        # [N, TILES] int8, -1 = fallow
+    structure_of: np.ndarray   # [N, TILES] int8, NO_STRUCTURE / COOP / PASTURE
     phase: np.ndarray          # [N, TILES] int8
     stop_plant: np.ndarray     # [N] int16
     harvest_par: np.ndarray    # [N, N_CROPS] int8, index into HARVEST_DELTA/ONGOING_THRESHOLD
@@ -145,26 +192,23 @@ class Plan:
     seed_reserve: np.ndarray   # [N] float64
     land_day: np.ndarray       # [N, 3] int16
     dump_day: np.ndarray       # [N] int16
+    herd: np.ndarray           # [N, N_ANIMALS] int16, target headcount per species
+    stock_day: np.ndarray      # [N] int16, day to start buying animals (NEVER = none)
+    feed_wheat: np.ndarray     # [N] int16, wheat units held per animal for FEED
+    fert_policy: np.ndarray    # [N] int8, FERT_SELL / FERT_APPLY / FERT_APPLY_THEN_SELL
 
     @property
     def size(self):
         return self.crop_of.shape[0]
 
     def repeat(self, times):
-        """Tile the population ``times`` over, so each plan gets several replicate games."""
-        return Plan(
-            crop_of=np.repeat(self.crop_of, times, axis=0),
-            phase=np.repeat(self.phase, times, axis=0),
-            stop_plant=np.repeat(self.stop_plant, times, axis=0),
-            harvest_par=np.repeat(self.harvest_par, times, axis=0),
-            hires=np.repeat(self.hires, times, axis=0),
-            sell_qty=np.repeat(self.sell_qty, times, axis=0),
-            sell_every=np.repeat(self.sell_every, times, axis=0),
-            floor_frac=np.repeat(self.floor_frac, times, axis=0),
-            seed_reserve=np.repeat(self.seed_reserve, times, axis=0),
-            land_day=np.repeat(self.land_day, times, axis=0),
-            dump_day=np.repeat(self.dump_day, times, axis=0),
-        )
+        """Tile the population ``times`` over, so each plan gets several replicate games.
+
+        Iterates the dataclass fields rather than naming each one, because the hand-written version
+        listed eleven fields and adding a twelfth meant every replicate silently carried a default.
+        """
+        return Plan(*(np.repeat(getattr(self, f), times, axis=0)
+                      for f in self.__dataclass_fields__))
 
     def take(self, index):
         """Select plans by index array, in order."""
@@ -183,10 +227,17 @@ def decode(genomes):
         lo, hi = _OFFSETS[name]
         return g[:, lo:hi]
 
-    crop = block("crop_of") - 1                      # 0 -> FALLOW, 1..5 -> crop id
+    raw_use = block("crop_of")                       # 0 -> FALLOW, 1..5 -> crop, 6 coop, 7 pasture
+    crop = raw_use - 1
+    structure = np.where(raw_use == CROP_GENE_COOP, COOP,
+                         np.where(raw_use == CROP_GENE_PASTURE, PASTURE, NO_STRUCTURE))
+    # A structure tile grows nothing. Without this the executor would try to plant a pasture, which
+    # is the class of bug that left `jax_frontier` with `max empty pens: 0` and $380 in the bank.
+    crop = np.where(structure != NO_STRUCTURE, FALLOW, crop)
     sell = SELL_QTYS[block("sell_qty")].reshape(n, N_BLOCKS, N_CROPS)
     return Plan(
         crop_of=crop.astype(np.int8),
+        structure_of=structure.astype(np.int8),
         phase=block("phase").astype(np.int8),
         stop_plant=STOP_PLANT_DAYS[block("stop_plant")[:, 0]],
         harvest_par=block("harvest_par").astype(np.int8),
@@ -197,7 +248,40 @@ def decode(genomes):
         seed_reserve=SEED_RESERVES[block("seed_reserve")[:, 0]],
         land_day=LAND_DAYS[block("land_day")],
         dump_day=DUMP_DAYS[block("dump_day")[:, 0]],
+        herd=HERD_LEVELS[block("herd")],
+        stock_day=STOCK_DAYS[block("stock_day")[:, 0]],
+        feed_wheat=FEED_WHEAT[block("feed_wheat")[:, 0]],
+        fert_policy=block("fert_policy")[:, 0].astype(np.int8),
     )
+
+
+def herd_gene(count):
+    """The gene value whose `HERD_LEVELS` entry is `count`, for writing a known plan down by hand."""
+    hits = np.flatnonzero(HERD_LEVELS == count)
+    if not len(hits):
+        raise ValueError(f"herd size {count} is not on the ladder {list(HERD_LEVELS)}")
+    return int(hits[0])
+
+
+def pad_genome(genome):
+    """Migrate a genome saved before a block was appended, by filling the new genes with category 0.
+
+    `kagg/search/best_plan.json` holds a 277-gene genome from before the livestock blocks existed and
+    `agent.py` loads it as the default plan. Category 0 is `HERD_LEVELS[0] == 0` and
+    `FEED_WHEAT[0] == 0`, i.e. no animals -- so a padded old genome decodes to exactly the plan it
+    always decoded to, which is what `tests/test_plan_animals.py` asserts.
+
+    A genome that is *longer* than `N_GENES` is an error rather than something to truncate: it means
+    the file was written by a newer version and silently dropping its tail would run a different plan
+    than the one that was saved.
+    """
+    g = np.asarray(genome, dtype=np.int64)
+    if g.shape[-1] > N_GENES:
+        raise ValueError(f"genome has {g.shape[-1]} genes, more than the current {N_GENES}")
+    if g.shape[-1] == N_GENES:
+        return g
+    pad = np.zeros(g.shape[:-1] + (N_GENES - g.shape[-1],), dtype=np.int64)
+    return np.concatenate([g, pad], axis=-1)
 
 
 def uniform_probs():
