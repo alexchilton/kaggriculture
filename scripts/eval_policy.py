@@ -74,7 +74,10 @@ def play(params_a, params_b, model, batch, key, greedy=True, swap=False):
     a `swap` that only applied when the opponent was another checkpoint, so every random-legal
     evaluation silently measured seat 0 twice and printed the same number under two labels.
     """
-    state = J.reset(batch)
+    # `reset_with_shops`: a plain reset freezes every shop, cutting the town's season wheat demand
+    # from ~700 units to 140 and every tail sale price by 27-38%. An evaluation in that market is
+    # not an evaluation of the game the submission plays.
+    state = J.reset_with_shops(batch)
 
     def one_turn(carry, _):
         state, key = carry

@@ -93,7 +93,7 @@ def _greedy(heads, masks):
 
 
 def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
-         opponent_fn=None):
+         opponent_fn=None, frozen_town=False):
     """Policy vs the scripted farmer for a full season.
 
     Returns `(money [B, 2], money_trace [DAYS, B, 2], op_counts [N_OPS], unit_turns)`.
@@ -101,7 +101,15 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
     only -- `MAX_UNITS` is 24 against a crew of a few, so counting every slot is the padding
     mistake `train_jax_rl.py` already made twice.
     """
-    state = J.reset(batch)
+    # `reset_with_shops`, not `reset`: a plain reset never opens a shop, so the town drains 140 wheat
+    # a season instead of ~700 and end-of-season wheat prices at $37 against the real $51. The
+    # money-flow decomposition this script produces is the input to P4's "the farm runs at a loss"
+    # finding, and it was pricing the sell side ~30% low at the tail while the buy side is mostly
+    # fixed shop prices.
+    # `frozen_town=True` reproduces the pre-fix market -- every shop at `NEVER`, season wheat demand
+    # 140 units against the real ~700 -- so the A/B for that bug is one flag apart and the only
+    # difference between the two runs is the market.
+    state = J.reset(batch) if frozen_town else J.reset_with_shops(batch)
     seat = 1 if swap else 0
 
     def one_turn(carry, _):
@@ -136,7 +144,11 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
                 theirs.reshape(theirs.shape + (1,) * (mine.ndim - 2)), other, mine),
             sim_actions, heur)
 
-        nxt = J.step(state, sim_actions)
+        # **Accounted, so the bank curve can be read as causes rather than levels.**
+        # The per-game-day bank showed the farmer replay falling -21/day to day 10 and -552/day to
+        # day 15 -- a cliff, and a policy converged on inaction cannot produce a cliff. A level
+        # cannot say what happened; `acct` names every dollar. See `jax_sim.step_accounted`.
+        nxt, acct = J.step_accounted(state, sim_actions)
 
         live = jax_obs.encode(state)[1][..., 0].reshape(batch, 2, -1) > 0.5
         # **The RESOLVED op, not the policy's token.** A `COMMIT_FEED` is a decision; what the unit
@@ -153,14 +165,27 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
         commits = (jax.nn.one_hot(tok - O.N_OPS, CM.N_COMMIT, dtype=jnp.float32)
                    * counted[..., None]).sum(axis=(0, 1, 2))
         cmt_next = CM.clear_at_night(cmt, nxt)
-        return (nxt, key, cmt_next), (nxt.farm.money, counts, counted.sum(), commits)
+        return (nxt, key, cmt_next), (nxt.farm.money, counts, counted.sum(), commits,
+                                      acct["hire"], acct["land"], acct["trade"],
+                                      acct["sell"], acct["buy"])
 
-    (final, _, _), (money_t, counts_t, unit_t, commit_t) = jax.lax.scan(
+    (final, _, _), (money_t, counts_t, unit_t, commit_t,
+                    hire_t, land_t, trade_t, sell_t, buy_t) = jax.lax.scan(
         one_turn, (state, key, CM.init(batch)), None, length=turns)
     # One sample per game-day rather than per turn, which is the unit a human reads.
     trace = money_t[::J.TURNS_PER_DAY]
+    # The accounting is a *flow*, so it is summed over each day rather than sampled at the day
+    # boundary the way the bank level is. Sampling a flow would report one turn's spend as a day's.
+    n_days = turns // J.TURNS_PER_DAY
+    keep = n_days * J.TURNS_PER_DAY
+
+    def per_day(x):
+        return x[:keep].reshape(n_days, J.TURNS_PER_DAY, *x.shape[1:]).sum(axis=1)
+
+    acct_trace = {"hire": per_day(hire_t), "land": per_day(land_t), "trade": per_day(trade_t),
+                  "sell": per_day(sell_t), "buy": per_day(buy_t)}
     return (final.farm.money, trace, counts_t.sum(axis=0), float(unit_t.sum()),
-            commit_t.sum(axis=0))
+            commit_t.sum(axis=0), acct_trace)
 
 
 def report(money, swap):
@@ -182,6 +207,11 @@ def main():
                     help="which seat-1 agent to replay against. The farmer alone is a "
                          "misleading picture -- see OPPONENTS.")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--frozen-town", action="store_true",
+                    help="reproduce the pre-2026-08-03 market in which no shop ever unlocked, so "
+                         "the town bought 140 wheat a season instead of ~700 and end-of-season "
+                         "wheat priced at $37 against $51. For the A/B only -- it is not a "
+                         "reachable configuration of the real game.")
     ap.add_argument("--greedy", action="store_true",
                     help="decode with per-head argmax instead of sampling. NOT the default any "
                          "more, and the reason is measured: on the same checkpoint, greedy emitted "
@@ -218,9 +248,9 @@ def main():
     key = jax.random.PRNGKey(args.seed)
     for swap in (False, True):
         key, sub = jax.random.split(key)
-        money, trace, counts, unit_turns, commits = play(
+        money, trace, counts, unit_turns, commits, acct = play(
             params, model, args.games, sub, swap, greedy=args.greedy,
-            opponent_fn=OPPONENTS[args.opponent])
+            opponent_fn=OPPONENTS[args.opponent], frozen_town=args.frozen_town)
         w, d, ll, me, them = report(money, swap)
         seat = 1 if swap else 0
         print(f"--- policy in seat {seat} vs {args.opponent} ---")
@@ -237,6 +267,41 @@ def main():
         tf = np.asarray(trace)[:, :, 1 - seat]
         print("  farmer bank by day  "
               + "  ".join(f"d{d_}:{np.median(tf[d_]):,.0f}" for d_ in days if d_ < len(tf)))
+
+        # **Where the money went, per game-day, as causes rather than a level.**
+        #
+        # The bank curve showed the farmer replay falling -21/day to day 10 and then -552/day to
+        # day 15. A cliff is not something a policy converged on inaction can produce, because its
+        # own inaction is the dominant driver of its own cash and inaction is smooth. These three
+        # columns say which line moved. They sum to the day's change exactly -- pinned by
+        # `tests/test_money_accounting.py`.
+        #
+        # `hire` is the one to watch and the reason this is per-day rather than cumulative: the
+        # crew resets to a single unit every night, so a crew of N is re-bought every morning at
+        # `sum(HIRE_COST[:N])`, and HIRE_COST is Fibonacci. Eight units is $54/day, twelve is $376,
+        # fourteen is $986. That is a recurring bill booked as a one-off purchase, and it is
+        # invisible in any bank level.
+        med = lambda k: np.median(np.asarray(acct[k])[:, :, seat], axis=1)   # noqa: E731
+        hire_d, land_d, sell_d, buy_d = med("hire"), med("land"), med("sell"), med("buy")
+        print("  money flow per day (median over games), + is income")
+        print(f"    {'day':>5} {'sell':>10} {'buy':>10} {'hire':>10} {'land':>10} {'net':>10}")
+        for d_ in range(len(hire_d)):
+            net = sell_d[d_] - buy_d[d_] - hire_d[d_] - land_d[d_]
+            if d_ in (0, 1, 2, 3, 5, 8, 10, 11, 12, 13, 14, 15, 17, 20, 25, 29) or abs(net) > 100:
+                print(f"    {d_:>5} {sell_d[d_]:>10,.0f} {-buy_d[d_]:>10,.0f} "
+                      f"{-hire_d[d_]:>10,.0f} {-land_d[d_]:>10,.0f} {net:>10,.0f}")
+        tot = lambda a: np.asarray(a)[:, :, seat].sum(axis=0)      # noqa: E731
+        # **Gross sales for the season is the number that says whether the chain ever pays.**
+        # A net of -$648 is produced equally by a farm that sells nothing and one that sells $600
+        # while spending $1,248. Only the gross tells those apart, and they imply opposite fixes.
+        print(f"    season totals   SELL {np.median(tot(acct['sell'])):>+10,.0f}   "
+              f"buy {-np.median(tot(acct['buy'])):>+10,.0f}   "
+              f"hire {-np.median(tot(acct['hire'])):>+10,.0f}   "
+              f"land {-np.median(tot(acct['land'])):>+10,.0f}")
+        gross = np.asarray(acct["sell"])[:, :, seat].sum(axis=0)
+        print(f"    games that sold ANYTHING all season: "
+              f"{int((gross > 0).sum())}/{len(gross)}   "
+              f"gross sales median ${np.median(gross):,.0f} max ${gross.max():,.0f}")
 
         cm = np.asarray(commits)
         print("  commits chosen  " + "  ".join(

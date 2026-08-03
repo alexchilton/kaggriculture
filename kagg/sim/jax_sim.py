@@ -315,15 +315,73 @@ def stack_actions(frames):
     return Actions(*[jnp.stack([getattr(a, f) for a in frames]) for f in Actions._fields])
 
 
+SHOP_UNLOCK_INTERVAL = 3   # reference `townShopUnlockInterval` (`kaggriculture.py:836`)
+
+
+def random_unlock_days(batch, seed=0):
+    """A `[B, N_SHOPS]` unlock-day array: one random shop every `SHOP_UNLOCK_INTERVAL` days, per game.
+
+    **This is the reachable configuration, and `NEVER` everywhere is not.** The reference opens one
+    shop every three days in *every* episode (`kaggriculture.py:855`), so all eight are trading by
+    day 24. A frozen town is not a hard setting of the real game; it is a game that does not exist.
+
+    Only the *order* is random, which is deliberate: it is the simulator's one real seed-to-seed
+    variation, and it is what decides which product's price runs first. The total drain is therefore
+    identical across games while the path to it is not -- so a batch cannot learn one market's
+    timing and call it the market. `search/rollout.sample_unlock_schedule` already made exactly this
+    choice for the CEM search; this is the batched form of it.
+
+    Kept separate from `unlock_array` rather than folded into it as a `None` default, because
+    `unlock_array(None)` is what `reset` hands the numpy `Game` in lockstep parity tests -- and a
+    default that sampled would make the two simulators disagree at the top of every one of them.
+    """
+    rng = np.random.default_rng(seed)
+    out = np.full((batch, N_SHOPS), NEVER, dtype=np.int32)
+    days = SHOP_UNLOCK_INTERVAL * (1 + np.arange(N_SHOPS, dtype=np.int32))
+    for b in range(batch):
+        out[b, rng.permutation(N_SHOPS)] = days
+    return jnp.asarray(out)
+
+
 def unlock_array(schedule, batch):
     """Build the `[B, N_SHOPS]` unlock-day array from a `{day: shop_index}` dict.
 
     Same input the numpy `Game` takes. A shop absent from the schedule never opens.
+
+    Also accepts an already-built `[B, N_SHOPS]` array, which is how a *per-game* schedule is
+    expressed -- a dict cannot say "a different order in each game", and that is the shape the
+    reference actually produces. `None` and `{}` both still mean a frozen town, unchanged, because
+    the lockstep parity harness passes `None` to both simulators and must keep getting the same
+    thing from each.
     """
+    if schedule is not None and not isinstance(schedule, dict):
+        out = np.asarray(schedule, dtype=np.int32)
+        if out.shape == (N_SHOPS,):
+            out = np.broadcast_to(out, (batch, N_SHOPS))
+        if out.shape != (batch, N_SHOPS):
+            raise ValueError(f"unlock array has shape {out.shape}, expected ({batch}, {N_SHOPS})")
+        return jnp.asarray(out)
+
     out = np.full((batch, N_SHOPS), NEVER, dtype=np.int32)
     for day, shop in (schedule or {}).items():
         out[:, int(shop)] = min(int(out[0, int(shop)]), int(day))
     return jnp.asarray(out)
+
+
+def reset_with_shops(batch, seed=0, **kw):
+    """`reset` with a real per-game shop schedule. **Use this for anything that trains or measures.**
+
+    Plain `reset` defaults to a frozen town, and every RL and evaluation entry point took that
+    default: measured, the town then bought **140** wheat over a season against the reference's
+    **698**, holding end-of-season wheat at $37 instead of $51 and milk at $263 instead of $340.
+    The whole pipeline was learning and being scored in a market that discounted its own output by
+    27-38% at the tail.
+
+    The default is left alone rather than fixed in place because `_run_lockstep` passes
+    `unlock_schedule=None` to *both* simulators, so a sampling default would desynchronise the
+    parity gate at construction. The gate stays byte-identical; the callers move.
+    """
+    return reset(batch, unlock_schedule=random_unlock_days(batch, seed=seed), seed=seed, **kw)
 
 
 def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_PLAYERS,
@@ -746,8 +804,28 @@ def _process_market(farm, tiles, inventory, actions):
 
     The unit loop is a `while`, not a bounded `for`: it terminates on "nobody committed", which is
     exactly the reference's `if not committed_any: break` and cannot be made to spin.
+
+    **Returns an accounting alongside the state**, `(farm, tiles, inventory, acct)`, where `acct`
+    names every dollar this function moved: `hire` and `land` as positive costs, `trade` as the
+    signed net of sells against seed / product / animal buys.
+
+    This is instrumentation, not simulation. `step` discards it and XLA eliminates the dead
+    subtractions, so the training hot path is unchanged; `step_accounted` is the entry point that
+    keeps it. It is threaded out of here rather than reconstructed from state deltas outside
+    because it cannot be reconstructed: `_end_of_day` zeroes `hires_today` on the last turn of
+    every day, so on exactly the turns where a crew is most expensive there is no observable
+    counter left to difference. `n_units` resets nightly for the same reason.
     """
     op_all, item_all, qty_all = _order_book(actions)
+    # Positive numbers are money leaving the farm. `money_in` is the mark against which the net
+    # trade is recovered at the end, so no sell has to be counted twice.
+    money_in = farm.money
+    hire_spend = jnp.zeros_like(farm.money)
+    land_spend = jnp.zeros_like(farm.money)
+    # Gross, not net. `trade` alone cannot answer "does the chain ever terminate in money" -- a
+    # season that sells nothing and a season that sells $600 and spends $1,200 both read -$648.
+    sell_income = jnp.zeros_like(farm.money)
+    buy_spend = jnp.zeros_like(farm.money)
 
     for slot in range(MAX_ORDERS):
         sop = op_all[:, :, slot]
@@ -755,8 +833,12 @@ def _process_market(farm, tiles, inventory, actions):
         srem = qty_all[:, :, slot]
 
         # Atomic orders resolve once, in seat order, and then the slot is spent.
+        before_hire = farm.money
         farm = _hire(farm, sop == ORDER_HIRE)
+        hire_spend = hire_spend + (before_hire - farm.money)
+        before_land = farm.money
         farm, tiles = _buy_land(farm, tiles, sop == ORDER_BUY_LAND)
+        land_spend = land_spend + (before_land - farm.money)
         atomic = (sop == ORDER_HIRE) | (sop == ORDER_BUY_LAND)
         # A malformed sub-op is dropped rather than retried: only two products are buyable.
         bad = (sop == ORDER_BUY_PRODUCT) & ~BUYABLE[jnp.clip(sitem, 0, N_PRODUCTS - 1)]
@@ -765,11 +847,11 @@ def _process_market(farm, tiles, inventory, actions):
         prod_idx = jnp.clip(sitem, 0, N_PRODUCTS - 1)
 
         def cond(carry):
-            rem, _m, _s, _sd, _inv, progress = carry
+            rem, _m, _s, _sd, _inv, _in, _out, progress = carry
             return progress & jnp.any(rem > 0)
 
         def body(carry):
-            rem, money, shed, seeds, inv, _p = carry
+            rem, money, shed, seeds, inv, income, outgo, _p = carry
             live = (rem > 0) & (sop != ORDER_NONE)
 
             # Both seats quoted from the same pre-commit inventory, before either commits.
@@ -803,7 +885,10 @@ def _process_market(farm, tiles, inventory, actions):
                 animaling = live_s & (op_s == ORDER_BUY_ANIMAL) & afford
 
                 spend = (buying | seeding | animaling).astype(_F) * q_s
-                money = money.at[:, seat].add(selling.astype(_F) * q_s - spend)
+                earned = selling.astype(_F) * q_s
+                money = money.at[:, seat].add(earned - spend)
+                income = income.at[:, seat].add(earned)
+                outgo = outgo.at[:, seat].add(spend)
                 shed = shed.at[:, seat].add(
                     item_hot.astype(_I) * (buying.astype(_I) - selling.astype(_I))[:, None]
                     + animal_hot.astype(_I) * animaling.astype(_I)[:, None])
@@ -817,15 +902,32 @@ def _process_market(farm, tiles, inventory, actions):
                 # A failed commit abandons the rest of that order, as the reference does.
                 rem = rem.at[:, seat].set(
                     jnp.where(live_s & ~ok, 0, rem[:, seat] - ok.astype(_I)))
-            return rem, money, shed, seeds, inv, jnp.any(committed)
+            return rem, money, shed, seeds, inv, income, outgo, jnp.any(committed)
 
-        _rem, money, shed, seeds, inventory, _prog = lax.while_loop(
+        _rem, money, shed, seeds, inventory, sell_income, buy_spend, _prog = lax.while_loop(
             cond, body,
-            (srem, farm.money, farm.shed, farm.seeds, inventory, jnp.asarray(True)),
+            (srem, farm.money, farm.shed, farm.seeds, inventory,
+             sell_income, buy_spend, jnp.asarray(True)),
         )
         farm = farm._replace(money=money, shed=shed, seeds=seeds)
 
-    return farm, tiles, inventory
+    # Net trade is recovered rather than accumulated: everything this function moved is either a
+    # hire, a land purchase, or a trade, so the residual IS the trade. That makes the invariant
+    # `trade - hire - land == money_end - money_start` true by construction rather than by
+    # agreement between two separately-maintained counters, which is the failure species
+    # `CLAUDE.md` records for the per-opponent win rate.
+    acct = {
+        "hire": hire_spend,
+        "land": land_spend,
+        "trade": (farm.money - money_in) + hire_spend + land_spend,
+        # Gross halves of `trade`, accumulated rather than recovered. They are kept as a *separate*
+        # pair of counters precisely so that `sell == trade + buy` is an independent check rather
+        # than an identity -- if the two ever disagree, one of them is wrong, and a decomposition
+        # that cannot be caught being wrong is not worth having.
+        "sell": sell_income,
+        "buy": buy_spend,
+    }
+    return farm, tiles, inventory, acct
 
 
 def _buy_seeds(farm, buy_seed):
@@ -1116,6 +1218,30 @@ def step(state, actions, weed_chance=0.0):
     town drains, so the price a player receives is set by the pre-drain inventory. Swapping the
     two shifts every sale price in the game.
     """
+    return step_accounted(state, actions, weed_chance)[0]
+
+
+def step_accounted(state, actions, weed_chance=0.0):
+    """`step`, plus a decomposition of every dollar the turn moved.
+
+    Returns `(state, acct)` where `acct` maps `"hire"` / `"land"` / `"trade"` to `[B, P]` arrays.
+    `hire` and `land` are positive costs; `trade` is the signed net of sells against buys. The
+    invariant, pinned by `tests/test_money_accounting.py`, is exact:
+
+        money_after - money_before == trade - hire - land
+
+    with no tolerance, because money is float64 under the x64 flag and every mutation is an add of
+    a quoted price. A residual would mean the decomposition describes something other than what
+    happened.
+
+    **There is no upkeep line, and that is a fact about the game rather than an omission here.**
+    `_end_of_day` and `_night` move no money at all. What looks like upkeep is `hire`: the crew is
+    reset to a single unit every night, so holding a crew of N costs `sum(HIRE_COST[:N])` *every
+    day*, and `HIRE_COST` is Fibonacci -- $54/day for eight units, $376/day for twelve, $986/day
+    for fourteen. A policy that re-hires each morning is paying a large recurring bill that is
+    booked as a one-off purchase, which is exactly the kind of thing a per-game-day bank curve
+    hides.
+    """
     actions = _canonical(actions)
     day = state.step_index // TURNS_PER_DAY                # [B]
 
@@ -1123,7 +1249,7 @@ def step(state, actions, weed_chance=0.0):
 
     # One slot-paired pass now covers sells, seeds, products, animals, hiring and land, because
     # the reference settles them together and their order relative to one another is observable.
-    farm, tiles, inventory = _process_market(farm, tiles, state.inventory, actions)
+    farm, tiles, inventory, acct = _process_market(farm, tiles, state.inventory, actions)
 
     inventory = inventory - _drain(state.step_index, day, state.unlock_day)
     tiles = _decay_plants(tiles, state.step_index)
@@ -1145,7 +1271,7 @@ def step(state, actions, weed_chance=0.0):
         farm=farm,
         inventory=inventory,
         key=key,
-    )
+    ), acct
 
 
 def done(state):

@@ -81,7 +81,9 @@ def rollout(params, model, batch, key, seat, turns):
     against a crew of about two, so anything averaged over every slot is padding -- the mistake this
     project has now made in three separate places.
     """
-    state = J.reset(batch)
+    # `reset_with_shops`: a plain reset never opens a shop, so the diagnosis runs in a market whose
+    # season wheat demand is 140 units against the real ~700.
+    state = J.reset_with_shops(batch)
 
     def one_turn(carry, _):
         state, key = carry
