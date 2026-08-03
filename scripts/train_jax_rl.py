@@ -51,7 +51,7 @@ import numpy as np
 import optax
 
 from kagg.rl import (commit as CM, curriculum, jax_act as A, jax_heuristic as HEUR, jax_obs,
-                     jax_rancher as RANCH,
+                     jax_carrot as CARROT, jax_rancher as RANCH,
                      jax_policy as P, league)
 from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
@@ -189,14 +189,14 @@ def ema_update(target, params, decay):
 # Shares are now sampled rather than partitioned exactly, which gives up the exactness the strided
 # permutation was written for -- at batch 256 the realised share of a p=0.30 role has an s.d. of
 # ~2.9%, and `role_counts` logs what actually happened so this is checked rather than assumed.
-ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH = range(6)
-N_ROLES = 6
-ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch")
+ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH, ROLE_CARROT = range(7)
+N_ROLES = 7
+ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch", "carrot")
 
 # One list, because the per-opponent census and the opponent-by-day cross-tab have to agree on
 # both the names and the order or the two views of the same rows disagree silently.
 OPPONENT_FLAGS = (("idle", "vs_idle"), ("trade", "vs_trade"), ("farm", "vs_farm"),
-                  ("ranch", "vs_ranch"), ("pool", "vs_pool"))
+                  ("ranch", "vs_ranch"), ("carrot", "vs_carrot"), ("pool", "vs_pool"))
 OPPONENT_NAMES = tuple(n for n, _ in OPPONENT_FLAGS)
 
 PRODUCT_NAMES = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
@@ -257,6 +257,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             use_trade = roles == ROLE_TRADE
             use_idle = roles == ROLE_IDLE
             use_ranch = roles == ROLE_RANCH
+            use_carrot = roles == ROLE_CARROT
 
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
@@ -314,7 +315,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                     take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
                 actions)
             take_opp = take_opp | take_idle | jnp.broadcast_to(
-                (use_trade | use_farm | use_ranch)[:, None] & (seat == 1),
+                (use_trade | use_farm | use_ranch | use_carrot)[:, None] & (seat == 1),
                 (batch, 2)).reshape(-1)
 
             # **Commitments are resolved here, between the policy and the simulator.**
@@ -395,6 +396,21 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             #
             # It has existed, JAX-native and jit-safe, since 2026-08-01 and was wired only into
             # `bc_dagger`. This is the first run that plays against it.
+            # **The carrot fleet, a port of a public Kaggle baseline.** It banks $3,410 from
+            # $3,000 against `jax_heuristic`'s $23,783, so it is by far the weakest farmer here --
+            # and that is the point. Outcome variance is `p(1 - p)`, so an opponent the policy is
+            # *near* teaches more per game than one permanently above it, and this one sits just
+            # above the $3,000 an idle seat holds and just above what the policy currently manages
+            # from a real start. It also differs in kind rather than dial: melon on 16 tiles over a
+            # long cycle against carpeting every tile with carrot on a three-day one, which is the
+            # tempo diversity `CLAUDE.md` says this pool has never had.
+            carrot_seat = jnp.broadcast_to(use_carrot[:, None] & (seat == 1), (batch, 2))
+            carrot = CARROT.actions(state)
+            sim_actions = jax.tree_util.tree_map(
+                lambda mine, theirs: jnp.where(
+                    carrot_seat.reshape(carrot_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
+                sim_actions, carrot)
+
             ranch_seat = jnp.broadcast_to(use_ranch[:, None] & (seat == 1), (batch, 2))
             ranch = RANCH.actions(state)
             sim_actions = jax.tree_util.tree_map(
@@ -525,7 +541,8 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
                 # of a cross-play game, so the live policy's side of one can be picked out.
                 crossplay=jnp.broadcast_to(
-                    (use_opp | use_idle | use_trade | use_farm | use_ranch)[:, None],
+                    (use_opp | use_idle | use_trade | use_farm | use_ranch
+                     | use_carrot)[:, None],
                     (batch, 2)).reshape(-1),
                 # Games against a *pool checkpoint* specifically. `crossplay` covers every scripted
                 # seat too, which is right for the win-rate metric and wrong for deciding how hard
@@ -540,6 +557,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 vs_trade=jnp.broadcast_to(use_trade[:, None], (batch, 2)).reshape(-1),
                 vs_farm=jnp.broadcast_to(use_farm[:, None], (batch, 2)).reshape(-1),
                 vs_ranch=jnp.broadcast_to(use_ranch[:, None], (batch, 2)).reshape(-1),
+                vs_carrot=jnp.broadcast_to(use_carrot[:, None], (batch, 2)).reshape(-1),
                 roles=roles,
                 # **Which unit-turns were the policy's own decision**, in network-flat layout.
                 # False on the intermediate turns of a commitment: the unit was walking a path it
@@ -1203,6 +1221,19 @@ def main():
                          "It is the only opponent in the pool that can punish a bad farm: the other "
                          "two are beatable by a fixed amount, so they are a floor, while this one "
                          "has real play in it. 0 disables.")
+    ap.add_argument("--carrot-frac", type=float, default=0.0,
+                    help="fraction of games whose seat 1 is `jax_carrot`, a port of the public "
+                         "baseline `makimakiai/kaggriculture-carrot-fleet-simple-python-baseline`. "
+                         "It banks $3,410 from $3,000 -- by far the weakest farmer available, and "
+                         "that is why it is here. Outcome variance is p(1-p), so an opponent the "
+                         "policy is NEAR teaches more per game than one permanently above it: the "
+                         "farmer at $23,783 holds us near 0.09 and contributes almost no gradient, "
+                         "while this sits just above an idle seat's $3,000 and just above what the "
+                         "policy manages from a real start, so it should sit near 0.5 and cross as "
+                         "the policy improves. It also differs in KIND rather than dial -- melon on "
+                         "16 tiles over a long cycle against carpeting every tile with carrot on a "
+                         "three-day one -- which is the tempo diversity CLAUDE.md records this pool "
+                         "has never had. 0 disables.")
     ap.add_argument("--trade-frac", type=float, default=0.25,
                     help="fraction of games whose seat 1 only trades wheat: buys early, sells late, "
                          "every unit passing. It banks $3,989 from a $3,000 start using zero crew "
@@ -1615,10 +1646,11 @@ def main():
     # Role probabilities, in `ROLE_NAMES` order. Self-play is the remainder, as it always was, but
     # now explicitly rather than by falling through a partition.
     role_p = np.array([0.0, args.opponent_frac, args.farm_frac,
-                       args.trade_frac, args.idle_frac, args.ranch_frac], dtype=np.float64)
+                       args.trade_frac, args.idle_frac, args.ranch_frac,
+                       args.carrot_frac], dtype=np.float64)
     if role_p[1:].sum() > 1.0:
         raise SystemExit(
-            f"opponent/farm/trade/idle/ranch fracs sum to {role_p[1:].sum():.2f} > 1.0")
+            f"opponent/farm/trade/idle/ranch/carrot fracs sum to {role_p[1:].sum():.2f} > 1.0")
     role_p[ROLE_SELF] = 1.0 - role_p[1:].sum()
     print("seat-1 roles, sticky per episode: "
           + "  ".join(f"{n}:{p:.0%}" for n, p in zip(ROLE_NAMES, role_p)))
