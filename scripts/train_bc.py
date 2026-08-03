@@ -35,7 +35,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from kagg.rl import jax_policy as P
+from kagg.rl import jax_act as A, jax_policy as P
 
 DATA = Path("data/il")
 OUT = Path("data/bc")
@@ -127,6 +127,14 @@ def cross_entropy(logits, target, weight=None, smooth=0.0):
 
 def main():
     ap = argparse.ArgumentParser()
+    # **Architecture size, exposed so capacity can be measured rather than assumed.**
+    # The RL run sits at ev_signal ~0.3-0.8 on a noisy terminal target, which cannot distinguish
+    # "the net is too small to represent this" from "the target is too noisy to learn from". BC has
+    # a clean supervised target and no credit assignment over 719 turns, so held-out NLL at two
+    # sizes answers the capacity half on its own.
+    ap.add_argument("--d-model", type=int, default=128)
+    ap.add_argument("--n-layers", type=int, default=3)
+    ap.add_argument("--n-heads", type=int, default=4)
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -154,7 +162,8 @@ def main():
     idx_tr = np.concatenate([np.arange(0, n_replay - n_val), np.arange(n_replay, n)])
     print(f"train {len(idx_tr):,}  val {len(idx_val):,} (held out as a trailing block, not at random)")
 
-    model = P.Policy()
+    model = P.Policy(d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers)
+    print(f"architecture: d_model={args.d_model} n_layers={args.n_layers} n_heads={args.n_heads}")
     key = jax.random.PRNGKey(0)
     params = model.init(key, jnp.asarray(tiles[:2], jnp.float32),
                         jnp.asarray(units[:2], jnp.float32),
@@ -167,6 +176,41 @@ def main():
 
     def loss_fn(params, batch):
         heads, _value = model.apply(params, batch["tiles"], batch["units"], batch["glob"])
+        # **Condition on the teacher's own trade and op before scoring anything.**
+        #
+        # `crop`, `item` and `qty` carry a `[.., MAX_UNITS, N_POLICY_OPS, K]` axis and `sell` and
+        # `buy_product` a `[.., N_PRODUCTS, N_TRADE_MODES, K]` one, so neither is a distribution
+        # until its conditioning variable is chosen. Without this the loss indexed a 4-dim head
+        # with a 3-dim target and BC could not run at all -- which is why the capacity question
+        # went unanswered: the tool that answers it had been broken since the op head was widened
+        # for COMMIT tokens, and only the training path is exercised daily.
+        #
+        # Teacher forcing is the right choice here and not a shortcut: BC scores the argument the
+        # teacher chose under the slice for the op the teacher chose, which is exactly what
+        # `jax_act.evaluate` does with the stored action in the PPO ratio. Conditioning on the
+        # model's own argmax instead would score a distribution the label was never drawn from.
+        heads = A.condition_on_op(heads, batch["y_op"])
+        # **`trade` is a LATENT here, so marginalise it rather than conditioning on it.**
+        #
+        # `sell` and `buy_product` carry a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis, and unlike
+        # `op` the dataset has no `y_trade` to collapse it with -- the replays record what was
+        # ordered, never which coordinating mode produced it. Dropping the two heads would make BC
+        # silently stop covering the market half; conditioning on the model's own argmax would
+        # score a distribution the label was never drawn from. The correct likelihood for an
+        # unobserved discrete latent is the marginal:
+        #
+        #     p(product) = sum_t p(trade = t) * p(product | trade = t)
+        #
+        # computed in log space. This is exact, not an approximation, and it keeps every head in
+        # the loss. It also means the market heads train through the same joint the policy samples
+        # from, which is the whole reason the trade axis exists.
+        _t_logp = jax.nn.log_softmax(heads["trade"], axis=-1)          # [N, N_TRADE_MODES]
+        for _k in A.CONDITIONED_HEADS:
+            if _k not in heads or heads[_k].ndim < 4:
+                continue
+            _h = jax.nn.log_softmax(heads[_k], axis=-1)                # [N, P, T, K]
+            _w = _t_logp[:, None, :, None]                             # [N, 1, T, 1]
+            heads[_k] = jax.nn.logsumexp(_h + _w, axis=-2)             # [N, P, K]
         # Column 0 of the unit features is `live` -- whether that slot is a unit the farm owns.
         live = (batch["units"][..., 0] > 0.5).astype(jnp.float32)
         total, parts = 0.0, {}

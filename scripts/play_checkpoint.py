@@ -33,7 +33,24 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from kagg.rl import commit as CM, jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
+from kagg.rl import (commit as CM, jax_act as A, jax_carrot as CARROT,
+                     jax_heuristic as HEUR, jax_obs, jax_policy as P, jax_rancher as RANCH)
+
+# **Which opponent the replay is run against, because it only ever ran one.**
+#
+# The script played the scripted farmer and nothing else, so 'what does the policy actually do'
+# was answerable against one opponent out of five -- and that one takes it to $0, which reads as
+# a total collapse until you notice `eval_policy` shows it keeping ~$1,100 against another
+# policy. Same behaviour, different opponent, opposite conclusion. The informative opponents are
+# the ones whose bank is NEAR ours: idle holds $3,000 and carrot banks $3,410, against a policy
+# that manages ~$1,100, while the farmer's $30,292 is unreachable and tells us only that it is
+# unreachable.
+OPPONENTS = {
+    'farm': HEUR.actions,      # $23,783-$30,292 -- the ceiling reference
+    'carrot': CARROT.actions,  # $3,410 -- just above us, so near maximum outcome variance
+    'ranch': RANCH.actions,    # $12,078 -- the animal economy
+    'idle': None,              # holds its opening $3,000 by passing every turn
+}
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
@@ -75,7 +92,8 @@ def _greedy(heads, masks):
     return out
 
 
-def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS):
+def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
+         opponent_fn=None):
     """Policy vs the scripted farmer for a full season.
 
     Returns `(money [B, 2], money_trace [DAYS, B, 2], op_counts [N_OPS], unit_turns)`.
@@ -105,9 +123,12 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS):
             unit_op=sim_op.astype(J._I), unit_crop=sim_crop.astype(J._I),
             unit_item=sim_item.astype(J._I),
             unit_qty=P.UNIT_QTY_BUCKETS[sim_qty].astype(J._I))
-        heur = HEUR.actions(state)
+        # `idle` is all-zeros: NOOP is op 0 and bucket 0 of every market head is quantity zero, so
+        # a zeroed Actions IS the do-nothing agent -- no parameters, nothing to keep in sync.
+        heur = (jax.tree_util.tree_map(jnp.zeros_like, sim_actions) if opponent_fn is None
+                else opponent_fn(state))
 
-        # The farmer takes whichever seat the policy does not.
+        # The opponent takes whichever seat the policy does not.
         seats = jnp.arange(2)[None, :]
         theirs = jnp.broadcast_to(seats != seat, (batch, 2))
         sim_actions = jax.tree_util.tree_map(
@@ -157,6 +178,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint")
     ap.add_argument("--games", type=int, default=32)
+    ap.add_argument("--opponent", default="farm", choices=sorted(OPPONENTS),
+                    help="which seat-1 agent to replay against. The farmer alone is a "
+                         "misleading picture -- see OPPONENTS.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--greedy", action="store_true",
                     help="decode with per-head argmax instead of sampling. NOT the default any "
@@ -195,10 +219,11 @@ def main():
     for swap in (False, True):
         key, sub = jax.random.split(key)
         money, trace, counts, unit_turns, commits = play(
-            params, model, args.games, sub, swap, greedy=args.greedy)
+            params, model, args.games, sub, swap, greedy=args.greedy,
+            opponent_fn=OPPONENTS[args.opponent])
         w, d, ll, me, them = report(money, swap)
         seat = 1 if swap else 0
-        print(f"--- policy in seat {seat} vs scripted farmer ---")
+        print(f"--- policy in seat {seat} vs {args.opponent} ---")
         print(f"  W/D/L      {w} / {d} / {ll}      "
               f"(win rate counting a tie as half: {(w + 0.5 * d) / len(me):.3f})")
         print(f"  policy $   median {np.median(me):>10,.0f}   mean {me.mean():>10,.0f}   "
