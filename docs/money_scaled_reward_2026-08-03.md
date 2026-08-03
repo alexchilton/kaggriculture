@@ -167,8 +167,21 @@ otherwise be doing. Its stated purpose:
 > *"a do-nothing policy now **loses** to this seat rather than drawing with it, which is the whole
 > point: it removes the 0.5 payoff for inaction instead of trying to regularise around it."*
 
-**`--trade-frac 0.00` in the live run.** The existing counter to the exact trap the graded ladder
-would dig is switched off.
+**`--trade-frac 0.00` in the live run — and that is correct, not an oversight.**
+`docs/HANDOFF_2026-08-02.md:220-223` records the measurement, under *"Things established today that
+should not be relitigated"*:
+
+> *"An opponent that earns from the shared market is not a stable rung. The scripted trader banks
+> $3,368 against an idle seat and **$2** against our policy, because our policy trades the same wheat
+> and `_process_market` re-quotes after every unit. `wr_trade` reading 0.31 was two bankrupt agents
+> comparing pocket change. A rung must earn from its own board."*
+
+The $3,989 figure is measured against an *idle* seat. Against a policy that also trades wheat — ours
+still does, `BUY WHEAT:0.021` / `SELL WHEAT:0.026` in the current log — the trader collapses to $2 and
+becomes another degenerate near-tie, which is the same failure it was built to fix.
+
+**So `trade` cannot serve as the anti-inaction rung, and an earlier version of this doc recommending
+it be switched on was wrong.**
 
 ### The general form: money is the wrong axis for a curriculum
 
@@ -212,12 +225,13 @@ earning is required.**
 
 1. **Do not scale the terminal reward with money.** It optimises margin, which the ladder does not
    score, and it pays for hoarding against opponents we cannot yet beat.
-2. **Turn `trade` on now, regardless of anything else.** It is implemented, it costs a flag, and it
-   is the existing mechanism for removing the 0.5 payoff for inaction. Leaving it at 0% while
-   discussing how to avoid teaching inaction is the wrong way round.
-3. **Do not grade stakes below $3,989.** Anything under what do-nothing achieves teaches thrift and
-   digs the absorbing basin. If graded stakes are used, put the support above it, where the
-   convexity Alex asked for actually belongs.
+2. **Do not turn `trade` on.** It earns from the shared market, so our own wheat trading collapses it
+   to $2 and it becomes another bankrupt near-tie. This is on record and should not be relitigated.
+3. **Grade `idle` upward instead, above $3,000.** `idle` is the only opponent immune to market
+   destruction — it never trades, so it banks exactly its stake whatever the policy does. Graded
+   *above* what inaction achieves it is a stable, ungameable "must earn" ladder ($5k / $10k / $20k),
+   which is what `trade` was trying to be and could not. Graded *below* it teaches thrift and digs
+   the absorbing basin; that direction is dead.
 4. **P2b moves up the list, not down.** It is the only proposal that grades difficulty on
    time-to-payoff rather than on final money, which is the axis where acting is what gets paid.
 5. **Keep per-step bank delta in reserve, not off the table.** It is policy-invariant and the
