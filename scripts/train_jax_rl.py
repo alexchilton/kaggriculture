@@ -91,6 +91,11 @@ TRADER_LOT = 5
 TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
+# How many turns before a terminal count as "near-terminal" for the value-loss share diagnostic.
+# Eight is a quarter of the default 32-turn horizon: wide enough that the window usually contains a
+# terminal when one is in the slice at all, narrow enough that "near" still means near.
+NEAR_TERMINAL_TURNS = 8
+
 
 def initial_virgin(seeded):
     """Whether a slot's FIRST completed episode should have its reward suppressed.
@@ -943,6 +948,51 @@ def kl_fraction(kl_anneal, it):
     if not kl_anneal:
         return 1.0
     return max(0.0, 1.0 - it / float(kl_anneal))
+
+
+def terminal_loss_shares(sq_err, trainable, done, near_turns=NEAR_TERMINAL_TURNS):
+    """How much of the value loss the terminal and near-terminal rows carry. Diagnostic only.
+
+    Item 1 of `docs/critic_terminal_blindness_2026-08-03.md`, which asks for a measurement before any
+    third mechanism is added to the value loss. The premise stated throughout this file is that
+    terminal rows are ~0.14% of the batch (one turn in 719) and the critic therefore trains almost
+    entirely on its own bootstrap. But **count share and loss share are different numbers**, and only
+    the second one says whether upweighting those rows would change the gradient: a terminal row's
+    target is the true outcome rather than a bootstrap, so its squared error is typically far larger.
+    If 0.14% of rows already carry 2% of the loss they have 14x leverage and upweighting is a much
+    smaller intervention than the row count suggests. `term_leverage` near 1.0 is the case that makes
+    upweighting worth doing.
+
+    Nothing here enters `loss_fn`, so a run with this instrumentation trains bit-identically to one
+    without it.
+
+    All three arrays are `[horizon, rows]`, not flattened, because `near` has to shift along the
+    horizon axis. Rows whose terminal falls outside the window simply do not count as near, which is
+    honest -- we cannot see it. `jnp.roll` is deliberately avoided: it wraps, which would make the top
+    of the window adjacent to the bottom.
+    """
+    tr = trainable.astype(jnp.float32)
+    ended = done & trainable
+    term = ended.astype(jnp.float32)
+    total = jnp.maximum((sq_err * tr).sum(), 1e-8)
+    n_rows = jnp.maximum(tr.sum(), 1.0)
+
+    loss_share = (sq_err * term).sum() / total
+    row_share = term.sum() / n_rows
+
+    near = ended
+    for s in range(1, near_turns):
+        near = near | jnp.concatenate(
+            [ended[s:], jnp.zeros((s,) + ended.shape[1:], dtype=bool)], axis=0)
+    near_f = near.astype(jnp.float32) * tr
+
+    return dict(
+        term_loss_share=loss_share,
+        term_row_share=row_share,
+        term_leverage=loss_share / jnp.maximum(row_share, 1e-8),
+        near_loss_share=(sq_err * near_f).sum() / total,
+        near_row_share=near_f.sum() / n_rows,
+    )
 
 
 def blend_regulariser(reg_coef, kl_frac, kl_prior, entropy_loss, kl_active):
@@ -2069,6 +2119,30 @@ def main():
         # computed and thrown away.
         terminal_ret_std = jnp.sqrt(jnp.maximum(r_var, 0.0))
 
+        # **How much of the value loss the terminal rows actually carry.**
+        #
+        # Item 1 of `docs/critic_terminal_blindness_2026-08-03.md`, which asks for a measurement
+        # before any third mechanism is added. The premise everywhere in this file is that terminal
+        # rows are ~0.14% of the batch and the critic therefore trains on its own bootstrap -- but
+        # *count* share and *loss* share are different numbers, and only the second one says whether
+        # upweighting those rows would change the gradient. A terminal row's target is the true
+        # outcome rather than a bootstrap, so its squared error is usually far larger than a
+        # reward-free row's; if 0.14% of rows already carry 2% of the loss they have 14x leverage and
+        # upweighting is a much smaller intervention than the count suggests.
+        #
+        # Read-only. These feed the log and nothing else -- no term here enters `loss_fn`, so a run
+        # with this instrumentation is bit-identical in its training to one without it.
+        _hr = traj["done"].shape                                 # [horizon, rows]
+        _shares = terminal_loss_shares(
+            sq_err=((ret_d - val_d) ** 2).reshape(_hr),
+            trainable=traj["trainable"],
+            done=traj["done"])
+        term_loss_share = _shares["term_loss_share"]
+        term_row_share = _shares["term_row_share"]
+        term_leverage = _shares["term_leverage"]
+        near_loss_share = _shares["near_loss_share"]
+        near_row_share = _shares["near_row_share"]
+
         # **What the policy is actually doing, which no scalar has ever shown.**
         #
         # Every metric in this log is an aggregate: returns, entropy, a win rate. None of them can
@@ -2243,6 +2317,9 @@ def main():
             "rewarded_frac": rewarded_frac, "ev": ev_d, "ev_signal": ev_sig_d,
             "ret_mean": ret_d.mean(), "ret_std": ret_d.std(),
             "terminal_ret_std": terminal_ret_std, "op_counts": op_counts,
+            "term_loss_share": term_loss_share, "term_row_share": term_row_share,
+            "term_leverage": term_leverage,
+            "near_loss_share": near_loss_share, "near_row_share": near_row_share,
             "trade_counts": trade_counts, "buy_rate": buy_rate,
             "sell_rate": sell_rate, "crop_counts": crop_counts,
             "item_counts": item_counts,
@@ -2300,6 +2377,13 @@ def main():
             "seat_sum_absdev": float(stats["seat_sum_absdev"]),
             "value_mean": float(stats["value_mean"]),
             "terminal_ret_std": float(stats["terminal_ret_std"]),
+            # Value-loss share carried by terminal and near-terminal rows. See where these are
+            # computed: `term_leverage` near 1.0 is the case that makes upweighting worth doing.
+            "term_loss_share": float(stats["term_loss_share"]),
+            "term_row_share": float(stats["term_row_share"]),
+            "term_leverage": float(stats["term_leverage"]),
+            "near_loss_share": float(stats["near_loss_share"]),
+            "near_row_share": float(stats["near_row_share"]),
             "op_counts": [float(x) for x in jax.device_get(stats["op_counts"])],
             "op_counts_full": [float(x) for x in jax.device_get(op_counts_full)],
             "trade_counts": [float(x) for x in stats["trade_counts"]],
@@ -2510,6 +2594,12 @@ def main():
             f"{vnet}V {row['value_mean']:.3f} {vnet}sum {row['seat_sum']:.3f} "
             f"seatL {row['seat_loss']:.4f}  klP {row['kl_prior']:.3f}  "
             f"{row['sps']:,.0f} t/s\n"
+            # Terminal rows: what share of the batch they are, what share of the value loss they
+            # carry, and the ratio. `lev` near 1 means they pull no harder than a bootstrap row.
+            f"         termrows {row['term_row_share']:.4%} vloss {row['term_loss_share']:.2%} "
+            f"lev {row['term_leverage']:.1f}x   "
+            f"near{NEAR_TERMINAL_TURNS} rows {row['near_row_share']:.2%} "
+            f"vloss {row['near_loss_share']:.2%}\n"
             f"         vs " + "  ".join(
                 f"{k}:{row[f'wr_{k}']:.3f}/{row[f'games_{k}']}x/d{row[f'draws_{k}']:.0%}"
                 if row[f"games_{k}"] else f"{k}: n/a"
