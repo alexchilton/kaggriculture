@@ -33,6 +33,7 @@ from kagg.sim import jax_sim as J
 pytestmark = pytest.mark.skipif(not curriculum.available(), reason="replay data not downloaded")
 
 
+@pytest.mark.slow
 def test_both_seats_are_seeded_from_a_real_board():
     """The Session 6 virgin-episode bug, on the opponent's side.
 
@@ -150,6 +151,7 @@ def test_a_batch_larger_than_the_reference_pool_still_fills():
     assert np.asarray(state.farm.money).shape[0] == 40
 
 
+@pytest.mark.slow
 def test_a_day_no_replay_reaches_fails_loudly():
     """Past the end of the season there is nothing to seed from, and that must not hang or return
     a short batch quietly."""

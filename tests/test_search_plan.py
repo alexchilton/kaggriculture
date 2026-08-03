@@ -9,6 +9,7 @@ moving away from uniform.
 """
 
 import numpy as np
+import pytest
 
 from kagg.search import cem, library
 from kagg.search import plan as P
@@ -78,6 +79,7 @@ def test_repeat_and_take_keep_plans_aligned():
     assert (picked.crop_of[1] == plans.crop_of[0]).all()
 
 
+@pytest.mark.slow
 def test_search_raises_the_population_mean_not_only_its_maximum():
     """A broken executor would still show a rising *best*; only the mean is proof of learning."""
     result = cem.search(library.opposition(), generations=4, pop=48, schedules=1,
@@ -87,6 +89,7 @@ def test_search_raises_the_population_mean_not_only_its_maximum():
     assert last["elite_win"] >= first["elite_win"]
 
 
+@pytest.mark.slow
 def test_the_fitted_distribution_moves_away_from_uniform():
     result = cem.search(library.opposition(), generations=4, pop=48, schedules=1,
                         seed=4, log=lambda _: None)

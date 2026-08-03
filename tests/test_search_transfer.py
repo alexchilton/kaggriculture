@@ -55,6 +55,7 @@ def _both(first, second, seed):
     return real, (float(money[0, 0]), float(money[0, 1]))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("seed", [101, 202])
 def test_the_simulator_predicts_the_real_banks_within_ten_percent(seed):
     real, sim = _both(library.melon_wheat(), library.wheat_only(), seed)
@@ -68,6 +69,7 @@ def test_the_simulator_predicts_the_real_banks_within_ten_percent(seed):
     assert (sim[0] > sim[1]) == (real[0] > real[1])
 
 
+@pytest.mark.slow
 def test_the_two_plans_are_far_apart_so_the_agreement_above_means_something():
     """Two plans that scored the same would satisfy the tolerances while proving nothing."""
     real, sim = _both(library.melon_wheat(), library.wheat_only(), 101)

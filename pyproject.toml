@@ -13,13 +13,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-xdist>=3"]
 
 [tool.setuptools.packages.find]
 include = ["kagg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Almost every test here pays a JAX trace-and-compile before it asserts anything, and that cost is
+# per-process, so the suite is embarrassingly parallel and barely touched by anything else. Measured
+# on a 14-core box: 387s serial, 131s with `-n auto`. Add `-n0` to any command to get back a single
+# process (needed for `--pdb`, and quicker when you are iterating on one test).
+addopts = "-n auto"
 markers = [
-    "slow: plays whole episodes; deselect with -m 'not slow'",
+    # A test earns this mark by being an *integration* check -- it runs the CEM search, scans the
+    # replay archive on disk, or plays whole seasons through the ladder -- not merely by being slow.
+    # These are the suite's critical path: the ~10 marked tests are 165s of its 387s serial cost.
+    # Unit tests must stay in the default set, however long they take, because they are the ones
+    # that have to run on every edit.
+    "slow: integration test; deselect with -m 'not slow'",
 ]

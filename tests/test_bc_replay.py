@@ -100,6 +100,7 @@ def test_a_replay_observation_is_the_state_after_its_own_action():
     assert crew_prev > crew_cur
 
 
+@pytest.mark.slow
 def test_iter_turns_yields_the_state_the_action_was_decided_from():
     """The consumer-facing half of the property above.
 
@@ -184,6 +185,7 @@ def test_encode_action_keeps_the_crop_the_teacher_named():
     pytest.skip("no PLANT action in the sampled replays")
 
 
+@pytest.mark.slow
 def test_the_top_seats_demonstrate_feed_and_care():
     """The reason this track exists.
 
