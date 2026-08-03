@@ -172,20 +172,52 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
     (final, _, _), (money_t, counts_t, unit_t, commit_t,
                     hire_t, land_t, trade_t, sell_t, buy_t) = jax.lax.scan(
         one_turn, (state, key, CM.init(batch)), None, length=turns)
-    # One sample per game-day rather than per turn, which is the unit a human reads.
-    trace = money_t[::J.TURNS_PER_DAY]
-    # The accounting is a *flow*, so it is summed over each day rather than sampled at the day
-    # boundary the way the bank level is. Sampling a flow would report one turn's spend as a day's.
-    n_days = turns // J.TURNS_PER_DAY
-    keep = n_days * J.TURNS_PER_DAY
-
-    def per_day(x):
-        return x[:keep].reshape(n_days, J.TURNS_PER_DAY, *x.shape[1:]).sum(axis=1)
-
-    acct_trace = {"hire": per_day(hire_t), "land": per_day(land_t), "trade": per_day(trade_t),
-                  "sell": per_day(sell_t), "buy": per_day(buy_t)}
+    trace = bank_by_day(money_t)
+    acct_trace = {"hire": per_day_flow(hire_t, turns), "land": per_day_flow(land_t, turns),
+                  "trade": per_day_flow(trade_t, turns), "sell": per_day_flow(sell_t, turns),
+                  "buy": per_day_flow(buy_t, turns)}
     return (final.farm.money, trace, counts_t.sum(axis=0), float(unit_t.sum()),
             commit_t.sum(axis=0), acct_trace)
+
+
+def n_game_days(turns):
+    """Game-days spanned by `turns`, rounding **up**.
+
+    `719 // 24` is 29 and the season is 30 days: the last one is a 23-turn tail. Flooring it is what
+    made the last 23 turns of every game invisible in the flow table, while the bank kept moving --
+    against `ranch` the trace read $388 at turn 696 and the true final was $6.
+    """
+    return -(-turns // J.TURNS_PER_DAY)
+
+
+def per_day_flow(x, turns):
+    """`[days, ...]` -- sum a per-turn *flow* into game-days, including the partial last day.
+
+    Money movements are flows and must be summed over the day, not sampled at its boundary the way a
+    bank level is; sampling a flow reports one turn's spend as a day's. The tail is zero-padded to a
+    whole day so every turn lands in exactly one bucket -- `test_every_turn_lands_in_exactly_one_day_bucket`
+    is the guard, because a reporting tool that silently drops turns prints numbers that are each
+    true and a picture that is wrong.
+    """
+    n_days = n_game_days(turns)
+    pad = n_days * J.TURNS_PER_DAY - x.shape[0]
+    if pad:
+        x = jnp.concatenate([x, jnp.zeros((pad,) + x.shape[1:], x.dtype)], axis=0)
+    return x.reshape(n_days, J.TURNS_PER_DAY, *x.shape[1:]).sum(axis=1)
+
+
+def bank_by_day(money_t):
+    """`[days, ...]` -- the bank at the **end** of each game-day, final turn always included.
+
+    Sampling `money_t[::TURNS_PER_DAY]` took day *starts*, so the last sample was turn 696 while the
+    headline "policy $" is `final.farm.money` at turn 718. Two timestamps, presented side by side as
+    though they were one, and the gap was $382 against `ranch` seat 0 and $3,216 against seat 1.
+    """
+    ends = jnp.arange(J.TURNS_PER_DAY - 1, money_t.shape[0], J.TURNS_PER_DAY)
+    # The final turn closes the season whether or not it falls on a day boundary.
+    last = money_t.shape[0] - 1
+    idx = ends if int(ends[-1]) == last else jnp.concatenate([ends, jnp.asarray([last])])
+    return money_t[idx]
 
 
 def report(money, swap):
