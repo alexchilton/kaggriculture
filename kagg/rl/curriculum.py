@@ -51,6 +51,22 @@ from kagg.sim import tiles as T
 # schedule step does not present one board repeatedly across the batch.
 DAY_WINDOW = 1
 
+# The day `chain_states` builds its half-farm at. Named rather than repeated, because the length
+# weighting below and the function's own default must not be able to drift apart -- a mismatch is
+# invisible and mis-allocates the rung's slots by the ratio of the two numbers.
+CHAIN_START_DAY = 25
+
+# Mix keys that are not recorded game days, mapped to the game day whose episode LENGTH they have.
+# -1 is `chain_states`: a half-built farm at day 25, so the last link of the production chain is
+# learnable inside a ~120-turn episode.
+#
+# **This mapping is what `length_weighted_mix` was missing.** It weighted `-1` by
+# `season_days - (-1)` = 31 days when the rung produces a ~5-day episode, so the rung received 6.2x
+# the slots its requested episode share called for. Rung `-1` and rung `25` are the same length and
+# cannot correctly get different allocations for the same requested share.
+SYNTHETIC_START_DAY = {-1: CHAIN_START_DAY}
+SYNTHETIC_RUNGS = frozenset(SYNTHETIC_START_DAY)
+
 
 def available(root="data"):
     return bool(bc.find_replays(root))
@@ -68,9 +84,30 @@ def noop_actions(batch):
 
 
 def _turn_indices(n_steps, day, window=DAY_WINDOW):
-    """Recorded step indices whose game-day is within `window` of `day`."""
-    lo = max(1, (day - window) * J.TURNS_PER_DAY)
-    hi = min(n_steps - 1, (day + window + 1) * J.TURNS_PER_DAY)
+    """Recorded step indices whose game-day is within `window` of `day`.
+
+    **`day` stays the centre of the window even when the clip bites.** The old spelling was
+    `lo = max(1, (day - window) * TURNS_PER_DAY)`, which had two defects in one line:
+
+    - **turn 0 was unreachable for every day**, and turn 0 is the only true game start on disk;
+    - **at day 0 the window was not centred on day 0.** Clipping the low side to turn 1 while
+      leaving the high side at `(0 + 1 + 1) * 24` gave `(1, 48)`, a window spanning game-days 0-2
+      with its median at turn 24 -- game-day *1*. Measured, `states_at_day(0)` returned boards on
+      $476 holding 7 units, a full game-day of play already spent.
+
+    Shrinking the far side by however much the near side was clipped keeps the requested day at the
+    median at every day, which is what the docstring always claimed.
+
+    A recording shorter than the requested day still returns `hi <= lo`. That is the caller's
+    signal to skip the replay, and clamping it away would silently answer a day-29 request with
+    day-25 turns.
+    """
+    lo_day, hi_day = day - window, day + window
+    if lo_day < 0:
+        hi_day += lo_day          # same amount off the top, so `day` stays the centre
+        lo_day = 0
+    lo = max(0, lo_day * J.TURNS_PER_DAY)
+    hi = min(n_steps - 1, (hi_day + 1) * J.TURNS_PER_DAY)
     return lo, hi
 
 
@@ -127,7 +164,7 @@ def _stack(states):
     )
 
 
-def chain_states(n, wheat=12, plots=6, herd=3, crop=0, start_day=25):
+def chain_states(n, wheat=12, plots=6, herd=3, crop=0, start_day=CHAIN_START_DAY):
     """A pristine board with the production chain already half-built, late in the season.
 
     **The problem, measured.** The policy will not buy animals or land, and over a full night those
@@ -162,7 +199,11 @@ def chain_states(n, wheat=12, plots=6, herd=3, crop=0, start_day=25):
     """
     import jax.numpy as jnp
 
-    st = J.reset(n, phase=np.full(n, int(start_day) * J.TURNS_PER_DAY, dtype=np.int64))
+    # `reset_with_shops`, not `reset`: a plain reset freezes every shop at `NEVER`, so the town
+    # buys 140 wheat a season instead of ~700 and end-of-season wheat sits at $37 against the real
+    # $51. This rung exists to make the last link of the chain -- sell before the bell -- learnable,
+    # and it was pricing that sale 27% low.
+    st = J.reset_with_shops(n, phase=np.full(n, int(start_day) * J.TURNS_PER_DAY, dtype=np.int64))
     tiles, farm = st.tiles, st.farm
 
     # Only tiles that start unlocked and empty; the locked quadrants stay locked.
@@ -260,17 +301,48 @@ def states_at_day(batch, day, seed=0, min_bank=None, top=None, root="data", behi
         misses = 0
         obs, privates, _action, seat, step = turns[int(rng.integers(lo, hi))]
         st = _with_step_index(adapter.state_from_obs(obs, privates), step)
-        # `adapter` places each farm at its own replay index, so the ranked seat is not always
-        # index 0. Swap only when the seat we want the trainee to occupy is not already there --
-        # an unconditional swap flips whatever happens to be present and the dial does nothing.
-        want_ranked_at = 1 if behind else 0
-        if seat != want_ranked_at:
+        # **Swap on the money actually in the drawn board, not on `ref.seat`.**
+        #
+        # `adapter` places each farm at its own replay index, so the richer seat is not always index
+        # 0, and swapping only when needed is what stops the dial cancelling itself out.
+        #
+        # It used to key off `ref.seat` -- the seat `bc.rank_seats` ranked, which ranks by **final**
+        # bank. That is not the same seat as the one that is ahead *at the seed turn*, and the gap is
+        # not small: measured over 24 boards per rung, the ranked seat led at the seed in 62% of
+        # day-10 boards, 50% at day 15, 58% at day 20 and 50% at day 25. So the flag delivered a
+        # coin flip, and at days 20 and 25 it **inverted** -- `behind=True` handed the trainee the
+        # richer seat ($58,391 against $54,052 at day 25).
+        #
+        # That silently voided the guard the flag exists to provide. Its docstring's claim is that
+        # `behind=True` is where "a win cannot be inherited and has to be earned"; on the late rungs
+        # it was where a win was *most* inheritable. Comparing the two banks in the state itself
+        # makes the dial exact rather than 50-62% accurate, and it is the flag's documented contract
+        # rather than a new behaviour.
+        #
+        # `mirror` still works: two calls with the same seed draw the same boards, and the richer
+        # seat lands at index 0 in one and index 1 in the other, which is the exact exchange it wants.
+        money = np.asarray(st.farm.money)[0]
+        richer = int(np.argmax(money))
+        want_richer_at = 1 if behind else 0
+        if richer != want_richer_at:
             st = _swap_seats(st)
         states.append(st)
 
     if len(states) < batch:
         raise SystemExit(f"only built {len(states)} of {batch} seeded states")
-    return _stack(states[:batch])
+    stacked = _stack(states[:batch])
+
+    # **Stamp a plausible shop schedule over the adapter's `NEVER`.**
+    #
+    # `adapter.state_from_obs` sets `unlock_day = NEVER` for a correct reason -- the schedule is a
+    # per-episode RNG artifact and an observation does not record it. But `NEVER` is not a neutral
+    # unknown: it is the assertion that no shop ever opens, which drops the town's shop drain to
+    # zero and holds end-of-season wheat at $37 against the real $51. A sampled schedule is
+    # unknowably wrong in its *order* and right about the cadence; `NEVER` is wrong about both.
+    #
+    # The recorded board is mid-season, so a day-15 seed correctly finds five of eight shops
+    # already open -- the sampled days run 3..24 regardless of where the episode resumes.
+    return stacked._replace(unlock_day=J.random_unlock_days(batch, seed=seed))
 
 
 def _duplicate_seat(state, seat=0):
@@ -349,14 +421,24 @@ def length_weighted_mix(days, season_days=30):
     if not want:
         raise ValueError("no days given")
     for d in want:
+        # Negative keys are SYNTHETIC rungs, not recorded game days -- currently only -1, the
+        # half-built chain at day 25. Validated against the known set rather than a range, so a
+        # typo still fails loudly instead of silently seeding something nobody asked for.
+        if d in SYNTHETIC_RUNGS:
+            continue
         if d < 0 or d >= season_days:
-            raise ValueError(f"day {d} is outside 0..{season_days - 1}")
+            raise ValueError(f"day {d} is outside 0..{season_days - 1} "
+                             f"(synthetic rungs: {sorted(SYNTHETIC_RUNGS)})")
 
     # **Slots ~ episode_share x remaining length.** Episodes arrive in proportion to
     # `slots / (season_days - d)`, so multiplying the target by the length cancels the bias exactly
     # and each day lands on the share that was asked for. The equal-share case reduces to the
     # original `season_days - d`, which is why the old spelling keeps working unchanged.
-    weights = {d: want[d] * float(season_days - d) for d in sorted(want, reverse=True)}
+    # A synthetic rung's key is not its length. `-1` is a half-built farm at day 25, so it must be
+    # weighted as a 5-day episode; weighting it by `season_days - (-1)` = 31 gave it 6.2x the slots
+    # its requested share called for, which is a confound sitting directly under P7.
+    weights = {d: want[d] * float(season_days - SYNTHETIC_START_DAY.get(d, d))
+               for d in sorted(want, reverse=True)}
     total = sum(weights.values())
     return {d: w / total for d, w in weights.items()}
 
@@ -395,8 +477,19 @@ def parse_mix(spec):
             raise ValueError(f"mix entry {part!r} is not day:fraction (e.g. '25:0.8,0:0.2')")
         day_s, frac_s = part.split(":", 1)
         day, frac = int(day_s), float(frac_s)
+        # **Synthetic rungs are deliberately NOT accepted in the plain form**, and that is pinned by
+        # `test_a_day_outside_the_season_is_refused`. The reason holds on inspection: a synthetic
+        # rung's whole problem is that its key is not its episode length, so it is only meaningful
+        # once length weighting is applied -- which is exactly what the `length:` prefix turns on.
+        # Allowing `-1:0.1` in the plain form would hand it a raw *slot* share and reintroduce the
+        # 6.2x mis-allocation from the other direction.
+        #
+        # The message says so, rather than leaving the caller to guess why one spelling works.
         if day < 0 or day > 29:
-            raise ValueError(f"mix day {day} is outside the season (0-29)")
+            hint = (f" -- synthetic rungs {sorted(SYNTHETIC_RUNGS)} need the 'length:' form, which "
+                    f"applies the episode-length weighting they require"
+                    if day in SYNTHETIC_RUNGS else "")
+            raise ValueError(f"mix day {day} is outside the season (0-29){hint}")
         if frac <= 0:
             raise ValueError(f"mix fraction for day {day} is {frac}; use a positive fraction or "
                              f"drop the entry rather than asking for a zero share")
@@ -503,7 +596,11 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behi
             # `mirror`, `behind` and `symmetric` are all no-ops here by construction: a pristine
             # board is already identical on both seats, so there is no richer seat to inherit and
             # nothing to mirror.
-            pools.append(J.reset(n))
+            #
+            # `reset_with_shops` rather than `reset`, for the reason recorded on `chain_states`: a
+            # plain reset never opens a shop, so this rung -- 60% of the live run's slots -- was a
+            # full 719-turn season in a market that bought a fifth of the wheat it should.
+            pools.append(J.reset_with_shops(n, seed=day_seed))
             continue
         if not mirror:
             pools.append(states_at_day(n, day=day, seed=day_seed, min_bank=min_bank, top=top,

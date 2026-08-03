@@ -132,7 +132,10 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
 
             nxt = J.step(state, sim_actions)
             done = (nxt.step_index > J.LAST_STEP) & ~(state.step_index > J.LAST_STEP)
-            fresh = J.reset(batch)
+            # `reset_with_shops`: a plain reset never opens a shop, so DAgger would collect its
+            # student states -- and therefore its teacher labels -- in a market with a fifth of the
+            # real season wheat demand.
+            fresh = J.reset_with_shops(batch)
             pick = lambda new, old: jnp.where(                  # noqa: E731
                 done.reshape((-1,) + (1,) * (old.ndim - 1)), new, old)
             nxt = nxt._replace(
@@ -140,6 +143,9 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
                 tiles=jax.tree_util.tree_map(pick, fresh.tiles, nxt.tiles),
                 farm=jax.tree_util.tree_map(pick, fresh.farm, nxt.farm),
                 inventory=pick(fresh.inventory, nxt.inventory),
+                # Per game, so it restarts with the rest of the board. Omitting it was invisible
+                # while every schedule was the constant `NEVER`; it is not now.
+                unlock_day=pick(fresh.unlock_day, nxt.unlock_day),
             )
             # Only slots the teacher can be held responsible for: a live unit's action.
             unit_live = units[..., 0].reshape(batch * 2, -1) > 0.5
@@ -213,7 +219,7 @@ def main():
     model = P.Policy(d_model=args.d_model, n_heads=args.heads, n_layers=args.layers)
     key = jax.random.PRNGKey(args.seed)
     key, sub = jax.random.split(key)
-    state0 = J.reset(args.batch)
+    state0 = J.reset_with_shops(args.batch, seed=args.seed)   # also the rollout start, see below
     t, u, g = jax_obs.encode(state0)
     params = model.init(sub, A._flat(t), A._flat(u), A._flat(g))
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))

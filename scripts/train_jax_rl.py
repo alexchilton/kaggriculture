@@ -92,6 +92,41 @@ TURNS_PER_DAY = J.TURNS_PER_DAY
 EPISODE_TURNS = 719
 
 
+def initial_virgin(seeded):
+    """Whether a slot's FIRST completed episode should have its reward suppressed.
+
+    **True only for `staggered_states`.** That builds a slot at, say, turn 700 on an *empty* board
+    with $3,000 a side, which is a legal state and an impossible position: `won = money > money[::-1]`
+    is then decided by the day/board mismatch, and the scripted farmer -- which gates planting on
+    `day <= LAST_PLANT_DAY` -- declines to act at all, so both sides stand still and the game scores
+    an exact tie worth 0.5. Suppressing that first reward is right.
+
+    **False for a curriculum-seeded slot, and it was wrongly True.** A curriculum board is a real
+    recorded position, or `J.reset` at turn 0 for the day-0 rung. Those first episodes are genuine
+    results and were being thrown away -- one per slot on every process start *and* on every
+    `--resume`, which is exactly the window a human reads after relaunching a run.
+    """
+    return bool(not seeded)
+
+
+def warn_if_phases_inert(n_phases, seeded):
+    """Say so when `--n-phases` has no effect, because a flag that silently does nothing lies.
+
+    `state = staggered_states(...)` runs at startup and is then overwritten by `state = seed_states`
+    whenever a curriculum is set, so under a curriculum `--n-phases` stops controlling episode-start
+    staggering entirely -- the mix's own day spread does it instead. The evening handoff listed
+    `--n-phases 12` as an active mitigation for P1 on the strength of the flag being on the command
+    line.
+
+    Worth stating plainly: staggering changes *when* terminal rows arrive, never what fraction of
+    rows they are. No setting of this flag can move P1's ~0.14% terminal density.
+    """
+    if seeded and n_phases and n_phases > 1:
+        print(f"NOTE: --n-phases {n_phases} is INERT under a curriculum -- the seeded states "
+              f"replace the staggered ones, so the mix's day spread sets episode phase. It cannot "
+              f"change terminal-row density either way.", flush=True)
+
+
 def staggered_states(batch, n_phases, seed=0):
     """One state whose games start at evenly spread points in the season.
 
@@ -124,7 +159,10 @@ def staggered_states(batch, n_phases, seed=0):
     groups = max(1, min(n_phases, batch))
     idx = np.arange(batch)
     phase = ((idx % groups) * (EPISODE_TURNS + 1)) // groups
-    return J.reset(batch, seed=seed, phase=phase)
+    # `reset_with_shops`: a plain `reset` leaves every shop at `NEVER`, which measured a season-long
+    # town drain of 140 wheat against the reference's ~700 and held end-of-season wheat at $37
+    # instead of $51. Every RL and eval entry point had taken that default.
+    return J.reset_with_shops(batch, seed=seed, phase=phase)
 
 
 def _pack(x):
@@ -238,7 +276,6 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
     """
     gamma = jnp.asarray(gamma, dtype=jnp.float32)
     gae_lambda = jnp.asarray(gae_lambda, dtype=jnp.float32)
-    per_group = batch // n_phases
     # Even-numbered envs are the early-game ones, matching Ender's split exactly.
     is_early = (jnp.arange(batch) % 2) == 0
     _EARLY_ROWS = jnp.repeat(is_early, 2)         # [B*2], for splitting per-seat statistics
@@ -506,6 +543,16 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             # two unwatered days and animals escape after two unfed ones. So a seeded position
             # cannot be held by standing still, which is exactly what a weak scripted opponent
             # would have allowed.
+            # **Bank at the moment the season ends, captured BEFORE the restart overwrites it.**
+            #
+            # `money_med` is `farm.money` sampled when the update happens to end, with every game at
+            # a different point in its season -- so it measures typical cash ON HAND, not an
+            # outcome. It rose $922 -> $2,600 overnight while a replay of the same checkpoint ended
+            # every game on $0, and both numbers were honest: the policy had learnt to go broke
+            # later. The outcome question -- did it finish with more than the $3,000 it started
+            # with -- needs the bank on terminal rows, and three lines later `pick` has already
+            # replaced it with the seed state's.
+            end_money = nxt.farm.money
             fresh = seed_states
             restart = just_done | truncate
             pick = lambda new, old: jnp.where(                       # noqa: E731
@@ -515,6 +562,13 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
                 tiles=jax.tree_util.tree_map(pick, fresh.tiles, nxt.tiles),
                 farm=jax.tree_util.tree_map(pick, fresh.farm, nxt.farm),
                 inventory=pick(fresh.inventory, nxt.inventory),
+                # **`unlock_day` is per game and must be restored with the rest of the board.**
+                # It was omitted while every entry point left it at the constant `NEVER`, where the
+                # omission could not be observed. Now that a restarting slot's seed state carries a
+                # real per-game shop order, keeping the finished game's schedule would pair one
+                # game's board with another game's market -- and the town drain drives every price
+                # the new episode trades at.
+                unlock_day=pick(fresh.unlock_day, nxt.unlock_day),
             )
 
             # **A virgin ending is a truncation, not a termination**, and the distinction is load
@@ -532,6 +586,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases):
             out = dict(
                 logp=logp, value=value, reward=reward.reshape(-1),
                 done=done_flat, actions=actions, masks=masks, obs=obs,
+                end_money=end_money.reshape(-1),
                 trunc=jnp.broadcast_to(pseudo_trunc[:, None], (batch, 2)).reshape(-1),
                 # Rows the frozen opponent chose are not ours to learn from: their log-probs come
                 # from different parameters, so including them would make the PPO ratio a ratio of
@@ -879,11 +934,46 @@ def kl_to_prior(heads, prior_heads, masks):
     return total
 
 
+def kl_fraction(kl_anneal, it):
+    """How much of the regulariser is still the KL at update `it`. 1.0 -> all KL, 0.0 -> all entropy.
+
+    Clamped at zero on both ends. A negative fraction would flip the KL's sign and actively push
+    the policy *away* from the prior, which is the opposite of releasing it.
+    """
+    if not kl_anneal:
+        return 1.0
+    return max(0.0, 1.0 - it / float(kl_anneal))
+
+
+def blend_regulariser(reg_coef, kl_frac, kl_prior, entropy_loss, kl_active):
+    """The single regulariser term, handing over from KL to entropy as the prior anneals out.
+
+    **Why a handover and not a sum.** The long comment in `loss_fn` is right that under Ender's
+    structure the KL *replaces* entropy rather than adding to it, and that a separate `--kl-coef`
+    alongside `--ent-coef 0` cost two runs by leaving effectively no regulariser at all. Summing
+    the two would also double-count: `hand_prior_heads` returns a uniform prior for every head it
+    does not shape, and `KL(p || uniform) = -H(p) + const`, so on those heads the KL already *is*
+    an entropy bonus. So the two share one coefficient and trade weight on a convex blend.
+
+    **What this fixes.** `--kl-anneal` used to decay `reg_coef` itself, and `reg_coef` is the whole
+    regulariser when a prior is set -- so annealing the prior away annealed *everything* away and
+    the run finished with nothing holding the policy. Measured on `ppo-20260802-085329`: entropy
+    13.35 -> 26.70 while the win rate fell 0.525 -> 0.291 over 66 updates, with `ev_signal` still
+    rising. The critic was fine; the anchor had come off.
+
+    At `kl_frac = 1.0` this is exactly the old expression, so a run without `--kl-anneal` is
+    unchanged to the last bit. Pinned by `tests/test_kl_anneal.py`.
+    """
+    if not kl_active:
+        return reg_coef * entropy_loss
+    return reg_coef * (kl_frac * kl_prior + (1.0 - kl_frac) * entropy_loss)
+
+
 def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_coef=0.0,
                 kl_coef=0.0, prior_params=None, hand_noop_p=0.0, spend_p=0.0):
     """Build the jitted PPO update over one rollout's minibatches."""
 
-    def loss_fn(params, batch_data, reg_coef):
+    def loss_fn(params, batch_data, reg_coef, kl_frac):
         tiles, units, glob = batch_data["obs"]
         heads, value = model.apply(params, tiles, units, glob)
         logp, entropy = A.evaluate(heads, batch_data["masks"], batch_data["actions"],
@@ -1027,10 +1117,14 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         # not shape, and `KL(p || uniform) = -H(p) + const`, so minimising that KL already maximises
         # entropy on exactly the heads Ender leaves on plain entropy. Only `op` differs, and there
         # the KL pulls toward `noop_p` instead of toward uniform -- which is the point.
-        if kl_coef and (hand_noop_p or spend_p or prior_params is not None):
-            regulariser = reg_coef * kl_prior
-        else:
-            regulariser = reg_coef * entropy_loss
+        #
+        # **The anneal now hands over instead of switching off.** `--kl-anneal` used to decay
+        # `reg_coef`, which is the entire regulariser on this branch, so releasing the prior
+        # released everything. `blend_regulariser` trades the weight across to entropy instead, so
+        # the objective always has something in it. `kl_frac == 1.0` reproduces the old expression
+        # exactly, which is what a run without `--kl-anneal` gets.
+        kl_active = bool(kl_coef) and (hand_noop_p or spend_p or prior_params is not None)
+        regulariser = blend_regulariser(reg_coef, kl_frac, kl_prior, entropy_loss, kl_active)
 
         loss = policy_loss + vf_coef * value_loss + regulariser + seat_coef * seat_loss
         approx_kl = ((batch_data["old_logp"] - logp) * w).sum() / w_sum
@@ -1041,16 +1135,16 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
                           kl_prior=kl_prior)
 
     @jax.jit
-    def update(params, opt_state, batch_data, reg_coef):
+    def update(params, opt_state, batch_data, reg_coef, kl_frac):
         (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-            params, batch_data, reg_coef)
+            params, batch_data, reg_coef, kl_frac)
         grads, gnorm = _clip_by_norm(grads, max_grad_norm)
         updates, opt_state = optimiser.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
         return params, opt_state, {**aux, "loss": loss, "grad_norm": gnorm}
 
     @functools.partial(jax.jit, static_argnames=("epochs", "n_chunks", "chunk"))
-    def run_epochs(params, opt_state, data, key, epochs, n_chunks, chunk, reg_coef):
+    def run_epochs(params, opt_state, data, key, epochs, n_chunks, chunk, reg_coef, kl_frac):
         """Every minibatch of every epoch as a single dispatch.
 
         The obvious loop -- shuffle in numpy, slice per minibatch, call a jitted update -- costs one
@@ -1076,7 +1170,7 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
             def one_minibatch(carry, rows):
                 params, opt_state = carry
                 mb = jax.tree_util.tree_map(lambda x: x[rows], data)
-                params, opt_state, metrics = update(params, opt_state, mb, reg_coef)
+                params, opt_state, metrics = update(params, opt_state, mb, reg_coef, kl_frac)
                 return (params, opt_state), metrics
 
             (params, opt_state), metrics = lax.scan(one_minibatch, (params, opt_state), perm)
@@ -1204,7 +1298,17 @@ def main():
                          "from entropy to KL-against-the-prior. The *strength* comes from "
                          "--ent-coef, which they share, matching Ender's structure.")
     ap.add_argument("--kl-anneal", type=int, default=0,
-                    help="updates over which --kl-coef decays linearly to zero. 0 keeps it flat.")
+                    help="updates over which the KL's SHARE of the regulariser decays linearly to "
+                         "zero, handing the weight over to entropy at the same --ent-coef. 0 keeps "
+                         "it flat, which is byte-identical to the behaviour before the handover "
+                         "existed. "
+                         "**It no longer decays the coefficient itself.** It used to, and that was "
+                         "dangerous: on the prior branch the KL *is* the whole regulariser, so "
+                         "annealing it annealed everything and the run finished with nothing "
+                         "holding the policy. Measured on `ppo-20260802-085329` -- entropy 13.35 "
+                         "-> 26.70 while the win rate fell 0.525 -> 0.291 over 66 updates, with "
+                         "ev_signal still RISING. The critic was fine; the anchor had come off. "
+                         "See `blend_regulariser` and `tests/test_kl_anneal.py`.")
     ap.add_argument("--early-limit", type=int, default=0,
                     help="if >0, even-numbered envs truncate at this many turns and restart, so "
                          "the opening is trained on constantly instead of once a season. Ender's "
@@ -1438,6 +1542,9 @@ def main():
     # schedule's day changes.
     cur_day = 0
     seed_days = None
+    # Whether the opening `state` is a seeded board rather than `staggered_states`' empty mid-season
+    # one. Drives `initial_virgin` and the `--n-phases` notice, so both read the same fact.
+    _seeded_start = False
     # **The mix is deliberately not annealable.** Its whole premise is that the composition moves on
     # the value probe rather than on the update counter, so a flag that walked it on the clock would
     # reintroduce exactly what it exists to avoid. Combining it with --curriculum-day would also
@@ -1462,6 +1569,7 @@ def main():
             mirror=args.curriculum_mirror, symmetric=args.curriculum_symmetric,
             top=args.curriculum_top or None, with_days=True)
         state = seed_states
+        _seeded_start = True
         seats = "poorer" if args.curriculum_behind else "richer"
         counts = curriculum.mix_counts(args.batch, cur_mix)
         # Terminal episodes per update per day, so the log states the share that actually matters
@@ -1523,6 +1631,7 @@ def main():
         # Seeded slots start on a real board too, not just restart onto one -- otherwise the first
         # episode of every slot is the empty-board game the curriculum exists to avoid.
         state = seed_states
+        _seeded_start = True
         seats = "poorer" if args.curriculum_behind else "richer"
         print(f"curriculum: seeding from real boards at game-day {cur_day} ({seats} seat), "
               f"annealing one day per {args.curriculum_anneal or 'never'} updates", flush=True)
@@ -1542,7 +1651,8 @@ def main():
                 f"{start_turn} (game-day {args.curriculum_day}), so every early env would truncate "
                 f"immediately and never finish an episode. Use --early-limit 0 with a curriculum.")
     else:
-        seed_states = J.reset(args.batch)
+        seed_states = J.reset_with_shops(args.batch, seed=args.seed)
+    warn_if_phases_inert(args.n_phases, seeded=_seeded_start)
     tiles, units, glob = jax_obs.encode(state)
     params = model.init(sub, A._flat(tiles), A._flat(units), A._flat(glob))
     n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
@@ -1622,7 +1732,33 @@ def main():
               f"(teacher: {bc.get('args', {}).get('teacher', '?')}); optimiser is fresh")
     if args.resume:
         ck = load_checkpoint(args.resume)
-        params, opt_state = ck["params"], ck["opt_state"]
+        # **A resume must migrate too, and the optimiser state cannot come with it.**
+        #
+        # This branch used to assign `ck["params"]` straight through, so a checkpoint from before an
+        # observation gained a feature failed with a shape error deep inside `apply` -- while
+        # `--init` and `--kl-prior` three lines up both went through `load_or_migrate`. P3 added a
+        # `glob` column, which is exactly that case, and resuming `league1` is the whole point of it.
+        #
+        # `opt_state` holds Adam's first and second moments, shaped like the parameters. Widening a
+        # kernel therefore invalidates them, and there is no honest value to pad in: a moment is a
+        # running average of gradients that were never taken for the new row. So the optimiser is
+        # restarted rather than reshaped, and it says so -- a silently mismatched moment array is the
+        # kind of thing that shows up as an unexplained instability twenty updates later.
+        # `load_or_migrate` returns its input *unchanged* when the checkpoint already fits, so
+        # identity is the exact test for "did anything have to be reshaped" -- no shape walk needed.
+        # `opt_state` was built by `optimiser.init(params)` above from the freshly initialised
+        # parameters, so it already has this architecture's shapes and is the right thing to keep.
+        resumed = P.load_or_migrate(ck["params"], params)
+        migrated = resumed is not ck["params"]
+        params = jax.device_put(resumed)
+        if migrated:
+            print(f"resumed from {args.resume} and MIGRATED to this architecture "
+                  f"(observation widths are now "
+                  f"{(jax_obs.TILE_FEATURES, jax_obs.UNIT_FEATURES, jax_obs.GLOBAL_FEATURES)}); "
+                  f"**optimiser state discarded** -- Adam's moments do not fit the new shapes.",
+                  flush=True)
+        else:
+            opt_state = ck["opt_state"]
         start_update = ck["update"] + 1
         best_wr = ck.get("best") or -1.0
         print(f"resumed from {args.resume} at update {start_update}")
@@ -1664,9 +1800,10 @@ def main():
     # one season as each game terminates and re-draws.
     roles = jax.random.categorical(
         jax.random.PRNGKey(args.seed + 1), role_logp, shape=(args.batch,))
-    # Every slot starts mid-season on an empty board, so no slot's *first* termination is a real
-    # result. Cleared per slot as soon as it restarts. See where `reward` is computed.
-    virgin = jnp.ones((args.batch,), dtype=bool)
+    # Without a curriculum every slot starts mid-season on an empty board, so no slot's *first*
+    # termination is a real result. With one, the opening state IS a seeded board and its first
+    # episode is genuine -- see `initial_virgin`. Cleared per slot as soon as it restarts anyway.
+    virgin = jnp.full((args.batch,), initial_virgin(seeded=_seeded_start), dtype=bool)
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
@@ -2062,9 +2199,13 @@ def main():
         # resulted in significant improvement". It could not have worked as written either, because
         # `ent_coef` was captured as a Python float when `make_update` built its closure, so it was
         # baked into the compiled graph and constant for the whole run. It is now a traced value.
+        #
+        # **It decays the KL's *share*, not the coefficient.** Decaying `reg_coef` zeroed the whole
+        # regulariser, because on the prior branch the KL *is* the whole regulariser -- so the flag
+        # that was meant to release the prior released the policy entirely. `kl_frac` hands the
+        # weight over to entropy instead; see `blend_regulariser`.
         reg_coef = args.ent_coef
-        if args.kl_anneal:
-            reg_coef *= max(0.0, 1.0 - it / float(args.kl_anneal))
+        kl_frac = jnp.asarray(kl_fraction(args.kl_anneal, it), dtype=jnp.float32)
 
         n_chunks = max(1, flat_n // args.minibatch_size)
         key, ekey = jax.random.split(key)
@@ -2072,7 +2213,7 @@ def main():
         params, opt_state, metrics = run_epochs(
             params, opt_state, batch_data_full, ekey,
             epochs=args.epochs, n_chunks=n_chunks, chunk=args.minibatch_size,
-            reg_coef=reg_coef)
+            reg_coef=reg_coef, kl_frac=kl_frac)
         # **How far the weights actually moved this update, relative to their own size.**
         #
         # `approx_kl`, `clip_frac` and `grad_norm` all describe the *behaviour* change or the
@@ -2143,6 +2284,10 @@ def main():
         ev = float(stats["ev"])
         ev_signal = float(stats["ev_signal"])
 
+        _fin = np.asarray(jax.device_get(traj["done"] & traj["trainable"] & ~traj["trunc"]))
+        _em = np.asarray(jax.device_get(traj["end_money"]))
+        _bank_final_med = float(np.median(_em[_fin])) if _fin.any() else float("nan")
+
         row = {
             "update": it,
             "turns": (it + 1) * args.horizon * args.batch,
@@ -2177,6 +2322,11 @@ def main():
             # which is the policy-prior `CLAUDE.md` forbids, and it would also make this question
             # permanently unanswerable by construction.
             "param_drift": float(jax.device_get(param_drift)),
+            # Median bank of games that actually FINISHED this update, on the live policy's own
+            # seat. Against a $3,000 start this reads directly as "did we make money" -- the
+            # question `money_med` cannot answer. nan when nothing terminated, which is honest:
+            # with day-0 slots synchronised, most updates resolve no full-season game at all.
+            "bank_final_med": _bank_final_med,
             "jobs_med": float(np.median(
                 np.asarray(jax.device_get(HEUR.outstanding_jobs(state)))[:, 0])),
             "money_max": float(np.asarray(jax.device_get(state.farm.money))[:, 0].max()),
@@ -2385,7 +2535,11 @@ def main():
             + f"  |  spend seed:{row['seed_rate']:.3f} hire:{row['hire_rate']:.3f} "
               f"land:{row['land_rate']:.3f}"
             + f"  bank med ${row['money_med']:,.0f} max ${row['money_max']:,.0f}"
-            f"  jobs {row['jobs_med']:.0f}  dW {row['param_drift']:.2e}",
+            f"  jobs {row['jobs_med']:.0f}  dW {row['param_drift']:.2e}"
+            # The outcome number. `bank med` above is cash on hand mid-season; this one is what
+            # games actually FINISHED on, which is the only version that answers "did we profit".
+            + (f"  END ${row['bank_final_med']:,.0f}"
+               if row['bank_final_med'] == row['bank_final_med'] else "  END n/a"),
             flush=True,
         )
         if args.opponent_frac and it and it % args.pool_every == 0:
