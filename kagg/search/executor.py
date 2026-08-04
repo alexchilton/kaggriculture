@@ -69,6 +69,11 @@ N_PRODUCTS = 9        # market.N_PRODUCTS; the sell/buy_product axis width
 # numpy and imported by the submission path, so it must not pull in jax.
 ANIMAL_COST = np.array([300.0, 400.0, 500.0])
 
+# `farm.LAND_PRICES`, inlined for the same reason -- `kagg.sim.farm` imports `kaggle_environments`.
+# Needed here because `buy_land` had no affordability gate at all and would order a $1,000 parcel
+# against a $0 bank (`tests/test_one_turn_never_overcommits_cash.py`).
+LAND_PRICES = np.array([1000.0, 2000.0, 4000.0])
+
 # Ceiling used only to size a wheat order against cash. Wheat's base price is $25 and it rises as the
 # town runs dry, so budgeting at the top of the range under-orders rather than overdrawing.
 WHEAT_PRICE_CAP = 60.0
@@ -499,6 +504,26 @@ def decide(view, plan):
     budget = np.maximum(view.money - plan.seed_reserve, 0.0)
     buy_seed[:, c] = np.minimum(need, np.floor(budget / SEED_COST[c])).astype(np.int64)
 
+    # ---- one shared ledger for the turn ------------------------------------------------------
+    #
+    # **Every purchase below is sized against what is left, not against the bank.** Seed, feed,
+    # livestock and land each read `view.money` independently until 2026-08-04, so the same dollar
+    # was promised several times over. Measured on day 0 of a real season with the leaders'
+    # allocation (`data/logs/executor_cash_ledger.log`): $1,800 of seed, $956 of feed and a $400 cow
+    # committed against a $3,000 stake. The reference settles the order list in slot order, so the
+    # seeds filled and the animal was silently refused -- and with one animal and no feed the herd
+    # starved, the bank sat at $0 from day 5 to day 12, plants fell 20 -> 4 for want of seed money,
+    # and the season ended on $0 against the same allocation's $147,178 on the ladder.
+    #
+    # This is the bug `:568` already records for the species loop -- "computing `afford` from
+    # `view.money` each time let all three species independently believe they could afford the whole
+    # stake" -- fixed there and for wheat-versus-animals, but never extended to seed or land.
+    #
+    # The ledger fixes *affordability*, not *priority*. Which of seed and livestock should go first
+    # on day 0 is a plan question and `seed_reserve` is the gene for it; the tape's answer is animals
+    # first. Kept separate deliberately so neither change can be credited for the other.
+    cash_left = np.maximum(view.money - (buy_seed * SEED_COST[None, :]).sum(axis=1), 0.0)
+
     # **A count, not a flag.** `game.py:113` and `jax_sim.py:291` have carried integer hire counts
     # since 2026-08-04 -- the latter warning that "casting to bool here would collapse 'hire twice' to
     # 'hire once'" -- and the leaders open with two HIREs in a single turn. A boolean here narrowed
@@ -514,8 +539,11 @@ def decide(view, plan):
     shortfall = np.maximum(target_hands - (view.n_units - 1), 0)
     hire = np.minimum(np.minimum(shortfall, room), HIRES_PER_TURN).astype(np.int64)
 
+    # **Land is decided here but priced last**, after feed and livestock have taken their share --
+    # see the gate below the animal loop. It carried no affordability check at all until 2026-08-04
+    # and would order a $1,000 parcel against a $0 bank on every turn from its `land_day` onward.
     slot = np.minimum(view.n_land, plan.land_day.shape[1] - 1)
-    buy_land = (view.n_land < plan.land_day.shape[1]) & (day >= plan.land_day[games, slot])
+    want_land = (view.n_land < plan.land_day.shape[1]) & (day >= plan.land_day[games, slot])
 
     # ---- feed, then livestock ---------------------------------------------------------------------
     #
@@ -533,7 +561,8 @@ def decide(view, plan):
     # season, which is what stopped the balance ever reaching the $1,000 for the first land parcel.
     held_wheat = view.shed_wheat + view.carried_wheat.sum(axis=1)
     short = np.maximum(want_wheat - held_wheat, 0)
-    wheat_budget = np.floor(np.maximum(view.money - plan.seed_reserve, 0.0) / WHEAT_PRICE_CAP)
+    # `cash_left`, not `view.money`: the seed order above has already been committed this turn.
+    wheat_budget = np.floor(np.maximum(cash_left - plan.seed_reserve, 0.0) / WHEAT_PRICE_CAP)
     wheat_order = np.minimum(short, wheat_budget.astype(np.int64))
     buy_product[:, WHEAT_ITEM] = wheat_order
 
@@ -567,7 +596,7 @@ def decide(view, plan):
     # price, so the reservation over-estimates and under-buys animals rather than overdrawing.
     # `cash` is then spent down across the species loop; computing `afford` from `view.money` each
     # time let all three species independently believe they could afford the whole stake.
-    cash = np.maximum(view.money - wheat_order * WHEAT_PRICE_CAP, 0.0)
+    cash = np.maximum(cash_left - wheat_order * WHEAT_PRICE_CAP, 0.0)
     for a in range(N_ANIMALS):
         placed = (view.animal == a).sum(axis=1) + view.shed_animals[:, a]
         room = np.minimum(np.maximum(plan.herd[:, a] - placed, 0), housing)
@@ -578,6 +607,11 @@ def decide(view, plan):
         housing = np.maximum(housing - take, 0)          # one pen per animal, first species first
         feed_room = np.maximum(feed_room - take, 0)
         cash = np.maximum(cash - take * ANIMAL_COST[a], 0.0)
+
+    # **Land last, and only out of what survives the rest of the turn.** A parcel is the largest
+    # single purchase in the game and the least urgent -- deferring it by a turn costs nothing,
+    # while ordering one the farm cannot pay for costs the orders behind it in the slot list.
+    buy_land = want_land & (cash >= LAND_PRICES[np.minimum(view.n_land, len(LAND_PRICES) - 1)])
 
     return Decision(
         unit_op=unit_op,

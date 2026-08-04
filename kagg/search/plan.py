@@ -386,10 +386,38 @@ def leaders_genome():
         a, b = _OFFSETS[name]
         g[a:b] = value
 
+    # **Phase stays flat, and that was tested rather than assumed.** Staggering it across the
+    # five-day cycle (`np.arange(TILES) % 5`) looks obviously right -- the tape's plant count climbs
+    # smoothly, 17/19/27/30/35/39/43/51, where ours sits at 9-15 -- and measured *worse*:
+    # $230 -> $0, pens 14 -> 5, plants 3-5 (`data/logs/executor_vs_tape_after_phase.log`).
+    # With one phase the farm plants everything it can reach whenever it has cash; with five, only a
+    # fifth of the field is eligible on any dawn and a tile the crew cannot reach waits another five
+    # days. Throughput, not synchronisation, is the binding constraint.
     put("phase", 0)
     put("stop_plant", int(np.argmin(np.abs(STOP_PLANT_DAYS - 20))))
     put("harvest_par", 2)                             # HARVEST_DELTA 0: cut at max_yield_day
-    put("hires", int(np.argmin(np.abs(HIRE_LEVELS - 12))))
+    # **The crew ramps; it is not hired on day 0.** "306 hires over 30 days" is an *average* of 12,
+    # and encoding the average as a flat daily target is what bankrupted this plan. Measured mid-day
+    # crew from episode 89873723 seat 0 (`data/logs/executor_vs_tape_by_day.log`) against ours with a
+    # flat 12:
+    #
+    #     day    0   1   2   3   4   5   6   7   8   9  10 ... 19
+    #     tape   5   5   6   6   7   7   7   9  11  12  13 ... 13
+    #     flat  13  13   8   6   3   2   1   1   1   1   1 ...  8
+    #
+    # Twelve hands on day 0 come out of the same $3,000 as $1,800 of seed and $956 of feed. The farm
+    # is dry by day 5 and cannot pay for a single hand for a week; one unit cannot work 50 tiles, so
+    # plants collapse to 7 against the tape's 54 and nothing is ever harvested. The tape instead buys
+    # each hand out of income that already exists.
+    #
+    # `hires` is `[N, SEASON_DAYS]`, so the ramp is expressible and only the fixture was wrong. That
+    # is unlike `herd`, which is one target plus one `stock_day` and genuinely cannot say a ramp --
+    # see `tests/test_herd_ramp.py`. Stored as hands (crew minus the farmer), which is what
+    # `executor.py:514` subtracts against.
+    crew = np.array([5, 5, 6, 6, 7, 7, 7, 9, 11, 12, 13], dtype=np.int64)
+    hands = np.concatenate([crew - 1, np.full(SEASON_DAYS - len(crew), crew[-1] - 1)])
+    lo, hi = _OFFSETS["hires"]
+    g[lo:hi] = [int(np.argmin(np.abs(HIRE_LEVELS - h))) for h in hands[:SEASON_DAYS]]
     put("sell_every", int(np.argmin(np.abs(SELL_EVERY - 2))))
     put("floor_frac", 1)                              # 0.3 of base: sell unless the price collapses
     put("seed_reserve", 1)                            # keep $200 back
