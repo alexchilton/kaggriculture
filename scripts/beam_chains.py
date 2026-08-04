@@ -61,8 +61,8 @@ ap.add_argument("--out", default="data/chain_search")
 # day 0 only, and day 0 is the one day nothing has been earned -- `data/logs/land_day7.log` measures
 # waiting at up to +$22,911 on a 4-pen farm. Pin it here to test the leader's shape directly; the
 # `--refine` passes still sweep the whole grid afterwards unless `--pin-land` holds it.
-ap.add_argument("--force-land-day", type=int, default=0,
-                help="day every land-needing chain orders its first parcel (leader uses 7)")
+ap.add_argument("--force-land-day", type=int, default=7,
+                help="the non-zero land day the catalog offers alongside day 0 (leader uses 7)")
 ap.add_argument("--pin-land", action="store_true",
                 help="keep --force-land-day through refinement instead of re-sweeping it")
 args = ap.parse_args()
@@ -152,6 +152,14 @@ DEFAULT_START_I = C.START_DAY_CHOICES.index(DEFAULT_START)
 
 
 FORCED_LAND_I = C.LAND_DAY_CHOICES.index(args.force_land_day)
+# **The catalog must offer more than one land day.** It used to hardcode `.index(0)`, and day 0 is the
+# single day on which nothing has been earned -- so the forward pass, which is where the crop and
+# animal mix is decided, could only ever propose spending the opening bank on land. Widening
+# `LAND_DAY_CHOICES` from 6 days to 30 bought nothing while that stood. Measured: day 7 beats day 0 by
+# $1,654 and produces the first SHEEP this project has placed. Two values, not thirty: `--refine`
+# sweeps the full grid per slot afterwards, so the catalog only has to avoid *pinning* the decision.
+LAND_DAYS_OFFERED = ((FORCED_LAND_I,) if args.pin_land
+                     else tuple(sorted({C.LAND_DAY_CHOICES.index(0), FORCED_LAND_I})))
 
 
 def _land_choices(tile):
@@ -169,17 +177,22 @@ def catalog(slot):
     the mix is what decides whether a slot is worth owning at all; the `--refine` passes then sweep
     timing with the mix fixed. Two cheap exhaustive sweeps beat one that cannot be afforded.
     """
-    out = [("off", 0, 0, 0, 0, 0, 0)]
+    out = [("off", 0, 0, 0, 0, 0, 0, 0)]
     for c_i, crop in enumerate(R.CROPS):
         # The fertilized variant only where it can differ. Melon yields 12 per tile either way, so a
         # `fertilize=1` melon decodes to an identical script and would just be scored twice. When it
         # does fertilize, both funding routes are offered: buy the units (`fert_trade=1`) or take
         # whatever the herd left in the shed (`fert_trade=0`).
         ferts = ((0, 0), (1, 0), (1, 1)) if crop in R.FERTILIZER_HELPS else ((0, 0),)
+        # `feed_loop` only means anything on wheat: hold the harvest for the herd instead of selling
+        # it. On any other crop `decode()` ignores it, so offering the variant would score duplicates.
+        feeds = (0, 1) if crop == "WHEAT" else (0,)
         for b_i, block in enumerate(C.BLOCKS):
-            land_i = 0 if C.land_cost(block[0]) == 0 else FORCED_LAND_I
-            for f, trade in ferts:
-                out.append(("grow", c_i, b_i, DEFAULT_START_I, land_i, f, trade))
+            land_days = (0,) if C.land_cost(block[0]) == 0 else LAND_DAYS_OFFERED
+            for land_i in land_days:
+                for f, trade in ferts:
+                    for feed in feeds:
+                        out.append(("grow", c_i, b_i, DEFAULT_START_I, land_i, f, trade, feed))
     # Any slot may now propose a pen on any tile. The old rule -- slot `k` offered cell `k` only --
     # existed because a shed pen's unit is fixed by its cell, and it meant the beam could never put an
     # animal on a cell a crop had already taken. Off the shed the slot owns its own unit, so the
@@ -187,26 +200,33 @@ def catalog(slot):
     for a_i in range(len(R.ANIMAL_NAMES)):
         for t_i, tile in enumerate(C.RANCH_TILES):
             parcels = R.land_purchases_for(tile)
-            land_i = 0 if not parcels else FORCED_LAND_I
-            # **The pen must start after its ground arrives.** `routines.py` spaces a chain's parcels
-            # one per day from `land_day`, so the last one lands on `land_day + parcels - 1` and the
-            # animal can only be placed the day after. Offering a day-0 pen on a day-7 parcel makes
-            # PLACE fail silently on locked ground -- which is how the first seeded genome bought four
-            # animals and placed one.
-            start = 0 if not parcels else min(R.SEASON_DAYS - 2,
-                                              C.LAND_DAY_CHOICES[land_i] + parcels)
-            start_i = C.START_DAY_CHOICES.index(start)
-            # Both fertilizer dispositions: sell the herd's output, or leave it in the shed for the
-            # crop chains. Rival uses of one good, and the farm used to do both blindly.
-            for trade in (0, 1):
-                out.append(("ranch", a_i, t_i, start_i, land_i, 0, trade))
+            for land_i in ((0,) if not parcels else LAND_DAYS_OFFERED):
+                _emit_ranch(out, a_i, t_i, parcels, land_i)
     return out
+
+
+def _emit_ranch(out, a_i, t_i, parcels, land_i):
+    """Every fertilizer/feed variant of one animal on one tile, for one land day.
+
+    **The pen must start after its ground arrives.** `routines.py` spaces a chain's parcels one per
+    day from `land_day`, so the last lands on `land_day + parcels - 1` and the animal can only be
+    placed the day after. Offering a day-0 pen on a day-7 parcel makes PLACE fail silently on locked
+    ground -- which is how the first seeded genome bought four animals and placed one.
+    """
+    start = 0 if not parcels else min(R.SEASON_DAYS - 2, C.LAND_DAY_CHOICES[land_i] + parcels)
+    start_i = C.START_DAY_CHOICES.index(start)
+    # `fert_trade`: sell the herd's fertilizer, or leave it in the shed for the crop chains.
+    # `feed_loop`: order feed from the market, or eat wheat some chain grew. Rival uses of one good in
+    # both cases, and the farm used to pick blindly in both directions.
+    for trade in (0, 1):
+        for feed in (0, 1):
+            out.append(("ranch", a_i, t_i, start_i, land_i, 0, trade, feed))
 
 
 def with_slot(genome, slot, action):
     g = np.asarray(genome, dtype=np.int64).reshape(N_SLOTS, len(C.GENES)).copy()
-    kind, what, block, start_i, land_i, fert_i, trade_i = action
-    g[slot] = (C.KINDS.index(kind), what, block, start_i, land_i, fert_i, trade_i)
+    kind, what, block, start_i, land_i, fert_i, trade_i, feed_i = action
+    g[slot] = (C.KINDS.index(kind), what, block, start_i, land_i, fert_i, trade_i, feed_i)
     return g.reshape(-1)
 
 
@@ -218,92 +238,105 @@ def describe(genome):
 # --------------------------------------------------------------------------
 # Forward pass: one exact max per slot, beam width B
 # --------------------------------------------------------------------------
-t0 = time.time()
-empty = np.zeros(N_SLOTS * len(C.GENES), dtype=np.int64)
-w0, m0 = values([empty])
-beam = [(float(w0[0]), float(m0[0]), empty)]
-print(f"{N_PAIRS} games per candidate, {T} turns, chunk {CHUNK}")
-print(f"empty farm: {w0[0]:.0f}/{N_PAIRS} wins, ${m0[0]:,.0f}\n")
-
-for slot in range(N_SLOTS):
-    cat = catalog(slot)
-    cands, provenance = [], []
-    for bi, (_w, _m, g) in enumerate(beam):
-        for a in cat:
-            cands.append(with_slot(g, slot, a))
-            provenance.append((bi, a))
-    wins, money = values(cands)
-    order = np.lexsort((money, wins))[::-1]
-    # **Diversity cap, and it is load-bearing.** Without it the six melon blocks on land we already
-    # own tie at exactly $15,241, four identical ideas fill a width-4 beam, and every structurally
-    # different option is dropped at slot 0 and never reconsidered. Measured in
-    # `data/logs/animal_diagnostic_fixed.log`: the best pen ranks 12 of 124 while being worth
-    # **+$2,167** over the melon block it would displace. The search was not rejecting animals, it
-    # could not see them. Capping how many entries may add the same `(kind, what)` costs nothing and
-    # makes the beam carry distinct strategies rather than near-duplicates of one.
-    beam, per_key = [], {}
-    for i in order:
-        action = provenance[i][1]
-        key = (action[0], action[1])
-        if per_key.get(key, 0) >= args.per_kind:
-            continue
-        per_key[key] = per_key.get(key, 0) + 1
-        beam.append((float(wins[i]), float(money[i]), cands[i]))
-        if len(beam) >= args.beam:
-            break
-    bw, bm, bg = beam[0]
-    used, _ = describe(bg)
-    print(f"slot {slot} | {len(cands):>5} evaluated | best {bw:.0f}/{N_PAIRS} ${bm:>10,.0f} | "
-          f"beam holds {len(per_key)} distinct kinds | {used[-1] if used else 'off'} | "
-          f"{time.time()-t0:.0f}s", flush=True)
-
-best = beam[0]
-print(f"\nforward pass: {best[0]:.0f}/{N_PAIRS} wins, ${best[1]:,.0f} "
-      f"({_N_EVALS:,} evaluations, {time.time()-t0:.0f}s)")
-
 # --------------------------------------------------------------------------
-# Refinement: sweep each slot's timing with every other slot held fixed
+# Execution. Everything above is definitions and is safe to import; everything below runs a
+# multi-minute GPU search, so it sits behind the guard. Without it, `import beam_chains` -- which
+# `tests/test_catalog_covers_every_gene.py` does to check the catalog against `GENES` -- would
+# launch the whole beam.
 # --------------------------------------------------------------------------
-for sweep in range(args.refine):
-    moved = 0
+def main():
+    t0 = time.time()
+    global beam, best, _N_EVALS
+    empty = np.zeros(N_SLOTS * len(C.GENES), dtype=np.int64)
+    w0, m0 = values([empty])
+    beam = [(float(w0[0]), float(m0[0]), empty)]
+    print(f"{N_PAIRS} games per candidate, {T} turns, chunk {CHUNK}")
+    print(f"empty farm: {w0[0]:.0f}/{N_PAIRS} wins, ${m0[0]:,.0f}\n")
+
     for slot in range(N_SLOTS):
-        g = best[2].reshape(N_SLOTS, len(C.GENES))
-        if C.KINDS[int(g[slot, 0]) % len(C.KINDS)] == "off":
-            continue
-        kind = C.KINDS[int(g[slot, 0])]
-        tile = (C.RANCH_TILES[int(g[slot, 2]) % len(C.RANCH_TILES)] if kind == "ranch"
-                else C.BLOCKS[int(g[slot, 2]) % len(C.BLOCKS)][0])
-        cands = []
-        for s_i in range(len(C.START_DAY_CHOICES)):
-            for l_i in _land_choices(tile):
-                # Land after the chain starts is money spent on a pen that cannot be built yet.
-                if C.LAND_DAY_CHOICES[l_i] > C.START_DAY_CHOICES[s_i] and C.land_cost(tile) > 0:
-                    continue
-                cands.append(with_slot(best[2], slot,
-                                       (kind, int(g[slot, 1]), int(g[slot, 2]), s_i, l_i,
-                                        int(g[slot, 5]), int(g[slot, 6]))))
-        if not cands:
-            continue
+        cat = catalog(slot)
+        cands, provenance = [], []
+        for bi, (_w, _m, g) in enumerate(beam):
+            for a in cat:
+                cands.append(with_slot(g, slot, a))
+                provenance.append((bi, a))
         wins, money = values(cands)
-        k = int(np.lexsort((money, wins))[-1])
-        if (float(wins[k]), float(money[k])) > (best[0], best[1]):
-            best = (float(wins[k]), float(money[k]), cands[k])
-            moved += 1
-    print(f"refine {sweep} | {moved} slots retimed | {best[0]:.0f}/{N_PAIRS} ${best[1]:,.0f} | "
-          f"{time.time()-t0:.0f}s", flush=True)
-    if moved == 0:
-        break
+        order = np.lexsort((money, wins))[::-1]
+        # **Diversity cap, and it is load-bearing.** Without it the six melon blocks on land we already
+        # own tie at exactly $15,241, four identical ideas fill a width-4 beam, and every structurally
+        # different option is dropped at slot 0 and never reconsidered. Measured in
+        # `data/logs/animal_diagnostic_fixed.log`: the best pen ranks 12 of 124 while being worth
+        # **+$2,167** over the melon block it would displace. The search was not rejecting animals, it
+        # could not see them. Capping how many entries may add the same `(kind, what)` costs nothing and
+        # makes the beam carry distinct strategies rather than near-duplicates of one.
+        beam, per_key = [], {}
+        for i in order:
+            action = provenance[i][1]
+            key = (action[0], action[1])
+            if per_key.get(key, 0) >= args.per_kind:
+                continue
+            per_key[key] = per_key.get(key, 0) + 1
+            beam.append((float(wins[i]), float(money[i]), cands[i]))
+            if len(beam) >= args.beam:
+                break
+        bw, bm, bg = beam[0]
+        used, _ = describe(bg)
+        print(f"slot {slot} | {len(cands):>5} evaluated | best {bw:.0f}/{N_PAIRS} ${bm:>10,.0f} | "
+              f"beam holds {len(per_key)} distinct kinds | {used[-1] if used else 'off'} | "
+              f"{time.time()-t0:.0f}s", flush=True)
 
-used, skipped = describe(best[2])
-print(f"\nbest: {best[0]:.0f}/{N_PAIRS} wins, ${best[1]:,.0f}, {skipped} chains skipped")
-for u in used:
-    print("   ", u)
+    best = beam[0]
+    print(f"\nforward pass: {best[0]:.0f}/{N_PAIRS} wins, ${best[1]:,.0f} "
+          f"({_N_EVALS:,} evaluations, {time.time()-t0:.0f}s)")
 
-out = pathlib.Path(args.out)
-out.mkdir(parents=True, exist_ok=True)
-dest = out / "best_beam_genome.npz"
-np.savez_compressed(dest, genome=best[2], wins=best[0], money=best[1], slots=N_SLOTS)
-print(f"\n{_N_EVALS:,} simulator evaluations in {time.time()-t0:.0f}s")
-print(f"wrote {dest}")
-print("NOT a competitive number yet: recorded opponents, weeds off, one sim seed. Score it on "
-      "kagg.arena across fresh seeds before believing it.")
+    # --------------------------------------------------------------------------
+    # Refinement: sweep each slot's timing with every other slot held fixed
+    # --------------------------------------------------------------------------
+    for sweep in range(args.refine):
+        moved = 0
+        for slot in range(N_SLOTS):
+            g = best[2].reshape(N_SLOTS, len(C.GENES))
+            if C.KINDS[int(g[slot, 0]) % len(C.KINDS)] == "off":
+                continue
+            kind = C.KINDS[int(g[slot, 0])]
+            tile = (C.RANCH_TILES[int(g[slot, 2]) % len(C.RANCH_TILES)] if kind == "ranch"
+                    else C.BLOCKS[int(g[slot, 2]) % len(C.BLOCKS)][0])
+            cands = []
+            for s_i in range(len(C.START_DAY_CHOICES)):
+                for l_i in _land_choices(tile):
+                    # Land after the chain starts is money spent on a pen that cannot be built yet.
+                    if C.LAND_DAY_CHOICES[l_i] > C.START_DAY_CHOICES[s_i] and C.land_cost(tile) > 0:
+                        continue
+                    cands.append(with_slot(best[2], slot,
+                                           (kind, int(g[slot, 1]), int(g[slot, 2]), s_i, l_i,
+                                            int(g[slot, 5]), int(g[slot, 6]), int(g[slot, 7]))))
+            if not cands:
+                continue
+            wins, money = values(cands)
+            k = int(np.lexsort((money, wins))[-1])
+            if (float(wins[k]), float(money[k])) > (best[0], best[1]):
+                best = (float(wins[k]), float(money[k]), cands[k])
+                moved += 1
+        print(f"refine {sweep} | {moved} slots retimed | {best[0]:.0f}/{N_PAIRS} ${best[1]:,.0f} | "
+              f"{time.time()-t0:.0f}s", flush=True)
+        if moved == 0:
+            break
+
+    used, skipped = describe(best[2])
+    print(f"\nbest: {best[0]:.0f}/{N_PAIRS} wins, ${best[1]:,.0f}, {skipped} chains skipped")
+    for u in used:
+        print("   ", u)
+
+    out = pathlib.Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    dest = out / "best_beam_genome.npz"
+    np.savez_compressed(dest, genome=best[2], wins=best[0], money=best[1], slots=N_SLOTS)
+    print(f"\n{_N_EVALS:,} simulator evaluations in {time.time()-t0:.0f}s")
+    print(f"wrote {dest}")
+    print("NOT a competitive number yet: recorded opponents, weeds off, one sim seed. Score it on "
+          "kagg.arena across fresh seeds before believing it.")
+
+
+
+if __name__ == "__main__":
+    main()

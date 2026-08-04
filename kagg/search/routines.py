@@ -184,7 +184,7 @@ class Script:
 # ---------------------------------------------------------------------------
 
 def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
-          collect_fertilizer=True, sell_fertilizer=True):
+          collect_fertilizer=True, sell_fertilizer=True, buy_land=True, buy_feed=True):
     """Build a pen on `tile`, stock it, and feed it every remaining day of the season.
 
     Emits the complete chain and nothing partial. There is deliberately no primitive that buys an
@@ -271,10 +271,18 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
     # search can actually express, so `land_day` chooses between plans that differ instead of
     # between plans that all collapse to "whatever the opening bank covered". The leader tape is the
     # shape to aim at: parcels on **day 7 and day 10**, spaced, and the third never bought at all.
-    for k in range(land_purchases_for(tile)):
-        t = (land_day + k) * TURNS_PER_DAY
-        if 0 <= t < script.T:
-            script.buy_land[t] = 1
+    #
+    # `buy_land=False` hands the schedule to the caller. A BUY_LAND order is a claim on a shared,
+    # ordered, farm-level resource -- `_do_buy_land` unlocks `LAND_ORDER[n_already_bought]` and
+    # ignores which quadrant was wanted -- so two chains each privately ordering "the parcels I need"
+    # over-buy as soon as their days differ. A pen on NE wanting day 7 and a pen on SW wanting day 10
+    # emitted orders on days 7, 10 and 11: three parcels, $7,000, when NE + SW is $3,000. `decode()`
+    # consolidates instead. Standalone callers keep the self-sufficient default.
+    if buy_land:
+        for k in range(land_purchases_for(tile)):
+            t = (land_day + k) * TURNS_PER_DAY
+            if 0 <= t < script.T:
+                script.buy_land[t] = 1
 
     # --- the crew this cell needs, re-hired every dawn --------------------
     # `maximum`, not `+=`: a cell needing 3 hands already provides units 1 and 2 for the nearer
@@ -292,7 +300,15 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
         if d >= script.T:
             return
         # Order feed a turn ahead of drawing it, so the market has resolved either way.
-        script.buy_product[d, wheat] += 1
+        #
+        # `buy_feed=False` lives off the shed instead, which is the wheat -> animal -> fertilizer loop
+        # `production.py:53` calls the main structural reason to keep animals. It only closes if some
+        # `grow("WHEAT", ..., sell=False)` chain is stocking that shed: `pickup` takes by item index
+        # and does not care where the wheat came from, but `consecutive_unfed >= 2` escapes the animal
+        # for a deterministic $300-$500, so an empty shed is not a small mistake. Five pens buy 120
+        # units at $25 = $3,000 a season, and a 4-tile wheat block yields 112.
+        if buy_feed:
+            script.buy_product[d, wheat] += 1
         if setup:
             script.buy_animal[d, a_idx] += 1
 
@@ -462,7 +478,7 @@ def serpentine(tiles):
 
 
 def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell=True, unit=0,
-         buy_fertilizer=True,
+         buy_fertilizer=True, buy_land=True, water_every=1,
          fertilize=False):
     """Plant, water and harvest a block of tiles, re-walking from spawn every day.
 
@@ -516,18 +532,42 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
     c_idx = CROPS.index(crop_name)
     prod_idx = PRODUCTS.index(crop_name)
     ordered = serpentine(tiles)
+    if water_every < 1:
+        raise ValueError("water_every must be at least 1")
+    # **How often a tile is visited, which sets how much land one unit can hold.**
+    #
+    # Watering every tile every day costs about three turns per tile -- the WATER plus the walk -- so a
+    # 24-turn day caps a block at four. Six raises. That single default is why our farm is 12-16 crop
+    # tiles while the leader works 60-75.
+    #
+    # The game does not require it. Death needs **two consecutive** dry days (`tiles.py:157`), so one
+    # dry day leaves the streak at 1 and the next visit resets it; and base production never tests
+    # watering at all (`tiles.py:178` -- watering gates only the fertilizer doubling). So `water_every=2`
+    # visits half the tiles each day and legally holds **eight**.
+    #
+    # It is opt-in per chain because it is not universally good. Measured, one unit, whole season:
+    # strawberry 4 daily $6,182 -> 8 alternate $9,395 (**+52%**), melon 4 daily $15,575 -> 8 alternate
+    # $11,167 (**-28%**). Strawberry is ongoing and produces on a fixed interval, so it does not care
+    # which days it is visited. Melon is one-shot with a window that shuts at `max_day` 12, and a
+    # missed visit forfeits the harvest to `decay_plants`. Wheat is worse still at 2-4 days.
+    #
+    # Why it matters: strawberry is the largest market in the game -- drain 572 at base 120 is $68,640
+    # against melon's 140 at 250 for $35,000 -- and filling it needs ~48 tiles. At four tiles a unit
+    # that is twelve slots and out of reach; at eight it is six.
+    shifts = [ordered[i::water_every] for i in range(water_every)]
     # Default to the top of the bonus-water window: the most yield from one planting. A caller wanting
     # more cycles of a fast crop passes a smaller age explicitly -- that trade is a plan parameter.
     age_to_harvest = info["max_day"] if harvest_age is None else harvest_age
     if age_to_harvest < info["first"]:
         raise ValueError(f"{crop_name} cannot be harvested before age {info['first']}")
 
-    # One parcel per day, for the reason spelled out in `ranch()`: three orders inside one day can
-    # only ever be judged against the bank the farm woke up with.
-    for k in range(land_purchases_for(ordered[0])):
-        t = (land_day + k) * TURNS_PER_DAY
-        if 0 <= t < script.T:
-            script.buy_land[t] = 1
+    # One parcel per day, for the reason spelled out in `ranch()`, and skippable for the same reason:
+    # `decode()` owns the farm-level schedule when more than one chain wants land.
+    if buy_land:
+        for k in range(land_purchases_for(ordered[0])):
+            t = (land_day + k) * TURNS_PER_DAY
+            if 0 <= t < script.T:
+                script.buy_land[t] = 1
 
     # `maximum`, not `+=`: co-located routines share the crew, exactly as in `ranch()`.
     for day in range(plant_day, SEASON_DAYS):
@@ -554,7 +594,10 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
             break
         jobs = {}
         dig_tiles = []
-        for tile in ordered:
+        # Which tiles this unit reaches today. With `water_every=1` this is the whole block, exactly as
+        # before; with 2 it alternates halves, so every tile is visited every second day.
+        today = shifts[(day - plant_day) % water_every]
+        for tile in today:
             p = planted[tile]
             if p is None:
                 # **WATER on the planting day, not from the next one.** A seedling is already at
@@ -599,7 +642,7 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
 
         fert_tiles = []
         if fertilizing:
-            for tile in ordered:
+            for tile in today:
                 if fertilized_until[tile] >= day:
                     continue                    # still active from an earlier application
                 if "HARVEST" in jobs[tile] and not info["ongoing"]:
@@ -621,7 +664,7 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
                     seq.append((op_name, None))
                 pos = tuple(SPAWN)
                 seq.append(("PICKUP", None))
-            for tile in ordered:
+            for tile in today:
                 for op_name in _path_ops(pos, tile):
                     seq.append((op_name, None))
                 pos = tile
@@ -665,8 +708,8 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
             t += 1
         if t > d + TURNS_PER_DAY:
             raise ValueError(
-                f"day {day} needs {t - d} turns for {len(ordered)} tiles but a day is "
-                f"{TURNS_PER_DAY}; use a smaller or closer block")
+                f"day {day} needs {t - d} turns for {len(today)} of {len(ordered)} tiles but a day "
+                f"is {TURNS_PER_DAY}; use a smaller or closer block, or a larger water_every")
         for tile in fert_tiles:
             fertilized_until[tile] = day + FERTILIZER_ACTIVE_DAYS - 1
 
@@ -680,7 +723,7 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
             if t_sell < script.T:
                 script.sell[t_sell, prod_idx] += info["max_yield"] * n_harvested
 
-        for tile in ordered:
+        for tile in today:
             if "HARVEST" in jobs[tile]:
                 # Records that this ground has been cropped, so its next PLANT gets a DIG first.
                 harvested[tile] = True

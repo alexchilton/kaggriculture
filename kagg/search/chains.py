@@ -34,7 +34,15 @@ from kagg.search import routines as R
 # sold before inventory gluts and the price collapses toward the floor.
 DRAIN_UNITS = {"WHEAT": 662, "CARROT": 338, "TOMATO": 374, "STRAWBERRY": 572, "MELON": 140}
 
+# **Two block sizes, because how often a tile is watered decides how many a unit can hold.**
+# Watering every tile every day costs ~3 turns per tile, so a 24-turn day fits four and six raises.
+# Visiting half the tiles each day is legal -- death needs two *consecutive* dry days and base
+# production never tests watering -- and holds eight. See `routines.grow`'s `water_every`.
+#
+# Both are cut, because neither dominates: strawberry gains +52% on eight alternate-day tiles while
+# melon loses 28% (its one-shot harvest window shuts at max_day 12 and a missed visit forfeits it).
 BLOCK_SIZE = 4
+WIDE_BLOCK_SIZE = 8
 
 # **Every day, not a grid.** These were coarse -- `(0, 1, 2, 3, 5, 8, 12)` and `(0, 4, 8, 12, 16, 99)`
 # -- purely so `search_chains.py`'s uniform categorical had fewer bins to converge over. Nothing else
@@ -61,7 +69,7 @@ def _quadrant_tiles(quadrant):
     return [(x, y) for y in ys for x in xs]
 
 
-def _cut_blocks():
+def _cut_blocks(size=BLOCK_SIZE):
     """Pre-cut blocks of adjacent tiles, nearest quadrant first, shed-access tiles reserved.
 
     The four shed-access tiles are excluded because `ranch()` needs them: a pen on one of those runs
@@ -73,22 +81,30 @@ def _cut_blocks():
     blocks = []
     for quadrant in ("NW", "NE", "SW", "SE"):
         tiles = [t for t in R.serpentine(_quadrant_tiles(quadrant)) if t not in reserved]
-        for i in range(0, len(tiles) - BLOCK_SIZE + 1, BLOCK_SIZE):
-            blocks.append(tuple(tiles[i:i + BLOCK_SIZE]))
+        for i in range(0, len(tiles) - size + 1, size):
+            blocks.append(tuple(tiles[i:i + size]))
     return tuple(blocks)
 
 
-def _fits_in_a_day(block):
+def _fits_in_a_day(block, water_every=1):
     """Whether `grow()` can work `block` inside 24 turns. Cheaper to check once than to catch later."""
     try:
-        R.grow(R.Script(T=R.TURNS_PER_DAY * 2), "WHEAT", list(block), plant_day=0)
+        R.grow(R.Script(T=R.TURNS_PER_DAY * 3), "WHEAT", list(block), plant_day=0,
+               water_every=water_every)
         return True
     except ValueError:
         return False
 
 
-ALL_BLOCKS = _cut_blocks()
-BLOCKS = tuple(b for b in ALL_BLOCKS if _fits_in_a_day(b))
+# Narrow blocks are worked daily; wide ones only alternate-day, which is the only cadence they fit in.
+# `WATER_EVERY_FOR_BLOCK` records which is which so `decode()` never has to guess, and so a wide block
+# can never be handed a daily chain that would raise.
+NARROW_BLOCKS = tuple(b for b in _cut_blocks(BLOCK_SIZE) if _fits_in_a_day(b, 1))
+WIDE_BLOCKS = tuple(b for b in _cut_blocks(WIDE_BLOCK_SIZE) if _fits_in_a_day(b, 2))
+ALL_BLOCKS = _cut_blocks(BLOCK_SIZE)
+BLOCKS = NARROW_BLOCKS + WIDE_BLOCKS
+WATER_EVERY_FOR_BLOCK = {b: 1 for b in NARROW_BLOCKS}
+WATER_EVERY_FOR_BLOCK.update({b: 2 for b in WIDE_BLOCKS})
 # Recorded rather than silently dropped: a block excluded here is board the search cannot reach, and
 # `scripts/search_chains.py` prints the count so shrinking coverage is visible.
 UNREACHABLE_BLOCKS = tuple(b for b in ALL_BLOCKS if b not in BLOCKS)
@@ -177,11 +193,19 @@ OWNED_CELLS = tuple(c for c in RANCH_CELLS if land_cost(c) == 0)
 # same market, paying the spread twice. Measured on one block, selling beat applying about 6:1, but
 # that was one 4-tile block with two cows and it is exactly the kind of narrow measurement this
 # project has been burned by, so the search owns the choice rather than inheriting my answer.
-GENES = ("kind", "what", "block", "start_day", "land_day", "fertilize", "fert_trade")
+# `feed_loop` is `fert_trade`'s mirror image, and the farm was making the same mistake in both
+# directions: pens SOLD fertilizer while crops BOUGHT it, and crops SELL wheat while pens BUY it --
+# paying the market spread twice on each. On a `ranch` chain this gene means "eat out of the shed
+# instead of ordering feed"; on a `grow WHEAT` chain it means "hold the harvest for the herd". On any
+# other crop it is ignored, since a melon chain that refuses to sell simply never earns.
+# `water_every` is not a gene: it is a property of the *block*, since a wide block only fits a day at
+# all on the alternate cadence and a narrow one gains nothing from it. Keeping it out of the genome
+# avoids a whole axis of combinations that would decode to a raise. `WATER_EVERY_FOR_BLOCK` carries it.
+GENES = ("kind", "what", "block", "start_day", "land_day", "fertilize", "fert_trade", "feed_loop")
 N_KINDS = len(KINDS)
 N_WHAT = max(len(R.CROPS), len(R.ANIMAL_NAMES))
 GENE_SIZES = (N_KINDS, N_WHAT, max(len(BLOCKS), len(RANCH_TILES)), len(START_DAY_CHOICES),
-              len(LAND_DAY_CHOICES), 2, 2)
+              len(LAND_DAY_CHOICES), 2, 2, 2)
 
 
 def n_genes(n_slots):
@@ -204,26 +228,59 @@ def reachable_quadrants(genome, n_slots):
     so a chain is only skipped when its ground could not be bought on the day it is ordered even with
     the whole opening bank -- which is exactly the day-0 triple-buy that has been distorting results.
     """
+    _g, first_order = _land_requests(genome, n_slots)
+    return _affordable(first_order) if first_order else 0
+
+
+def land_schedule(genome, n_slots):
+    """`[day, ...]` -- one entry per parcel the farm should buy, in unlock order.
+
+    A BUY_LAND order is a claim on a **shared, ordered** resource: `_do_buy_land` unlocks
+    `LAND_ORDER[n_already_bought]` and ignores which quadrant the caller wanted. So the farm must
+    order parcels once, centrally, and a chain's `land_day` is a *deadline* -- "my ground by day D" --
+    not a private purchase.
+
+    Letting each chain buy its own was correct only by accident. `ranch()` writes `buy_land[t] = 1` by
+    assignment, so chains sharing a `land_day` collapsed onto the same turns and the count came out
+    right. Give them different days -- which is the leader's actual shape, **NE day 7 and SW day 10** --
+    and a pen on NE plus a pen on SW emitted orders on days 7, 10 and 11: three parcels for $7,000
+    when two cost $3,000, the third being an SE the leader never buys.
+
+    Parcel `j` is bought as soon as the earliest chain needing it asks, and never before parcel
+    `j - 1`, since they unlock in sequence.
+    """
+    _g, first_order = _land_requests(genome, n_slots)
+    days, prev = [], -1
+    for j in sorted(first_order):
+        # Never before the previous parcel, and never on the same day as it. Two parcels resolving in
+        # one day are judged against one day's bank -- $1,000 + $2,000 against a $3,000 opening stake
+        # is the double-buy that `test_land_orders_are_spaced.py` was written for, one level up.
+        prev = max(prev + 1, first_order[j])
+        days.append(prev)
+    return days
+
+
+def _land_requests(genome, n_slots):
+    """`(gene rows, {parcel index: earliest day it is wanted})`."""
     g = np.asarray(genome, dtype=np.int64).reshape(n_slots, len(GENES))
-    orders = []                      # (day, parcels_needed) per chain that wants land
+    first_order = {}
     for slot in range(n_slots):
-        if KINDS[int(g[slot, 0]) % N_KINDS] == "off":
-            continue
         kind = KINDS[int(g[slot, 0]) % N_KINDS]
+        if kind == "off":
+            continue
         block_i = int(g[slot, 2])
         tile = (RANCH_TILES[block_i % len(RANCH_TILES)] if kind == "ranch"
                 else BLOCKS[block_i % len(BLOCKS)][0])
         need = R.land_purchases_for(tile)
-        if need:
-            orders.append((LAND_DAY_CHOICES[int(g[slot, 4]) % len(LAND_DAY_CHOICES)], need))
-    if not orders:
-        return 0
-    # The earliest day by which each parcel index is ordered. `ranch()`/`grow()` space their own
-    # parcels one per day from `land_day`, so chain k's j-th parcel is ordered on `land_day + j`.
-    first_order = {}
-    for day, need in orders:
+        if not need:
+            continue
+        day = LAND_DAY_CHOICES[int(g[slot, 4]) % len(LAND_DAY_CHOICES)]
         for j in range(need):
-            first_order[j] = min(first_order.get(j, 10**6), day + j)
+            first_order[j] = min(first_order.get(j, 10 ** 6), day)
+    return g, first_order
+
+
+def _affordable(first_order):
     bought, spent = 0, 0
     for j in sorted(first_order):
         spent += R.LAND_PRICES[j]
@@ -253,12 +310,18 @@ def decode(genome, n_slots):
     # How much land this genome can really afford on the day it orders it. A chain standing on ground
     # beyond that is skipped and counted, rather than silently relocating.
     affordable = reachable_quadrants(genome, n_slots)
+    # One central schedule, so two chains wanting the same quadrant on different days do not buy it
+    # twice -- and a chain on SW does not drag SE along behind it. See `land_schedule`.
+    for day in land_schedule(genome, n_slots):
+        t = day * R.TURNS_PER_DAY
+        if 0 <= t < script.T:
+            script.buy_land[t] += 1
 
     for slot in range(n_slots):
         kind = KINDS[int(g[slot, 0]) % N_KINDS]
         if kind == "off":
             continue
-        what_i, block_i, start_i, land_i, fert_i, trade_i = (int(x) for x in g[slot, 1:])
+        what_i, block_i, start_i, land_i, fert_i, trade_i, feed_i = (int(x) for x in g[slot, 1:])
         start_day = START_DAY_CHOICES[start_i % len(START_DAY_CHOICES)]
         land_day = LAND_DAY_CHOICES[land_i % len(LAND_DAY_CHOICES)]
         tile = (RANCH_TILES[block_i % len(RANCH_TILES)] if kind == "ranch"
@@ -279,14 +342,18 @@ def decode(genome, n_slots):
                 # otherwise every remote pen would collide on unit 0 and interleave its walks.
                 R.ranch(script, animal=animal, tile=cell, start_day=start_day, land_day=land_day,
                         unit=None if cell in RANCH_CELLS else units[slot],
-                        sell_fertilizer=bool(trade_i % 2))
+                        sell_fertilizer=bool(trade_i % 2), buy_land=False,
+                        buy_feed=not bool(feed_i % 2))
                 used.append(("ranch", animal, cell, start_day))
             else:
                 block = BLOCKS[block_i % len(BLOCKS)]
                 crop = R.CROPS[what_i % len(R.CROPS)]
+                # Holding the harvest is only meaningful for the crop the animals eat.
+                hold = bool(feed_i % 2) and crop == "WHEAT"
                 R.grow(script, crop, list(block), plant_day=start_day, land_day=land_day,
                        unit=units[slot], fertilize=bool(fert_i % 2),
-                       buy_fertilizer=bool(trade_i % 2))
+                       buy_fertilizer=bool(trade_i % 2), buy_land=False, sell=not hold,
+                       water_every=WATER_EVERY_FOR_BLOCK[block])
                 used.append(("grow", crop, block, start_day))
         except ValueError:
             skipped += 1
