@@ -1,7 +1,7 @@
-"""`routines.crop()` must emit a chain that survives the dawn reset and the atomic PLANT rule.
+"""`routines.grow()` must emit a chain that survives the dawn reset and the atomic PLANT rule.
 
 `ranch()` is safe by construction: it binds to a shed-access tile and therefore never emits a movement
-op, so no edit can invalidate a later position. `crop()` cannot inherit that -- there are only four
+op, so no edit can invalidate a later position. `grow()` cannot inherit that -- there are only four
 shed-access tiles and animals want them, so a crop block sits on the other ~96 and the routine has to
 route. Every test here exists because that reintroduces a failure mode `ranch()` had designed out.
 
@@ -68,7 +68,7 @@ NW_BLOCK = [(3, 3), (4, 3)]          # two tiles adjacent to spawn, inside the s
 
 def test_the_block_is_re_walked_from_spawn_every_day():
     """**The property `ranch()` got for free and this routine must earn.**"""
-    s = R.crop(R.Script(), "WHEAT", NW_BLOCK, plant_day=0)
+    s = R.grow(R.Script(), "WHEAT", NW_BLOCK, plant_day=0)
     for day in range(0, R.SEASON_DAYS):
         for tile in NW_BLOCK:
             assert _tile_visited(s, 0, day, tile), (
@@ -78,7 +78,7 @@ def test_the_block_is_re_walked_from_spawn_every_day():
 
 def test_every_working_op_lands_on_a_block_tile_and_never_on_spawn():
     """A WATER emitted while standing on the shed is the silent version of the bug above."""
-    s = R.crop(R.Script(), "WHEAT", NW_BLOCK, plant_day=0)
+    s = R.grow(R.Script(), "WHEAT", NW_BLOCK, plant_day=0)
     for op_name in ("PLANT", "WATER", "HARVEST"):
         for day in range(0, R.SEASON_DAYS):
             for pos in _op_positions(s, 0, day, op_name):
@@ -88,7 +88,7 @@ def test_every_working_op_lands_on_a_block_tile_and_never_on_spawn():
 
 def test_a_crop_is_watered_every_day_it_is_in_the_ground():
     """`consecutive_unwatered >= 2` kills the plant, for ongoing crops too."""
-    s = R.crop(R.Script(), "STRAWBERRY", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "STRAWBERRY", [(3, 3)], plant_day=0)
     for day in range(1, R.SEASON_DAYS):
         assert "WATER" in _ops_on_day(s, 0, day), f"day {day} has no WATER; the plant dies at 2 days"
 
@@ -96,7 +96,7 @@ def test_a_crop_is_watered_every_day_it_is_in_the_ground():
 def test_an_ongoing_crop_is_harvested_on_every_eligible_day():
     """Decay starts the moment the lifetime cap is hit, so waiting for a schedule loses yield."""
     first = R.CROP_TABLE["STRAWBERRY"]["first"]
-    s = R.crop(R.Script(), "STRAWBERRY", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "STRAWBERRY", [(3, 3)], plant_day=0)
     for day in range(first, R.SEASON_DAYS):
         assert "HARVEST" in _ops_on_day(s, 0, day), (
             f"day {day} (age {day} >= first yield {first}) has no HARVEST -- accumulated units decay")
@@ -104,14 +104,14 @@ def test_an_ongoing_crop_is_harvested_on_every_eligible_day():
 
 def test_an_ongoing_crop_is_planted_exactly_once():
     """HARVEST does not clear an ongoing tile, so replanting it would be a wasted seed and turn."""
-    s = R.crop(R.Script(), "STRAWBERRY", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "STRAWBERRY", [(3, 3)], plant_day=0)
     plants = sum(_ops_on_day(s, 0, d).count("PLANT") for d in range(R.SEASON_DAYS))
     assert plants == 1, f"ongoing crop planted {plants} times"
 
 
 def test_a_one_shot_crop_runs_more_than_one_cycle():
     """HARVEST clears a non-ongoing tile to EMPTY, which is where wheat's multi-cycle yield comes from."""
-    s = R.crop(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
     plants = sum(_ops_on_day(s, 0, d).count("PLANT") for d in range(R.SEASON_DAYS))
     assert plants > 1, "wheat planted once; the tile is cleared on harvest and should be reused"
 
@@ -119,8 +119,8 @@ def test_a_one_shot_crop_runs_more_than_one_cycle():
 def test_two_blocks_of_one_crop_on_one_day_order_the_sum_of_their_seeds():
     """The atomic rule drops EVERY request for a crop when demand exceeds seeds, not just the excess."""
     s = R.Script()
-    R.crop(s, "WHEAT", [(3, 3), (4, 3)], plant_day=0, unit=0)
-    R.crop(s, "WHEAT", [(3, 4)], plant_day=0, unit=1)
+    R.grow(s, "WHEAT", [(3, 3), (4, 3)], plant_day=0, unit=0)
+    R.grow(s, "WHEAT", [(3, 4)], plant_day=0, unit=1)
     ordered = int(s.buy_seed[0, R.CROPS.index("WHEAT")])
     assert ordered == 3, (
         f"ordered {ordered} wheat seeds for 3 tiles planted on day 0; `maximum` would give 2 and the "
@@ -129,7 +129,7 @@ def test_two_blocks_of_one_crop_on_one_day_order_the_sum_of_their_seeds():
 
 def test_seeds_are_ordered_before_the_turn_that_plants_them():
     """Demand is tested against seeds held at the START of the turn."""
-    s = R.crop(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
     seed_turns = np.flatnonzero(s.buy_seed[:, R.CROPS.index("WHEAT")] > 0)
     plant_turns = np.flatnonzero(s.unit_op[:, 0] == R.OP["PLANT"])
     assert len(seed_turns) and len(plant_turns)
@@ -140,8 +140,8 @@ def test_seeds_are_ordered_before_the_turn_that_plants_them():
 def test_co_located_blocks_share_hands_rather_than_each_hiring_their_own():
     """Same `maximum` argument `ranch()` makes: unit 2 existing already provides units 0 and 1."""
     s = R.Script()
-    R.crop(s, "WHEAT", [(3, 3)], plant_day=0, unit=1)
-    R.crop(s, "CARROT", [(3, 4)], plant_day=0, unit=2)
+    R.grow(s, "WHEAT", [(3, 3)], plant_day=0, unit=1)
+    R.grow(s, "CARROT", [(3, 4)], plant_day=0, unit=2)
     assert int(s.hire[0]) == 2, f"hired {int(s.hire[0])}; two co-located blocks need max(1,2)=2 hands"
 
 
@@ -149,21 +149,32 @@ def test_a_day_that_cannot_fit_in_24_turns_raises_rather_than_spilling():
     """A silent overflow would write ops into the next dawn, where the unit has been teleported away."""
     far_block = [(x, 0) for x in range(5)]        # a full row at the top of NW, 4 steps from spawn
     with pytest.raises(ValueError, match="turns"):
-        R.crop(R.Script(), "WHEAT", far_block + [(x, 1) for x in range(5)], plant_day=0)
+        R.grow(R.Script(), "WHEAT", far_block + [(x, 1) for x in range(5)], plant_day=0)
 
 
 def test_a_block_spanning_two_quadrants_is_refused():
     """v1 routes inside one quadrant; a cross-quadrant path has to order land before the walk."""
     with pytest.raises(ValueError, match="quadrant"):
-        R.crop(R.Script(), "WHEAT", [(3, 3), (7, 3)], plant_day=0)
+        R.grow(R.Script(), "WHEAT", [(3, 3), (7, 3)], plant_day=0)
 
 
 def test_a_block_outside_nw_orders_its_land_first():
     """Movement is blocked by LOCKED at the target cell, so the parcel must be bought before the walk."""
-    s = R.crop(R.Script(), "WHEAT", [(7, 3)], plant_day=5, land_day=1)
+    s = R.grow(R.Script(), "WHEAT", [(7, 3)], plant_day=5, land_day=1)
     bought = np.flatnonzero(s.buy_land > 0)
     assert len(bought) == R.land_purchases_for((7, 3))
     assert bought[0] // R.TURNS_PER_DAY == 1, "land not ordered on land_day"
+
+
+def test_a_short_script_is_truncated_rather_than_overrun():
+    """`Script.op` promises "out-of-range turns are dropped so a routine may run past the season", and
+    the market arrays have to honour the same contract. They did not: `buy_seed[d]` was written
+    unguarded, so a script shorter than a season raised IndexError at day 2. Found by
+    `chains._fits_in_a_day`, which probes a block against a two-day script.
+    """
+    short = R.Script(T=R.TURNS_PER_DAY * 2)
+    R.grow(short, "WHEAT", [(3, 3)], plant_day=0)          # must not raise
+    assert short.unit_op.shape[0] == R.TURNS_PER_DAY * 2
 
 
 def test_a_tile_is_watered_on_the_day_it_is_planted():
@@ -177,7 +188,7 @@ def test_a_tile_is_watered_on_the_day_it_is_planted():
     Everything after that is silently dead: WATER needs `kind == PLANT` and PLANT needs `EMPTY`, so a
     weeded tile refuses both while the routine keeps paying for seeds.
     """
-    s = R.crop(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
     day0 = _ops_on_day(s, 0, 0)
     assert "PLANT" in day0 and "WATER" in day0, f"day 0 ops are {[o for o in day0 if o != 'PASS']}"
     assert day0.index("WATER") > day0.index("PLANT"), "watered before planting"
@@ -214,14 +225,14 @@ def test_a_crop_routine_pays_for_itself(crop_name):
     """
     base = _run(R.Script())
     s = R.Script()
-    R.crop(s, crop_name, [(3, 3)], plant_day=0)
+    R.grow(s, crop_name, [(3, 3)], plant_day=0)
     got = _run(s)
     assert got > base, f"{crop_name} lost money: ${got:,.0f} vs baseline ${base:,.0f}"
 
 
 def test_a_harvest_is_sold_after_the_shed_has_received_it():
     """The structural form of the same property, independent of prices."""
-    s = R.crop(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
+    s = R.grow(R.Script(), "WHEAT", [(3, 3)], plant_day=0)
     harvest_days = {int(t) // R.TURNS_PER_DAY
                     for t in np.flatnonzero(s.unit_op[:, 0] == R.OP["HARVEST"])}
     sell_days = {int(t) // R.TURNS_PER_DAY

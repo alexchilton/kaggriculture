@@ -290,7 +290,7 @@ def serpentine(tiles):
     return out
 
 
-def crop(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell=True, unit=0):
+def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell=True, unit=0):
     """Plant, water and harvest a block of tiles, re-walking from spawn every day.
 
     The crop analogue of `ranch()`, and structurally harder for one reason: `ranch()` is safe because
@@ -334,7 +334,7 @@ def crop(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
         raise ValueError(f"unknown crop {crop_name}")
     tiles = [tuple(t) for t in tiles]
     if not tiles:
-        raise ValueError("crop() needs at least one tile")
+        raise ValueError("grow() needs at least one tile")
     quads = {quadrant_of(*t) for t in tiles}
     if len(quads) > 1:
         raise ValueError(f"block spans quadrants {sorted(quads)}; v1 routes inside one quadrant only")
@@ -365,6 +365,10 @@ def crop(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
 
     for day in range(plant_day, SEASON_DAYS):
         d = day * TURNS_PER_DAY
+        # `Script.op` drops out-of-range turns so a routine may run past the season; the market arrays
+        # are raw indexing and must honour the same contract explicitly.
+        if d >= script.T:
+            break
         jobs = {}
         for tile in ordered:
             p = planted[tile]
