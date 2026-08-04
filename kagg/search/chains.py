@@ -81,6 +81,25 @@ UNREACHABLE_BLOCKS = tuple(b for b in ALL_BLOCKS if b not in BLOCKS)
 
 RANCH_CELLS = tuple(R.shed_access_tiles())
 
+OPENING_BANK = 3000                 # `kaggriculture.py:237` startingMoney
+
+
+def land_cost(tile):
+    """What unlocking `tile`'s quadrant costs in total, since parcels are bought in a fixed order."""
+    return sum(R.LAND_PRICES[:R.land_purchases_for(tile)])
+
+
+SEED_COST = {"WHEAT": 10, "CARROT": 20, "TOMATO": 50, "STRAWBERRY": 100, "MELON": 80}
+ANIMAL_COST = {"GOOSE": 300, "COW": 400, "SHEEP": 500}
+
+
+# Blocks and cells the farm already owns at spawn. The seed stays inside these: land is bought out of
+# working capital and working capital is what binds -- the first parcel alone is a third of the opening
+# bank, before a single seed. The *search* is not restricted; it owns `land_day` and buying SE late is a
+# strategy it is free to find.
+OWNED_BLOCKS = tuple(b for b in BLOCKS if max(land_cost(t) for t in b) == 0)
+OWNED_CELLS = tuple(c for c in RANCH_CELLS if land_cost(c) == 0)
+
 # Genome layout: one row per slot, five categorical genes per row.
 GENES = ("kind", "what", "block", "start_day", "land_day")
 N_KINDS = len(KINDS)
@@ -135,28 +154,59 @@ def seeded_genome(n_slots, rng=None):
     Their season, extracted in `docs/`: 14 pens (8 cow, 6 sheep), strawberry 40 tiles, melon 11, wheat
     10, two land parcels bought around days 6 and 9, crew ramping 5 -> 13 rather than flat. Only four
     ranch cells exist here, so the animal count is necessarily smaller than theirs -- the point of the
-    seed is the *shape* (animals first, strawberry bulk, melon capped near its drain), not a copy.
+    seed is the *shape* (animals first, melon capped near its drain, strawberry bulk), not a copy.
+
+    **The first version of this was worse than an empty tape**: it banked $0 against $3,000 for a farm
+    that does nothing, because it bought four animals on day 0 with `land_day=8`. Three of the four pens
+    stood on land the farm did not own, `PLACE` failed silently on a LOCKED tile, and the feed and crew
+    were paid for thirty days of nothing. Two rules come out of that, and `tests/test_seeded_genome.py`
+    pins both:
+
+    - **A ranch cell's land must be unlocked before its animal is bought**, so `land_day <= start_day`.
+    - **At most one parcel before the farm has earned anything.** The second costs $2,000 of a $3,000
+      bank, and the season is decided by working capital -- see `data/logs/sell_timing_sweep.log`.
+
+    The measured cause of the $0 was **over-commitment, not ordering**. Day 0 spent $1,853 on two cows
+    and a parcel; day 1 then asked for 12 melon at $80 and 12 strawberry at $100, $2,160 against $1,147.
+    The atomic PLANT rule drops *every* request for a crop when demand exceeds seeds held, so the farm
+    bought nothing, planted nothing, and starved the animals it had already paid for.
+
+    So the seed is staged by **cash flow**, which is what the crop table actually rewards:
+
+    - Wheat first. $10 a seed, harvestable at age 2 and topping out at age 4, so it is the only crop
+      that returns money inside the first week -- and `ranch()` buys wheat as feed every day regardless,
+      so growing it also removes a purchase.
+    - Melon next, capped near its 140-unit town drain (`data/logs/market_ceiling.log`), at $80 a seed
+      the best per-tile crop measured (+$3,182 in `data/logs/crop_pays.log`).
+    - Strawberry last. $100 a seed for a first harvest at age 10 is the biggest hole in the season and
+      wants to be dug once there is revenue to dig it with.
+
+    One animal, on the free cell. A ranch slot's unit is derived from its cell, so slot `i` must hold
+    cell `i` or two chains collide on one unit and interleave their walks.
     """
     rng = rng or np.random.default_rng(0)
     g = np.zeros((n_slots, len(GENES)), dtype=np.int64)
-    # Melon is capped by its own drain: 140 units a season against ~12 units per tile.
-    melon_blocks = max(1, DRAIN_UNITS["MELON"] // (12 * BLOCK_SIZE))
-    plan = ([("ranch", "COW")] * min(2, n_slots)
-            + [("ranch", "SHEEP")] * min(2, max(0, n_slots - 2))
-            + [("grow", "MELON")] * melon_blocks
-            + [("grow", "STRAWBERRY")] * n_slots)
+    melon_blocks = max(1, round(DRAIN_UNITS["MELON"] / (12 * BLOCK_SIZE)))
+
+    # (kind, what, start_day). Every entry is affordable at the bank the entries before it leave behind.
+    plan = [("ranch", "COW", 0), ("grow", "WHEAT", 0), ("grow", "WHEAT", 0)]
+    plan += [("grow", "MELON", 2)] * melon_blocks
+    plan += [("grow", "STRAWBERRY", d) for d in (5, 8, 12)]
+    plan += [("grow", "WHEAT", 3)] * n_slots           # pad: cheap, and it feeds the animals
 
     block_cursor = 0
     for slot in range(n_slots):
-        kind, what = plan[slot] if slot < len(plan) else ("off", "WHEAT")
+        kind, what, start_day = plan[slot]
+        if kind == "grow" and block_cursor >= len(OWNED_BLOCKS):
+            break                                     # out of land we own; leave the rest "off"
         g[slot, 0] = KINDS.index(kind)
         if kind == "ranch":
             g[slot, 1] = R.ANIMAL_NAMES.index(what)
-            g[slot, 2] = slot % len(RANCH_CELLS)
-        elif kind == "grow":
+            g[slot, 2] = RANCH_CELLS.index(OWNED_CELLS[slot % len(OWNED_CELLS)])
+        else:
             g[slot, 1] = R.CROPS.index(what)
-            g[slot, 2] = block_cursor % len(BLOCKS)
+            g[slot, 2] = BLOCKS.index(OWNED_BLOCKS[block_cursor])
             block_cursor += 1
-        g[slot, 3] = START_DAY_CHOICES.index(0 if kind == "ranch" else 1)
-        g[slot, 4] = LAND_DAY_CHOICES.index(8)
+        g[slot, 3] = START_DAY_CHOICES.index(start_day)
+        g[slot, 4] = LAND_DAY_CHOICES.index(0)         # nothing here needs land; 0 is a no-op
     return g.reshape(-1)
