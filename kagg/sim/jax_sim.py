@@ -259,6 +259,17 @@ class Actions(NamedTuple):
     buy_animal: jnp.ndarray
     hire: jnp.ndarray
     buy_land: jnp.ndarray
+    # Optional explicit market-order list, mirroring `game.Actions`. Left all-zero the canonical
+    # layout below is used unchanged, which is what every RL rollout and the parity gate rely on.
+    # Supplied for a seat, that seat's slots are taken verbatim -- the only way to express a turn
+    # that interleaves orders on one product, e.g. SELL WHEAT 1 / BUY_PRODUCT WHEAT 2 / SELL WHEAT 2,
+    # which per-product totals flatten into SELL 3 / BUY 2 and misprice by $25 on that one turn.
+    # Defaulted to None so the ten-field positional constructors all over this project keep working
+    # and so a caller that does not care pays nothing: None means "use the canonical layout", which is
+    # a *structural* choice resolved at trace time, not a traced value.
+    order_op: jnp.ndarray = None
+    order_item: jnp.ndarray = None
+    order_qty: jnp.ndarray = None
 
 
 def zero_actions(batch, players=N_PLAYERS):
@@ -274,6 +285,9 @@ def zero_actions(batch, players=N_PLAYERS):
         buy_animal=jnp.zeros((batch, players, N_ANIMALS), dtype=_I),
         hire=jnp.zeros((batch, players), dtype=_I),
         buy_land=jnp.zeros((batch, players), dtype=_I),
+        order_op=jnp.zeros((batch, players, MAX_ORDERS), dtype=_I),
+        order_item=jnp.zeros((batch, players, MAX_ORDERS), dtype=_I),
+        order_qty=jnp.zeros((batch, players, MAX_ORDERS), dtype=_I),
     )
 
 
@@ -291,7 +305,39 @@ def from_numpy_actions(actions, players=N_PLAYERS):
         # Integer counts, not flags: casting to bool here would collapse "hire twice" to "hire once".
         hire=jnp.asarray(actions.hire, dtype=_I),
         buy_land=jnp.asarray(actions.buy_land, dtype=_I),
+        # `getattr` rather than attribute access: `Actions` objects from before the explicit list
+        # existed are still readable, and an absent list means "use the canonical layout".
+        **_order_fields(actions, players),
     )
+
+
+def _order_fields(actions, players):
+    """The three explicit-list columns, or all-None when the caller supplied no list.
+
+    **Presence is decided by `order_op` alone.** Testing each column for a non-zero entry looked
+    equivalent and is not: `ORDER_NONE` is 0 but so is item id 0, which is WHEAT -- the most traded
+    product in the game. An all-wheat order list has an all-zero `order_item` column and was being
+    read as "no list supplied", silently falling back to the canonical layout.
+
+    Returning None rather than zero arrays matters for the hot path: `_order_book` then skips the
+    override branch at trace time, so RL rollouts keep exactly the graph they had before this existed.
+    """
+    op = getattr(actions, "order_op", None)
+    if op is None:
+        return {"order_op": None, "order_item": None, "order_qty": None}
+    op = np.asarray(op)
+    if not op.any():
+        return {"order_op": None, "order_item": None, "order_qty": None}
+
+    def column(name):
+        got = getattr(actions, name, None)
+        if got is None:
+            return jnp.zeros(op.shape, dtype=_I)
+        return jnp.asarray(np.asarray(got), dtype=_I)
+
+    return {"order_op": jnp.asarray(op, dtype=_I),
+            "order_item": column("order_item"),
+            "order_qty": column("order_qty")}
 
 
 def _canonical(actions):
@@ -307,13 +353,25 @@ def _canonical(actions):
         buy_animal=actions.buy_animal.astype(_I),
         hire=actions.hire.astype(_I),
         buy_land=actions.buy_land.astype(_I),
+        order_op=None if actions.order_op is None else actions.order_op.astype(_I),
+        order_item=None if actions.order_item is None else actions.order_item.astype(_I),
+        order_qty=None if actions.order_qty is None else actions.order_qty.astype(_I),
     )
 
 
 def stack_actions(frames):
     """Stack per-step `Actions` (numpy or JAX) into one time-major pytree for `rollout`."""
     frames = [a if isinstance(a, Actions) else from_numpy_actions(a) for a in frames]
-    return Actions(*[jnp.stack([getattr(a, f) for a in frames]) for f in Actions._fields])
+
+    def stack(field):
+        # A field is stackable only if every frame has it; a single None makes the whole column
+        # absent, which is the honest answer -- half a time series of order lists is not usable.
+        values = [getattr(a, field) for a in frames]
+        if any(v is None for v in values):
+            return None
+        return jnp.stack(values)
+
+    return Actions(*[stack(f) for f in Actions._fields])
 
 
 SHOP_UNLOCK_INTERVAL = 3   # reference `townShopUnlockInterval` (`kaggriculture.py:836`)
@@ -799,6 +857,36 @@ def _order_book(actions):
     op = zeros.at[bi, pi, target].set(c_op)[:, :, :MAX_ORDERS]
     item = zeros.at[bi, pi, target].set(c_item)[:, :, :MAX_ORDERS]
     qty = zeros.at[bi, pi, target].set(c_qty)[:, :, :MAX_ORDERS]
+
+    # ---- an explicit order list overrides the canonical layout, per seat -------------------------
+    #
+    # Branchless because this runs under `jit`: the override is always computed and selected with a
+    # `where` on a per-seat flag, rather than a Python `if` on a traced value.
+    #
+    # Compacted by the same `present`/`cumsum` rule as above rather than copied straight through.
+    # `_parse_order` rejects a quantity <= 0 while the reference has already spent that slot
+    # positionally (`reference/kaggriculture.py:534` truncates before parsing), so a zero entry must
+    # vanish instead of padding -- which is also why a caller cannot use this path to smuggle in more
+    # than `MAX_ORDERS` orders.
+    e_op, e_item, e_qty = actions.order_op, actions.order_item, actions.order_qty
+    if e_op is None or e_item is None or e_qty is None:
+        return op, item, qty
+    atomic = (e_op == ORDER_HIRE) | (e_op == ORDER_BUY_LAND)
+    e_present = (e_op != ORDER_NONE) & ((e_qty > 0) | atomic)
+    e_slot = jnp.cumsum(e_present, axis=2) - 1
+    e_target = jnp.where(e_present & (e_slot < MAX_ORDERS), e_slot, MAX_ORDERS)
+    # HIRE and BUY_LAND carry no quantity; the atomic branch keys off the op alone, and a zero here
+    # would read as "not present" when the slot is walked.
+    e_qty_out = jnp.where(atomic, jnp.maximum(e_qty, 1), e_qty)
+
+    x_op = zeros.at[bi, pi, e_target].set(e_op)[:, :, :MAX_ORDERS]
+    x_item = zeros.at[bi, pi, e_target].set(e_item)[:, :, :MAX_ORDERS]
+    x_qty = zeros.at[bi, pi, e_target].set(e_qty_out)[:, :, :MAX_ORDERS]
+
+    uses = (e_op != ORDER_NONE).any(axis=2)[:, :, None]
+    op = jnp.where(uses, x_op, op)
+    item = jnp.where(uses, x_item, item)
+    qty = jnp.where(uses, x_qty, qty)
     return op, item, qty
 
 
