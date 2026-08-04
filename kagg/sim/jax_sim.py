@@ -245,8 +245,8 @@ class Actions(NamedTuple):
     - `unit_crop` [B, P, MAX_UNITS]   crop id for PLANT ops, ignored otherwise
     - `sell`      [B, P, N_PRODUCTS]  units offered for sale
     - `buy_seed`  [B, P, N_CROPS]     seeds to buy
-    - `hire`      [B, P]              hire one hand this turn
-    - `buy_land`  [B, P]              unlock the next quadrant
+    - `hire`      [B, P]              COUNT of hands to hire this turn, not a flag
+    - `buy_land`  [B, P]              COUNT of quadrants to unlock this turn, not a flag
     """
 
     unit_op: jnp.ndarray
@@ -272,8 +272,8 @@ def zero_actions(batch, players=N_PLAYERS):
         buy_seed=jnp.zeros((batch, players, N_CROPS), dtype=_I),
         buy_product=jnp.zeros((batch, players, N_PRODUCTS), dtype=_I),
         buy_animal=jnp.zeros((batch, players, N_ANIMALS), dtype=_I),
-        hire=jnp.zeros((batch, players), dtype=bool),
-        buy_land=jnp.zeros((batch, players), dtype=bool),
+        hire=jnp.zeros((batch, players), dtype=_I),
+        buy_land=jnp.zeros((batch, players), dtype=_I),
     )
 
 
@@ -288,8 +288,9 @@ def from_numpy_actions(actions, players=N_PLAYERS):
         buy_seed=jnp.asarray(actions.buy_seed, dtype=_I),
         buy_product=jnp.asarray(actions.buy_product, dtype=_I),
         buy_animal=jnp.asarray(actions.buy_animal, dtype=_I),
-        hire=jnp.asarray(actions.hire, dtype=bool),
-        buy_land=jnp.asarray(actions.buy_land, dtype=bool),
+        # Integer counts, not flags: casting to bool here would collapse "hire twice" to "hire once".
+        hire=jnp.asarray(actions.hire, dtype=_I),
+        buy_land=jnp.asarray(actions.buy_land, dtype=_I),
     )
 
 
@@ -304,8 +305,8 @@ def _canonical(actions):
         buy_seed=actions.buy_seed.astype(_I),
         buy_product=actions.buy_product.astype(_I),
         buy_animal=actions.buy_animal.astype(_I),
-        hire=actions.hire.astype(bool),
-        buy_land=actions.buy_land.astype(bool),
+        hire=actions.hire.astype(_I),
+        buy_land=actions.buy_land.astype(_I),
     )
 
 
@@ -773,8 +774,15 @@ def _order_book(actions):
         add(ORDER_BUY_PRODUCT, i, actions.buy_product[:, :, i])
     for a in range(N_ANIMALS):
         add(ORDER_BUY_ANIMAL, a, actions.buy_animal[:, :, a])
-    add(ORDER_HIRE, 0, actions.hire.astype(_I))
-    add(ORDER_BUY_LAND, 0, actions.buy_land.astype(_I))
+    # One slot per hire -- see the note in `kagg/sim/game.py::_order_book`. HIRE and BUY_LAND are
+    # atomic per *slot*, not per turn, so a count of `n` emits `n` unit candidates and the existing
+    # `slot < MAX_ORDERS` clamp enforces `maxMarketOrdersPerTurn`.
+    n_hire = actions.hire.astype(_I)
+    n_land = actions.buy_land.astype(_I)
+    for k in range(MAX_ORDERS):
+        add(ORDER_HIRE, 0, (n_hire > k).astype(_I))
+    for k in range(MAX_ORDERS):
+        add(ORDER_BUY_LAND, 0, (n_land > k).astype(_I))
 
     c_op = jnp.stack(ops, axis=2)
     c_item = jnp.stack(items, axis=2)

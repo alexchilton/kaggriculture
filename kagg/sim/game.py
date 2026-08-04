@@ -103,8 +103,15 @@ class Actions:
         # Only WHEAT and FERTILIZER are buyable; the rest of the column is ignored.
         self.buy_product = np.zeros((batch, players, N_PRODUCTS), dtype=np.int64)
         self.buy_animal = np.zeros((batch, players, N_ANIMALS), dtype=np.int64)
-        self.hire = np.zeros((batch, players), dtype=bool)
-        self.buy_land = np.zeros((batch, players), dtype=bool)
+        # **Counts, not flags.** HIRE and BUY_LAND are atomic *per order slot*, not per turn:
+        # `reference/kaggriculture.py:538` walks the order slots and fires one hire for each slot
+        # holding a HIRE, so `[["HIRE"], ["HIRE"]]` hires twice. `senkin13` opens with exactly that
+        # and the recorded observation shows `hires_today: 2`. These were `bool` until 2026-08-04,
+        # which made the leaders' own turns inexpressible and any exact replay impossible --
+        # positions tracked for 209 turns and then the season ended at $0 against $145,034.
+        # Assigning `True` still works: it stores as 1.
+        self.hire = np.zeros((batch, players), dtype=np.int64)
+        self.buy_land = np.zeros((batch, players), dtype=np.int64)
 
 
 class Game:
@@ -259,8 +266,17 @@ class Game:
             add(ORDER_BUY_PRODUCT, i, actions.buy_product[:, :, i])
         for a in range(N_ANIMALS):
             add(ORDER_BUY_ANIMAL, a, actions.buy_animal[:, :, a])
-        add(ORDER_HIRE, 0, actions.hire.astype(np.int64))
-        add(ORDER_BUY_LAND, 0, actions.buy_land.astype(np.int64))
+        # One slot per hire, because the reference spends a slot per atomic order. A count of `n`
+        # therefore emits `n` candidates of quantity 1 each; `present = c_qty > 0` drops the rest, and
+        # the `slot < MAX_ORDERS` clamp below applies `maxMarketOrdersPerTurn` exactly as it would to
+        # any other order. Capping the loop at MAX_ORDERS is not a further restriction: an eleventh
+        # hire could not reach a slot anyway.
+        n_hire = np.asarray(actions.hire, dtype=np.int64)
+        n_land = np.asarray(actions.buy_land, dtype=np.int64)
+        for k in range(MAX_ORDERS):
+            add(ORDER_HIRE, 0, (n_hire > k).astype(np.int64))
+        for k in range(MAX_ORDERS):
+            add(ORDER_BUY_LAND, 0, (n_land > k).astype(np.int64))
 
         c_op = np.stack(cand_op, axis=2)
         c_item = np.stack(cand_item, axis=2)

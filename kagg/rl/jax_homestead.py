@@ -92,6 +92,7 @@ def actions(state):
         # Hire whenever *either* wants to, since the crew now serves both jobs and the Fibonacci fee
         # resets nightly. This is the one place the composition is strictly more aggressive than
         # either parent, and it is the field's behaviour.
-        hire=herd.hire | crop.hire,
-        buy_land=herd.buy_land | crop.buy_land,
+        # `maximum`, not `|`: these are counts now, and bitwise-or on counts is nonsense (1 | 2 == 3).
+        hire=jnp.maximum(herd.hire, crop.hire),
+        buy_land=jnp.maximum(herd.buy_land, crop.buy_land),
     )

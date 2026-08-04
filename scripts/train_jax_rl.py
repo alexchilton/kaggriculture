@@ -421,8 +421,10 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
                 unit_op=jnp.where(trade_seat[..., None], O.NOOP, sim_actions.unit_op),
                 buy_product=_set(sim_actions.buy_product, buy, wheat, TRADER_LOT),
                 sell=_set(sim_actions.sell, sell, wheat, TRADER_LOT),
-                hire=jnp.where(trade_seat, False, sim_actions.hire),
-                buy_land=jnp.where(trade_seat, False, sim_actions.buy_land),
+                # 0, not False: `hire`/`buy_land` are integer counts, so a bool literal here would
+                # force the whole array back to bool and collapse any count above one.
+                hire=jnp.where(trade_seat, 0, sim_actions.hire),
+                buy_land=jnp.where(trade_seat, 0, sim_actions.buy_land),
             )
 
             # **The only opponent in the pool that can punish a bad farm.**

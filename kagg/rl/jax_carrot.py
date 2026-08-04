@@ -24,11 +24,20 @@ here is the translation to a batched jit-safe form.
   non-overlapping allocation in the common case, and when the crew outnumbers the jobs the cost is
   a unit walking further than it needed to -- never two units fighting over one tile.
 - *Hiring cadence.* The original emits `TARGET_HANDS - len(hands)` HIRE orders in a single turn at
-  `hour == 0`. `jax_sim.Actions.hire` is one boolean per seat per turn, because the reference rule
-  makes HIRE atomic -- "handle once, in player order" -- so several hires in one turn is not
-  expressible here. Hiring on any turn while below target is the closest expressible behaviour and
-  reaches the same crew, a little sooner. Faithfully restricting it to `hour == 0` would cap crew
-  growth at one hand per day, which is a limit of this port rather than of the published agent.
+  `hour == 0`.
+
+  **This docstring previously claimed that was inexpressible, and that was wrong.** It read the
+  reference's "Atomic orders (HIRE, BUY_LAND): handle once, in player order" as one hire per turn.
+  That comment sits inside `for i in range(max_len)` over the *order slots*
+  (`reference/kaggriculture.py:538`); "atomic" means the slot resolves once and is then spent so the
+  per-unit SELL/BUY lockstep skips it. Each slot holding a HIRE fires its own hire, so up to
+  `maxMarketOrdersPerTurn` (10) hires per turn are legal -- and `senkin13` opens with two, banking
+  $145,034 (`docs/the_winners_are_open_loop_2026-08-04.md`).
+
+  `Actions.hire` is an integer count as of 2026-08-04, so the original cadence *is* now expressible.
+  This port still hires on any turn while below target, which reaches the same crew; emitting the
+  full shortfall at `hour == 0` would now be the faithful version. Pinned by
+  `tests/test_multiple_hires_per_turn.py`.
 """
 
 import jax
