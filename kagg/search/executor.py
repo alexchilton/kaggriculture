@@ -80,6 +80,16 @@ COOP_GENE_KIND = 1
 EMPTY, LOCKED, WEED, PLANT, COOP, PASTURE = range(6)
 
 MAX_EXEC_UNITS = 16      # the hire gene tops out at 14 hands plus the farmer
+
+# How many hands to take in a single turn. **Measured, not chosen**: across every archived leader seat
+# (15,840 turns) the distribution of HIRE orders per turn is 1 x154, 2 x506, **3 x1642**, 4 x16 and
+# 10 x56, so three is the modal play. It also has to be small for a mechanical reason -- both
+# `game._order_book` and the reference compact a turn into ten slots, so a fourteen-hire request
+# crowds out every SELL and the farm banks $98 on a $3,000 stake (`test_hiring_never_starves_the_market_orders`).
+# Three leaves seven slots for the market and still fills a fourteen-hand crew by hour five, at
+# identical cost: `HIRE_COST` is Fibonacci in `hires_today` and resets each dawn, so what matters is
+# hires per *day*, not per turn. A candidate for a gene later; a constant read off the tape for now.
+HIRES_PER_TURN = 3
 N_MARKET_SLOTS = 8
 
 
@@ -148,8 +158,11 @@ class View:
     n_units: np.ndarray         # [B] int
     money: np.ndarray           # [B] float
     seeds: np.ndarray           # [B, N_CROPS] int
-    shed: np.ndarray            # [B, N_CROPS] int
-    prices: np.ndarray          # [B, N_CROPS] int
+    # **N_PRODUCTS wide, not N_CROPS.** These were sliced to the crops until 2026-08-04, so the
+    # executor could not see that it held EGG / MILK / WOOL / FERTILIZER and therefore never sold
+    # any of it -- ~83% of the leaders' revenue, sitting in the shed for the whole season.
+    shed: np.ndarray            # [B, N_PRODUCTS] int
+    prices: np.ndarray          # [B, N_PRODUCTS] int
     n_land: np.ndarray          # [B] int
 
     # **Livestock, appended with defaults on 2026-08-04.** Defaults so `agent.py` -- which builds a
@@ -184,6 +197,17 @@ class View:
             if getattr(self, name) is None:
                 object.__setattr__(self, name, make())
 
+        # A caller that supplies only the five crops gets the four animal products zero-filled, i.e.
+        # "this farm holds none and they are worthless". Both real call sites -- `rollout.build_view`
+        # and `agent.observation_view` -- pass all nine and are pinned by
+        # `tests/test_sell_animal_products.py`, so this widening is for hand-built Views in tests that
+        # only care about crops. It is a shape adapter, never a source of stock.
+        for name in ("shed", "prices"):
+            arr = np.asarray(getattr(self, name))
+            if arr.shape[1] < N_PRODUCTS:
+                pad = np.zeros((arr.shape[0], N_PRODUCTS - arr.shape[1]), dtype=arr.dtype)
+                object.__setattr__(self, name, np.concatenate([arr, pad], axis=1))
+
 
 @dataclass
 class Decision:
@@ -191,9 +215,9 @@ class Decision:
 
     unit_op: np.ndarray         # [B, MAX_EXEC_UNITS]
     unit_crop: np.ndarray       # [B, MAX_EXEC_UNITS]
-    sell: np.ndarray            # [B, N_CROPS]
+    sell: np.ndarray            # [B, N_PRODUCTS] -- crops and animal products alike
     buy_seed: np.ndarray        # [B, N_CROPS]
-    hire: np.ndarray            # [B] bool
+    hire: np.ndarray            # [B] int -- how many hands to take this turn, not a flag
     buy_land: np.ndarray        # [B] bool
     # Livestock. `game.Actions` has carried these slots all along; the executor never used them.
     unit_item: np.ndarray = None    # [B, MAX_EXEC_UNITS] item index for PICKUP / PLACE
@@ -388,7 +412,24 @@ def decide(view, plan):
     shed_stock = view.shed_animals.sum(axis=1)
     want_collect = np.minimum(np.maximum(n_pens_free, 0), shed_stock)          # [B]
     herd_size = (view.animal >= 0).sum(axis=1)
-    want_wheat = np.where(herd_size > 0, plan.feed_wheat * np.maximum(herd_size, 1), 0)
+
+    # **Feed is sized by the herd the plan intends, not the herd already standing on a tile.**
+    # It read `where(herd_size > 0, ...)` until 2026-08-04, and that made the animal chain
+    # self-closing in exactly the way `jax_masks.py:93` does one layer down: on turn 0 nothing is
+    # placed, so `want_wheat` was 0 and no wheat was ordered -- while the same turn spent the opening
+    # stake on animals. By the time an animal stood on a pen and `want_wheat` went positive there was
+    # no money left. Measured over a full season in `data/logs/diverge_by_day_147k.log`: `shed_wheat`
+    # 0 on all thirty days, 14 animals escaped at full purchase price, season ended on $0.
+    #
+    # The intended count is capped by the pens actually standing, which is the same gate
+    # `buy_animal` uses below, so feed and animals are ordered against one number and arrive
+    # together. `maximum(intended, owned)` so a herd already held is never under-fed if the plan's
+    # target is later reduced.
+    pens_total = ((view.kind == COOP) | (view.kind == PASTURE)).sum(axis=1)
+    owned = herd_size + shed_stock
+    intended = np.where(day >= plan.stock_day,
+                        np.minimum(plan.herd.sum(axis=1), pens_total), 0)
+    want_wheat = plan.feed_wheat * np.maximum(intended, owned)
 
     rank = np.cumsum(at_shed, axis=1) - 1                                     # 0-based among at-shed
     # **NOT gated on being idle.** The first version required `~found`, so a unit only fetched feed if
@@ -434,9 +475,14 @@ def decide(view, plan):
     dumping = day >= plan.dump_day
     tick = (hour % np.maximum(plan.sell_every, 1)) == 0
 
-    price_ok = view.prices >= (plan.floor_frac * BASE_PRICE[None, :])
-    qty = plan.sell_qty[:, block, :]
-    qty = np.where(dumping[:, None], view.shed, np.where(price_ok, qty, 0))
+    # Crops and animal products get the same cadence machinery and their own genes. Concatenating
+    # rather than branching keeps `sell` one array of width `N_PRODUCTS`, which is what the order book
+    # and the reference's market list both want.
+    want_qty = np.concatenate([plan.sell_qty[:, block, :],
+                               plan.sell_qty_animal[:, block, :]], axis=1)
+    floors = np.concatenate([plan.floor_frac, plan.floor_frac_animal], axis=1)
+    price_ok = view.prices >= (floors * BASE_PRICE[None, :])
+    qty = np.where(dumping[:, None], view.shed, np.where(price_ok, want_qty, 0))
     sell = np.where(tick[:, None], np.minimum(qty, view.shed), 0).astype(np.int64)
 
     # One crop's seeds per turn, rotating, so the fixed 8-slot order list always fits.
@@ -453,34 +499,85 @@ def decide(view, plan):
     budget = np.maximum(view.money - plan.seed_reserve, 0.0)
     buy_seed[:, c] = np.minimum(need, np.floor(budget / SEED_COST[c])).astype(np.int64)
 
+    # **A count, not a flag.** `game.py:113` and `jax_sim.py:291` have carried integer hire counts
+    # since 2026-08-04 -- the latter warning that "casting to bool here would collapse 'hire twice' to
+    # 'hire once'" -- and the leaders open with two HIREs in a single turn. A boolean here narrowed
+    # that capability back down one layer above the simulator, which is the same defect shape as the
+    # livestock fields `observation_view` was dropping.
+    #
+    # Asking for the whole shortfall at once is not just a dtype change: `HIRE_COST` is Fibonacci in
+    # `hires_today` and resets each dawn, so N hands cost the same taken together as taken one an hour,
+    # but they start working up to N-1 hours sooner. Clamped to `MAX_EXEC_UNITS` because the executor
+    # only routes that many units, so hiring past it would spend money on hands it never commands.
     target_hands = plan.hires[games, min(day, plan.hires.shape[1] - 1)]
-    hire = (view.n_units - 1) < target_hands
+    room = np.maximum(MAX_EXEC_UNITS - view.n_units, 0)
+    shortfall = np.maximum(target_hands - (view.n_units - 1), 0)
+    hire = np.minimum(np.minimum(shortfall, room), HIRES_PER_TURN).astype(np.int64)
 
     slot = np.minimum(view.n_land, plan.land_day.shape[1] - 1)
     buy_land = (view.n_land < plan.land_day.shape[1]) & (day >= plan.land_day[games, slot])
+
+    # ---- feed, then livestock ---------------------------------------------------------------------
+    #
+    # Wheat is *bought*, not grown, when it is feed: the leaders buy 967 units a season for 14
+    # animals. `feed_wheat` is units per animal, so the order tops the shed up to that.
+    #
+    # **Priced before the animals, because it also caps them.** An animal is only worth its price if
+    # something feeds it, so the feed order is sized first and the herd is then limited to what that
+    # feed supports.
+    buy_product = np.zeros((batch, N_PRODUCTS), dtype=np.int64)
+    # **Wheat in hand counts.** This read `want_wheat - view.shed_wheat`, and `fetch_wheat` moves feed
+    # out of the shed into `carried_wheat` at dawn -- so the shed read 0 again and the full requirement
+    # was re-ordered on every one of the day's 24 turns. Measured in `data/logs/cash_ledger.log`: 203
+    # units and $5,075 in the first eight days, against the copied seat's 967 units for the whole
+    # season, which is what stopped the balance ever reaching the $1,000 for the first land parcel.
+    held_wheat = view.shed_wheat + view.carried_wheat.sum(axis=1)
+    short = np.maximum(want_wheat - held_wheat, 0)
+    wheat_budget = np.floor(np.maximum(view.money - plan.seed_reserve, 0.0) / WHEAT_PRICE_CAP)
+    wheat_order = np.minimum(short, wheat_budget.astype(np.int64))
+    buy_product[:, WHEAT_ITEM] = wheat_order
 
     # ---- livestock orders ------------------------------------------------------------------------
     #
     # **An animal is only ordered against a standing empty pen.** This single condition is the fix for
     # `jax_frontier`, which bought its herd on day 0 against pens it never built and wrote off ~$1,400.
     # The shed count is subtracted too, or a slow placement queue would keep re-ordering.
+    #
+    # **And only against feed it can actually eat**, added 2026-08-04 for the same reason. An animal
+    # unfed two nights escapes with its whole purchase price (`jax_sim.py:1057`), so ordering one the
+    # feed supply cannot cover is a deterministic loss, not a gamble. This removes that whole class of
+    # plan from the space rather than asking the search to learn to avoid it -- and the search could
+    # not learn it cheaply anyway, since a plan is scored on the season and this failure is a slow
+    # bleed. Note the consequence: `feed_wheat = 0` now means "no animals", because a herd with no
+    # feed reserve starves by construction.
     buy_animal = np.zeros((batch, N_ANIMALS), dtype=np.int64)
     housing = np.maximum(n_pens_free - shed_stock, 0)
     stocking = day >= plan.stock_day
+    per_head = np.maximum(plan.feed_wheat, 0)
+    feed_have = view.shed_wheat + wheat_order
+    fed_capacity = np.where(per_head > 0,
+                            feed_have // np.maximum(per_head, 1),
+                            0).astype(np.int64)
+    # Only the headroom above what is already owned is available to new purchases.
+    feed_room = np.maximum(fed_capacity - owned, 0)
+
+    # **The feed order and the animals compete for the same cash, so its cost comes off the top.**
+    # Without this, $400 -- exactly one cow -- funds both a cow and its wheat on paper, the market
+    # fills one of them, and the animal starves. Priced at `WHEAT_PRICE_CAP` rather than the live
+    # price, so the reservation over-estimates and under-buys animals rather than overdrawing.
+    # `cash` is then spent down across the species loop; computing `afford` from `view.money` each
+    # time let all three species independently believe they could afford the whole stake.
+    cash = np.maximum(view.money - wheat_order * WHEAT_PRICE_CAP, 0.0)
     for a in range(N_ANIMALS):
         placed = (view.animal == a).sum(axis=1) + view.shed_animals[:, a]
         room = np.minimum(np.maximum(plan.herd[:, a] - placed, 0), housing)
-        afford = np.floor(np.maximum(view.money, 0.0) / ANIMAL_COST[a]).astype(np.int64)
+        room = np.minimum(room, feed_room)
+        afford = np.floor(cash / ANIMAL_COST[a]).astype(np.int64)
         take = np.where(stocking, np.minimum(room, afford), 0)
         buy_animal[:, a] = take
         housing = np.maximum(housing - take, 0)          # one pen per animal, first species first
-
-    # Wheat is *bought*, not grown, when it is feed: the leaders buy 967 units a season for 14
-    # animals. `feed_wheat` is units per animal, so the order tops the shed up to that.
-    buy_product = np.zeros((batch, N_PRODUCTS), dtype=np.int64)
-    short = np.maximum(want_wheat - view.shed_wheat, 0)
-    wheat_budget = np.floor(np.maximum(view.money - plan.seed_reserve, 0.0) / WHEAT_PRICE_CAP)
-    buy_product[:, WHEAT_ITEM] = np.minimum(short, wheat_budget.astype(np.int64))
+        feed_room = np.maximum(feed_room - take, 0)
+        cash = np.maximum(cash - take * ANIMAL_COST[a], 0.0)
 
     return Decision(
         unit_op=unit_op,

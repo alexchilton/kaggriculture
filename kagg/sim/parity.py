@@ -198,10 +198,22 @@ def run_reference(script, seed):
         obs = env.state[0].observation
         for shop in obs.get("town", {}).get("unlocked_shops", []):
             unlocks.setdefault(shop, obs.get("day", 0))
+        # **`shed` and `carried` are compared as of 2026-08-04.** Money, market inventory and a tile
+        # census were the only fields, and none of them move when an item shifts between a unit's hands
+        # and the shed -- so a one-turn error in the dawn drop was invisible over 719 exact steps.
+        # Found by replaying a real tape: our drop fired at the end of hour 23 while the reference
+        # drops during hour 0, and a `SELL FERTILIZER` on that boundary settled for $99 in our sim and
+        # $0 in theirs. `tiles` is still a census, so per-tile identity remains uncompared.
+        privates = [st.observation.private for st in env.state]
         trace.append({
             "money": [obs["farms"][i]["money"] for i in range(2)],
             "inventory": dict(obs["market"]["inventory"]),
             "tiles": [_census(obs["farms"][i]["tiles"]) for i in range(2)],
+            "shed": [{k: int(v) for k, v in (privates[i].get("shed") or {}).items() if v}
+                     for i in range(2)],
+            "carried": [[{k: int(v) for k, v in (inv or {}).items() if v}
+                         for inv in (privates[i].get("inventories") or [])]
+                        for i in range(2)],
         })
         if env.done:
             break
@@ -297,11 +309,27 @@ def run_sim(scripts, seed=None, weed_chance=0.0, unlocks=None):
                 "money": [float(money[b, 0]), float(money[b, 1])],
                 "inventory": {p: int(game.inventory[b, PRODUCT_INDEX[p]]) for p in PRODUCTS},
                 "tiles": [_sim_census(game.tiles[i], b) for i in range(2)],
+                "shed": [_shed_dict(game.farms[i], b) for i in range(2)],
+                "carried": [_carried_list(game.farms[i], b) for i in range(2)],
             })
     return traces
 
 
-def compare(sim_trace, ref_trace, label="", fields=("money", "inventory", "tiles")):
+def _shed_dict(farm, b):
+    """The farm's shed as a sparse name->count dict, matching the reference's `private["shed"]`."""
+    from .market import ITEMS
+    return {ITEMS[i]: int(v) for i, v in enumerate(farm.shed[b]) if v}
+
+
+def _carried_list(farm, b):
+    """Per-unit carried inventories, one sparse dict each, trimmed to the units that exist."""
+    from .market import ITEMS
+    n = int(farm.n_units[b])
+    return [{ITEMS[i]: int(v) for i, v in enumerate(farm.carried[b, u]) if v} for u in range(n)]
+
+
+def compare(sim_trace, ref_trace, label="",
+            fields=("money", "inventory", "tiles", "shed", "carried")):
     """Return a list of human-readable divergences, empty if parity holds."""
     problems = []
     for step, (s, r) in enumerate(zip(sim_trace, ref_trace)):
@@ -314,6 +342,11 @@ def compare(sim_trace, ref_trace, label="", fields=("money", "inventory", "tiles
                         f"{label}step {step}: {product} inventory "
                         f"{s['inventory'][product]} != {r['inventory'][product]}"
                     )
+        if "shed" in fields and s.get("shed") != r.get("shed"):
+            problems.append(f"{label}step {step}: shed {s.get('shed')} != {r.get('shed')}")
+        if "carried" in fields and s.get("carried") != r.get("carried"):
+            problems.append(
+                f"{label}step {step}: carried {s.get('carried')} != {r.get('carried')}")
         if "tiles" in fields and s["tiles"] != r["tiles"]:
             problems.append(f"{label}step {step}: tiles {s['tiles']} != {r['tiles']}")
         if problems:

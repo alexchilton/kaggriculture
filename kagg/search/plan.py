@@ -75,8 +75,22 @@ CROP_NAMES = ["WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON"]
 N_CROPS = len(CROP_NAMES)
 FALLOW = -1
 
-BASE_PRICE = np.array([25.0, 35.0, 60.0, 120.0, 250.0])
+# The four products that come off animals rather than out of the ground. `market.PRODUCTS` is
+# `CROP_NAMES + ANIMAL_PRODUCT_NAMES`, so a product index below `N_CROPS` is a crop and one at or
+# above it is an animal product -- the executor relies on that ordering to slice the two apart.
+ANIMAL_PRODUCT_NAMES = ["EGG", "MILK", "WOOL", "FERTILIZER"]
+N_ANIMAL_PRODUCTS = len(ANIMAL_PRODUCT_NAMES)
+N_PRODUCTS = N_CROPS + N_ANIMAL_PRODUCTS
+
+# All nine products, from `kg.MARKET_PARAMS[name]["base"]`, in `market.PRODUCTS` order. The four
+# animal products were missing until 2026-08-04 because nothing could sell them; a `floor_frac`
+# against a base price is meaningless without them.
+BASE_PRICE = np.array([25.0, 35.0, 60.0, 120.0, 250.0,     # WHEAT CARROT TOMATO STRAWBERRY MELON
+                       50.0, 160.0, 200.0, 100.0])         # EGG MILK WOOL FERTILIZER
 SEED_COST = np.array([10.0, 20.0, 50.0, 100.0, 80.0])
+# Name-keyed, for callers reading a replay's order tape where products arrive as strings. Built from
+# `BASE_PRICE` so the two can never drift apart.
+BASE_PRICE_OF = dict(zip(CROP_NAMES + ANIMAL_PRODUCT_NAMES, BASE_PRICE.tolist()))
 FIRST_YIELD_DAY = np.array([2, 2, 8, 10, 10], dtype=np.int16)
 MAX_YIELD_DAY = np.array([4, 3, 8, 10, 12], dtype=np.int16)
 ONGOING = np.array([False, False, True, True, False])
@@ -155,6 +169,20 @@ SPEC = (
     ("stock_day", 1, len(STOCK_DAYS)),
     ("feed_wheat", 1, len(FEED_WHEAT)),
     ("fert_policy", 1, N_FERT_POLICIES),
+    # --- selling the animal products, appended 2026-08-04 ---
+    #
+    # `sell_qty` and `floor_frac` are sized to `N_CROPS`, and `Decision.sell` was `[B, N_CROPS]`, so
+    # EGG, MILK, WOOL and FERTILIZER had **no sell path at all** -- `decide` could not emit an order
+    # for them and `View.shed` was sliced so it could not even see it held them. Measured in
+    # `data/logs/diverge_by_day_147k.log`: produce accumulates to 30 units by day 20, never moves
+    # again, and the season ends on $0. `docs/episode_teardown_2026-08-03.md` puts ~83% of the
+    # leaders' revenue in exactly these four products.
+    #
+    # Given their own genes rather than borrowing the crops', because milk's cadence has no reason to
+    # equal a melon's: animal products carry no seed cost, have `max_held` caps instead of a lifetime
+    # yield, and arrive daily rather than in a harvest window.
+    ("sell_qty_animal", N_BLOCKS * N_ANIMAL_PRODUCTS, len(SELL_QTYS)),
+    ("floor_frac_animal", N_ANIMAL_PRODUCTS, len(FLOOR_FRACS)),
 )
 
 N_GENES = sum(n for _, n, _ in SPEC)
@@ -196,6 +224,8 @@ class Plan:
     stock_day: np.ndarray      # [N] int16, day to start buying animals (NEVER = none)
     feed_wheat: np.ndarray     # [N] int16, wheat units held per animal for FEED
     fert_policy: np.ndarray    # [N] int8, FERT_SELL / FERT_APPLY / FERT_APPLY_THEN_SELL
+    sell_qty_animal: np.ndarray   # [N, N_BLOCKS, N_ANIMAL_PRODUCTS] int32
+    floor_frac_animal: np.ndarray  # [N, N_ANIMAL_PRODUCTS] float64
 
     @property
     def size(self):
@@ -252,6 +282,9 @@ def decode(genomes):
         stock_day=STOCK_DAYS[block("stock_day")[:, 0]],
         feed_wheat=FEED_WHEAT[block("feed_wheat")[:, 0]],
         fert_policy=block("fert_policy")[:, 0].astype(np.int8),
+        sell_qty_animal=SELL_QTYS[block("sell_qty_animal")].reshape(
+            n, N_BLOCKS, N_ANIMAL_PRODUCTS),
+        floor_frac_animal=FLOOR_FRACS[block("floor_frac_animal")],
     )
 
 

@@ -12,7 +12,7 @@ in the real environment, because a plan that only wins in the simulator has prov
 import numpy as np
 
 from kagg.search import executor as X
-from kagg.search.plan import N_CROPS
+from kagg.search.plan import N_CROPS, N_PRODUCTS
 from kagg.sim.game import Actions, Game
 from kagg.sim.market import price
 from kagg.sim.town import SHOPS, SHOP_INDEX
@@ -48,8 +48,10 @@ def build_view(game, player, day, hour):
         n_units=farm.n_units,
         money=farm.money,
         seeds=farm.seeds,
-        shed=farm.shed[:, :N_CROPS],
-        prices=price(game.inventory)[:, :N_CROPS],
+        # All nine products, not the five crops. The `[:, :N_CROPS]` slice here was why EGG, MILK,
+        # WOOL and FERTILIZER were never sold: `decide` could not observe that it held them.
+        shed=farm.shed[:, :N_PRODUCTS],
+        prices=price(game.inventory)[:, :N_PRODUCTS],
         n_land=farm.n_land,
         # Livestock. Without these the animal genes are inert and CEM searches the crop-only
         # subspace -- which is what it did until 2026-08-04, topping out at $42,087 against
@@ -76,7 +78,9 @@ def _carried_animal(carried):
 def _write(actions, player, decision):
     actions.unit_op[:, player, : X.MAX_EXEC_UNITS] = decision.unit_op
     actions.unit_crop[:, player, : X.MAX_EXEC_UNITS] = decision.unit_crop
-    actions.sell[:, player, :N_CROPS] = decision.sell
+    # `Actions.sell` has been `N_PRODUCTS` wide all along; this wrote only the first `N_CROPS` of it,
+    # so EGG / MILK / WOOL / FERTILIZER sell orders never reached the simulator.
+    actions.sell[:, player, :N_PRODUCTS] = decision.sell
     actions.buy_seed[:, player, :] = decision.buy_seed
     actions.hire[:, player] = decision.hire
     actions.buy_land[:, player] = decision.buy_land

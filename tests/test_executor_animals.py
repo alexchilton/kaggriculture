@@ -135,11 +135,31 @@ def test_an_animal_is_never_bought_without_a_pen_to_put_it_in():
 
 
 def test_an_animal_is_bought_once_an_empty_pen_exists():
+    """A pen *and* a feed reserve. `feed_wheat` was omitted here until 2026-08-04, which left it at
+    the gene default of 0 -- and an animal with no feed budget starves in two days and refunds
+    nothing, so the executor now declines to order it. Setting it makes the plan a viable one."""
     crop = np.zeros(TILES, dtype=np.int64)
     crop[0] = P.CROP_GENE_PASTURE
     v = _view(kind=_kinds({0: X.PASTURE}))
-    d = X.decide(v, _plan(crop_of=crop, herd=[0, P.herd_gene(8), 0], stock_day=0))
+    d = X.decide(v, _plan(crop_of=crop, herd=[0, P.herd_gene(8), 0], stock_day=0,
+                          feed_wheat=2))
     assert int(d.buy_animal[0, 1]) > 0, "a pen is standing and empty and no cow was ordered"
+
+
+def test_no_animal_is_bought_when_the_plan_budgets_no_feed():
+    """The companion to the above, and the reason it needed changing.
+
+    `feed_wheat = 0` means every animal the plan owns goes unfed, escapes at
+    `consecutive_unfed >= 2` and takes its purchase price with it. So a herd target with no feed
+    budget is not a cheap herd, it is a guaranteed loss, and the decoder refuses it outright rather
+    than leaving the search to discover it over a whole season of slow bleed.
+    """
+    crop = np.zeros(TILES, dtype=np.int64)
+    crop[0] = P.CROP_GENE_PASTURE
+    v = _view(kind=_kinds({0: X.PASTURE}))
+    d = X.decide(v, _plan(crop_of=crop, herd=[0, P.herd_gene(8), 0], stock_day=0,
+                          feed_wheat=0))
+    assert int(d.buy_animal[0].sum()) == 0, "ordered an animal the plan budgets no feed for"
 
 
 def test_buying_stops_at_the_herd_target():

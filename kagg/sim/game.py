@@ -90,6 +90,8 @@ class Actions:
     __slots__ = (
         "unit_op", "unit_crop", "unit_item", "unit_qty",
         "sell", "buy_seed", "buy_product", "buy_animal", "hire", "buy_land",
+        # Optional explicit market-order list; see `__init__` for why slot order matters.
+        "order_op", "order_item", "order_qty",
     )
 
     def __init__(self, batch, players=N_PLAYERS):
@@ -112,6 +114,24 @@ class Actions:
         # Assigning `True` still works: it stores as 1.
         self.hire = np.zeros((batch, players), dtype=np.int64)
         self.buy_land = np.zeros((batch, players), dtype=np.int64)
+        # **An optional explicit order list, for when slot order carries money.**
+        #
+        # The per-product vectors above are a convenience: `_order_book` lays them out in the fixed
+        # canonical sequence every agent in this project emits. That is lossless for a turn whose
+        # orders are each a distinct `(op, item)`, and `tests/test_split_sell_orders.py` shows even
+        # splitting one SELL into pieces settles identically.
+        #
+        # It is *not* lossless when a turn interleaves orders on the same product. Turn 11 of day 0 on
+        # episode 89873723 is `SELL WHEAT 1 / BUY_PRODUCT WHEAT 2 / SELL WHEAT 2`; totals collapse
+        # that to `SELL 3 / BUY 2`, and since SELL raises inventory while BUY_PRODUCT quotes at
+        # `inventory - 1`, moving both sells ahead of the buy reprices it -- $58 recorded against $33
+        # merged. Replaying the winner's tape is dollar-exact for turns 0-10 and breaks there.
+        #
+        # Left all-zero, `_order_book` behaves exactly as before, so every existing caller and the
+        # parity gate are untouched. Set `order_op` for a seat and that seat's list is used verbatim.
+        self.order_op = np.zeros((batch, players, MAX_ORDERS), dtype=np.int64)
+        self.order_item = np.zeros((batch, players, MAX_ORDERS), dtype=np.int64)
+        self.order_qty = np.zeros((batch, players, MAX_ORDERS), dtype=np.int64)
 
 
 class Game:
@@ -294,6 +314,34 @@ class Game:
         op[gi, pi, si] = c_op[gi, pi, ki]
         item[gi, pi, si] = c_item[gi, pi, ki]
         qty[gi, pi, si] = c_qty[gi, pi, ki]
+
+        # **An explicit order list overrides the canonical layout, per seat.**
+        #
+        # Compacted the same way rather than copied straight through: `_parse_order` rejects a
+        # quantity <= 0 while the reference has already spent that slot positionally
+        # (`reference/kaggriculture.py:534` truncates before parsing), so a zero entry must vanish
+        # instead of padding. That is the same `present`/`cumsum` rule applied above, which is why a
+        # caller cannot use this to smuggle in more than `MAX_ORDERS` orders.
+        explicit = np.asarray(getattr(actions, "order_op", None))
+        if explicit.ndim == 3 and explicit.any():
+            e_qty = np.asarray(actions.order_qty, dtype=np.int64)
+            e_item = np.asarray(actions.order_item, dtype=np.int64)
+            e_present = (explicit != ORDER_NONE) & (
+                (e_qty > 0) | np.isin(explicit, (ORDER_HIRE, ORDER_BUY_LAND)))
+            e_slot = np.cumsum(e_present, axis=2) - 1
+            e_keep = e_present & (e_slot < MAX_ORDERS)
+            # Only seats that actually supplied a list; the others keep their canonical book.
+            uses = explicit.any(axis=2)
+            op = np.where(uses[:, :, None], 0, op)
+            item = np.where(uses[:, :, None], 0, item)
+            qty = np.where(uses[:, :, None], 0, qty)
+            gi, pi, ki = np.nonzero(e_keep)
+            si = e_slot[gi, pi, ki]
+            op[gi, pi, si] = explicit[gi, pi, ki]
+            item[gi, pi, si] = e_item[gi, pi, ki]
+            # HIRE and BUY_LAND carry no quantity; the atomic branch keys off the op alone, and a
+            # zero here would read as "not present" on the next pass.
+            qty[gi, pi, si] = np.maximum(e_qty[gi, pi, ki], 1)
         return op, item, qty
 
     def _quote(self, op, item):

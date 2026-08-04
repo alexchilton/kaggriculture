@@ -18,6 +18,7 @@ from kagg.search import agent as A
 from kagg.search import executor as X
 from kagg.search import library, rollout
 from kagg.search import plan as P
+from kagg.sim.farm import LAND_PRICES
 from kagg.sim.game import Actions, Game
 
 SCHEDULE = {3: 0, 6: 1, 9: 7, 12: 2, 15: 6, 18: 3, 21: 5, 24: 4}
@@ -119,11 +120,33 @@ def test_the_dump_day_overrides_the_price_floor():
 
 
 def test_units_reach_their_tiles_rather_than_deadlocking_against_locked_land():
-    """A greedy longer-axis-first route can wedge against a locked quadrant; it must fall back."""
+    """A greedy longer-axis-first route can wedge against a locked quadrant; it must fall back.
+
+    **The profit check is on net worth, not cash.** `money > 3000` was the assertion until 2026-08-04,
+    and it is not a stable proxy for "the farm made money" -- buying land converts cash into an asset,
+    so a *better* season can end with less in the bank. Measured when hiring became a per-turn count
+    (`executor.HIRES_PER_TURN`):
+
+        cap  final cash   peak cash   parcels   plants
+          1      $3,550      $3,791         2       50
+          3        $205      $3,738         3       63
+
+    Identical earning power; the cap-3 farm simply spent $4,000 on the third parcel that the cap-1 farm
+    could never afford, and then owned 63 planted tiles instead of 50. Reading the cash column alone
+    reports that as a 94% collapse. This is CLAUDE.md's own warning about a metric that is correct per
+    row while its label moves under the thing it describes, so the assertion now counts what the stake
+    actually became.
+    """
     game = _drive(np.stack([library.wheat_only(), library.wheat_only()]), 24 * 22)
     kinds = game.tiles[0].kind[0]
     assert (kinds == X.PLANT).sum() > 20, "farm is idle -- units are not reaching their tiles"
-    assert game.farms[0].money[0] > 3000.0
+
+    cash = float(game.farms[0].money[0])
+    parcels = int(game.farms[0].n_land[0])
+    spent_on_land = float(np.asarray(LAND_PRICES)[:parcels].sum())
+    assert cash + spent_on_land > 3000.0, (
+        f"started on $3,000 and finished holding ${cash:,.0f} cash plus {parcels} land parcels "
+        f"(${spent_on_land:,.0f}) -- the farm did not turn a profit in any form")
 
 
 def _recorded(genome, seed):
@@ -160,11 +183,33 @@ def test_the_real_environment_agent_emits_a_legal_action_every_turn():
         assert len(action["hands"]) == before["hands"]
         widest = max(widest, len(action["market"]))
         assert len(action["market"]) <= 10, "maxMarketOrdersPerTurn would silently drop orders"
-        # Fixed slot layout: the sell slots must stay in product order so that the reference's
-        # slot-paired settlement lines up with the simulator's product-paired settlement.
-        for i, crop in enumerate(P.CROP_NAMES):
-            assert action["market"][i][:2] == ["SELL", crop]
-    assert widest == 8
+
+        # **This asserted a fixed slot layout until 2026-08-04** -- sells for all five crops at
+        # indices 0..4, zero-quantity ones padded -- on the reasoning that padding keeps the
+        # reference's slot-paired settlement aligned with the simulator's. That reasoning was wrong
+        # in a way only the end-to-end gate could show: `game._order_book` keeps only positive
+        # quantities (`present = c_qty > 0`) and compacts, so a padded list and the simulator
+        # disagree the moment anything is truncated. Widening sells from five products to nine took
+        # the list to twelve, `reference/kaggriculture.py:534` truncated positionally *before*
+        # parsing, HIRE and BUY_LAND fell off every turn, and
+        # `tests/test_search_transfer.py` measured sim $29,447 against real $18,953.
+        #
+        # It is replaced by the invariant that actually has to hold: the list is compacted, in the
+        # canonical order, and every entry is a real order. `CLAUDE.md` -- "only end-to-end parity
+        # verifies composition"; the transfer test is the authority here, and it fails on padding.
+        seen_non_sell = False
+        for entry in action["market"]:
+            op = entry[0]
+            if op in ("SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL"):
+                assert int(entry[2]) > 0, f"{entry} is a wasted slot -- `_parse_order` rejects it"
+            if op == "SELL":
+                assert not seen_non_sell, f"sells must lead the list, found {op} after a non-sell"
+            else:
+                seen_non_sell = True
+        sells = [e[1] for e in action["market"] if e[0] == "SELL"]
+        order = [P.CROP_NAMES + P.ANIMAL_PRODUCT_NAMES][0]
+        assert sells == sorted(sells, key=order.index), f"sells out of product order: {sells}"
+    assert widest <= 10
 
 
 def test_the_saved_plan_loads_and_plays_a_full_episode():
