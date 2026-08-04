@@ -60,10 +60,16 @@ class Result:
 
 
 def search(opposition, generations=25, pop=192, elite_frac=0.2, alpha=0.55, floor=0.01,
-           schedules=2, weed_chance=0.005, seed=0, log=print):
-    """Run CEM against a fixed set of opponent plans. `opposition` is ``[M, N_GENES]``."""
+           schedules=2, weed_chance=0.005, seed=0, log=print, start_probs=None):
+    """Run CEM against a fixed set of opponent plans. `opposition` is ``[M, N_GENES]``.
+
+    `start_probs` is the initial categorical distribution; `None` means uniform. Pass
+    `P.probs_around(P.leaders_genome())` to search **around a plan we have measured working** rather
+    than from scratch -- the leaders' allocation is known (`docs/episode_teardown_2026-08-03.md`) and
+    starting uniform throws that away.
+    """
     rng = np.random.default_rng(seed)
-    probs = P.uniform_probs()
+    probs = P.uniform_probs() if start_probs is None else np.array(start_probs, dtype=float)
     opponents = P.decode(opposition)
     n_elite = max(4, int(pop * elite_frac))
     result = Result()

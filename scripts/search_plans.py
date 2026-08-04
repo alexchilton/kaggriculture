@@ -68,14 +68,20 @@ def run_search(generations=16, pop=192, schedules=1):
     fixed seed set, not a small one -- and the winner is re-scored on six fresh draws afterwards.
     """
     t0 = time.time()
-    print("=== round 1: against the hand-written opposition ===", flush=True)
+    # **Seeded at the leaders' measured plan, not uniform.** We already know COW 8 / SHEEP 6 /
+    # 14 pastures / 21 melon / 44 strawberry / 12 hands banks $100k+ on the real ladder, so the
+    # question is only whether something nearby is better. Starting uniform spends the whole budget
+    # rediscovering what is already written down in docs/episode_teardown_2026-08-03.md.
+    start = P.probs_around(P.leaders_genome())
+    print("=== round 1: seeded at the leaders' plan, vs the hand-written opposition ===", flush=True)
+    print(P.describe(P.leaders_genome()), flush=True)
     first = cem.search(library.opposition(), generations=generations, pop=pop,
-                       schedules=schedules, seed=7)
+                       schedules=schedules, seed=7, start_probs=start)
 
     print("\n=== round 2: the round-1 winner joins the opposition ===", flush=True)
     stronger = np.concatenate([library.opposition(), first.best_genome[None, :]])
     second = cem.search(stronger, generations=generations, pop=pop,
-                        schedules=schedules, seed=11)
+                        schedules=schedules, seed=11, start_probs=start)
 
     # Winner's curse: re-score both winners and both modal plans on a fresh draw before choosing.
     contenders = np.stack([

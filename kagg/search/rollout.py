@@ -51,7 +51,26 @@ def build_view(game, player, day, hour):
         shed=farm.shed[:, :N_CROPS],
         prices=price(game.inventory)[:, :N_CROPS],
         n_land=farm.n_land,
+        # Livestock. Without these the animal genes are inert and CEM searches the crop-only
+        # subspace -- which is what it did until 2026-08-04, topping out at $42,087 against
+        # leaders banking $100k+ with 34.9% of revenue from milk and wool.
+        animal=tiles.animal[:, ordering],
+        fed_today=tiles.fed_today[:, ordering],
+        cared_today=tiles.cared_today[:, ordering],
+        consecutive_unfed=tiles.consecutive_unfed[:, ordering],
+        fertilizer_available=tiles.fertilizer_available[:, ordering],
+        shed_animals=farm.shed[:, X.ANIMAL_ITEM_BASE:],
+        shed_wheat=farm.shed[:, X.WHEAT_ITEM],
+        carried_wheat=farm.carried[:, : X.MAX_EXEC_UNITS, X.WHEAT_ITEM],
+        carried_animal=_carried_animal(farm.carried[:, : X.MAX_EXEC_UNITS, :]),
     )
+
+
+def _carried_animal(carried):
+    """[B, U] animal id a unit is holding, or -1. `PLACE` needs to name the animal in hand."""
+    animals = carried[:, :, X.ANIMAL_ITEM_BASE:]
+    holding = animals.sum(axis=2) > 0
+    return np.where(holding, animals.argmax(axis=2), -1).astype(np.int64)
 
 
 def _write(actions, player, decision):
@@ -61,6 +80,11 @@ def _write(actions, player, decision):
     actions.buy_seed[:, player, :] = decision.buy_seed
     actions.hire[:, player] = decision.hire
     actions.buy_land[:, player] = decision.buy_land
+    # `Actions` has carried these four slots all along; the executor never filled them.
+    actions.unit_item[:, player, : X.MAX_EXEC_UNITS] = decision.unit_item
+    actions.unit_qty[:, player, : X.MAX_EXEC_UNITS] = decision.unit_qty
+    actions.buy_animal[:, player, :] = decision.buy_animal
+    actions.buy_product[:, player, :] = decision.buy_product
 
 
 def play(seat_plans, unlock_schedule, weed_chance=0.005, rng=None, steps=None):

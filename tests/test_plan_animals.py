@@ -153,11 +153,19 @@ def test_padding_rejects_a_genome_that_is_too_long():
 
 
 def test_the_shipped_best_plan_still_loads():
-    """The concrete instance of the migration, against the file on disk."""
+    """The concrete instance of the migration, against the file on disk.
+
+    Asserts only that it loads and decodes -- **not** what is in it. An earlier version required the
+    shipped plan to contain no structures, which was true of the pre-extension file and stopped being
+    true the moment a search ran and overwrote it: `save_best` writes the current genome width, so the
+    file on disk is whatever the last search produced.
+    """
     import json
     import pathlib
     f = pathlib.Path(P.__file__).with_name("best_plan.json")
     genome = np.asarray(json.loads(f.read_text())["genome"], dtype=np.int64)
     pl = P.decode(P.pad_genome(genome))
     assert pl.size == 1
-    assert int((pl.structure_of[0] != P.NO_STRUCTURE).sum()) == 0
+    assert pl.crop_of.shape == (1, P.TILES)
+    assert pl.structure_of.shape == (1, P.TILES)
+    assert pl.herd.shape == (1, P.N_ANIMALS)

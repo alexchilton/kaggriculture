@@ -284,6 +284,16 @@ def pad_genome(genome):
     return np.concatenate([g, pad], axis=-1)
 
 
+# **Livestock is in the sampled space.** Set False only to reproduce a crop-only search.
+#
+# A hand-written plan with 14 animals and `feed_wheat = 2` on the $3,000 opening stake went bankrupt
+# ($7 banked, 5 FEEDs a season against the leaders' 319). That is one point in the space, not a verdict
+# on the space -- the herd size, the stocking day and the feed reserve are exactly what the search is
+# for, and it will find that a big herd on a small stake starves. Gating the genes off because one
+# hand-picked setting failed would have hidden the search's own answer.
+LIVESTOCK_ENABLED = True
+
+
 def uniform_probs():
     """The initial CEM distribution: uniform over every gene's categories.
 
@@ -294,6 +304,106 @@ def uniform_probs():
     probs = np.zeros((N_GENES, k))
     for i, cats in enumerate(N_CATS):
         probs[i, :cats] = 1.0 / cats
+    if not LIVESTOCK_ENABLED:
+        # Zero the structure categories and every non-zero herd level, then renormalise. The genes
+        # still exist and still decode -- they are simply never drawn, so tonight's run searches the
+        # same crop-only space that produced $42,087 rather than exploring a half the executor cannot
+        # yet keep alive. See the flag's comment for the measurement.
+        lo, hi = _OFFSETS["crop_of"]
+        probs[lo:hi, CROP_GENE_COOP] = 0.0
+        probs[lo:hi, CROP_GENE_PASTURE] = 0.0
+        for name in ("herd", "stock_day", "feed_wheat", "fert_policy"):
+            a, b = _OFFSETS[name]
+            probs[a:b, :] = 0.0
+            probs[a:b, 0] = 1.0
+        probs[lo:hi] /= probs[lo:hi].sum(axis=1, keepdims=True)
+    return probs
+
+
+def leaders_genome():
+    """The plan the top of the leaderboard actually runs, encoded as a genome.
+
+    Measured from replay JSON in `docs/episode_teardown_2026-08-03.md`, not guessed.
+    `Dmitry Larko` (#1), `IY` (#4) and `Juste Me` (#5) submit byte-identical integers:
+
+        14 BUILD_PASTURE, 0 BUILD_COOP
+        seeds  MELON 21   STRAWBERRY 44   WHEAT 66
+        animals COW 8   SHEEP 6   GOOSE 0
+        306 hires over 30 days (~12 hands rebuilt every dawn), 2 land, 967 wheat bought as feed
+        cows from day 0; land on days 7 and 10
+
+    **This is a starting point for search, not an answer.** The whole reason to have it is that CEM
+    around a known-good plan beats CEM from uniform: we already know these numbers work, so the
+    question is only whether better ones exist nearby.
+
+    The *spatial* layout is ours, not theirs -- the counts are measured but which tile holds what is
+    not extracted yet, so pastures go nearest the shed and the crops fill outward in serpentine order.
+    CEM will move them.
+    """
+    g = np.zeros(N_GENES, dtype=np.int64)
+
+    use = np.zeros(TILES, dtype=np.int64)
+    use[:14] = CROP_GENE_PASTURE
+    use[14:35] = 5                                    # gene 5 -> MELON  (21 tiles)
+    use[35:79] = 4                                    # gene 4 -> STRAWBERRY (44 tiles)
+    lo, hi = _OFFSETS["crop_of"]
+    g[lo:hi] = use
+
+    def put(name, value):
+        a, b = _OFFSETS[name]
+        g[a:b] = value
+
+    put("phase", 0)
+    put("stop_plant", int(np.argmin(np.abs(STOP_PLANT_DAYS - 20))))
+    put("harvest_par", 2)                             # HARVEST_DELTA 0: cut at max_yield_day
+    put("hires", int(np.argmin(np.abs(HIRE_LEVELS - 12))))
+    put("sell_every", int(np.argmin(np.abs(SELL_EVERY - 2))))
+    put("floor_frac", 1)                              # 0.3 of base: sell unless the price collapses
+    put("seed_reserve", 1)                            # keep $200 back
+    put("dump_day", int(np.argmin(np.abs(DUMP_DAYS - 26))))
+    put("herd", 0)
+    put("stock_day", 0)                               # cows on day 0, as measured
+    put("feed_wheat", int(np.argmin(np.abs(FEED_WHEAT - 2))))
+    put("fert_policy", FERT_APPLY_THEN_SELL)
+
+    a, b = _OFFSETS["herd"]
+    g[a] = 0                                          # GOOSE 0
+    g[a + 1] = herd_gene(8)                           # COW 8
+    g[a + 2] = herd_gene(6)                           # SHEEP 6
+
+    a, b = _OFFSETS["land_day"]
+    g[a] = int(np.argmin(np.abs(LAND_DAYS - 6)))      # first extra quadrant ~day 7
+    g[a + 1] = int(np.argmin(np.abs(LAND_DAYS - 9)))  # second ~day 10
+    g[a + 2] = len(LAND_DAYS) - 1                     # NEVER
+
+    a, b = _OFFSETS["sell_qty"]
+    g[a:b] = 3                                        # SELL_QTYS 10 per tick per product per block
+    return g
+
+
+def probs_around(genome, concentration=0.55):
+    """A CEM start distribution centred on `genome`, with the rest spread over the alternatives.
+
+    `concentration` is the probability mass on the seeded category; the remainder is uniform over the
+    others so every value stays reachable. This is the difference between "search from scratch" and
+    "search around what we know works" -- `uniform_probs` throws away the only measurement we have of
+    a plan that banks $100k+.
+
+    Deliberately not 1.0. A point start collapses CEM's first generation to one plan and it can only
+    walk downhill from there; `CLAUDE.md` records the winner's curse biting at +40% reported against
+    +12.8% held out, and keeping mass on the alternatives is what leaves room to escape it.
+    """
+    g = np.asarray(pad_genome(genome), dtype=np.int64)
+    k = int(N_CATS.max())
+    probs = np.zeros((N_GENES, k))
+    for i, cats in enumerate(N_CATS):
+        cats = int(cats)
+        if cats == 1:
+            probs[i, 0] = 1.0
+            continue
+        rest = (1.0 - concentration) / (cats - 1)
+        probs[i, :cats] = rest
+        probs[i, int(g[i])] = concentration
     return probs
 
 
@@ -314,11 +424,24 @@ def describe(genome):
     """A human-readable summary of one genome, for the experiment log."""
     plan = decode(genome[None, :])
     lines = []
+    # **Structures are counted, not folded into FALLOW.** A pasture tile decodes to `crop_of == FALLOW`
+    # by design, so the first version of this reported 14 pastures as "FALLOW=35" and never mentioned
+    # the herd at all -- a livestock plan and a crop plan printed identically. Third instance today of
+    # a census dropping a column and the zero being read as a fact.
     counts = {}
-    for c in plan.crop_of[0]:
-        name = "FALLOW" if c < 0 else CROP_NAMES[c]
+    for c, st in zip(plan.crop_of[0], plan.structure_of[0]):
+        if st == COOP:
+            name = "COOP"
+        elif st == PASTURE:
+            name = "PASTURE"
+        else:
+            name = "FALLOW" if c < 0 else CROP_NAMES[c]
         counts[name] = counts.get(name, 0) + 1
     lines.append("tiles: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    herd = ", ".join(f"{n} {int(v)}" for n, v in zip(ANIMAL_NAMES, plan.herd[0]) if v)
+    fert = ["sell", "apply", "apply then sell"][int(plan.fert_policy[0])]
+    lines.append(f"herd: {herd or 'none'} | stock from day {int(plan.stock_day[0])}"
+                 f" | feed {int(plan.feed_wheat[0])} wheat/animal | fertiliser: {fert}")
     lines.append(f"stop_plant day {int(plan.stop_plant[0])}, dump day {int(plan.dump_day[0])}")
     lines.append("hires by day: " + " ".join(str(int(h)) for h in plan.hires[0]))
     lines.append(f"sell every {int(plan.sell_every[0])}h, reserve ${plan.seed_reserve[0]:.0f}")

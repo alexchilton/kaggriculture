@@ -46,16 +46,35 @@ from kagg.search.plan import (
     BASE_PRICE,
     BLOCK_DAYS,
     BOARD,
+    COOP,
+    FERT_APPLY,
+    FERT_SELL,
     FIRST_YIELD_DAY,
     HARVEST_DELTA,
     MAX_YIELD_DAY,
     N_BLOCKS,
     N_CROPS,
+    N_ANIMALS,
+    NO_STRUCTURE,
     ONGOING,
     ONGOING_THRESHOLD,
+    PASTURE as PLAN_PASTURE,
     SEED_COST,
     TILES,
 )
+
+N_PRODUCTS = 9        # market.N_PRODUCTS; the sell/buy_product axis width
+
+# `market.ANIMAL_COST`, inlined for the same reason the crop tables above are: this module is pure
+# numpy and imported by the submission path, so it must not pull in jax.
+ANIMAL_COST = np.array([300.0, 400.0, 500.0])
+
+# Ceiling used only to size a wheat order against cash. Wheat's base price is $25 and it rises as the
+# town runs dry, so budgeting at the top of the range under-orders rather than overdrawing.
+WHEAT_PRICE_CAP = 60.0
+
+# `plan.COOP`, renamed at the import site to avoid colliding with the tile-kind COOP below.
+COOP_GENE_KIND = 1
 
 # Tile kinds, matching `kagg.sim.tiles`.
 EMPTY, LOCKED, WEED, PLANT, COOP, PASTURE = range(6)
@@ -92,8 +111,24 @@ for _i, (_x, _y) in enumerate(ORDER):
             NEIGH[_i, _d] = ORD_OF_TILE[_ny * BOARD + _nx]
 MOVE_OPS = np.array([O.NORTH, O.SOUTH, O.EAST, O.WEST], dtype=np.int64)
 
-JOB_NONE, JOB_DIG, JOB_HARVEST, JOB_WATER, JOB_PLANT = range(5)
-JOB_TO_OP = np.array([O.NOOP, O.DIG, O.HARVEST, O.WATER, O.PLANT_OP], dtype=np.int64)
+(JOB_NONE, JOB_DIG, JOB_HARVEST, JOB_WATER, JOB_PLANT,
+ JOB_FEED, JOB_CARE, JOB_COLLECT, JOB_PLACE, JOB_BUILD) = range(10)
+JOB_TO_OP = np.array([O.NOOP, O.DIG, O.HARVEST, O.WATER, O.PLANT_OP,
+                      O.FEED, O.CARE, O.COLLECT_FERT, O.PLACE, O.BUILD_PASTURE], dtype=np.int64)
+
+# **Jobs that only some units can serve**, because the rules gate them on what the unit is carrying:
+# `jax_masks.py:96` needs `carrying_wheat` for FEED, and PLACE needs the animal in hand. `tile_jobs`
+# is per-tile and cannot know, so `decide` masks these out for units that are not equipped.
+CARRY_GATED = (JOB_FEED, JOB_PLACE)
+
+# Item indices into the shed/carried axis, which is `PRODUCTS + ANIMALS` (`market.py:42`).
+WHEAT_ITEM = 0
+ANIMAL_ITEM_BASE = 9        # market.N_PRODUCTS; asserted in tests/test_executor_animals.py
+
+# Where a night leaves every unit. `ops.SHED_TILES == [44, 45, 54, 55]`, and the simulator respawns
+# the whole crew there at dawn -- so hour 0 is a **free** PICKUP window that needs no routing at all.
+# Sending a unit to fetch wheat mid-day is what turned `jax_frontier` into a 70.5% PICKUP loop.
+SHED_ORDS = ORD_OF_TILE[np.asarray(O.SHED_TILES)].astype(np.int64)
 
 _BIG = np.int16(30000)
 
@@ -117,6 +152,38 @@ class View:
     prices: np.ndarray          # [B, N_CROPS] int
     n_land: np.ndarray          # [B] int
 
+    # **Livestock, appended with defaults on 2026-08-04.** Defaults so `agent.py` -- which builds a
+    # View by hand from a live observation dict -- keeps working unchanged and simply runs crop-only.
+    # A required field here would break the submission path on import.
+    animal: np.ndarray = None               # [B, TILES] int, -1 where none
+    fed_today: np.ndarray = None            # [B, TILES] bool
+    cared_today: np.ndarray = None          # [B, TILES] bool
+    consecutive_unfed: np.ndarray = None    # [B, TILES] int
+    fertilizer_available: np.ndarray = None  # [B, TILES] bool
+    shed_animals: np.ndarray = None         # [B, N_ANIMALS] int
+    shed_wheat: np.ndarray = None           # [B] int
+    carried_wheat: np.ndarray = None        # [B, MAX_EXEC_UNITS] int
+    carried_animal: np.ndarray = None       # [B, MAX_EXEC_UNITS] int, -1 where none
+
+    def __post_init__(self):
+        """Fill the livestock fields with 'no animals anywhere' when a caller omits them."""
+        b, t = self.kind.shape
+        u = self.unit_ord.shape[1]
+        blanks = dict(
+            animal=lambda: np.full((b, t), -1, dtype=np.int64),
+            fed_today=lambda: np.zeros((b, t), dtype=bool),
+            cared_today=lambda: np.zeros((b, t), dtype=bool),
+            consecutive_unfed=lambda: np.zeros((b, t), dtype=np.int64),
+            fertilizer_available=lambda: np.zeros((b, t), dtype=bool),
+            shed_animals=lambda: np.zeros((b, N_ANIMALS), dtype=np.int64),
+            shed_wheat=lambda: np.zeros(b, dtype=np.int64),
+            carried_wheat=lambda: np.zeros((b, u), dtype=np.int64),
+            carried_animal=lambda: np.full((b, u), -1, dtype=np.int64),
+        )
+        for name, make in blanks.items():
+            if getattr(self, name) is None:
+                object.__setattr__(self, name, make())
+
 
 @dataclass
 class Decision:
@@ -128,6 +195,22 @@ class Decision:
     buy_seed: np.ndarray        # [B, N_CROPS]
     hire: np.ndarray            # [B] bool
     buy_land: np.ndarray        # [B] bool
+    # Livestock. `game.Actions` has carried these slots all along; the executor never used them.
+    unit_item: np.ndarray = None    # [B, MAX_EXEC_UNITS] item index for PICKUP / PLACE
+    unit_qty: np.ndarray = None     # [B, MAX_EXEC_UNITS] quantity for PICKUP
+    buy_animal: np.ndarray = None   # [B, N_ANIMALS] animals to order this turn
+    buy_product: np.ndarray = None  # [B, N_PRODUCTS] products to buy -- wheat, as feed
+
+    def __post_init__(self):
+        b, u = self.unit_op.shape
+        if self.unit_item is None:
+            object.__setattr__(self, "unit_item", np.zeros((b, u), dtype=np.int64))
+        if self.unit_qty is None:
+            object.__setattr__(self, "unit_qty", np.zeros((b, u), dtype=np.int64))
+        if self.buy_animal is None:
+            object.__setattr__(self, "buy_animal", np.zeros((b, N_ANIMALS), dtype=np.int64))
+        if self.buy_product is None:
+            object.__setattr__(self, "buy_product", np.zeros((b, N_PRODUCTS), dtype=np.int64))
 
 
 def tile_jobs(view, plan):
@@ -164,13 +247,46 @@ def tile_jobs(view, plan):
     harvest = is_plant & ready
     water = is_plant & ~view.watered
 
+    # ---- livestock ----------------------------------------------------------------------------
+    #
+    # **Ordering is the whole risk here.** `jax_frontier` bought four animals, never once built a pen
+    # (`max empty pens: 0` over 240 turns), and banked $380 with the livestock sitting in the shed as
+    # dead capital. So: a structure gets built first, an animal is only ordered against a *standing
+    # empty* pen (in `decide`), and FEED outranks everything optional because an animal unfed two
+    # nights escapes with the whole purchase price (`jax_sim.py:1159`).
+    wants_structure = plan.structure_of.astype(np.int64)
+    build = (view.kind == EMPTY) & (wants_structure != NO_STRUCTURE) & (view.kind != LOCKED)
+    is_structure = (view.kind == COOP) | (view.kind == PASTURE)
+    has_animal = view.animal >= 0
+
+    # An empty pen is where a carried animal goes.
+    place = is_structure & ~has_animal
+    # Hungry first, then the free upkeep. CARE and COLLECT_FERT cost nothing but the action.
+    feed = has_animal & ~view.fed_today
+    care = has_animal & ~view.cared_today
+    collect = has_animal & view.fertilizer_available
+    animal_harvest = has_animal & (view.yield_units > 0)
+
+    # A structure tile is `FALLOW` in `crop_of` (`plan.decode`), so `farmed` excludes it -- livestock
+    # jobs are therefore scored on their own mask rather than being multiplied away below.
+    livestock = np.where(
+        feed, JOB_FEED,
+        np.where(animal_harvest, JOB_HARVEST,
+                 np.where(care, JOB_CARE,
+                          np.where(collect, JOB_COLLECT,
+                                   np.where(place, JOB_PLACE,
+                                            np.where(build, JOB_BUILD, JOB_NONE))))),
+    )
+
     job = np.where(
         view.kind == WEED, JOB_DIG,
         np.where(harvest, JOB_HARVEST,
                  np.where(water, JOB_WATER,
                           np.where(plant, JOB_PLANT, JOB_NONE))),
     )
-    return job * farmed, farmed
+    job = job * farmed
+    job = np.where(livestock != JOB_NONE, livestock, job)
+    return job, farmed | (livestock != JOB_NONE)
 
 
 def _owner(farmed, n_live):
@@ -228,6 +344,16 @@ def decide(view, plan):
     pos = view.unit_ord
     mine = (owner[:, None, :] == units[None, :, None]) & (job > JOB_NONE)[:, None, :]
     mine &= live[:, :, None]
+    # **Carry-gated jobs.** FEED needs the unit to hold wheat (`jax_masks.py:96`) and PLACE needs the
+    # animal in hand, so a unit that is not equipped must not claim the job -- otherwise it walks
+    # there, cannot act, and the tile stays unserved while the animal starves.
+    can_feed = (view.carried_wheat > 0)[:, :, None]
+    can_place = (view.carried_animal >= 0)[:, :, None]
+    is_feed = (job == JOB_FEED)[:, None, :]
+    is_place = (job == JOB_PLACE)[:, None, :]
+    mine &= ~(is_feed & ~can_feed)
+    mine &= ~(is_place & ~can_place)
+
     cost = np.where(mine, DIST[pos], _BIG)                             # [B, U, TILES]
     target = cost.argmin(axis=2)
     found = np.take_along_axis(cost, target[:, :, None], axis=2)[:, :, 0] < _BIG
@@ -237,6 +363,57 @@ def decide(view, plan):
     unit_op = np.where(at_target, JOB_TO_OP[target_job], _step_toward(pos, target, view.kind))
     unit_crop = np.maximum(np.take_along_axis(plan.crop_of.astype(np.int64), target, axis=1), 0)
     unit_op = np.where(found, unit_op, O.NOOP)
+
+    # BUILD is two different ops depending on which structure the plan asked for, so it cannot be a
+    # single entry in `JOB_TO_OP`.
+    wants = np.take_along_axis(plan.structure_of.astype(np.int64), target, axis=1)
+    building = found & at_target & (target_job == JOB_BUILD)
+    unit_op = np.where(building & (wants == COOP_GENE_KIND), O.BUILD_COOP, unit_op)
+
+    # PLACE carries the animal's item index; the reference reads which animal from the unit's hand.
+    unit_item = np.zeros_like(unit_op)
+    unit_qty = np.zeros_like(unit_op)
+    placing = found & at_target & (target_job == JOB_PLACE)
+    unit_item = np.where(placing, ANIMAL_ITEM_BASE + np.maximum(view.carried_animal, 0), unit_item)
+
+    # ---- the dawn PICKUP window ----------------------------------------------------------------
+    #
+    # Every unit respawns on the shed at dawn (`ops.SHED_TILES`), so hour 0 is a free PICKUP with no
+    # walking. Fetching feed mid-day is what turned `jax_frontier` into a 70.5% PICKUP loop, so it is
+    # only ever done here. Units are claimed lowest-index first: animals to place, then feed wheat.
+    at_shed = np.isin(pos, SHED_ORDS) & live
+    has_animal_tiles = view.animal >= 0
+    n_pens_free = (((view.kind == COOP) | (view.kind == PASTURE)).sum(axis=1)
+                   - has_animal_tiles.sum(axis=1))
+    shed_stock = view.shed_animals.sum(axis=1)
+    want_collect = np.minimum(np.maximum(n_pens_free, 0), shed_stock)          # [B]
+    herd_size = (view.animal >= 0).sum(axis=1)
+    want_wheat = np.where(herd_size > 0, plan.feed_wheat * np.maximum(herd_size, 1), 0)
+
+    rank = np.cumsum(at_shed, axis=1) - 1                                     # 0-based among at-shed
+    # **NOT gated on being idle.** The first version required `~found`, so a unit only fetched feed if
+    # it had no other job -- and at dawn every unit has watering or planting to do. Nobody ever picked
+    # up wheat, `carrying_wheat` was never true, FEED could never be legal, and the herd starved: a
+    # measured 14 pens built, 3 animals bought, **0 FEED**, $30 in the bank. Keeping an animal alive
+    # outranks watering a plant, so the lowest-indexed units are claimed for it whatever else is going
+    # on. `hungry` is what makes this bounded -- once the herd is fed the claim stops.
+    hungry = (has_animal_tiles & ~view.fed_today).sum(axis=1)
+    collect_animal = at_shed & (rank < want_collect[:, None]) & (view.carried_animal < 0)
+    n_carriers = np.minimum(np.maximum(hungry, 0), 3)
+    fetch_wheat = (at_shed & ~collect_animal
+                   & (rank >= want_collect[:, None])
+                   & (rank < (want_collect + n_carriers)[:, None])
+                   & (view.shed_wheat[:, None] > 0) & (want_wheat[:, None] > 0)
+                   & (view.carried_wheat <= 0))
+
+    first_animal = np.argmax(view.shed_animals > 0, axis=1)
+    unit_op = np.where(collect_animal, O.PICKUP, unit_op)
+    unit_item = np.where(collect_animal, ANIMAL_ITEM_BASE + first_animal[:, None], unit_item)
+    unit_qty = np.where(collect_animal, 1, unit_qty)
+
+    unit_op = np.where(fetch_wheat, O.PICKUP, unit_op)
+    unit_item = np.where(fetch_wheat, WHEAT_ITEM, unit_item)
+    unit_qty = np.where(fetch_wheat, np.minimum(want_wheat, 10)[:, None], unit_qty)
 
     # Never ask to plant a crop the farm has no seed left for: the reference silently drops
     # *every* PLANT for that crop, which would waste the turn for several units at once. Units
@@ -282,6 +459,29 @@ def decide(view, plan):
     slot = np.minimum(view.n_land, plan.land_day.shape[1] - 1)
     buy_land = (view.n_land < plan.land_day.shape[1]) & (day >= plan.land_day[games, slot])
 
+    # ---- livestock orders ------------------------------------------------------------------------
+    #
+    # **An animal is only ordered against a standing empty pen.** This single condition is the fix for
+    # `jax_frontier`, which bought its herd on day 0 against pens it never built and wrote off ~$1,400.
+    # The shed count is subtracted too, or a slow placement queue would keep re-ordering.
+    buy_animal = np.zeros((batch, N_ANIMALS), dtype=np.int64)
+    housing = np.maximum(n_pens_free - shed_stock, 0)
+    stocking = day >= plan.stock_day
+    for a in range(N_ANIMALS):
+        placed = (view.animal == a).sum(axis=1) + view.shed_animals[:, a]
+        room = np.minimum(np.maximum(plan.herd[:, a] - placed, 0), housing)
+        afford = np.floor(np.maximum(view.money, 0.0) / ANIMAL_COST[a]).astype(np.int64)
+        take = np.where(stocking, np.minimum(room, afford), 0)
+        buy_animal[:, a] = take
+        housing = np.maximum(housing - take, 0)          # one pen per animal, first species first
+
+    # Wheat is *bought*, not grown, when it is feed: the leaders buy 967 units a season for 14
+    # animals. `feed_wheat` is units per animal, so the order tops the shed up to that.
+    buy_product = np.zeros((batch, N_PRODUCTS), dtype=np.int64)
+    short = np.maximum(want_wheat - view.shed_wheat, 0)
+    wheat_budget = np.floor(np.maximum(view.money - plan.seed_reserve, 0.0) / WHEAT_PRICE_CAP)
+    buy_product[:, WHEAT_ITEM] = np.minimum(short, wheat_budget.astype(np.int64))
+
     return Decision(
         unit_op=unit_op,
         unit_crop=unit_crop,
@@ -289,4 +489,8 @@ def decide(view, plan):
         buy_seed=buy_seed,
         hire=hire,
         buy_land=buy_land,
+        unit_item=unit_item,
+        unit_qty=unit_qty,
+        buy_animal=buy_animal,
+        buy_product=buy_product,
     )
