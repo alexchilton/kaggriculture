@@ -15,6 +15,13 @@ one-sided replay would not settle the same way.
 The replay records each observation **after** its own action, so `steps[t].observation.money` is the
 money to compare against once turn `t` has been applied.
 
+**`steps[0].action` is never applied.** It is the placeholder recorded when the environment resets,
+before any agent has seen a board, and feeding it in shifts every subsequent turn by one -- which puts
+each day boundary a turn out of place. Measured on episode 89873723: replaying from index 0 gives
+$43,443 and first diverges at turn 48, replaying from index 1 gives **$147,031 against the recorded
+$147,178** and first diverges at turn 577. The remaining 0.1% is the weed RNG stream, which this
+project deliberately does not reproduce.
+
     PYTHONPATH=. python3 -u scripts/replay_tape_day.py --day 0 2>&1 | tee data/logs/replay_tape_day0.log
 """
 
@@ -34,6 +41,8 @@ from kagg.sim.tiles import COOP, PASTURE
 from kagg.sim.town import SHOP_INDEX
 
 TURNS_PER_DAY = 24
+# The first recorded action is the reset placeholder; applying it shifts every day boundary by a turn.
+FIRST_ACTION_TURN = 1
 OP_CODE = {name: code for code, name in A.OP_NAMES.items()}
 CROP_INDEX = {c: i for i, c in enumerate(A.CROP_NAMES)}
 PRODUCT_INDEX = {p: i for i, p in enumerate(PRODUCTS)}
@@ -116,7 +125,7 @@ def main():
 
     steps = json.loads(open(a.episode).read())["steps"]
     n_turns = (a.days or (a.day + 1)) * TURNS_PER_DAY
-    start = 0 if a.days else 0
+    start = FIRST_ACTION_TURN
 
     schedule = unlock_schedule(steps)
     print(f"unlock schedule from the replay: {schedule}")
