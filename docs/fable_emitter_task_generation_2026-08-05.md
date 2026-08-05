@@ -76,7 +76,35 @@ harvests ongoing crops every 3rd day regardless of each crop's own `interval` (T
 STRAWBERRY=2, `kaggriculture.py:14-15`). Mostly harmless because production accumulates to
 `max_yield` and only decays after the cap, so at most a small part of the -20 HARVEST residual.
 
-## Test order
+## OUTCOMES -- all three tested, one delta at a time
+
+    Finding 1  one-shot water window     74.69%  from 72.28%   ACCEPTED  (+2.41)
+    Finding 2  cut pen FEED/CARE         66.42%  from 74.69%   REVERTED  (-8.27)
+    Finding 3  the 14-task tour cap      74.69%  unchanged     INERT
+
+**Finding 1 was right and is the largest single fix of the session.** WATER went 713 -> 817 against
+the tape's 851. Pinned by `tests/test_one_shot_crops_are_watered_every_day_in_window.py`, which
+asserts the RULE (one-shot crops watered every window day, ongoing crops NOT watered daily) rather
+than the cadence.
+
+**Finding 2 was wrong, and the reasoning is the instructive part.** The mechanism argument is correct
+-- `kaggriculture.py:791` really does produce regardless of `fed_today`, so a daily visit to every pen
+really is mostly redundant work. But the tape feeds **319 times across roughly 343 animal-days**: it
+feeds daily anyway. Cutting to "every other day plus production days" dropped FEED to 122 and CARE to
+122, and cost eight points of fidelity to reclaim a +47/+36 over-production. The mechanism said the
+work was unnecessary; the winner does it regardless, and the winner is the target.
+
+Kept as `tests/test_the_herd_is_serviced_when_it_pays.py`, inverted, with the failed argument written
+into the docstring -- it looked sound and will look sound again. Its two safety assertions are
+genuinely useful and stay: an animal is never unfed two days running (`:786`, escape is
+unrecoverable), and a production day is always a fed day (`:794`, an unfed production day discards
+every care turn banked since the last one).
+
+**Finding 3 is inert.** Swept the cap at 10, 14, 20 and 30: identical output at every value. The turn
+budget binds first and the cap is never reached, so it is not a magic number doing hidden damage --
+it is dead code.
+
+## Test order (as advised)
 
 One delta at a time, re-running `scripts/tape_match.py` after each:
 1. Finding 1 alone (isolates the water-supply fix)
