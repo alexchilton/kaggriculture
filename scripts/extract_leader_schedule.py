@@ -113,7 +113,43 @@ print(f"{'peak crew':>14}: {max(r['hands'] for r in day_rows.values())} hands")
 print(f"{'first pen':>14}: day {min((dd for dd in range(n_days) if day_rows[dd]['places']), default=-1)}")
 print(f"{'first plant':>14}: day {min((dd for dd in range(n_days) if day_rows[dd]['plants']), default=-1)}")
 
+# ---------------------------------------------------------------- tiles, not just counts
+# A tape cell is `["PLANT","MELON"]` with no coordinate -- the op acts on whatever tile the unit is
+# standing on -- so a schedule of counts forces the emitter to re-invent the placement. Measured: the
+# tape's own tiles bank $11,638 against $6,794 for ours, with 2 refusals against 17, and our chooser
+# is unstable (one run in three banked $2). The tape defines them exactly; carry them.
+tiles = {}
+try:
+    tape = json.loads(pathlib.Path("data/seed_scripts/new_leader/tape.json").read_text())
+except FileNotFoundError:
+    tape = None
+if tape:
+    import collections as _c
+    plants = _c.defaultdict(list)
+    builds = _c.defaultdict(list)
+    pending = {}
+    ANIMALS = ("GOOSE", "COW", "SHEEP")
+    for row in tape:
+        for cell in row["units"]:
+            if not cell or not cell.get("tile"):
+                continue
+            t = tuple(cell["tile"])
+            if cell["op"] == "PLANT":
+                plants[row["day"]].append([list(t), cell["arg"]])
+            elif cell["op"] in ("BUILD_PASTURE", "BUILD_COOP"):
+                pending[t] = row["day"]
+            elif cell["op"] == "PLACE" and cell["arg"] in ANIMALS:
+                builds[pending.pop(t, row["day"])].append([list(t), cell["arg"]])
+    tiles = {d: dict(plants=plants.get(d, []), builds=builds.get(d, []))
+             for d in set(plants) | set(builds)}
+    print(f"{'tiles':>14}: {sum(len(v['plants']) for v in tiles.values())} plantings and "
+          f"{sum(len(v['builds']) for v in tiles.values())} pens carry their coordinates")
+else:
+    print(f"{'tiles':>14}: tape.json missing -- run scripts/extract_tape.py to add coordinates")
+
 out = {str(day): dict(
+    plant_tiles=(tiles.get(day) or {}).get("plants", []),
+    build_tiles=(tiles.get(day) or {}).get("builds", []),
     money_dawn=day_rows[day]["money_dawn"],
     hands=day_rows[day]["hands"],
     hires=day_rows[day]["hires"],

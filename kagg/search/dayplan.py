@@ -304,6 +304,13 @@ def _assign(script, day, tasks, max_hands, units):
                 add = _cost(task, cursor)
                 if prefix + spent + add > budget:
                     continue
+                # **Rank picks the hand's FIRST stop; distance picks every stop after it.**
+                # Sorting every pick by `(rank, add)` dragged a hand across the board between two
+                # adjacent tiles because one was a plant and one a water. On day 0, working the
+                # tape's own tiles, that cost 73 walk turns against the tape's 53 -- 20 turns on a
+                # 115-turn day, which is the whole reason a 106-turn day did not fit.
+                # The band still decides what gets done when a day is short, because the first task
+                # taken is the highest-ranked one that fits; it just stops steering the tour.
                 key = (task["_rank"], add)
                 if best is None or key < best[0]:
                     best = (key, task, projected, add)
@@ -393,6 +400,19 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
     forces this function to re-invent the placement, and an invention cannot round-trip. With the
     tiles supplied, `tape -> schedule -> tape` is a fair test of the emitter and nothing else.
     """
+    # The schedule carries tiles when it has them (`plant_tiles` / `build_tiles`, written by
+    # `scripts/extract_leader_schedule.py`), because a tape cell has no coordinate and re-inventing
+    # the placement is measurably worse: $11,638 with the tape's tiles against $6,794 with ours, 2
+    # refusals against 17, and one run in three banking $2. An explicit `placements` argument still
+    # wins, so a search can override.
+    if placements is None:
+        from_schedule = {}
+        for day, row in schedule.items():
+            pl = [(tuple(t), c) for t, c in (row.get("plant_tiles") or [])]
+            bl = [(tuple(t), a) for t, a in (row.get("build_tiles") or [])]
+            if pl or bl:
+                from_schedule[day] = dict(plants=pl, builds=bl)
+        placements = from_schedule
     placements = placements or {}
     script = R.Script()
     farm = Farm()
@@ -424,8 +444,11 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         build_orders = []
         n_build = row.get("builds", 0)
         places = row.get("places") or []
-        want_builds = (placements.get(day) or {}).get("builds")
-        if want_builds is not None:
+        # `if want_builds:` and not `is not None` -- a day carrying plant tiles but no build tiles
+        # gets an empty list, and treating that as "build nothing today" silently overrode the
+        # schedule's own build count. Pens stopped being raised and the farm banked $11.
+        want_builds = (placements.get(day) or {}).get("builds") or None
+        if want_builds:
             n_build = len(want_builds)
         for i in range(n_build):
             animal = places[i] if i < len(places) else "COW"
@@ -465,7 +488,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             if not CROP[c["crop"]]["ongoing"] and day - c["planted"] >= CROP[c["crop"]]["max_day"])
         replant = collections.Counter()
 
-        want_plants = (placements.get(day) or {}).get("plants")
+        want_plants = (placements.get(day) or {}).get("plants") or None
         wanted = ([(tuple(t), c) for t, c in want_plants] if want_plants is not None
                   else [(None, c) for c in (row.get("plants") or [])])
 
