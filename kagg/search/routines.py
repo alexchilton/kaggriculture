@@ -559,15 +559,65 @@ CROP_TABLE = {
 # send every path the wrong way and is silent, because a blocked move is a no-op rather than an error.
 def _axis_ops(src, dst):
     """Movement ops `src` -> `dst`, X then Y. Safe only when the whole rectangle is unlocked."""
+    # **Y before X.** Measured against the leader's tape: of the 244 walks where our route was the
+    # right length but the wrong order, 220 moved north/south first and 18 east/west
+    # (`scripts/level2_route.py`). Same cost either way -- the board is a grid -- but matching the
+    # order is what lets a tape be compared to a tape at all, and the vertical-first rule also clears
+    # the locked-quadrant border sooner on this board's geometry.
     ops = []
     dx = dst[0] - src[0]
     dy = dst[1] - src[1]
-    ops += ["EAST"] * dx if dx > 0 else ["WEST"] * (-dx)
     ops += ["SOUTH"] * dy if dy > 0 else ["NORTH"] * (-dy)
+    ops += ["EAST"] * dx if dx > 0 else ["WEST"] * (-dx)
     return ops
 
 
-def _path_ops(src, dst):
+def _walked_tiles(src, ops):
+    """The tiles a sequence of movement ops passes through, destination included."""
+    d = {"NORTH": (0, -1), "SOUTH": (0, 1), "EAST": (1, 0), "WEST": (-1, 0)}
+    x, y = src
+    out = []
+    for o in ops:
+        dx, dy = d[o]
+        x, y = x + dx, y + dy
+        out.append((x, y))
+    return out
+
+
+def _bfs_ops(src, dst, parcels):
+    """Shortest movement ops from `src` to `dst` across tiles the farm owns, or None if unreachable.
+
+    Tie-break is the order of `_MOVE_ORDER` -- north/south before east/west -- which is the leader's
+    own rule, measured 220 to 18 on the walks where our route was the right length and the wrong
+    order.
+    """
+    from collections import deque
+    if src == dst:
+        return []
+    seen = {src}
+    q = deque([(src, [])])
+    while q:
+        (x, y), path = q.popleft()
+        for name, (dx, dy) in _MOVE_ORDER:
+            nxt = (x + dx, y + dy)
+            if nxt in seen:
+                continue
+            if not (0 <= nxt[0] < BOARD_SIZE and 0 <= nxt[1] < BOARD_SIZE):
+                continue
+            if land_purchases_for(nxt) > parcels:
+                continue
+            if nxt == dst:
+                return path + [name]
+            seen.add(nxt)
+            q.append((nxt, path + [name]))
+    return None
+
+
+#: North/south before east/west -- see `_axis_ops`.
+_MOVE_ORDER = (("NORTH", (0, -1)), ("SOUTH", (0, 1)), ("EAST", (1, 0)), ("WEST", (-1, 0)))
+
+
+def _path_ops(src, dst, parcels=None):
     """Movement ops walking `src` -> `dst`, routed through `SPAWN` so the walk never starts by
     stepping into locked land.
 
@@ -591,6 +641,26 @@ def _path_ops(src, dst):
     if src == dst:
         return []
     spawn = tuple(SPAWN)
+    # **Detour only when the direct route is actually blocked.** With `parcels` supplied the caller
+    # knows how much land the farm owns that day, so the walk can be checked rather than guessed.
+    #
+    # Guessing cost real distance: measured against the leader's tape, 194 of 410 routing mismatches
+    # were ours being LONGER than his, almost all of them this detour firing on a route that was
+    # never blocked (`scripts/level2_route.py`). Switching it off entirely took the router from
+    # 78.57% to 83.17% exact -- but off entirely is the bug this detour was added to fix, where unit
+    # 2 pushed WEST into locked ground for four turns and banked $5,402 against unit 0's $15,570.
+    # Checking is what gets both.
+    if parcels is not None:
+        direct = _axis_ops(src, dst)
+        if all(land_purchases_for(t) <= parcels for t in _walked_tiles(src, direct)):
+            return direct
+        # Direct route is blocked, so find the real shortest walk over the land we own rather than
+        # falling back on the SPAWN detour. Going via `(4,4)` is *a* legal route, not the short one:
+        # it added 2-8 steps on 119 walks the leader's tape did in fewer. BFS is exact and the board
+        # is 100 tiles, so the cost is irrelevant next to being wrong every day of the season.
+        found = _bfs_ops(src, dst, parcels)
+        if found is not None:
+            return found
     # Only the *first* leg -- out of a shed-access tile -- can start in locked ground. Hops between
     # tiles of a block start on land the chain already works, so they take the direct route. Sending
     # those through SPAWN too would walk the unit home between every pair of adjacent tiles: 56 turns
