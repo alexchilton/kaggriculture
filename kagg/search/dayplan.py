@@ -134,6 +134,12 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
 
     # ---- the herd. Fed daily; an unfed animal produces nothing and eventually escapes.
     for tile, pen in sorted(farm.pens.items()):
+        # A pen raised today is already covered by its build task -- `emit()` inserts it into
+        # `farm.pens` before calling this, so without the guard the tile carries two entries on its
+        # first day. 15 phantom tasks a season, and feeding twice buys nothing
+        # (`kaggriculture.py:791`, `:798`).
+        if pen["placed"] == day:
+            continue
         ops = ["FEED", "CARE", "COLLECT_FERTILIZER"]
         age = day - pen["placed"]
         # Every third day, not every second. An animal accumulates produce up to `max_held` and a
@@ -260,7 +266,30 @@ def _cost(task, pos):
     return n
 
 
-def _assign(script, day, tasks, max_hands, units):
+def _can_leave(unit, parcels):
+    """Can `unit` move off its spawn tile at all, given the land the farm owns?
+
+    Unit 3 spawns on (5,5) in SE, and BOTH its neighbours -- (4,5) in SW and (5,4) in NE -- are
+    locked until two and one parcels are bought. `ops.py:86` ignores a move onto LOCKED and the unit
+    simply loses the turn, silently, so every task handed to it on day 0 is emitted and lost.
+
+    Measured: 17 PLANT ops emitted on day 0 and 12 landed, with 6 seeds left in store and every one
+    of the 17 tiles unlocked NW ground. The tiles were fine; the hand could not get to them.
+    `routines.py` records the same unit as a known exception and this planner handed it work anyway.
+    """
+    spawn = R.spawn_tile(unit)
+    if R.land_purchases_for(spawn) <= parcels:
+        pass                                  # standing on our own land, can always step
+    for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0)):
+        n = (spawn[0] + dx, spawn[1] + dy)
+        if not (0 <= n[0] < R.BOARD_SIZE and 0 <= n[1] < R.BOARD_SIZE):
+            continue
+        if R.land_purchases_for(n) <= parcels:
+            return True
+    return False
+
+
+def _assign(script, day, tasks, max_hands, units, parcels=0):
     """Pack today's tasks onto today's hands. Nearest-neighbour tours, cheapest hand first.
 
     This is the whole point of the module, so it is worth being explicit about what it does *not* do:
@@ -270,7 +299,8 @@ def _assign(script, day, tasks, max_hands, units):
     """
     pending = list(tasks)
     done, used_units = [], []
-    for unit in units[:max_hands]:
+    usable_units = [u for u in units if _can_leave(u, parcels)]
+    for unit in usable_units[:max_hands]:
         if not pending:
             break
         budget = script.turns_left(day, unit)
@@ -564,7 +594,8 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
                     if slot < script.T:
                         script.buy_animal[slot, R.ANIMAL_NAMES.index(a)] += 1
 
-        done, left, used = _assign(script, day, tasks, workers, unit_order)
+        done, left, used = _assign(script, day, tasks, workers, unit_order,
+                                   parcels=parcels_by_day.get(day, 0))
 
         # **Hire what the day actually used, not what it wanted.** The ladder is Fibonacci and resets
         # every dawn, so an unused hand is not free -- it is the most expensive rung of that day's
