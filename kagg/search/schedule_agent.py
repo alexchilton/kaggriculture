@@ -51,7 +51,7 @@ LAND_PRICES = R.LAND_PRICES
 #: outright (`kaggriculture.py:786`). A thirsty tile next: two dry days makes it a weed, and weeded ground
 #: refuses PLANT until someone digs it, so the tile is dead for the season.
 RANK = dict(FEED=0, CARE=1, COLLECT_FERTILIZER=2, WATER_THIRSTY=3, HARVEST=4,
-            PLACE=5, BUILD=6, WATER=7, PLANT=8, DIG=9)
+            PLACE=5, BUILD=6, WATER=7, FERTILIZE=8, PLANT=9, DIG=10)
 
 
 def _owned(tile, unlocked):
@@ -156,6 +156,21 @@ def make_agent(schedule, me=0):
                                           t, "WATER", None))
                     if cell["yield_units"] > 0 and age >= info["first"]:
                         tasks.append((RANK["HARVEST"], t, "HARVEST", None))
+                    # **FERTILIZE, which the agent never did at all.** It doubles a tile's yield, but only
+                    # on a day the tile is ALSO watered: `_daily_refresh_plants` computes
+                    # `fertilized = was_watered and fertilized_until_day >= current_day`, and the one-shot
+                    # WATER bonus is `2 if fertilized else 1`. It lasts three days (day..day+2), so it is
+                    # worth applying just before a producing stretch and worthless outside one. The tape
+                    # applies 107; we applied 0 and sold the fertilizer instead.
+                    # Fertilizer in the shed OR already in a hand. A unit that has just run
+                    # COLLECT_FERTILIZER is carrying one, and testing the shed alone found none -- because
+                    # the sell list dumps every unit of FERTILIZER from the shed each turn, so it is gone
+                    # before any tile can be fertilized. FERTILIZE fired 0 times against the tape's 107.
+                    carried = any(collections.Counter(iv).get("FERTILIZER", 0) > 0 for iv in invs)
+                    if (cell["fertilized_until_day"] < day
+                            and age >= info["first"] - 2
+                            and (shed.get("FERTILIZER", 0) > 0 or carried)):
+                        tasks.append((RANK["FERTILIZE"], t, "FERTILIZE", "FERTILIZER"))
                 elif "animal" in cell:
                     if not cell["fed_today"]:
                         tasks.append((RANK["FEED"], t, "FEED", "WHEAT"))
@@ -253,7 +268,7 @@ def make_agent(schedule, me=0):
             claimed.add(tile)
 
             # Anything carried is drawn at a shed cell, and only when it is actually in store.
-            if item and op in ("FEED", "PLACE") and inv.get(item, 0) <= 0:
+            if item and op in ("FEED", "PLACE", "FERTILIZE") and inv.get(item, 0) <= 0:
                 if pos in SHED and shed.get(item, 0) > 0:
                     shed[item] -= 1
                     acts.append(["PICKUP", item, 1])
@@ -294,7 +309,13 @@ def make_agent(schedule, me=0):
         # SELL first: the proceeds have to be in the bank before anything below spends them, and that
         # ordering is exactly what decided whether BUY_LAND cleared at all.
         for prod in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"):
-            n = min(int(shed.get(prod, 0)), int((row.get("sells") or {}).get(prod, 0)))
+            have = int(shed.get(prod, 0))
+            # **Hold back a few fertilizer.** Applied to a watered, producing tile it doubles the yield --
+            # a strawberry tile is 4 units at $120, so doubling beats the $100 the unit sells for. Dumping
+            # the whole shed every turn is why FERTILIZE never fired at all.
+            if prod == "FERTILIZER":
+                have = max(0, have - 4)
+            n = min(have, int((row.get("sells") or {}).get(prod, 0)))
             if n > 0 and len(orders) < 5:
                 orders.append(["SELL", prod, n])
 
