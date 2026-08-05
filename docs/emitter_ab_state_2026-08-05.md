@@ -54,9 +54,13 @@ daily cadence rather than when the animal needs it.
 - **Routing is not the gap.** 1.49 walk turns per work turn against the tape's 1.44, and level 2 is
   90.42% against a ceiling that is not ours to move: 3774 of the tape's 3775 moves changed position,
   so its detours are its own policy and not blocked ground.
-- **Tile placement is free.** 58 of 64 tiles are shared with the tape and the quadrant splits are
-  near-identical. Forcing the tape's exact tiles scored 61.99% tile fidelity and banked $1,484;
-  choosing our own scored 37.76% and banked $11,215. Do not optimise levels 3 or 4 toward 100%.
+- ~~**Tile placement is free.**~~ **RETRACTED 2026-08-05, later the same day.** The original
+  measurement -- tape tiles $1,484 against our own $11,215 -- was taken while the emitter was
+  building three of four day-0 pens on locked ground, inventing its own market book, and letting
+  crops die of thirst. Re-measured after those fixes: **tape tiles $11,638 (12,669/11,097/11,149),
+  ours $6,794 (10,211/10,168/2)**, with 2 refusals against our 17. The tape's tiles now win and ours
+  is unstable. `_nearest_free` hands each planting the closest free tile, which scatters work across
+  quadrants; it is the weak part and it is worth replacing.
 - **The mix is not the gap.** His 44/21 strawberry/melon, the calculator's 48/12 and both crosses all
   banked $15-$309 at our scale.
 - **Day 26 is capacity, not a bug.** 62 crop tiles and 14 pens against the 75 the farm owns on two
