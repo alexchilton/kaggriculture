@@ -109,7 +109,7 @@ def _nearest_empty(tiles, unlocked, origin, skip=frozenset()):
 def make_agent(schedule, me=0):
     """`agent(obs, config) -> action`. Holds only which tile each unit is working, and re-reads the rest."""
     sched = {int(k): v for k, v in schedule.items()}
-    state = dict(assigned={}, hired=0, day=-1)
+    state = dict(assigned={}, hired=0, day=-1, tour={})
 
     def agent(obs, config=None):
         day = int(obs.get("day", 0) or 0)
@@ -132,7 +132,7 @@ def make_agent(schedule, me=0):
             # turn. Without it the agent re-issued the day's animals and seed on all 24 turns -- day 0
             # bought four animals at turn 0 and four more at turn 1 until the bank was empty, which is why
             # it reached day 1 on $61 and could then never afford a hand again.
-            state.update(day=day, assigned={}, hired=0, ordered=collections.Counter())
+            state.update(day=day, assigned={}, hired=0, ordered=collections.Counter(), tour={})
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
@@ -221,13 +221,29 @@ def make_agent(schedule, me=0):
             if job and not any((t, o, i) == job for _r, t, o, i in tasks):
                 job = None                    # the board says it is done or gone
             if job is None:
+                # **Distance first, rank only to break ties among tasks that are equally close.** Keying
+                # `(rank, distance)` made rank dominate, so every unit sprinted across the board for the
+                # highest-priority task anywhere -- twelve hands heading for the same three pens -- and the
+                # crew spent 78% of its turns walking, ~7 move turns per work turn against the tape's 1.44.
+                # `dayplan._assign` already carried this lesson in a comment and it was not brought over:
+                # "Rank picks the hand's FIRST stop; distance picks every stop after it."
+                # **Rank picks the hand's FIRST stop; distance picks every stop after it.**
+                # `(rank, distance)` throughout made rank dominate, so every unit sprinted across the board
+                # for the highest-priority task anywhere -- twelve hands converging on three pens -- at ~7
+                # move turns per work turn against the tape's 1.44. `(distance, rank)` throughout fixed the
+                # walking to 1.04 and banked $809, because the nearest task is never the important one and
+                # the herd starved. So: a unit with no tour under way chooses by rank, and a unit that has
+                # just finished an op continues to whatever is nearest. `dayplan._assign` carried this
+                # lesson in a comment and it was not brought across.
+                touring = state["tour"].get(u, False)
                 best = None
                 for rank, t, op, item in tasks:
                     if t in claimed:
                         continue
                     d = abs(t[0] - pos[0]) + abs(t[1] - pos[1])
-                    if best is None or (rank, d) < best[0]:
-                        best = ((rank, d), (t, op, item))
+                    key = (d, rank) if touring else (rank, d)
+                    if best is None or key < best[0]:
+                        best = (key, (t, op, item))
                 if best is None:
                     acts.append(["PASS"])
                     continue
@@ -263,12 +279,15 @@ def make_agent(schedule, me=0):
             elif op == "PLANT":
                 acts.append(["PLANT", item])
                 state["assigned"].pop(u, None)
+                state["tour"][u] = True
             elif op == "PLACE":
                 acts.append(["PLACE", item, 1])
                 state["assigned"].pop(u, None)
+                state["tour"][u] = True
             else:
                 acts.append([op])
                 state["assigned"].pop(u, None)
+                state["tour"][u] = True
 
         # ------------------------------------------------------------------ the market, bank-aware
         orders = []
