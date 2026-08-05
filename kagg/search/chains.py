@@ -66,6 +66,14 @@ DRAIN_UNITS = {"WHEAT": 662, "CARROT": 338, "TOMATO": 374, "STRAWBERRY": 572, "M
 #
 # Both are cut, because neither dominates: strawberry gains +52% on eight alternate-day tiles while
 # melon loses 28% (its one-shot harvest window shuts at max_day 12 and a missed visit forfeits it).
+# **Three sizes, because pens leave gaps that only a small block can fill.** Widening the cut to every
+# window was not enough on its own: the six tiles stranded on 2026-08-05 sat in three disjoint runs of
+# *two* -- `{(2,0),(3,0)}`, `{(3,1),(2,1)}`, `{(0,2),(1,2)}` -- separated by the tiles the cow pens took,
+# so no 4-tile window could span them. A pair block can.
+#
+# A 2-tile chain is expensive per tile: it costs a whole unit, and a unit costs hires. It exists for the
+# gaps, and the search will only take it where two tiles are worth more than the hand that works them.
+SMALL_BLOCK_SIZE = 2
 BLOCK_SIZE = 4
 WIDE_BLOCK_SIZE = 8
 
@@ -106,7 +114,16 @@ def _cut_blocks(size=BLOCK_SIZE):
     blocks = []
     for quadrant in ("NW", "NE", "SW", "SE"):
         tiles = [t for t in R.serpentine(_quadrant_tiles(quadrant)) if t not in reserved]
-        for i in range(0, len(tiles) - size + 1, size):
+        # **Every window, not every size-th one.** The stride used to be `size`, which made the block
+        # set a disjoint *partition* -- and a partition strands tiles. A two-pen ranch takes 2 tiles out
+        # of a 4-tile block and the other 2 become unreachable, because no block in the vocabulary
+        # covers them. Measured on the best genome of 2026-08-05: 18 NW tiles worked, **6 stranded**
+        # (`(0,2) (1,2) (2,0) (2,1) (3,0) (3,1)`), and two slots idle with nowhere legal to go.
+        #
+        # Overlapping blocks in the vocabulary are harmless now that `decode()` refuses a chain whose
+        # ground is already claimed: a genome picking two overlapping blocks loses the later slot and
+        # scores worse, so the search avoids it on its own.
+        for i in range(0, len(tiles) - size + 1):
             blocks.append(tuple(tiles[i:i + size]))
     return tuple(blocks)
 
@@ -124,11 +141,13 @@ def _fits_in_a_day(block, water_every=1):
 # Narrow blocks are worked daily; wide ones only alternate-day, which is the only cadence they fit in.
 # `WATER_EVERY_FOR_BLOCK` records which is which so `decode()` never has to guess, and so a wide block
 # can never be handed a daily chain that would raise.
+SMALL_BLOCKS = tuple(b for b in _cut_blocks(SMALL_BLOCK_SIZE) if _fits_in_a_day(b, 1))
 NARROW_BLOCKS = tuple(b for b in _cut_blocks(BLOCK_SIZE) if _fits_in_a_day(b, 1))
 WIDE_BLOCKS = tuple(b for b in _cut_blocks(WIDE_BLOCK_SIZE) if _fits_in_a_day(b, 2))
 ALL_BLOCKS = _cut_blocks(BLOCK_SIZE)
-BLOCKS = NARROW_BLOCKS + WIDE_BLOCKS
-WATER_EVERY_FOR_BLOCK = {b: 1 for b in NARROW_BLOCKS}
+BLOCKS = SMALL_BLOCKS + NARROW_BLOCKS + WIDE_BLOCKS
+WATER_EVERY_FOR_BLOCK = {b: 1 for b in SMALL_BLOCKS}
+WATER_EVERY_FOR_BLOCK.update({b: 1 for b in NARROW_BLOCKS})
 WATER_EVERY_FOR_BLOCK.update({b: 2 for b in WIDE_BLOCKS})
 # Recorded rather than silently dropped: a block excluded here is board the search cannot reach, and
 # `scripts/search_chains.py` prints the count so shrinking coverage is visible.
@@ -200,7 +219,12 @@ def _cut_pen_groups():
 
 RANCH_GROUPS = _cut_pen_groups()
 
+# Opening seed cost per tile. Duplicated from `scheduler.SEED_COST` rather than imported, because
+# `scheduler` imports this module and the cycle would not resolve. Pinned by the land-gate tests.
+SEED_COST = {"WHEAT": 10, "CARROT": 20, "TOMATO": 50, "STRAWBERRY": 100, "MELON": 80}
+
 OPENING_BANK = 3000                 # `kaggriculture.py:237` startingMoney
+C_OPENING_BANK = OPENING_BANK       # alias used by `_bank_estimate`, defined above its first use
 
 # The first day a farm can possibly have sold anything. Wheat is the fastest crop: planted on day 0 it
 # is harvestable at age 2, the harvest sits in `carried` until the dusk auto-drop, and the sell order
@@ -305,8 +329,76 @@ def reachable_quadrants(genome, n_slots):
     so a chain is only skipped when its ground could not be bought on the day it is ordered even with
     the whole opening bank -- which is exactly the day-0 triple-buy that has been distorting results.
     """
-    _g, first_order = _land_requests(genome, n_slots)
-    return _affordable(first_order) if first_order else 0
+    g, first_order = _land_requests(genome, n_slots)
+    if not first_order:
+        return 0
+    # What the chains themselves cost before any land: seeds for a first planting, animals per pen.
+    # A gate that ignores this judged a $7,000 land plan the same as a $1,000 one.
+    # Split by when the money is actually due: `upfront` is charged once, `per_day` accrues.
+    upfront = 0.0
+    per_day = 0.0
+    max_unit = 0
+    units = working_units(n_slots)
+    for slot in range(n_slots):
+        kind = KINDS[int(g[slot, 0]) % N_KINDS]
+        if kind == "off":
+            continue
+        max_unit = max(max_unit, units[slot])
+        block_i = int(g[slot, 2])
+        if kind == "ranch":
+            grp = RANCH_GROUPS[block_i % len(RANCH_GROUPS)]
+            animal = R.ANIMAL_NAMES[int(g[slot, 1]) % len(R.ANIMAL_NAMES)]
+            upfront += R.ANIMALS[animal]["cost"] * len(grp)
+            # Feed, every other day. A standing bill, so it belongs in `per_day` -- a gate that priced
+            # only the purchase let a herd look cheaper than it is, and one that charged the whole
+            # season up front made every herd unaffordable.
+            per_day += 25.0 * len(grp) / 2
+        else:
+            blk = BLOCKS[block_i % len(BLOCKS)]
+            upfront += SEED_COST[R.CROPS[int(g[slot, 1]) % len(R.CROPS)]] * len(blk)
+    # **Hires, which Alex is right to insist on.** Hands are dismissed and re-hired every dawn on a
+    # Fibonacci ladder that resets daily, so the crew is a standing cost for the whole season and it
+    # grows steeply: 6 hands is $20/day, 9 is $88, 12 is $376, 14 is $986. A genome reaching unit 14
+    # owes $29,580 over thirty days before it plants anything, and a land gate blind to that would wave
+    # through a farm whose crew alone outspends the parcels.
+    if max_unit > 0:
+        from kagg.sim.farm import HIRE_COST
+        # Hires are re-paid every dawn, so this is a daily rate, not a season total. Steep: 6 hands is
+        # $20/day, 9 is $88, 12 is $376, 14 is $986.
+        per_day += float(np.asarray(HIRE_COST)[:max_unit].sum())
+
+    # Walk the real curve where we can. `_affordable`'s straight line is kept only as the fallback for
+    # callers without a full genome.
+    curve = cash_curve(genome, n_slots)
+    # The cheapest chain waiting on each parcel. **Land has to leave enough behind to plant on**, or the
+    # farm buys ground it cannot use -- worse than not buying at all. $3,000 of parcels against a $3,000
+    # bank passed a bare `spent <= curve[day]` check and then had nothing for the seed, which is how a
+    # two-parcel plan bought one and silently relocated. Same rule as `scheduler.schedule`, so the gate
+    # and the scheduler agree about what is affordable instead of disagreeing quietly.
+    follow_on = {}
+    for slot in range(n_slots):
+        kind = KINDS[int(g[slot, 0]) % N_KINDS]
+        if kind == "off":
+            continue
+        block_i = int(g[slot, 2])
+        if kind == "ranch":
+            grp = RANCH_GROUPS[block_i % len(RANCH_GROUPS)]
+            cost = float(R.ANIMALS[R.ANIMAL_NAMES[int(g[slot, 1]) % len(R.ANIMAL_NAMES)]]["cost"])
+        else:
+            grp = BLOCKS[block_i % len(BLOCKS)]
+            cost = float(SEED_COST[R.CROPS[int(g[slot, 1]) % len(R.CROPS)]] * len(grp))
+        need_j = R.land_purchases_for(grp[0]) - 1
+        if need_j >= 0:
+            follow_on[need_j] = min(follow_on.get(need_j, cost), cost)
+
+    bought, spent = 0, 0
+    for j in sorted(first_order):
+        spent += R.LAND_PRICES[j]
+        day = min(first_order[j], R.SEASON_DAYS - 1)
+        if spent + follow_on.get(j, 0.0) > curve[day]:
+            break
+        bought = j + 1
+    return bought
 
 
 def land_schedule(genome, n_slots):
@@ -357,16 +449,127 @@ def _land_requests(genome, n_slots):
     return g, first_order
 
 
-def _affordable(first_order):
+# A deliberately pessimistic estimate of what a farm has earned by a given day, used only to decide
+# whether a land order can clear. It is not a revenue model -- the simulator is that -- it is a floor,
+# so a plan that cannot pay even optimistically is refused.
+#
+# Grounded on the measured seasons rather than fitted: our farms sit between $200 and $1,200 for the
+# first ten days and only pass $10,000 around day 12 (`data/logs/diff_vs_leader.log`), and the leader
+# runs at $42-$1,700 for eleven days before compounding. So earnings before day 10 are worth very
+# little, and a parcel bought early has to come from the opening bank whatever day it is ordered on.
+EARN_PER_DAY_AFTER = 10          # the day compounding actually starts, from both measured seasons
+EARN_RATE = 900.0                # $/day after that, floored well under the ~$2,500 we measure
+
+
+def cash_curve(genome, n_slots, parcel_days=()):
+    """Day-by-day bank estimate for a whole genome, respecting when money is actually due.
+
+    Replaces a straight line through `EARN_RATE`, which was wrong in three ways at once and produced
+    three different wrong answers on 2026-08-05: it charged the *whole season's* feed and hires on the day
+    of a land order (nothing could ever buy land), then charged every chain's purchase cost regardless of
+    when the chain starts (a plan whose pens go up on day 20 was judged as though it had bought them on
+    day 3), and it credited revenue from a chain's start day rather than its first production day (two cow
+    chains appeared to have earned $5,340 by day 3 when the real bank was $1,800, so land was bought on
+    day 3 instead of the leader's day 7).
+
+    This walks the days instead. A chain charges its purchase on its start day, its feed from then on, and
+    earns nothing until `start + payback`. Crew is charged daily at the Fibonacci rate for the highest
+    unit in play. Still an *estimate* -- the simulator is the judge -- but one whose errors are in the size
+    of the revenue rather than in the timing of anything.
+    """
+    from kagg.sim.farm import HIRE_COST
+    from kagg.economics import production as P
+
+    hc = np.asarray(HIRE_COST)
+    g = np.asarray(genome, dtype=np.int64).reshape(n_slots, len(GENES))
+    units = working_units(n_slots)
+    events = []                       # (day, one-off cost, per-day cost, earns_from, per-day revenue)
+    for slot in range(n_slots):
+        kind = KINDS[int(g[slot, 0]) % N_KINDS]
+        if kind == "off":
+            continue
+        start = START_DAY_CHOICES[int(g[slot, 3]) % len(START_DAY_CHOICES)]
+        block_i = int(g[slot, 2])
+        if kind == "ranch":
+            grp = RANCH_GROUPS[block_i % len(RANCH_GROUPS)]
+            animal = R.ANIMAL_NAMES[int(g[slot, 1]) % len(R.ANIMAL_NAMES)]
+            a = R.ANIMALS[animal]
+            # One pen per day, so the purchases are spread exactly as `ranch()` spreads them.
+            for k in range(len(grp)):
+                events.append((start + k, float(a["cost"]), 25.0 / 2, start + k + a["first_yield_day"],
+                               a["max_held"] * PRICE_BASE[a["product"]] * 0.5
+                               / max(a["interval"], 1)))
+            continue
+        blk = BLOCKS[block_i % len(BLOCKS)]
+        crop = R.CROPS[int(g[slot, 1]) % len(R.CROPS)]
+        y = max(P.TILE_YIELD_FERTILIZED[crop], P.TILE_YIELD_PER_SEASON[crop])
+        events.append((start, float(SEED_COST[crop] * len(blk)), 0.0,
+                       start + R.CROP_TABLE[crop]["first"] + 1,
+                       y * len(blk) * PRICE_BASE[crop] * 0.5 / R.SEASON_DAYS))
+    max_unit = max((units[s] for s in range(n_slots)
+                    if KINDS[int(g[s, 0]) % N_KINDS] != "off"), default=0)
+    crew = float(hc[:max_unit].sum()) if max_unit else 0.0
+
+    parcels = list(parcel_days)
+    bank, curve = float(OPENING_BANK), []
+    for day in range(R.SEASON_DAYS):
+        for d, once, _pd, _ef, _rev in events:
+            if d == day:
+                bank -= once
+        for d, _once, pd, earns_from, rev in events:
+            if day >= d:
+                bank -= pd
+            if day >= earns_from:
+                bank += rev
+        bank -= crew
+        for j, pday in enumerate(parcels):
+            if pday == day:
+                bank -= R.LAND_PRICES[j]
+        curve.append(bank)
+    return curve
+
+
+# Base market prices, for the cash estimate only. `kagg/sim/market.py` owns the real curve.
+PRICE_BASE = {"WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120, "MELON": 250,
+              "EGG": 50, "MILK": 160, "WOOL": 200, "FERTILIZER": 100}
+
+
+def _bank_estimate(day, upfront, per_day):
+    """Pessimistic bank on `day`: the stake, plus what has been earned, minus what has been spent.
+
+    **`per_day` is pro-rated and that is the whole point.** The first version of this charged the entire
+    season's feed and hires against the bank on the day of the land order -- $11,280 of hires and $3,375
+    of feed for a ten-chain farm -- so a day-7 purchase was judged against $3,000 minus $21,515 and
+    nothing could ever buy land. That replaced "always yes" with "always no" and lost the same 50 tiles a
+    different way. Recurring costs are paid out of recurring revenue, day by day, and only the days that
+    have actually elapsed can have been paid.
+    """
+    earned = max(0, day - EARN_PER_DAY_AFTER) * EARN_RATE
+    return C_OPENING_BANK + earned - upfront - per_day * day
+
+
+def _affordable(first_order, upfront=0.0, per_day=0.0):
+    """How many parcels the farm can really buy, in unlock order.
+
+    **The amount matters, not only the day.** This used to refuse a parcel only when it was ordered
+    before `EARLIEST_REVENUE_DAY` *and* the running total exceeded the opening bank; from day 3 onward
+    every parcel was assumed affordable whatever it cost and whatever else the farm had committed. So a
+    two-parcel plan passed, bought one, and `_do_buy_land` silently no-opped the other -- after which the
+    chain walked until a LOCKED tile stopped it and built there, while `decode()` still reported it as
+    `used`.
+
+    The search then learned the wrong lesson from every land genome it tried, stopped proposing land, and
+    stayed on **25 tiles against the leader's 75**. That is the entire gap.
+    """
     bought, spent = 0, 0
     for j in sorted(first_order):
         spent += R.LAND_PRICES[j]
+        if spent > _bank_estimate(first_order[j], upfront, per_day):
+            break
         # Nothing has been earned before `EARLIEST_REVENUE_DAY`, so parcels ordered that early are
         # judged against the opening bank alone. Later ones are allowed through: revenue really does
         # fund them, and judging *those* against the opening bank is what made the search believe day
         # 0 was optimal when waiting is worth up to +$22,911.
-        if first_order[j] < EARLIEST_REVENUE_DAY and spent > OPENING_BANK:
-            break
         bought = j + 1
     return bought
 
@@ -387,6 +590,16 @@ def decode(genome, n_slots):
     # How much land this genome can really afford on the day it orders it. A chain standing on ground
     # beyond that is skipped and counted, rather than silently relocating.
     affordable = reachable_quadrants(genome, n_slots)
+    # **Occupied ground, which nothing tracked until 2026-08-05.** Two slots could claim the same tiles
+    # and PLANT simply no-ops on the second, so the chain produced nothing while `decode()` reported it
+    # as `used`. Confirmed in that day's best genome: slot 5's four tiles were a subset of slot 1's
+    # eight-tile melon block, so the season grew **zero wheat** while ordering 16 wheat seeds -- and the
+    # slot still scored +$1,564 because its unit's crop-agnostic WATER and HARVEST ops landed on melon.
+    # It was a second hand on someone else's block wearing a wheat label, and every conclusion drawn
+    # from "the search chose wheat" was wrong.
+    #
+    # Earlier slots win, so the same genome always decodes to the same tape.
+    claimed = set()
     # One central schedule, so two chains wanting the same quadrant on different days do not buy it
     # twice -- and a chain on SW does not drag SE along behind it. See `land_schedule`.
     for day in land_schedule(genome, n_slots):
@@ -394,6 +607,7 @@ def decode(genome, n_slots):
         if 0 <= t < script.T:
             script.buy_land[t] += 1
 
+    plan = []
     for slot in range(n_slots):
         kind = KINDS[int(g[slot, 0]) % N_KINDS]
         if kind == "off":
@@ -401,8 +615,14 @@ def decode(genome, n_slots):
         what_i, block_i, start_i, land_i, fert_i, trade_i, feed_i = (int(x) for x in g[slot, 1:])
         start_day = START_DAY_CHOICES[start_i % len(START_DAY_CHOICES)]
         land_day = LAND_DAY_CHOICES[land_i % len(LAND_DAY_CHOICES)]
-        tile = (RANCH_GROUPS[block_i % len(RANCH_GROUPS)][0] if kind == "ranch"
-                else BLOCKS[block_i % len(BLOCKS)][0])
+        ground = (RANCH_GROUPS[block_i % len(RANCH_GROUPS)] if kind == "ranch"
+                  else BLOCKS[block_i % len(BLOCKS)])
+        tile = ground[0]
+        if set(ground) & claimed:
+            # Another slot already holds some of this ground. Emitting the chain anyway buys seed for
+            # tiles it can never plant and puts a second unit on someone else's block.
+            skipped += 1
+            continue
         if R.land_purchases_for(tile) > affordable:
             # The ground cannot be bought on the day this chain orders it. Emitting the chain anyway
             # is what produced a genome claiming pens on (7,8), (2,8) and (6,9) while the animals
@@ -410,6 +630,23 @@ def decode(genome, n_slots):
             # there. Skipping is counted, so an unaffordable genome reads as unaffordable.
             skipped += 1
             continue
+        # **Emission is deferred so pens can claim their turns before crop blocks.**
+        # Two chains may now share a unit (`Script.claim`), and the order they claim in decides whether
+        # they fit. A shed pen is zero-movement when it goes first, but if a crop block has already run
+        # the unit is standing out in the field, so `Script.where` correctly makes the pen walk back --
+        # 7 extra moves, and 15 + 7 + 7 = 29 of 23 turns, so the pen is refused. Reversed, the pen costs
+        # 7 turns and the block's own walk is unchanged: 22 of 23, and both fit.
+        #
+        # Pens go first for a second reason that outranks turn-packing: an animal escapes after two
+        # consecutive missed feeds, so pen work is survival-critical while a missed WATER is not.
+        #
+        # Ground is still claimed above in **slot order**, so "earlier slots win" is unchanged and the
+        # same genome still decodes to the same tape. Only the turn-claim order differs.
+        plan.append((0 if kind == "ranch" else 1, slot, kind, what_i, block_i, start_day,
+                     land_day, fert_i, trade_i, feed_i))
+
+    for _rank, slot, kind, what_i, block_i, start_day, land_day, fert_i, trade_i, feed_i in sorted(
+            plan, key=lambda r: (r[0], r[1])):
         try:
             if kind == "ranch":
                 # The `block` gene selects a pen *group*, so one slot can hold up to four animals.
@@ -424,6 +661,7 @@ def decode(genome, n_slots):
                         unit=None if cell in RANCH_CELLS and len(group) == 1 else units[slot],
                         sell_fertilizer=bool(trade_i % 2), buy_land=False,
                         buy_feed=not bool(feed_i % 2))
+                claimed.update(group)
                 used.append(("ranch", animal, group, start_day))
             else:
                 block = BLOCKS[block_i % len(BLOCKS)]
@@ -434,6 +672,7 @@ def decode(genome, n_slots):
                        unit=units[slot], fertilize=bool(fert_i % 2),
                        buy_fertilizer=bool(trade_i % 2), buy_land=False, sell=not hold,
                        water_every=WATER_EVERY_FOR_BLOCK[block])
+                claimed.update(block)
                 used.append(("grow", crop, block, start_day))
         except ValueError:
             skipped += 1
@@ -486,11 +725,27 @@ def seeded_genome(n_slots, rng=None):
     plan += [("grow", "STRAWBERRY", d) for d in (5, 8, 12)]
     plan += [("grow", "WHEAT", 3)] * n_slots           # pad: cheap, and it feeds the animals
 
+    # **Non-overlapping, which matters now that blocks are cut at every window.** `OWNED_BLOCKS` used to
+    # be a partition, so walking it with a cursor gave disjoint ground for free. Sliding windows overlap
+    # heavily, and `decode()` now (correctly) skips a chain whose tiles another slot already holds -- so
+    # taking consecutive entries produced a seed with three illegal chains out of eight.
+    taken = set()
+
+    def next_block(cursor):
+        while cursor < len(OWNED_BLOCKS):
+            b = OWNED_BLOCKS[cursor]
+            if not (set(b) & taken):
+                return cursor, b
+            cursor += 1
+        return cursor, None
+
     block_cursor = 0
     for slot in range(n_slots):
         kind, what, start_day = plan[slot]
-        if kind == "grow" and block_cursor >= len(OWNED_BLOCKS):
-            break                                     # out of land we own; leave the rest "off"
+        if kind == "grow":
+            block_cursor, chosen = next_block(block_cursor)
+            if chosen is None:
+                break                                 # out of land we own; leave the rest "off"
         g[slot, 0] = KINDS.index(kind)
         if kind == "ranch":
             g[slot, 1] = R.ANIMAL_NAMES.index(what)
@@ -498,7 +753,8 @@ def seeded_genome(n_slots, rng=None):
                               if gr == (OWNED_CELLS[slot % len(OWNED_CELLS)],))
         else:
             g[slot, 1] = R.CROPS.index(what)
-            g[slot, 2] = BLOCKS.index(OWNED_BLOCKS[block_cursor])
+            g[slot, 2] = BLOCKS.index(chosen)
+            taken.update(chosen)
             block_cursor += 1
         g[slot, 3] = START_DAY_CHOICES.index(start_day)
         g[slot, 4] = LAND_DAY_CHOICES.index(0)         # nothing here needs land; 0 is a no-op

@@ -149,8 +149,26 @@ class Script:
     the same arrays `scripts/build_script_submission.py` already turns into a verified submission.
     """
 
+    #: `(day, unit) -> turns already claimed today`. Turn 0 of a day is the market order, so work
+    #: starts at 1 and a day holds `TURNS_PER_DAY - 1` ops.
+    #:
+    #: **This exists so two routines can share a unit.** Both `ranch()` and `grow()` used to lay their
+    #: day out from `d + 1` on the assumption that they owned the whole day, and `op()` assigns
+    #: `unit_op[t, u]` directly -- so calling both for one unit silently overwrote the first. Measured
+    #: on a 2-pen group plus a 4-tile block: 327 + 434 ops composed to 441, losing 320 of them, and the
+    #: herd stopped being fed on 29 of 30 days. Nothing raised and nothing reported it.
+    #:
+    #: That mattered because one chain = one unit capped the farm. Covering the leader's 14 pens plus
+    #: ~100 tile-plantings needed 14 chains, forcing unit 17, and the hire ladder resets every dawn:
+    #: 9 hands is $88/day but 17 is $4,180/day, i.e. $125,400 a season -- more than he banks in total.
+    #: He does it with twelve hands because his hands tend a pen *and* crop tiles on the same day.
+    #:
+    #: Claiming turns instead of assuming them makes an overfull day a **refusal the caller can count**
+    #: rather than an overwrite nobody can see, which is the same contract the land gate now honours.
     def __init__(self, T=T_DEFAULT, U=U_DEFAULT):
         self.T, self.U = T, U
+        self._claimed = {}
+        self._pos = {}
         self.unit_op = np.zeros((T, U), np.int64)      # 0 == PASS
         self.unit_crop = np.zeros((T, U), np.int64)
         self.unit_item = np.zeros((T, U), np.int64)
@@ -166,6 +184,38 @@ class Script:
         return {f: getattr(self, f) for f in
                 ("unit_op", "unit_crop", "unit_item", "unit_qty", "sell", "buy_seed",
                  "buy_product", "buy_animal", "hire", "buy_land")}
+
+    def turns_left(self, day, unit):
+        """Work turns still free for `unit` on `day`. `TURNS_PER_DAY - 1` if nothing has claimed yet."""
+        return TURNS_PER_DAY - self._claimed.get((day, unit), 1)
+
+    def claim(self, day, unit, n, what=""):
+        """Reserve `n` consecutive work turns for `unit` on `day` and return the first of them.
+
+        Raises when the day cannot hold them, which is the whole point: the caller then refuses the
+        chain and counts it, instead of writing over another routine's ops.
+        """
+        used = self._claimed.get((day, unit), 1)      # turn 0 is the market order
+        if used + n > TURNS_PER_DAY:
+            raise ValueError(
+                f"day {day} unit {unit}: {what or 'this routine'} needs {n} turns but only "
+                f"{TURNS_PER_DAY - used} of {TURNS_PER_DAY - 1} remain (another routine on the same "
+                f"unit has claimed {used - 1}); use fewer tiles, a larger cadence, or another unit")
+        self._claimed[(day, unit)] = used + n
+        return day * TURNS_PER_DAY + used
+
+    def where(self, day, unit, default):
+        """Where `unit` stands partway through `day`, so a second routine walks from there.
+
+        Without this a combined chain is wrong even when it fits: `grow()` computes its walk from
+        `spawn_tile(unit)`, but after `ranch()` the unit is standing at a pen, so every MOVE lands
+        somewhere else and the ops that follow act on the wrong tile.
+        """
+        return self._pos.get((day, unit), tuple(default))
+
+    def stand(self, day, unit, pos):
+        """Record where `unit` finished its ops on `day`."""
+        self._pos[(day, unit)] = tuple(pos)
 
     def op(self, t, u, name, item=None, qty=0, crop=None):
         """Write one unit op. Out-of-range turns are dropped so a routine may run past the season."""
@@ -383,7 +433,7 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
         # checked. PICKUP only works next to the shed, so everything the unit must carry -- the
         # animals on the build day, the wheat every day -- is drawn at spawn *before* the walk.
         seq = []
-        pos = tuple(spawn_tile(u))
+        pos = script.where(day, u, spawn_tile(u))
         if not (zero_movement and len(tiles) == 1):
             for m in _path_ops(pos, SPAWN):
                 seq.append((m, None, 0))
@@ -424,14 +474,14 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
             # it is a no-op and `_drop_to_shed` moves the goods at dusk regardless.
             seq.append(("DROP", None, 0))
 
-        t = d + 1                      # turn 0 of the day is the market order; work starts at +1
+        # Claim the turns rather than assume them, so a crop block sharing this unit cannot be
+        # overwritten -- and so an overfull day raises here instead of vanishing.
+        t = script.claim(day, u, len(seq),
+                         what=f"{len(tiles)} pen(s) at {tiles} from {spawn_tile(u)}")
         for op_name, item, qty in seq:
             script.op(t, u, op_name, item=item, qty=qty)
             t += 1
-        if t > d + TURNS_PER_DAY:
-            raise ValueError(
-                f"day {day} needs {t - d} turns for {len(tiles)} pen(s) at {tiles} from "
-                f"{spawn_tile(u)} but a day is {TURNS_PER_DAY}; use fewer or closer pens")
+        script.stand(day, u, pos)
 
         if sell:
             # Over-requesting is safe: `_process_market` stops when the shed runs dry. Selling daily
@@ -732,7 +782,7 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
             can be checked -- adding fertilizer or a dig must never turn a legal block into a
             raising one."""
             seq = []
-            pos = tuple(spawn_tile(unit))
+            pos = script.where(day, unit, spawn_tile(unit))
             if fert:
                 # **Drawn on `SPAWN`, not wherever this unit woke up.** PICKUP needs a shed-access
                 # tile that is *unlocked* (`ops.py:216`) and only `(4,4)` is always both, so a hand
@@ -756,13 +806,17 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
                     seq.append(("FERTILIZE", tile))
             return seq
 
+        # Against the turns *still free* on this unit today, not against a whole empty day: a pen group
+        # sharing the unit has already claimed some, and measuring the optional extras against the full
+        # day would overflow the claim and raise where dropping the insurance would have fitted.
+        budget = script.turns_left(day, unit)
         seq = _sequence(fert_tiles, dig_tiles)
-        if dig_tiles and len(seq) > TURNS_PER_DAY - 1:
+        if dig_tiles and len(seq) > budget:
             # Insurance is the first thing to go: it protects an 11% risk, while overflowing the day
             # pushes work past the dawn teleport and loses it outright.
             dig_tiles = []
             seq = _sequence(fert_tiles, dig_tiles)
-        if fert_tiles and len(seq) > TURNS_PER_DAY - 1:
+        if fert_tiles and len(seq) > budget:
             # Drop the fertilizing rather than raise. A block that fits unfertilized must keep
             # fitting, or switching the option on would silently shrink the search's reachable board.
             fert_tiles = []
@@ -777,17 +831,18 @@ def grow(script, crop_name, tiles, plant_day, harvest_age=None, land_day=0, sell
             # in all eight slots of the $64,146 genome.
             script.buy_product[d, PRODUCTS.index("FERTILIZER")] += len(fert_tiles)
 
-        t = d + 1                      # turn 0 of the day is the market order; work starts at +1
+        # Claim, for the reason spelled out on `Script.claim`: a pen group may share this unit, and
+        # writing from `d + 1` regardless is what silently deleted 42% of a combined chain's ops.
+        t = script.claim(day, unit, len(seq),
+                         what=f"{len(today)} of {len(ordered)} tiles")
         for op_name, _tile in seq:
             if op_name == "PICKUP":
                 script.op(t, unit, "PICKUP", item="FERTILIZER", qty=len(fert_tiles))
             else:
                 script.op(t, unit, op_name, crop=crop_name if op_name == "PLANT" else None)
             t += 1
-        if t > d + TURNS_PER_DAY:
-            raise ValueError(
-                f"day {day} needs {t - d} turns for {len(today)} of {len(ordered)} tiles but a day "
-                f"is {TURNS_PER_DAY}; use a smaller or closer block, or a larger water_every")
+        if today:
+            script.stand(day, unit, today[-1])
         for tile in fert_tiles:
             fertilized_until[tile] = day + FERTILIZER_ACTIVE_DAYS - 1
 
