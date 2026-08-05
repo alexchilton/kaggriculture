@@ -47,7 +47,19 @@ for t, step in enumerate(d["steps"]):
     # (4,3)->(4,2). Pairing an op with its own step's position shifted every tile one move forward,
     # and those shifted tiles were being fed back in as ground truth -- so the error compounded into
     # every placement, every day, for the whole season.
-    pos = positions_at(t - 1) or positions_at(t)
+    # **At dawn the units have been teleported home, so the previous turn's position is not where
+    # this turn's op acts.** `_end_of_day` resets `farm["farmer"]` to spawn and empties `farm["hands"]`
+    # (`reference/kaggriculture.py:848-849`), so reading `t - 1` across a day boundary hands back the
+    # END of yesterday. Measured: paths that were the first of their day matched 161/334 while every
+    # later path in the same tape matched 1437/1579 -- the boundary, not the router.
+    # Turn 0 is the market phase and moves nobody, so its own record is already the dawn position.
+    pos = positions_at(t) if t % TD == 0 else (positions_at(t - 1) or positions_at(t))
+    # A hand hired THIS turn has no row in the previous turn's list, so its ops came out with no
+    # tile at all -- 5 of the 131 plantings were being dropped on the floor. It spawns at the shed,
+    # so fall back per unit rather than losing the op.
+    later = positions_at(t)
+    while len(pos) < len(later):
+        pos.append(later[len(pos)])
     act = s.get("action") or {}
     ops = [act.get("farmer")] + list(act.get("hands") or [])
     row = []
