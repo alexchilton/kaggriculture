@@ -713,19 +713,31 @@ def decode(genome, n_slots):
         # So take the lowest-numbered unit that is free and can actually reach this ground today. Lowest
         # keeps the hire ladder short; reachability keeps the chain real. A shed-cell pen still uses the
         # hand that wakes on it, since anyone else would have to walk there for no reason.
+        # **The unit is chosen at EMISSION time, not here, because whether a job fits depends on the
+        # turns already claimed on that unit -- and that is only known once earlier chains have been
+        # written.** Choosing here forced one job per hand, and one job per hand is what caps the farm:
+        #
+        #   - a hand is dismissed and re-hired at every dawn and the ladder is Fibonacci, so the crew
+        #     costs its whole partial sum every day: 8 hands $54, 12 hands $376, 16 hands $2,583;
+        #   - a hand given one chain does ~2 useful ops in its 23 turns. Census against the leader:
+        #     540 productive ops and 2,758 PASS turns for us, 2,438 and 357 for him.
+        #
+        # So every unit of capacity cost a ladder rung and delivered almost nothing, and the measured
+        # farm peaked at 5 chains ($32,460) and fell off a cliff at 15 ($2,609) -- against his 14 pens
+        # and ~61 tiles on 12 hands. Only the *pen cell* case is fixed here, because a shed-cell pen
+        # must be worked by whoever wakes on it or it walks for no reason.
+        fixed_unit = None
         if kind == "ranch" and ground[0] in RANCH_CELLS and len(ground) == 1:
-            pen_unit = R.unit_for_cell(ground[0])
-            if not unit_can_reach(pen_unit, tile, parcels_by(start_day)):
+            fixed_unit = R.unit_for_cell(ground[0])
+            if not unit_can_reach(fixed_unit, tile, parcels_by(start_day)):
                 skipped += 1
                 continue
-        else:
-            pen_unit = next((u for u in range(MAX_UNITS)
-                             if u not in busy_units
-                             and unit_can_reach(u, tile, parcels_by(start_day))), None)
-            if pen_unit is None:
-                skipped += 1
-                continue
-        busy_units.add(pen_unit)
+        elif not any(unit_can_reach(u, tile, parcels_by(start_day)) for u in range(MAX_UNITS)):
+            # No unit can walk to this ground on this day at all, so the chain is a phantom whatever
+            # the packing does. Counted, so an unreachable genome reads as unreachable.
+            skipped += 1
+            continue
+        pen_unit = fixed_unit
         # **Emission is deferred so pens can claim their turns before crop blocks.**
         # Two chains may now share a unit (`Script.claim`), and the order they claim in decides whether
         # they fit. A shed pen is zero-movement when it goes first, but if a crop block has already run
@@ -741,36 +753,70 @@ def decode(genome, n_slots):
         plan.append((0 if kind == "ranch" else 1, slot, kind, what_i, block_i, start_day,
                      land_day, fert_i, trade_i, feed_i, pen_unit))
 
+    # **A scratch script for probing whether a job fits on a unit.**
+    # Whether `claim` raises depends only on `_claimed` and `_pos`, never on the op arrays, so a probe
+    # needs those two dicts copied and nothing else. Reusing one scratch script and resetting the two
+    # dicts costs two small dict copies per candidate; a `deepcopy` of the real script costs ~1MB, and
+    # `decode` runs thousands of times inside a search.
+    probe = R.Script()
+
+    def _write(target, unit, kind, what_i, block_i, start_day, land_day, fert_i, trade_i, feed_i):
+        """Emit one chain onto `unit`. Raises ValueError if the day will not take it."""
+        if kind == "ranch":
+            group = RANCH_GROUPS[block_i % len(RANCH_GROUPS)]
+            animal = R.ANIMAL_NAMES[what_i % len(R.ANIMAL_NAMES)]
+            R.ranch(target, animal=animal, tile=list(group), start_day=start_day,
+                    land_day=land_day, unit=unit,
+                    sell_fertilizer=bool(trade_i % 2), buy_land=False,
+                    buy_feed=not bool(feed_i % 2))
+            return ("ranch", animal, group, start_day), group
+        block = BLOCKS[block_i % len(BLOCKS)]
+        crop = R.CROPS[what_i % len(R.CROPS)]
+        hold = bool(feed_i % 2) and crop == "WHEAT"
+        R.grow(target, crop, list(block), plant_day=start_day, land_day=land_day,
+               unit=unit, fertilize=bool(fert_i % 2),
+               buy_fertilizer=bool(trade_i % 2), buy_land=False, sell=not hold,
+               water_every=WATER_EVERY_FOR_BLOCK[block])
+        return ("grow", crop, block, start_day), block
+
     for (_rank, slot, kind, what_i, block_i, start_day, land_day, fert_i, trade_i, feed_i,
-         chain_unit) in sorted(plan, key=lambda r: (r[0], r[1])):
+         fixed_unit) in sorted(plan, key=lambda r: (r[0], r[1])):
+        ground = (RANCH_GROUPS[block_i % len(RANCH_GROUPS)] if kind == "ranch"
+                  else BLOCKS[block_i % len(BLOCKS)])
+        # **Units already carrying work are tried FIRST, in ascending order, and a new hand is opened
+        # only when no existing one has room.** That is the whole fix: it is first-fit bin packing over
+        # each hand's 22 work turns, and it is what turns 15 hands into 12 for the leader's own farm
+        # (`tests/test_the_crew_bill_must_not_dwarf_the_farm.py`).
+        if fixed_unit is not None:
+            candidates = [fixed_unit]
+        else:
+            candidates = [u for u in (sorted(busy_units)
+                                      + [u for u in range(MAX_UNITS) if u not in busy_units])
+                          if unit_can_reach(u, ground[0], parcels_by(start_day))]
+        chain_unit = None
+        for cand in candidates:
+            probe._claimed = dict(script._claimed)
+            probe._pos = dict(script._pos)
+            try:
+                _write(probe, cand, kind, what_i, block_i, start_day, land_day,
+                       fert_i, trade_i, feed_i)
+            except ValueError:
+                continue
+            chain_unit = cand
+            break
+        if chain_unit is None:
+            skipped += 1
+            continue
+        busy_units.add(chain_unit)
         try:
-            if kind == "ranch":
-                # The `block` gene selects a pen *group*, so one slot can hold up to four animals.
-                group = RANCH_GROUPS[block_i % len(RANCH_GROUPS)]
-                cell = group[0]
-                animal = R.ANIMAL_NAMES[what_i % len(R.ANIMAL_NAMES)]
-                # A shed cell must be worked by whoever wakes on it, or the pen walks for no reason,
-                # so `ranch()` picks the unit there. A pen anywhere else takes the slot's own unit --
-                # otherwise every remote pen would collide on unit 0 and interleave its walks.
-                R.ranch(script, animal=animal, tile=list(group), start_day=start_day,
-                        land_day=land_day,
-                        unit=chain_unit,
-                        sell_fertilizer=bool(trade_i % 2), buy_land=False,
-                        buy_feed=not bool(feed_i % 2))
-                claimed.update(group)
-                used.append(("ranch", animal, group, start_day))
-            else:
-                block = BLOCKS[block_i % len(BLOCKS)]
-                crop = R.CROPS[what_i % len(R.CROPS)]
-                # Holding the harvest is only meaningful for the crop the animals eat.
-                hold = bool(feed_i % 2) and crop == "WHEAT"
-                R.grow(script, crop, list(block), plant_day=start_day, land_day=land_day,
-                       unit=chain_unit, fertilize=bool(fert_i % 2),
-                       buy_fertilizer=bool(trade_i % 2), buy_land=False, sell=not hold,
-                       water_every=WATER_EVERY_FOR_BLOCK[block])
-                claimed.update(block)
-                used.append(("grow", crop, block, start_day))
+            record, ground_used = _write(script, chain_unit, kind, what_i, block_i, start_day,
+                                         land_day, fert_i, trade_i, feed_i)
+            claimed.update(ground_used)
+            used.append(record)
         except ValueError:
+            # The probe said it fitted and the real write did not, which can only happen if the two
+            # disagree -- counted rather than swallowed, so it shows up instead of silently shrinking
+            # the farm.
             skipped += 1
     return script, used, skipped
 
