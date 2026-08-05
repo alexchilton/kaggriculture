@@ -266,20 +266,19 @@ def _cost(task, pos):
     return n
 
 
-def _can_leave(unit, parcels):
-    """Can `unit` move off its spawn tile at all, given the land the farm owns?
+def _can_leave(spawn, parcels):
+    """Can a unit standing on `spawn` move off it at all, given the land the farm owns?
 
-    Unit 3 spawns on (5,5) in SE, and BOTH its neighbours -- (4,5) in SW and (5,4) in NE -- are
-    locked until two and one parcels are bought. `ops.py:86` ignores a move onto LOCKED and the unit
-    simply loses the turn, silently, so every task handed to it on day 0 is emitted and lost.
+    `(5,5)` is SE and BOTH its neighbours -- `(4,5)` in SW and `(5,4)` in NE -- are locked until two
+    and one parcels are bought. `ops.py:86` ignores a move onto LOCKED and the unit simply loses the
+    turn, silently, so every task handed to it that day is emitted and lost.
 
     Measured: 17 PLANT ops emitted on day 0 and 12 landed, with 6 seeds left in store and every one
     of the 17 tiles unlocked NW ground. The tiles were fine; the hand could not get to them.
-    `routines.py` records the same unit as a known exception and this planner handed it work anyway.
+
+    `R.dawn_crew` now hires two per turn precisely so no hand ever wakes here, which should make this
+    a guard rather than a filter. It stays because the failure it catches is invisible.
     """
-    spawn = R.spawn_tile(unit)
-    if R.land_purchases_for(spawn) <= parcels:
-        pass                                  # standing on our own land, can always step
     for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0)):
         n = (spawn[0] + dx, spawn[1] + dy)
         if not (0 <= n[0] < R.BOARD_SIZE and 0 <= n[1] < R.BOARD_SIZE):
@@ -299,15 +298,32 @@ def _assign(script, day, tasks, max_hands, units, parcels=0):
     """
     pending = list(tasks)
     done, used_units = [], []
-    usable_units = [u for u in units if _can_leave(u, parcels)]
-    for unit in usable_units[:max_hands]:
+    # **Take the crew first, THEN drop the units that cannot move.** Filtering before the slice let a
+    # dropped unit shift the whole window up: a crew of five became slots `[0, 1, 2, 4, 5]`, and the
+    # farm owns slots 0-4 on a four-hand day, so every op written to slot 5 was dropped by the harness
+    # before the environment saw it -- 7 ops on day 0 including the PLANT that is the whole of
+    # `plants day 1: 16 against the tape's 17`. A unit that cannot leave its spawn leaves the crew a
+    # worker short; it does not entitle us to a hand we never hired.
+    #
+    # **And the spawn tile comes from the hire cadence, not from a table.** `R.dawn_crew` hires two per
+    # turn, which pins every hand to `(5,4)` or `(4,5)` -- one step from the shed and never the trapped
+    # `(5,5)` corner -- at the cost of the pair not existing until the turn after its HIRE settles.
+    batches, spawn, ready = R.dawn_crew(max(0, max_hands - 1))
+    usable_units = [u for u in units[:max_hands]
+                    if u in spawn and _can_leave(spawn[u], parcels)]
+    for unit in usable_units:
         if not pending:
             break
-        budget = script.turns_left(day, unit)
+        script.hold(day, unit, ready[unit])
+        # One step onto `(4,4)`, always. Every tour then starts from the shed, which is both what the
+        # PICKUP gate needs and what keeps the next hire batch's occupancy predictable.
+        arrival = [(m, None, None) for m in _walk(spawn[unit], SPAWN)]
+        cap = script.turns_left(day, unit)
+        budget = cap - len(arrival)
         if budget <= 0:
             continue
-        pos = R.spawn_tile(unit)
-        seq, carried = [], collections.Counter()
+        pos = SPAWN
+        seq, carried = list(arrival), collections.Counter()
 
         # Everything a hand will carry must be drawn in one trip to the shed, before it leaves: PICKUP
         # is gated on a shed-access tile that is *unlocked* (`ops.py:216`), and only `(4,4)` is always
@@ -321,7 +337,7 @@ def _assign(script, day, tasks, max_hands, units, parcels=0):
         # turns that were being spent walking and then charged to his dropped plantings.
         want = collections.Counter()
         take, spent = [], 0
-        cursor = R.spawn_tile(unit)
+        cursor = SPAWN
         while len(take) < 14:
             best = None
             for task in pending:
@@ -330,7 +346,8 @@ def _assign(script, day, tasks, max_hands, units, parcels=0):
                 # Only what must be carried AWAY from the shed needs the outward trip.
                 projected = want + (collections.Counter(task["need"])
                                     if task["tile"] not in SHED else collections.Counter())
-                prefix = (_steps(R.spawn_tile(unit), SPAWN) + len(projected)) if projected else 0
+                # Already standing on the shed, so the outward trip is the draw itself and no walk.
+                prefix = len(projected) if projected else 0
                 add = _cost(task, cursor)
                 if prefix + spent + add > budget:
                     continue
@@ -397,13 +414,13 @@ def _assign(script, day, tasks, max_hands, units, parcels=0):
         if any("HARVEST" in t["ops"] or "COLLECT_FERTILIZER" in t["ops"] for t in take):
             home = min(SHED, key=lambda c: _steps(pos, c))
             back = _walk(pos, home)
-            if len(seq) + len(back) + 1 <= budget:
+            if len(seq) + len(back) + 1 <= cap:
                 for m in back:
                     seq.append((m, None, None))
                 pos = home
                 seq.append(("DROP", None, None))
 
-        seq = seq[:budget]
+        seq = seq[:cap]
         t0 = script.claim(day, unit, len(seq), what=f"day {day} tour")
         for i, (name, item, crop) in enumerate(seq):
             if name == "PICKUP":
@@ -450,7 +467,19 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
 
     days = sorted(schedule)
     land_days = [d for d in days if schedule[d]["land"]]
-    parcels_by_day = {d: sum(1 for L in land_days if L <= d) for d in range(R.SEASON_DAYS)}
+    # **A parcel bought at dusk is not ground you can work that day.** LAND_PRICES is [1000, 2000, 4000]
+    # and the tape buys the second one at day 10 **hour 20**, after a whole day of selling has taken it
+    # to $4,051 -- so treating it as owned from that dawn routes twenty days of hands into SW across a
+    # border that is still locked. `land_turns` carries the hour off the tape; anything past hour 2 only
+    # counts from the following day.
+    def _land_ready(d):
+        turns = schedule[d].get("land_turns") or ([1] * int(schedule[d]["land"]))
+        return sum(1 for h in turns if h <= 2)
+
+    parcels_by_day = {}
+    for d in range(R.SEASON_DAYS):
+        parcels_by_day[d] = (sum(int(schedule[L]["land"]) for L in land_days if L < d)
+                             + (_land_ready(d) if d in land_days else 0))
     board = _board(parcels_by_day)
 
     # **BUY_LAND gets a turn to itself.** `build_script_submission.py:90` appends it LAST and then
@@ -458,11 +487,15 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
     # buys seed it falls off the end -- silently. Measured: the farm held ONE quadrant for the whole
     # season while carrying $1,494 on day 7 against a $1,000 parcel, so the tape's day-8 pens in NE
     # had nowhere to stand and the herd stalled at 8 against 14.
-    # Turn 1 keeps it early enough that the day's own work can use the ground.
+    # **At the hour the tape bought it.** Turn 1 bought the $1,000 parcel and silently lost the $2,000
+    # one, because on day 10 the bank does not reach $2,000 until hour 20 -- the tape sells all day and
+    # buys last. Ordering early is not conservative here; it is the difference between owning SW and
+    # routing into it for twenty days.
     for d in land_days:
-        t = d * TPD + 1
-        if t < script.T:
-            script.buy_land[t] += 1
+        for h in (schedule[d].get("land_turns") or [1]):
+            t = d * TPD + int(h)
+            if t < script.T:
+                script.buy_land[t] += 1
 
     # **Ascending unit id, not nearest-the-shed.** `build_plan` maps unit 0 to the farmer and units
     # 1.. to the hands, so using unit k at all requires k hires -- and the ladder is the Fibonacci
@@ -574,9 +607,16 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # Seeds come off the schedule like every other market order. Counting one per planting we
         # managed to place under-ordered by 23 across the season, because the tape buys seed for the
         # plantings it intends, not for the ones a packer found room for.
+        # **On a land day, spend nothing until the parcel is paid for.** `_do_buy_land` returns silently
+        # when the bank is short, and the day's seed at turn 0 took $452 off a $1,239 dawn -- so a
+        # $1,000 parcel was ordered against $787 and both of the season's purchases vanished without a
+        # word. The tape buys its seed at hour 3, after the parcel at hour 2. `spend_turn` is 0 on every
+        # other day, so nothing else moves.
+        spend_turn = 3 if any(h <= 2 for h in (row.get("land_turns") or [])) else 0
         for crop, qty in (row.get("seeds") or {}).items():
             if crop in R.CROPS:
-                script.buy_seed[day * TPD, R.CROPS.index(crop)] += int(qty)
+                t = min(day * TPD + spend_turn, script.T - 1)
+                script.buy_seed[t, R.CROPS.index(crop)] += int(qty)
 
         tasks = _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant)
         # Restocked pens: the structure already stands, so it is PICKUP, PLACE, FEED, CARE with no
@@ -629,7 +669,8 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # The season total is unchanged, only the turn, so market fidelity is untouched.
         for a, qty in (row.get("animals_bought") or {}).items():
             if a in R.ANIMAL_NAMES and day * TPD < script.T:
-                script.buy_animal[day * TPD, R.ANIMAL_NAMES.index(a)] += int(qty)
+                t = min(day * TPD + spend_turn, script.T - 1)
+                script.buy_animal[t, R.ANIMAL_NAMES.index(a)] += int(qty)
 
         done, left, used = _assign(script, day, tasks, workers, unit_order,
                                    parcels=parcels_by_day.get(day, 0))
@@ -653,10 +694,18 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # units our own packer happened to fill -- ran 2-3 hands on days 4-7 where the tape ran 6-8,
         # because our task generator under-generates and the crew was being sized from it. That closes
         # a loop: fewer hands, less work done, fewer hands next time.
+        # **Two per turn, spread over the first turns of the day, not the whole crew at dawn.**
+        # `_spawn_hand` picks the min-occupancy shed-access tile at the moment the HIRE settles, so a
+        # crew hired in one turn puts hand 3 on `(5,5)` -- SE, both neighbours locked, unable to move at
+        # all -- and every hand after it on a tile our dead reckoning does not predict. That is where 76
+        # of 126 PLANT ops were being lost. `R.dawn_crew` chose the same batching to compute `spawn` and
+        # `ready` above; this writes the orders that make it true. It matches the tape's own cadence,
+        # `[(1, 2), (2, 2), (3, 2)]`, and it also keeps HIRE clear of the 10-slot market cap at turn 0.
         need = int(row.get("hires", 0) or 0) or (max(used) if used else 0)
-        t0 = day * TPD
-        if t0 < script.T:
-            script.hire[t0] = max(int(script.hire[t0]), need)
+        for turn, n in R.dawn_crew(need)[0]:
+            t = day * TPD + turn
+            if t < script.T:
+                script.hire[t] = max(int(script.hire[t]), n)
         if left:
             refused.append(f"day {day}: {len(left)} of {len(tasks)} tasks unassigned "
                            f"({workers} workers, {want_turns} turns of work)")
@@ -682,7 +731,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             for k in range(6):
                 if left <= 0:
                     break
-                slot = day * TPD + 2 + k * 3      # +2: turn 1 is reserved for BUY_LAND
+                slot = day * TPD + spend_turn + 2 + k * 3   # turn 1 is reserved for BUY_LAND
                 if slot < script.T:
                     script.buy_product[slot, w] += min(per, left)
                 left -= per
@@ -709,7 +758,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             elif t["kind"] == "pen":
                 farm.pens[tile]["last_feed"] = day
         if fert_needed:
-            slot = min(day * TPD + 2, script.T - 1)
+            slot = min(day * TPD + spend_turn + 2, script.T - 1)
             script.buy_product[slot, R.PRODUCTS.index("FERTILIZER")] += fert_needed
 
         report_days.append(dict(day=day, hands=need, workers=workers, tasks=len(tasks),
@@ -741,7 +790,12 @@ def _sell_from_schedule(script, schedule):
             lots = max(1, min(6, qty))
             per, left = qty // lots, qty
             for k in range(lots):
-                t = day * TPD + 2 + k * 3
+                # **From turn 0, so the proceeds are in the bank before anything spends them.**
+                # Starting at turn 2 put the day's seed and livestock buys ahead of its sales, and
+                # `_do_buy_land` returns silently on a short bank: the farm held NW and nothing else for
+                # all thirty days while ordering two parcels it could not pay for. The tape's day 7
+                # sells at hours 0 and 1, buys the parcel at hour 2 and its seed at hour 3.
+                t = day * TPD + k * 3
                 n = per if k < lots - 1 else left
                 if t < script.T and n > 0:
                     script.sell[t, i] += n

@@ -117,6 +117,54 @@ def spawn_tile(unit, board_size=BOARD_SIZE):
     return spawn_order(board_size, n=unit + 1)[unit]
 
 
+def dawn_crew(hands, board_size=BOARD_SIZE, per_turn=2):
+    """Hire `hands` hands two per turn, and say where each one wakes and when it can first act.
+
+    `spawn_tile` above is a table indexed by unit, and that is only correct for a crew hired in a
+    single turn -- which is not how the spawn rule works. `_spawn_hand` (`kaggriculture.py:508`) picks
+    the **minimum-occupancy** shed-access tile in NWSE order **at the moment the HIRE settles**, so the
+    tile a hand gets depends on where everyone is standing then. Hiring four at once with the farmer on
+    `(4,4)` gives `(5,4)`, `(4,5)`, `(5,5)`, `(4,4)` -- and `(5,5)` is SE, whose only neighbours are
+    `(5,4)` in NE and `(4,5)` in SW. Both are LOCKED until land is bought, `_apply_unit_action` ignores
+    a move onto LOCKED without spending the turn, and the hand emits a whole day of ops onto a tile it
+    does not own. Silently: nothing raises, and our own op census still counts them as done.
+
+    Measured on the tape's schedule, before this existed: every unit spent 139-505 turns on a tile the
+    emitter did not believe in, and 76 of 126 PLANT ops were refused -- 27 LOCKED and 43 OCCUPIED,
+    because a displaced hand works its neighbour's tile.
+
+    **Two per turn is the cadence that makes the tile predictable.** With the farmer parked on `(4,4)`
+    and every earlier hand walked home to it, occupancy is `{(4,4): 1+k}` and the two picks are always
+    `(5,4)` and `(4,5)` -- one step from the shed, never `(5,5)`. Each pair then steps onto `(4,4)` on
+    its first turn, which restores the invariant before the next pair settles. Three per turn would put
+    the third hand back on `(5,5)`, and a hand there needs two turns to reach `(4,4)`, which breaks the
+    occupancy assumption for every batch after it.
+
+    The tape does the same thing: `[(1, 2), (2, 2), (3, 2)]` on day 1, with its farmer doing shed and
+    pen work on `(4,4)` through hour 7.
+
+    Returns `(batches, spawn, ready)` -- `[(turn_in_day, count)]`, `{unit: tile}`, `{unit: first turn
+    of the day the unit may act}`. Unit 0 is the farmer: it exists from turn 1 but must hold `(4,4)`
+    until the last batch has settled, so its `ready` is the turn after the final HIRE.
+    """
+    tiles = shed_access_tiles(board_size)                  # NWSE: (4,4), (5,4), (4,5), (5,5)
+    spawn, ready, batches = {0: tuple(SPAWN)}, {}, []
+    k, turn = 0, 0
+    while k < hands:
+        n = min(per_turn, hands - k)
+        occ = {t: 0 for t in tiles}
+        occ[tuple(SPAWN)] = 1 + k                         # farmer home, every earlier hand walked back
+        for _ in range(n):
+            pick = min(occ.items(), key=lambda kv: (kv[1], tiles.index(kv[0])))[0]
+            occ[pick] += 1
+            k += 1
+            spawn[k], ready[k] = pick, turn + 1           # the HIRE settles at dusk of `turn`
+        batches.append((turn, n))
+        turn += 1
+    ready[0] = max(1, turn)
+    return batches, spawn, ready
+
+
 def unit_for_cell(tile, board_size=BOARD_SIZE):
     """The lowest unit index that spawns on `tile`.
 
@@ -188,6 +236,17 @@ class Script:
     def turns_left(self, day, unit):
         """Work turns still free for `unit` on `day`. `TURNS_PER_DAY - 1` if nothing has claimed yet."""
         return TURNS_PER_DAY - self._claimed.get((day, unit), 1)
+
+    def hold(self, day, unit, until):
+        """Burn `unit`'s turns before `until` on `day`, so its first op lands exactly there.
+
+        A hand hired in the batch at turn `b` does not exist until turn `b + 1`, and an op written into
+        a turn before that is dropped by the harness before the environment sees it -- 7 ops on day 0
+        alone, including the PLANT that was the whole of `plants day 1: 16 against the tape's 17`.
+        The farmer uses this too: it must hold `(4,4)` until the last HIRE has settled, or the spawn
+        tiles `dawn_crew` predicts are wrong for every batch after it moves.
+        """
+        self._claimed[(day, unit)] = max(self._claimed.get((day, unit), 1), max(1, int(until)))
 
     def claim(self, day, unit, n, what=""):
         """Reserve `n` consecutive work turns for `unit` on `day` and return the first of them.

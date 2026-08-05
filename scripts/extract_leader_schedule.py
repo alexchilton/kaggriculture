@@ -44,7 +44,7 @@ seat = d["info"]["TeamNames"].index(args.team)
 
 day_rows = collections.defaultdict(lambda: dict(
     builds=[], places=[], plants=[], animals_bought=collections.Counter(),
-    seeds=collections.Counter(), land=0, hires=0, sells=collections.Counter(),
+    seeds=collections.Counter(), land=0, land_turns=[], hires=0, sells=collections.Counter(),
     buys=collections.Counter(), money_dawn=None, hands=0))
 
 # **From `steps[1:]`, like every other reader in this project.** `steps[0].action` is the
@@ -88,6 +88,12 @@ for t, step in enumerate(d["steps"][1:]):
             row["sells"][o[1]] += n
         elif o[0] == "BUY_LAND":
             row["land"] += 1
+            # **The hour matters as much as the day.** LAND_PRICES is [1000, 2000, 4000] and
+            # `_do_buy_land` returns silently on a short bank, so the tape buys the first parcel at
+            # day 7 hour 2 and the second at day 10 **hour 21** -- after a whole day of selling took it
+            # to $4,051. Emitting both at hour 1 bought the first and silently lost the second, and the
+            # emitter then routed hands into SW for twenty days on ground it never owned.
+            row["land_turns"].append(hour)
         elif o[0] == "HIRE":
             row["hires"] += 1
 
@@ -159,6 +165,7 @@ out = {str(day): dict(
     hands=day_rows[day]["hands"],
     hires=day_rows[day]["hires"],
     land=day_rows[day]["land"],
+    land_turns=day_rows[day]["land_turns"],
     builds=len(day_rows[day]["builds"]),
     places=day_rows[day]["places"],
     plants=day_rows[day]["plants"],
