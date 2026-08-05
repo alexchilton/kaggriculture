@@ -387,7 +387,12 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
         away = collections.Counter()
         for task in take:
             if task["tile"] not in SHED:
-                away.update(task["need"])
+                # **An animal is never pre-batched.** BUY_ANIMAL settles in the market phase at the END
+                # of its turn, so a beast ordered at hour 2 is not in the shed until hour 3 -- and this
+                # draw happens on the tour's first turn. Two of the tape's four day-0 PLACEs no-oped that
+                # way. Drawn mid-tour instead (below), which puts the PICKUP after the purchase without
+                # holding back the hand's planting, which is what the per-unit-day version got wrong.
+                away.update({k: v for k, v in task["need"].items() if k not in R.ANIMAL_NAMES})
         if away:
             for m in _walk(pos, SPAWN):
                 seq.append((m, None, None))
@@ -396,9 +401,24 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
                 seq.append(("PICKUP", item, qty))
                 carried[item] += qty
 
+        # **Animal stops go last**, so the draw for them lands as late in the day as the tour allows.
+        # `sorted` is stable, so everything else keeps the greedy order it was chosen in.
+        take.sort(key=lambda t: any(a in R.ANIMAL_NAMES for a in (t.get("need") or {})))
+
         # Nearest-neighbour from where the hand now stands. The tour is short (rarely over eight
         # stops) so the greedy order is within a step or two of optimal and costs nothing to compute.
         for nxt in take:
+            beasts = {k: v for k, v in (nxt.get("need") or {}).items() if k in R.ANIMAL_NAMES}
+            if beasts and nxt["tile"] not in SHED:
+                # Back to the shed for the beast, then out to its pen. Costs the walk and buys the
+                # PLACE, which is worth roughly $100 a day in fertilizer alone for the rest of the season.
+                home = min(SHED, key=lambda c: _steps(pos, c))
+                for m in _walk(pos, home):
+                    seq.append((m, None, None))
+                pos = home
+                for item, qty in sorted(beasts.items()):
+                    seq.append(("PICKUP", item, qty))
+                    carried[item] += qty
             for m in _walk(pos, nxt["tile"]):
                 seq.append((m, None, None))
             # Standing on a shed cell, draw what this stop needs right here.
