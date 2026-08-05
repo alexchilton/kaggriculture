@@ -69,8 +69,11 @@ def test_the_premise_the_far_corner_costs_more_than_the_opening_bank():
 
 def _genome(tile, land_day=0, start_day=0, n_slots=8):
     g = np.zeros((n_slots, len(C.GENES)), dtype=np.int64)
-    g[0] = (C.KINDS.index("ranch"), R.ANIMAL_NAMES.index("COW"), C.RANCH_TILES.index(tile),
-            C.START_DAY_CHOICES.index(start_day), C.LAND_DAY_CHOICES.index(land_day), 0, 0)
+    # The block gene selects a pen *group* now, so pick the single-pen group on this tile.
+    group_i = next(i for i, g in enumerate(C.RANCH_GROUPS) if g == (tile,))
+    row = [C.KINDS.index("ranch"), R.ANIMAL_NAMES.index("COW"), group_i,
+           C.START_DAY_CHOICES.index(start_day), C.LAND_DAY_CHOICES.index(land_day)]
+    g[0] = row + [0] * (len(C.GENES) - len(row))
     return g.reshape(-1)
 
 
@@ -98,7 +101,7 @@ def test_ground_bought_out_of_revenue_is_still_allowed():
     """
     _script, used, skipped = C.decode(_genome(SE_TILE, land_day=10, start_day=14), 8)
     assert skipped == 0, "a parcel funded by ten days of revenue was refused as unaffordable"
-    assert any(u[0] == "ranch" and u[2] == SE_TILE for u in used)
+    assert any(u[0] == "ranch" and SE_TILE in u[2] for u in used)
 
 
 def test_the_border_tile_is_where_it_actually_lands():
@@ -119,12 +122,13 @@ def test_decode_does_not_report_a_chain_it_could_not_place():
     """`decode()` returns `used` and `skipped` so an unusable genome reads as unusable rather than as
     a weak strategy. A chain that relocates is unusable and is currently counted as used."""
     g = np.zeros((8, len(C.GENES)), dtype=np.int64)
-    g[0] = (C.KINDS.index("ranch"), R.ANIMAL_NAMES.index("COW"),
-            C.RANCH_TILES.index(SE_TILE), C.START_DAY_CHOICES.index(0),
-            C.LAND_DAY_CHOICES.index(0), 0, 0)
+    group_i = next(i for i, g in enumerate(C.RANCH_GROUPS) if g == (SE_TILE,))
+    row = [C.KINDS.index("ranch"), R.ANIMAL_NAMES.index("COW"), group_i,
+           C.START_DAY_CHOICES.index(0), C.LAND_DAY_CHOICES.index(0)]
+    g[0] = row + [0] * (len(C.GENES) - len(row))
     script, used, skipped = C.decode(g.reshape(-1), 8)
     placed = _animal_tiles(_run(script))
-    claimed = {u[2] for u in used if u[0] == "ranch"}
+    claimed = {t for u in used if u[0] == "ranch" for t in u[2]}
     assert claimed <= placed, (
         f"decode reports pens at {sorted(claimed)} with {skipped} skipped, but the season ends with "
         f"animals at {sorted(placed)}")

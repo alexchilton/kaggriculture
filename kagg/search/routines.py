@@ -184,8 +184,26 @@ class Script:
 # ---------------------------------------------------------------------------
 
 def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
-          collect_fertilizer=True, sell_fertilizer=True, buy_land=True, buy_feed=True):
-    """Build a pen on `tile`, stock it, and feed it every remaining day of the season.
+          collect_fertilizer=True, sell_fertilizer=True, buy_land=True, buy_feed=True,
+          feed_every=None):
+    """Build pens on `tile`, stock them, and keep every animal fed for the rest of the season.
+
+    `tile` takes a single tile or a list of them. **A list is one chain, one unit, one slot** --
+    which is the point, because 1 pen = 1 slot meant five pens ate five of eight slots and left three
+    for crops, i.e. 12 crop tiles against the leader's 60-75. Strawberry alone is a $68,640 market
+    needing ~48 tiles, so those slots decide the whole farm.
+
+    The arithmetic. Per animal per day the loop is PICKUP, FEED, CARE, COLLECT_FERTILIZER, HARVEST =
+    five turns, and the four shed cells form a 2x2 block one unit walks in four moves:
+
+        4 moves + 4 animals x 5 turns = 24   just over the 23 available work turns
+        feeding every other day:  4 + 4 x 3.5 = 18   comfortable
+
+    `feed_every` is that cadence and defaults to whatever fits. It is safe for the same reason
+    alternate-day watering is: `jax_sim.py:1243` escapes an animal only after **two consecutive**
+    missed feeds, so a gap of one leaves the streak at 1 and the next feed resets it. The leader
+    feeds 319 times across 14 animals -- **22.8 each, not 30** -- so he is not feeding daily either.
+    CARE, COLLECT_FERTILIZER and HARVEST stay daily: they are cheap and none of them gates survival.
 
     Emits the complete chain and nothing partial. There is deliberately no primitive that buys an
     animal without also committing the feed loop that keeps it alive -- that combination is the
@@ -232,7 +250,22 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
     if animal not in ANIMALS:
         raise ValueError(f"unknown animal {animal}")
 
-    tile = tuple(tile)
+    # One tile or many. Normalised early so everything below is written against a list.
+    tiles = ([tuple(tile)] if isinstance(tile, tuple) and tile and isinstance(tile[0], int)
+             else [tuple(t) for t in tile])
+    if not tiles:
+        raise ValueError("ranch() needs at least one tile")
+    if len(set(tiles)) != len(tiles):
+        raise ValueError(f"duplicate pen tiles {tiles}")
+    # One quadrant, with the shed cells as the deliberate exception: they are the contiguous 2x2 block
+    # around the shed, one per quadrant by construction, and adjacent to each other -- `(4,4)` to
+    # `(5,4)` is a single EAST step. Refusing them would refuse the only pen group that needs no walk
+    # to the shed at all. Everything else routes inside one quadrant, as `grow()` does.
+    quads = {quadrant_of(*t) for t in tiles}
+    if len(quads) > 1 and not set(tiles) <= set(shed_access_tiles()):
+        raise ValueError(f"pens span quadrants {sorted(quads)}; one chain routes inside one quadrant")
+    tiles = serpentine(tiles)
+    tile = tiles[0]                      # the chain's anchor: its unit, its land, its walk
     info = ANIMALS[animal]
     a_idx = ANIMAL_NAMES.index(animal)
     wheat = PRODUCTS.index("WHEAT")
@@ -294,55 +327,99 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
 
     build_op = "BUILD_PASTURE" if info["structure"] == "PASTURE" else "BUILD_COOP"
 
+    # How often each animal is fed. `None` means "as often as the day allows": the survival rule is a
+    # two-strike one (`jax_sim.py:1243`, two consecutive missed feeds and the animal escapes), so a
+    # cadence of 2 is safe and halves both the turns and the wheat bill. One pen has room to feed
+    # daily; four do not, and rather than raise, the chain stretches the cadence until it fits.
+    if feed_every is None:
+        feed_every = 1 if len(tiles) <= 2 else 2
+    if feed_every < 1:
+        raise ValueError("feed_every must be at least 1")
+    if feed_every > 2:
+        raise ValueError("feed_every above 2 starves the herd: two missed feeds and it escapes")
+    feed_shifts = [tiles[i::feed_every] for i in range(feed_every)]
+
     def day_loop(day, setup):
-        """One day on the cell. `setup` prepends build/stock/place before the feed cycle."""
+        """One day over the group. **One pen is built per day**, not all of them at once.
+
+        Building four pens on a single day needs 32 turns of a 24-turn day: each is BUILD, PICKUP,
+        PLACE, FEED, CARE, HARVEST on top of the walk. Staggering costs nothing -- an animal placed on
+        day `start_day + i` simply starts producing `i` days later -- and it matches cash flow, since
+        four animals is $1,600 against a $3,000 opening bank. The leader does the same: 14 pens with
+        `BUILD_PASTURE` spread across the season rather than clustered.
+        """
         d = day * TURNS_PER_DAY
         if d >= script.T:
             return
-        # Order feed a turn ahead of drawing it, so the market has resolved either way.
+        # Pens built so far, and the one being raised today.
+        n_live = min(len(tiles), max(0, day - start_day))
+        building = tiles[n_live] if n_live < len(tiles) else None
+        live = tiles[:n_live]
+        if not live and building is None:
+            return
+        # Feed only what exists. The shift index walks the live herd so each animal is reached at
+        # least every `feed_every` days.
+        feeding = [t for t in feed_shifts[(day - start_day) % feed_every] if t in live]
+        # **A pen must be fed on the day it is placed.** `consecutive_unfed` starts at 0 and ticks
+        # every night, so an animal placed on day D and first fed on D+2 escapes overnight on D+1 --
+        # before it has produced anything, for the full purchase price. Measured: four pens placed on
+        # consecutive days, zero alive at the bell.
+        if building is not None:
+            feeding = feeding + [building]
+        # Order feed a turn ahead of drawing it, so the market has resolved either way. One unit of
+        # wheat per animal actually being fed today, not per animal owned.
         #
         # `buy_feed=False` lives off the shed instead, which is the wheat -> animal -> fertilizer loop
         # `production.py:53` calls the main structural reason to keep animals. It only closes if some
         # `grow("WHEAT", ..., sell=False)` chain is stocking that shed: `pickup` takes by item index
         # and does not care where the wheat came from, but `consecutive_unfed >= 2` escapes the animal
-        # for a deterministic $300-$500, so an empty shed is not a small mistake. Five pens buy 120
-        # units at $25 = $3,000 a season, and a 4-tile wheat block yields 112.
-        if buy_feed:
-            script.buy_product[d, wheat] += 1
-        if setup:
+        # for a deterministic $300-$500, so an empty shed is not a small mistake.
+        if buy_feed and feeding:
+            script.buy_product[d, wheat] += len(feeding)
+        if building is not None:
             script.buy_animal[d, a_idx] += 1
 
         # `(op_name, item, qty)`, built before any of it is written so the day's length can be
         # checked. PICKUP only works next to the shed, so everything the unit must carry -- the
-        # animal on the build day, the wheat every day -- is drawn at spawn *before* the walk.
+        # animals on the build day, the wheat every day -- is drawn at spawn *before* the walk.
         seq = []
-        if zero_movement:
-            # Unit 0 on `(4,4)`: no walk at all, in the order this routine has always run.
-            if setup:
+        pos = tuple(spawn_tile(u))
+        if not (zero_movement and len(tiles) == 1):
+            for m in _path_ops(pos, SPAWN):
+                seq.append((m, None, 0))
+            pos = tuple(SPAWN)
+        if building is not None:
+            seq.append(("PICKUP", animal, 1))
+        if feeding:
+            seq.append(("PICKUP", "WHEAT", len(feeding)))
+
+        for t_ in [t for t in tiles if t in live or t == building]:
+            for m in _path_ops(pos, t_):
+                seq.append((m, None, 0))
+            pos = t_
+            if t_ == building:
                 seq.append((build_op, None, 0))
-                seq.append(("PICKUP", animal, 1))
                 seq.append(("PLACE", animal, 1))
-            seq.append(("PICKUP", "WHEAT", 1))
-        else:
-            seq += [(m, None, 0) for m in to_spawn]
-            if setup:
-                seq.append(("PICKUP", animal, 1))
-            seq.append(("PICKUP", "WHEAT", 1))
-            seq += [(m, None, 0) for m in walk]
-            if setup:
-                seq.append((build_op, None, 0))
-                seq.append(("PLACE", animal, 1))
-        seq.append(("FEED", None, 0))
-        # CARE grants +1 yield on the next fed production day, and `pending_care_bonus` accumulates
-        # while it waits, capped at `max_held`. One turn a day for roughly double output; it is why
-        # CARE correlates +0.441 with money across 312 real leaderboard seats.
-        seq.append(("CARE", None, 0))
-        if collect_fertilizer and not setup:
-            # Nothing to take on the build day: `fertilizer_available` is set overnight for animals
-            # that are already alive, so the first unit exists on the morning after PLACE.
-            seq.append(("COLLECT_FERTILIZER", None, 0))
-        seq.append(("HARVEST", None, 0))
-        if at_shed:
+                seq.append(("FEED", None, 0))
+                # CARE on the build day too: `pending_care_bonus` accumulates while it waits, so the
+                # turn is banked rather than spent. No COLLECT_FERTILIZER or HARVEST -- both need an
+                # overnight tick the animal has not had yet.
+                seq.append(("CARE", None, 0))
+                continue
+            if t_ in feeding:
+                seq.append(("FEED", None, 0))
+            # CARE grants +1 yield on the next fed production day, and `pending_care_bonus` accumulates
+            # while it waits, capped at `max_held`. One turn a day for roughly double output; it is why
+            # CARE correlates +0.441 with money across 312 real leaderboard seats. Kept daily even on a
+            # non-feeding day: it is cheap and it does not gate survival.
+            seq.append(("CARE", None, 0))
+            if collect_fertilizer:
+                # `fertilizer_available` is set overnight for animals already alive, so a pen raised
+                # today has nothing to give -- which the `continue` above already skips.
+                seq.append(("COLLECT_FERTILIZER", None, 0))
+            seq.append(("HARVEST", None, 0))
+
+        if at_shed and pos in shed_access_tiles():
             # Only worth a turn where it can succeed: DROP tests shed-adjacency, so out in the field
             # it is a no-op and `_drop_to_shed` moves the goods at dusk regardless.
             seq.append(("DROP", None, 0))
@@ -353,8 +430,8 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
             t += 1
         if t > d + TURNS_PER_DAY:
             raise ValueError(
-                f"day {day} needs {t - d} turns to reach {tile} from {spawn_tile(u)} but a day is "
-                f"{TURNS_PER_DAY}; use a closer cell")
+                f"day {day} needs {t - d} turns for {len(tiles)} pen(s) at {tiles} from "
+                f"{spawn_tile(u)} but a day is {TURNS_PER_DAY}; use fewer or closer pens")
 
         if sell:
             # Over-requesting is safe: `_process_market` stops when the shed runs dry. Selling daily
@@ -367,7 +444,9 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
             # `test_grow_routine.py`.
             t_sell = t + 1 if at_shed else (day + 1) * TURNS_PER_DAY
             if t_sell < script.T:
-                script.sell[t_sell, prod_idx] += info["max_held"]
+                # Scaled by the herd, not by one animal: a four-pen chain has four animals' worth of
+                # product in the shed and an order for one animal's worth would leave three unsold.
+                script.sell[t_sell, prod_idx] += info["max_held"] * max(1, len(live))
                 if collect_fertilizer and sell_fertilizer:
                     # **Selling and feeding it to plants are rival uses, and this used to be neither
                     # a choice nor visible.** The pen sold every unit it collected while
@@ -376,11 +455,10 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
                     # sales, so selling is not obviously wrong; a cow yields ~29 units a season and a
                     # fertilized 4-tile block wants ~40, so feeding is not obviously wrong either.
                     # It is a genuine trade-off and the search now owns it.
-                    script.sell[t_sell, fert_idx] += 1
+                    script.sell[t_sell, fert_idx] += max(1, len(live))
 
-    day_loop(start_day, setup=True)
-    for day in range(start_day + 1, SEASON_DAYS):
-        day_loop(day, setup=False)
+    for day in range(start_day, SEASON_DAYS):
+        day_loop(day, setup=(day == start_day))
     return script
 
 

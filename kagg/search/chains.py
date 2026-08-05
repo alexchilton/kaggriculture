@@ -123,6 +123,58 @@ RANCH_CELLS = tuple(R.shed_access_tiles())
 # anywhere, where before `catalog()` offered slot `k` only cell `k`.
 RANCH_TILES = RANCH_CELLS + tuple(b[0] for b in BLOCKS)
 
+
+def _fits_a_pen_group(group):
+    """Whether one unit can run every pen in `group` inside 24 turns, at any start day.
+
+    Several start days, not one, because the feed cadence is indexed off `start_day`: which pens are
+    fed on the peak day -- the last build day, when the chain has every earlier pen live *and* raises
+    one more -- depends on the parity. A group validated only at day 0 raised at day 11 for a start
+    day of 8, and `decode()` would have swallowed that as a skipped slot.
+    """
+    for start in (0, 1, 8, 9):
+        try:
+            R.ranch(R.Script(), "COW", list(group), start_day=start,
+                    land_day=max(0, start - 4), unit=0)
+        except ValueError:
+            return False
+    return True
+
+
+def _cut_pen_groups():
+    """Pens a single chain may hold: one unit, one slot, several animals.
+
+    How many fit depends on the walk, so each candidate is validated rather than assumed -- the same
+    approach `WIDE_BLOCKS` takes. A group near the shed fits four; the far NW corner is eight moves
+    away and fits three.
+
+    This is what breaks the herd/crop deadlock. One pen per chain meant five pens ate five of eight
+    slots and left three for crops = 12 crop tiles, while strawberry alone is a $68,640 market needing
+    ~48. Four pens on one chain frees three slots and cuts the hire bill, since fewer distinct units
+    are needed at dawn.
+    """
+    # Singles first and for every tile a pen could previously stand on, so the multi-pen vocabulary
+    # strictly *adds*: a lone remote pen was the whole of task #22 and must stay reachable.
+    groups = [(c,) for c in RANCH_CELLS]
+    groups += [(b[0],) for b in NARROW_BLOCKS + WIDE_BLOCKS]
+    groups.append(tuple(RANCH_CELLS))             # the shed 2x2: no walk to the shed at all
+    for block in NARROW_BLOCKS + WIDE_BLOCKS:
+        for n in (4, 3, 2):
+            if len(block) >= n:
+                groups.append(tuple(block[:n]))
+    seen, out = set(), []
+    for g in groups:
+        key = tuple(sorted(g))
+        if key in seen:
+            continue
+        seen.add(key)
+        if _fits_a_pen_group(g):
+            out.append(g)
+    return tuple(out)
+
+
+RANCH_GROUPS = _cut_pen_groups()
+
 OPENING_BANK = 3000                 # `kaggriculture.py:237` startingMoney
 
 # The first day a farm can possibly have sold anything. Wheat is the fastest crop: planted on day 0 it
@@ -204,7 +256,7 @@ OWNED_CELLS = tuple(c for c in RANCH_CELLS if land_cost(c) == 0)
 GENES = ("kind", "what", "block", "start_day", "land_day", "fertilize", "fert_trade", "feed_loop")
 N_KINDS = len(KINDS)
 N_WHAT = max(len(R.CROPS), len(R.ANIMAL_NAMES))
-GENE_SIZES = (N_KINDS, N_WHAT, max(len(BLOCKS), len(RANCH_TILES)), len(START_DAY_CHOICES),
+GENE_SIZES = (N_KINDS, N_WHAT, max(len(BLOCKS), len(RANCH_GROUPS)), len(START_DAY_CHOICES),
               len(LAND_DAY_CHOICES), 2, 2, 2)
 
 
@@ -269,7 +321,7 @@ def _land_requests(genome, n_slots):
         if kind == "off":
             continue
         block_i = int(g[slot, 2])
-        tile = (RANCH_TILES[block_i % len(RANCH_TILES)] if kind == "ranch"
+        tile = (RANCH_GROUPS[block_i % len(RANCH_GROUPS)][0] if kind == "ranch"
                 else BLOCKS[block_i % len(BLOCKS)][0])
         need = R.land_purchases_for(tile)
         if not need:
@@ -324,7 +376,7 @@ def decode(genome, n_slots):
         what_i, block_i, start_i, land_i, fert_i, trade_i, feed_i = (int(x) for x in g[slot, 1:])
         start_day = START_DAY_CHOICES[start_i % len(START_DAY_CHOICES)]
         land_day = LAND_DAY_CHOICES[land_i % len(LAND_DAY_CHOICES)]
-        tile = (RANCH_TILES[block_i % len(RANCH_TILES)] if kind == "ranch"
+        tile = (RANCH_GROUPS[block_i % len(RANCH_GROUPS)][0] if kind == "ranch"
                 else BLOCKS[block_i % len(BLOCKS)][0])
         if R.land_purchases_for(tile) > affordable:
             # The ground cannot be bought on the day this chain orders it. Emitting the chain anyway
@@ -335,16 +387,19 @@ def decode(genome, n_slots):
             continue
         try:
             if kind == "ranch":
-                cell = tile
+                # The `block` gene selects a pen *group*, so one slot can hold up to four animals.
+                group = RANCH_GROUPS[block_i % len(RANCH_GROUPS)]
+                cell = group[0]
                 animal = R.ANIMAL_NAMES[what_i % len(R.ANIMAL_NAMES)]
                 # A shed cell must be worked by whoever wakes on it, or the pen walks for no reason,
                 # so `ranch()` picks the unit there. A pen anywhere else takes the slot's own unit --
                 # otherwise every remote pen would collide on unit 0 and interleave its walks.
-                R.ranch(script, animal=animal, tile=cell, start_day=start_day, land_day=land_day,
-                        unit=None if cell in RANCH_CELLS else units[slot],
+                R.ranch(script, animal=animal, tile=list(group), start_day=start_day,
+                        land_day=land_day,
+                        unit=None if cell in RANCH_CELLS and len(group) == 1 else units[slot],
                         sell_fertilizer=bool(trade_i % 2), buy_land=False,
                         buy_feed=not bool(feed_i % 2))
-                used.append(("ranch", animal, cell, start_day))
+                used.append(("ranch", animal, group, start_day))
             else:
                 block = BLOCKS[block_i % len(BLOCKS)]
                 crop = R.CROPS[what_i % len(R.CROPS)]
@@ -414,7 +469,8 @@ def seeded_genome(n_slots, rng=None):
         g[slot, 0] = KINDS.index(kind)
         if kind == "ranch":
             g[slot, 1] = R.ANIMAL_NAMES.index(what)
-            g[slot, 2] = RANCH_TILES.index(OWNED_CELLS[slot % len(OWNED_CELLS)])
+            g[slot, 2] = next(i for i, gr in enumerate(RANCH_GROUPS)
+                              if gr == (OWNED_CELLS[slot % len(OWNED_CELLS)],))
         else:
             g[slot, 1] = R.CROPS.index(what)
             g[slot, 2] = BLOCKS.index(OWNED_BLOCKS[block_cursor])
