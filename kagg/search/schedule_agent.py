@@ -168,9 +168,15 @@ def make_agent(schedule, me=0):
                 elif kind == "WEED":
                     tasks.append((RANK["DIG"], t, "DIG", None))
                 elif kind in ("PASTURE", "COOP"):
-                    # An empty structure -- restock it if a matching animal is in store.
+                    # An empty structure -- restock it if a matching animal is in the shed **or already in
+                    # a hand**. Testing the shed alone dropped the task the instant the animal was picked
+                    # up, so a unit that had just built a pen and was holding a cow forgot to place it:
+                    # day 0 raised 4 pens and stocked 1.
                     for a in R.ANIMAL_NAMES:
-                        if R.ANIMALS[a]["structure"] == kind and shed.get(a, 0) > 0:
+                        if R.ANIMALS[a]["structure"] != kind:
+                            continue
+                        if shed.get(a, 0) > 0 or any(collections.Counter(iv).get(a, 0) > 0
+                                                     for iv in invs):
                             tasks.append((RANK["PLACE"], t, "PLACE", a))
                             break
 
@@ -314,10 +320,13 @@ def make_agent(schedule, me=0):
 
         # Hire TWO a turn. `_spawn_hand` picks by occupancy when the HIRE settles, so a third order in one
         # turn puts a hand on `(5,5)` in SE with both neighbours locked, unable to move for the whole day.
+        # **Count ORDERS issued today, not orders plus hands.** `have = len(units) - 1 + hired` counted
+        # every landed hire twice -- once in `hands` and once in `hired` -- so a target of 4 was reported
+        # met at 2 and the crew never grew. Hands are dismissed nightly and `hires_today` resets with them,
+        # so the orders issued today are exactly the crew we should end up with.
         target = int(row.get("hands", 0) or 0)
-        have = len(units) - 1 + state["hired"]
-        if have < target and hour < 8:
-            for _ in range(min(2, target - have)):
+        if state["hired"] < target and hour < 8:
+            for _ in range(min(2, target - state["hired"])):
                 orders.append(["HIRE"])
                 state["hired"] += 1
 
