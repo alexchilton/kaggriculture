@@ -11,6 +11,20 @@ reproduce -- the tape's tiles are one arrangement of many that satisfy the same 
 
 Levels 3 and 4 inherit level 2's ceiling: the leader's router is his code and is measurably not
 shortest-path (3774 of 3775 of his moves changed position, so the detours are policy, not obstacles).
+
+**DO NOT OPTIMISE LEVELS 3 OR 4 TOWARDS 100%.** Measured in the real environment, three games each:
+
+    level 3, his tiles   61.99% tile fidelity   banks  $1,484   (two of three games banked $0)
+    level 4, our tiles   37.76% tile fidelity   banks $11,215   (11,592 / 10,783 / 11,271)
+
+Fidelity to his tape and money are ANTI-correlated here, by 7.5x. His tiles are chosen for his
+routing and his unit assignment; handed to a different assigner they scatter the work, so hands walk
+further, fewer tasks fit the day, and the farm starves. And the tile sets barely differ anyway -- 58
+of 64 are shared, with near-identical quadrant splits (his SW24/NW20/NE20, ours NW24/SW22/NE20).
+
+So these levels are a diagnosis, not a target. Level 1 and the round trip are the ones that must be
+exact, because they are statements about our own pipeline being lossless. Levels 2-4 say where we
+differ from one particular opponent, which is worth knowing and is not worth matching.
 """
 import collections, json, pathlib, sys
 sys.path.insert(0, "."); sys.path.insert(0, "scripts")
