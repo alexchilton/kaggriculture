@@ -141,8 +141,13 @@ def test_the_crew_is_hired_once_at_dawn_and_never_larger_than_his(sched, tape):
         rest = int(hire[day * TPD + 1:(day + 1) * TPD].sum())
         if rest:
             wrong.append(f"day {day}: {rest} HIRE orders after dawn; the ladder is walked per order")
-        if dawn > row.get("hands", 0):
-            wrong.append(f"day {day}: hires {dawn} against his {row.get('hands', 0)}")
+        # Compared against HIRES ORDERED, not hands owned. On day 1 the tape issues 6 HIRE orders
+        # and is only ever observed holding 4 hands: it is sitting on $42, and `_do_hire` returns
+        # silently when `farm["money"] < cost`, so the last two no-op. Asserting `hires <= hands`
+        # would forbid us from doing what the tape does -- over-order into a thin bank and let the
+        # ladder truncate itself.
+        if dawn > row.get("hires", 0):
+            wrong.append(f"day {day}: hires {dawn} against the tape's {row.get('hires', 0)}")
     assert not wrong, "\n  " + "\n  ".join(wrong[:12])
 
 

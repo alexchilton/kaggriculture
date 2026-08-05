@@ -217,6 +217,8 @@ def test_our_crew_is_never_larger_than_his(schedule, ours):
         t = day * R.TURNS_PER_DAY
         if t >= len(hire):
             break
-        if int(hire[t]) > schedule[day]["hands"]:
-            over.append(f"day {day}: {int(hire[t])} against his {schedule[day]['hands']}")
+        # Against hires ORDERED, not hands owned -- the tape orders 6 on day 1 and holds 4, because
+        # a HIRE on an empty bank is a silent no-op (`_do_hire`).
+        if int(hire[t]) > schedule[day]["hires"]:
+            over.append(f"day {day}: {int(hire[t])} against the tape's {schedule[day]['hires']}")
     assert not over, "crew larger than his:\n  " + "\n  ".join(over[:8])
