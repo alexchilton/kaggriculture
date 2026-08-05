@@ -118,6 +118,38 @@ def seasons():
     return out
 
 
+@pytest.fixture(scope="module")
+def orders():
+    """`day -> Counter(order kind)` in units, for the tape and for what we emit."""
+    import numpy as np
+
+    from kagg.search import dayplan
+    from kagg.search import routines as R
+
+    d = json.loads(REPLAY.read_text())
+    seat = d["info"]["TeamNames"].index(TEAM)
+    a = collections.defaultdict(collections.Counter)
+    for t, st in enumerate(d["steps"][1:]):
+        act = (st[seat] or {}).get("action") or {}
+        for o in (act.get("market") or []):
+            if o:
+                a[t // TD][o[0]] += int(o[2]) if len(o) > 2 else 1
+
+    sched = {int(k): v for k, v in json.loads(SCHEDULE.read_text()).items()}
+    script, _r = dayplan.emit(sched)
+    arr = script.arrays()
+    b = collections.defaultdict(collections.Counter)
+    for t in range(arr["sell"].shape[0]):
+        day = t // TD
+        b[day]["SELL"] += int(arr["sell"][t].sum())
+        b[day]["BUY_PRODUCT"] += int(arr["buy_product"][t].sum())
+        b[day]["BUY_SEED"] += int(arr["buy_seed"][t].sum())
+        b[day]["BUY_ANIMAL"] += int(arr["buy_animal"][t].sum())
+        b[day]["HIRE"] += int(arr["hire"][t])
+        b[day]["BUY_LAND"] += int(arr["buy_land"][t])
+    return a, b
+
+
 def _diff(seasons, field, upto):
     rows = []
     for day in range(1, upto + 1):
@@ -157,6 +189,24 @@ def test_no_tile_of_ours_dies_of_thirst(seasons):
 def test_the_shed_matches_through_the_first_week(seasons):
     rows = _diff(seasons, "shed", 7)
     assert not rows, "\n  " + "\n  ".join(rows)
+
+
+def test_what_we_buy_and_sell_matches_day_by_day(seasons, orders):
+    """Alex's addition, and it belongs here rather than in the op census.
+
+    `scripts/tape_match.py` already shows every market TOTAL is exact -- SELL 4427, BUY_PRODUCT 967,
+    HIRE 306, BUY_SEED 131, BUY_ANIMAL 14, BUY_LAND 2. That is not the same as trading the same way:
+    the same 967 units of wheat bought on the wrong days is a different farm, because the town's price
+    walks with its inventory and a purchase made before the sale that funds it simply no-ops.
+    """
+    a, b = orders
+    rows = []
+    for day in range(0, 30):
+        for kind in ("SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL", "HIRE", "BUY_LAND"):
+            av, bv = a[day][kind], b[day][kind]
+            if av != bv:
+                rows.append(f"day {day}: {kind} {bv} against the tape's {av}")
+    assert not rows, f"{len(rows)} days differ:\n  " + "\n  ".join(rows[:15])
 
 
 def test_the_money_matches_through_the_first_week(seasons):

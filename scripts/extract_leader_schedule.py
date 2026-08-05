@@ -47,7 +47,12 @@ day_rows = collections.defaultdict(lambda: dict(
     seeds=collections.Counter(), land=0, hires=0, sells=collections.Counter(),
     buys=collections.Counter(), money_dawn=None, hands=0))
 
-for t, step in enumerate(d["steps"]):
+# **From `steps[1:]`, like every other reader in this project.** `steps[0].action` is the
+# placeholder recorded at reset and is never applied, so counting from index 0 puts every day
+# boundary one turn early: the last action of each day gets filed under the next one. It showed up as
+# SELL and BUY_SEED totals off by one to three on most days while the SEASON totals were exact --
+# the orders were all there, filed on the wrong day.
+for t, step in enumerate(d["steps"][1:]):
     day, hour = divmod(t, TD)
     row = day_rows[day]
     s = step[seat] or {}
