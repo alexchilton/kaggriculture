@@ -220,8 +220,17 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
 
 
 def _cost(task, pos):
-    """Turns to reach `task` from `pos` and do it."""
-    return _steps(pos, task["tile"]) + len(task["ops"])
+    """Turns to reach `task` from `pos` and do it, including a draw made at the stop itself.
+
+    A stop on a shed cell draws what it needs where it stands, and those PICKUPs are turns like any
+    other. Leaving them out of the estimate let the packer accept a tour it could not finish, and
+    `seq[:budget]` then silently cut the tail -- which showed up as WATER and DROP falling when
+    PICKUP rose.
+    """
+    n = _steps(pos, task["tile"]) + len(task["ops"])
+    if task["tile"] in SHED and task["need"]:
+        n += len(task["need"])
+    return n
 
 
 def _assign(script, day, tasks, max_hands, units):
@@ -261,7 +270,9 @@ def _assign(script, day, tasks, max_hands, units):
             for task in pending:
                 if task in take:
                     continue
-                projected = want + collections.Counter(task["need"])
+                # Only what must be carried AWAY from the shed needs the outward trip.
+                projected = want + (collections.Counter(task["need"])
+                                    if task["tile"] not in SHED else collections.Counter())
                 prefix = (_steps(R.spawn_tile(unit), SPAWN) + len(projected)) if projected else 0
                 add = _cost(task, cursor)
                 if prefix + spent + add > budget:
@@ -279,11 +290,20 @@ def _assign(script, day, tasks, max_hands, units):
         if not take:
             continue
 
-        if want:
+        # **Draw at the shed tile you are already standing on, not in one trip before you leave.**
+        # PICKUP needs a shed-access tile, and the herd lives on those four cells -- so a hand doing
+        # pen work is already somewhere it can draw, for free. Pre-batching every item into a single
+        # trip out of `SPAWN` emitted 193 pickups a season against the tape's 339, and paid a walk for
+        # the ones it did emit. Only what is needed AWAY from the shed has to be carried out.
+        away = collections.Counter()
+        for task in take:
+            if task["tile"] not in SHED:
+                away.update(task["need"])
+        if away:
             for m in _walk(pos, SPAWN):
                 seq.append((m, None, None))
             pos = SPAWN
-            for item, qty in sorted(want.items()):
+            for item, qty in sorted(away.items()):
                 seq.append(("PICKUP", item, qty))
                 carried[item] += qty
 
@@ -292,6 +312,10 @@ def _assign(script, day, tasks, max_hands, units):
         for nxt in take:
             for m in _walk(pos, nxt["tile"]):
                 seq.append((m, None, None))
+            # Standing on a shed cell, draw what this stop needs right here.
+            if nxt["tile"] in SHED and nxt["need"]:
+                for item, qty in sorted(nxt["need"].items()):
+                    seq.append(("PICKUP", item, qty))
             pos = nxt["tile"]
             for name in nxt["ops"]:
                 crop = nxt.get("crop") if name == "PLANT" else None
