@@ -41,6 +41,11 @@ import pytest
 from kagg.search import executor as X
 from kagg.search import plan as P
 
+# SKIPPED, deliberately and with the reason stated, rather than deleted: the code it
+# covers still exists and may be revived. A silently green suite would be worse than a red one.
+pytestmark = pytest.mark.skip(reason=(
+    "tests the superseded plan/executor architecture. The live path is routines.py -> chains.py -> build_script_submission.py and imports none of kagg.search.{plan,executor}. See docs/executor_livestock_broken_2026-08-04.md."))
+
 TILES = X.TILES
 STAKE = 3_000.0          # the real opening bank
 PENS = 14                # the leaders build 14 pastures, 0 coops

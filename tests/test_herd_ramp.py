@@ -34,6 +34,11 @@ import pytest
 
 from kagg.search import library, plan as P, replay_plan as RP, rollout
 
+# SKIPPED, deliberately and with the reason stated, rather than deleted: the code it
+# covers still exists and may be revived. A silently green suite would be worse than a red one.
+pytestmark = pytest.mark.skip(reason=(
+    "tests the superseded plan/library/rollout/replay_plan architecture. The herd ramp is now owned by ranch()'s one-pen-per-day loop and covered by tests/test_multi_pen_ranch.py."))
+
 EPISODE = "data/89113699.json"
 SEAT = 1
 

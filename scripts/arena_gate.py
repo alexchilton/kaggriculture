@@ -87,7 +87,17 @@ def main():
     ap.add_argument("--genome", default="data/chain_search_s8/best_beam_genome.npz")
     ap.add_argument("--slots", type=int, default=8)
     ap.add_argument("--seeds", type=int, default=20)
-    ap.add_argument("--workers", type=int, default=12)
+    # **1, not 12, and this is not a performance choice.** `ProcessPoolExecutor` on macOS spawns
+    # rather than forks, so each worker re-imports this module with `_GENOME` unset. `_plan()` then
+    # cannot build the tape, `agent()` falls back to `{"farmer": ["PASS"]}` every turn, and the gate
+    # reports our bank as exactly $3,000 with a 0.000 win rate against every opponent -- while the same
+    # tape banks $41,041 against `starter` when played in-process.
+    #
+    # It also silently dropped two of six opponents: `make_agent` returns a closure, and
+    # "Can't pickle local object 'make_agent.<locals>.agent'" removed `homestead` and `shepherd` from
+    # the pool entirely. Sequential play has neither problem, and a gate that measures its own plumbing
+    # is worse than no gate -- it reads as "the agent does nothing" when the agent is fine.
+    ap.add_argument("--workers", type=int, default=1)
     # `starter` is included only as a floor check, never as the verdict: CLAUDE.md records that it
     # sells almost nothing, so the market is never contested and its numbers run ~2x reality. v4
     # scored $43.6k against `starter` and then lost its ranked matches at a rating of 429.9.

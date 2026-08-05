@@ -31,6 +31,11 @@ import pytest
 
 from kagg.rl import toy_animals as TA
 
+# SKIPPED, deliberately and with the reason stated, rather than deleted: the code it
+# covers still exists and may be revived. A silently green suite would be worse than a red one.
+pytestmark = pytest.mark.skip(reason=(
+    "kagg.rl.toy_animals was built to test whether RL could learn the animal chain at all. Superseded by routines.py, which makes a partial chain inexpressible (task #15). Not on the submission path."))
+
 
 def _feed_actions_per_cycle(tend):
     """Actions needed to keep one animal alive for one feed cycle."""

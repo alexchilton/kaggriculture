@@ -36,6 +36,11 @@ import jax
 from kagg.rl import jax_act as A, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
 
+# SKIPPED, deliberately and with the reason stated, rather than deleted: the code it
+# covers still exists and may be revived. A silently green suite would be worse than a red one.
+pytestmark = pytest.mark.skip(reason=(
+    "the v131 RL critic is dead: it loads a policy checkpoint that no longer exists, and the live agent is a deterministic tape (routines.py -> chains.py -> build_script_submission.py), not a policy. Re-enable only if a critic is trained again."))
+
 # The last turn on which a decision is made. `TURNS_PER_DAY * SEASON_DAYS` is one past the end.
 LAST_TURN = J.TURNS_PER_DAY * 30 - 2
 

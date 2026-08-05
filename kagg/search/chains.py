@@ -234,28 +234,70 @@ EARLIEST_REVENUE_DAY = 3
 
 
 def working_units(n):
-    """The first `n` unit indices that can actually do anything, in cost order.
+    """Slot `k` drives unit `k`. Consecutive, because a skipped unit is a hand hired and left idle.
 
-    Hands fill the four shed-access tiles in NWSE order and the cycle repeats every four, so units 3,
-    7, 11 ... wake on `(5,5)` in SE. Both of that tile's neighbours are locked until the farm owns SE,
-    which costs all three parcels -- **$7,000** against a $3,000 opening bank -- and `ops.py:86`
-    ignores a move onto locked ground without complaint. The leader tape buys two parcels and never
-    buys SE, and neither has any plan our search has found, so those units are inert for the season.
+    **This used to skip units 3, 7, 11 ... and the reason given for it was false.** Those units wake on
+    `(5,5)` in SE, and the docstring claimed "both of that tile's neighbours are locked until the farm
+    owns SE, which costs all three parcels -- $7,000". `(4,5)` is indeed SW, but `(5,4)` is **NE, the
+    first $1,000 parcel**, so one NORTH step gets the unit out. Measured turn by turn:
 
-    Measured on one identical melon block, changing only the unit: $15,575 / $15,545 / $15,515 for
-    units 0-2 against **$1,920** for unit 3, and $15,365 / $15,215 / $14,975 against **$1,050** for
-    unit 7. Mapping slot `k` to unit `k` therefore threw away two of every eight slots while still
-    paying to hire them.
+        turn  1: NORTH  at (5, 4)   <- NE, needs 1 parcel
+        turn  5: EAST   at (7, 4)
+        turn  8: PLANT  at (7, 2)
+        turn  9: WATER  at (7, 2)
 
-    Skipping costs hires and the cost is small: hands are re-hired every dawn on a Fibonacci ladder
-    that resets daily, so reaching unit 9 rather than unit 7 is a few dollars a day.
+    and a full-season melon chain on an NE block emits 247 ops at 15 of the 23 work turns. The $1,920
+    measurement that justified skipping was taken on a **NW** block, where unit 3 really must cross
+    locked ground -- and that was generalised into "inert for the season".
+
+    The cost of the skip was not "a few dollars a day", as the old docstring said. Hands are hired in
+    sequence, so unit `k` is the `k`-th hire and reaching unit 14 means paying for hands 1-14. Skipping
+    three of them inflates the hire count past a Fibonacci cliff:
+
+        skipping:  12 slots -> max unit 14 -> 14 hands = $   986/day = $ 29,580/season
+                   14 slots -> max unit 17 -> 17 hands = $ 4,180/day = $125,400/season
+        consecutive: 12 slots -> 12 hands = $   376/day = $ 11,280/season
+                     14 slots -> 14 hands = $   986/day = $ 29,580/season
+
+    against the leader's **12 hands, all used**, $7,916 as actually ramped. $125,400 is more than he
+    banks all season, and it is what made 14 chains unaffordable.
+
+    A chain on an SE-spawn unit is still only worth placing on ground it can reach -- `decode()` refuses
+    the unreachable combinations rather than letting the walk stop at a locked border and work the wrong
+    tile, which is the silent no-op this project keeps paying for.
     """
-    out, u = [], 0
-    while len(out) < n:
-        if R.spawn_tile(u) != tuple(R.shed_access_tiles()[3]):
-            out.append(u)
-        u += 1
-    return out
+    return list(range(n))
+
+
+def unit_can_reach(unit, tile, parcels_owned):
+    """Can `unit` walk from its spawn to `tile` across ground the farm owns?
+
+    Movement onto a LOCKED tile is ignored without complaint (`ops.py:86`), so a chain whose walk crosses
+    locked ground does not fail -- it stops short and does a whole season of work on whatever tile it is
+    standing on. That is why an SE-spawn unit scored $1,920 on a NW block and got written off as inert,
+    and why a replica of the leader's ramp emitted six crop chains and planted **zero** tiles.
+
+    Two conditions, and the second is the subtle one:
+
+    - the **target** must be owned, or there is nowhere legal to work;
+    - the unit must be able to **leave its spawn**. A hand may wake on a LOCKED tile -- `spawn_order`
+      does not filter for unlocked -- and PICKUP/DROP still work there since they test only
+      shed-adjacency. Escaping needs one orthogonally adjacent tile that is owned.
+
+    The shed cells are `(4,4) (5,4) (4,5) (5,5)`, so `(5,5)` touches `(5,4)` in NE and `(4,5)` in SW but
+    **not** `(4,4)` diagonally. So an SE-spawn unit escapes as soon as NE (the first $1,000 parcel) is
+    bought -- which is what the turn-by-turn showed, one NORTH step -- and is genuinely stuck before then.
+    Requiring the *spawn* to be owned would restate the false belief this replaces.
+    """
+    spawn = tuple(R.spawn_tile(unit))
+    if R.land_purchases_for(tuple(tile)) > parcels_owned:
+        return False
+    if R.land_purchases_for(spawn) <= parcels_owned:
+        return True
+    x, y = spawn
+    return any(0 <= nx < R.BOARD_SIZE and 0 <= ny < R.BOARD_SIZE
+               and R.land_purchases_for((nx, ny)) <= parcels_owned
+               for nx, ny in ((x, y - 1), (x, y + 1), (x - 1, y), (x + 1, y)))
 
 
 def land_cost(tile):
@@ -628,6 +670,23 @@ def decode(genome, n_slots):
             # is what produced a genome claiming pens on (7,8), (2,8) and (6,9) while the animals
             # ended up on (7,4), (2,4) and (6,4): the walk stops at the locked border and BUILD fires
             # there. Skipping is counted, so an unaffordable genome reads as unaffordable.
+            skipped += 1
+            continue
+        # **The unit must be able to WALK to the ground, not merely own it.**
+        # `working_units` is now consecutive, so a slot can land on a unit that wakes in a quadrant the
+        # farm has not bought -- units 3, 7, 11 spawn on `(5,5)` in SE and units 2, 6, 10 on `(4,5)` in
+        # SW. Movement onto LOCKED ground is ignored without complaint (`ops.py:86`), so such a chain does
+        # not fail: it walks until the border stops it and then does a whole season of PLANT, WATER and
+        # HARVEST on whatever tile it is standing on.
+        #
+        # Measured on a replica of the leader's own ramp: 13 chains emitted, 12 hands hired, 312
+        # fertilizer sales ordered -- and **zero planted tiles**, because the six crop chains had been
+        # handed units 7-12. Every one of them was a phantom. This is the check that turns that into a
+        # counted refusal.
+        pen_unit = (R.unit_for_cell(ground[0])
+                    if kind == "ranch" and ground[0] in RANCH_CELLS and len(ground) == 1
+                    else units[slot])
+        if not unit_can_reach(pen_unit, tile, affordable):
             skipped += 1
             continue
         # **Emission is deferred so pens can claim their turns before crop blocks.**

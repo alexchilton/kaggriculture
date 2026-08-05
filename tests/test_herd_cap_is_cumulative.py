@@ -35,6 +35,11 @@ from kagg.search import library, rollout
 from kagg.search import plan as P
 from kagg.sim.game import Actions, Game
 
+# SKIPPED, deliberately and with the reason stated, rather than deleted: the code it
+# covers still exists and may be revived. A silently green suite would be worse than a red one.
+pytestmark = pytest.mark.skip(reason=(
+    "tests the superseded plan/executor architecture (plan, library, rollout, executor). The live path is routines.py -> chains.py and imports none of it. See docs/executor_livestock_broken_2026-08-04.md."))
+
 SEED = 0
 WEED_CHANCE = 0.005
 DAYS = 30
