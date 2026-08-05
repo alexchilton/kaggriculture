@@ -198,7 +198,9 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
             ops.append("FERTILIZE")
             need["FERTILIZER"] = 1
         if ops:
-            tasks.append(dict(tile=tile, ops=ops, need=need, kind="crop"))
+            # One dry day already banked: skip today's water and `_daily_refresh_plants` weeds it.
+            thirsty = "WATER" in ops and (day - c["last_water"]) >= 2
+            tasks.append(dict(tile=tile, ops=ops, need=need, kind="crop", _thirsty=thirsty))
 
     # ---- new pens: build, draw the animal at the shed, place it
     for tile, animal in build_orders:
@@ -226,9 +228,20 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
     # is unrecoverable if it is skipped: a pen not built and a tile not planted are capacity the rest
     # of the season never gets, feeding keeps the herd alive, water stops a tile dying in two days,
     # and a harvest missed today is mostly still there tomorrow.
+    # **A watering that is due is unrecoverable, so it ranks with the build.**
+    # `_daily_refresh_plants` turns a tile that has missed two waterings into a WEED
+    # (`kaggriculture.py:752-753`), and a WEED makes PLANT a silent no-op, so the ground is dead for
+    # the season too. Our cadence fires at a gap of two, which means the tile is ALREADY one dry day
+    # in -- dropping that single op kills it outright.
+    #
+    # Measured with `crop` ranked last, behind every pen upkeep visit: 16 crop tiles on day 5 became
+    # 4 by day 7 and 1 by day 13, with WEED climbing 2 -> 13 -> 18. The farm never earned again. A
+    # CARE visit skipped today can happen tomorrow; a tile left dry today is gone.
     RANK = {"build": 0, "plant": 1, "replant": 2, "pen": 3, "crop": 4}
     for t in tasks:
         t["_rank"] = RANK.get(t["kind"], 5)
+        if t["kind"] == "crop" and t.get("_thirsty"):
+            t["_rank"] = 0
     tasks.sort(key=lambda t: (t["_rank"], _steps(SPAWN, t["tile"])))
     return tasks
 
@@ -423,7 +436,20 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             if want_builds is not None:
                 spot, animal = tuple(want_builds[i][0]), want_builds[i][1] or animal
             else:
-                spot = next((t for t in R.shed_access_tiles() if farm.free(t)), None)
+                # **Only shed cells the farm actually owns.** `shed_access_tiles()` is the ring round
+                # the shed -- the only cells where PICKUP, DROP and a shed PLACE work -- and the herd
+                # wants them because it draws wheat every day. But the quadrant split puts three of
+                # the four in land that starts LOCKED: (5,4) needs 1 parcel, (4,5) needs 2, (5,5)
+                # needs 3. Only (4,4) is legal on day 0.
+                #
+                # Reaching for them in order without checking built three of the four day-0 pens on
+                # ground we did not own, so BUILD_PASTURE, PLACE, FEED and CARE all silently no-oped
+                # while the animals had already been paid for. The farm held 2 pens on day 1 against
+                # the tape's 4 and never caught up -- 5 by day 29 against 14. Nothing raised: the
+                # move onto LOCKED is ignored (`ops.py:86`) and `_apply_unit_action` bails before it
+                # reaches the op.
+                spot = next((t for t in R.shed_access_tiles()
+                             if farm.free(t) and R.land_purchases_for(t) <= farm.parcels), None)
                 spot = spot or next((t for t in usable if farm.free(t)), None)
             if spot is None:
                 refused.append(f"day {day}: no ground for a pen")
