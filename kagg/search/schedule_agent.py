@@ -109,7 +109,7 @@ def _nearest_empty(tiles, unlocked, origin, skip=frozenset()):
 def make_agent(schedule, me=0):
     """`agent(obs, config) -> action`. Holds only which tile each unit is working, and re-reads the rest."""
     sched = {int(k): v for k, v in schedule.items()}
-    state = dict(assigned={}, hired=0, day=-1, tour={})
+    state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter())
 
     def agent(obs, config=None):
         day = int(obs.get("day", 0) or 0)
@@ -210,7 +210,14 @@ def make_agent(schedule, me=0):
                        if isinstance(c, dict) and c.get("kind") in ("PASTURE", "COOP"))
         want_by_now = sum(int(sched.get(d, {}).get("builds", 0) or 0) for d in range(day + 1))
         claimed_spots = {t for _r, t, _o, _i in tasks}
-        for a in (row.get("places") or []):
+        # **The schedule is a running TARGET, not a one-shot instruction.** Iterating only today's `places`
+        # meant a pen we could not afford on its named day was never built again: 5 pens all season against
+        # the schedule's 14, so 72 animal-days against the tape's 343 -- and every animal figure was ~21% of
+        # the tape's purely because the herd was 21% the size. Servicing was already perfect at that size:
+        # CARE 100% of animal-days, fertilizer collected 100%. Catch up whenever a beast is in the shed.
+        want_animals = [a for d in sorted(sched) if d <= day
+                        for a in (sched[d].get("places") or [])]
+        for a in want_animals:
             if standing >= want_by_now or shed.get(a, 0) <= 0:
                 break
             spot = next((c for c in R.shed_access_tiles()
@@ -352,12 +359,31 @@ def make_agent(schedule, me=0):
                 money -= LAND_PRICES[owned]
 
         # Animals: only when the bank covers the cost, so the purchase can never silently no-op.
-        for a, qty in (row.get("animals_bought") or {}).items():
-            left = int(qty) - state["ordered"][("animal", a)]
-            for _ in range(max(0, left)):
+        # **Buy against the CUMULATIVE target, not today's row.** `animals_bought` is a per-day figure and
+        # `ordered` resets every dawn, so a purchase that failed on a thin bank was never retried. Measured
+        # per turn on the winner's schedule: days 8-10 failed on $2-$38, and from day 11 the schedule's rows
+        # are empty -- so the agent sat on $8,259 from day 12 to the end of the season and never bought
+        # another animal. 5 pens and 2 animals against a target of 14, which is why every animal figure was
+        # ~21% of the tape's while CARE and fertilizer collection were already at 100% of animal-days.
+        want_total = collections.Counter()
+        for dd in sorted(sched):
+            if dd <= day:
+                for a, qty in (sched[dd].get("animals_bought") or {}).items():
+                    want_total[a] += int(qty)
+        for a, qty in want_total.items():
+            if a not in R.ANIMALS:
+                continue
+            # Everything we already have of this animal: alive, in an empty pen's slot, in the shed, in a
+            # hand, or ordered earlier this season.
+            alive_a = sum(1 for r in tiles for c in r
+                          if isinstance(c, dict) and c.get("animal") == a)
+            held = (alive_a + int(shed.get(a, 0))
+                    + sum(collections.Counter(iv).get(a, 0) for iv in invs)
+                    + state["bought"][a])
+            for _ in range(max(0, qty - held)):
                 if money >= R.ANIMALS[a]["cost"] and len(orders) < 8:
                     orders.append(["BUY_ANIMAL", a, 1])
-                    state["ordered"][("animal", a)] += 1
+                    state["bought"][a] += 1
                     money -= R.ANIMALS[a]["cost"]
 
         for crop, qty in (row.get("seeds") or {}).items():
