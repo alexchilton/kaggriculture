@@ -13,9 +13,14 @@ best response against a fixed field.**
 Every clause in that sentence is load-bearing, and each one rules out a family of approaches.
 Unpacked below.
 
-The practical consequence: **the allocation is computable, the schedule needs search, and the
-simulator is the verifier rather than the search engine.**
-We spent weeks treating all three as one search problem.
+The practical consequence, and it is measured rather than argued (see the pipeline table below):
+
+* **the allocation is computable** -- closed form from the town's drains reproduces the leader's farm;
+* **the schedule genuinely needs search** -- greedy-by-payback under a cash simulation recovers only 23%
+  of what the beam finds, so this half is not reducible to a rule;
+* **the simulator is the verifier**, never the search engine.
+
+We spent weeks treating all three as one undifferentiated search problem.
 
 ## Why it is not a reinforcement learning problem
 
@@ -73,9 +78,15 @@ The objective is **nearly additive**: chains interact through exactly three chan
 3. **Tile and slot exclusivity.**
 
 Nothing else couples them.
-That near-additivity plus the *concavity* of the price curve is what makes the problem tractable:
+That near-additivity plus the *concavity* of the price curve is what makes the **allocation** tractable:
 with a concave objective and linear constraints, ranking by marginal-value-per-resource is near-optimal
 rather than a heuristic.
+
+**But channel 2 is not a mild coupling, and this is where the naive reading of this document goes
+wrong.** Cash is a flow, so "chain B is unaffordable until chain A has sold" is a precedence constraint
+that compounds over thirty days: which chain to fund first, and whether a given dollar buys land or
+seeds, changes what is affordable for the rest of the season. Measured, that coupling is worth roughly
+four times the allocation itself. Additivity buys you the mix. It does not buy you the schedule.
 
 ## What is computable in closed form
 
@@ -116,6 +127,56 @@ demand was invisible** -- including milk, the largest single market.
 Every allocation argument this project made was made with half the game missing.
 The numbers were in `data/logs/market_ceiling.log` the whole time.
 
+## Market conditions: the drain is a randomised schedule, not a season constant
+
+Everything above was written as though the town's appetite exists from day 0.
+It does not, and this is the largest single correction to the model.
+
+**Eight shops open on days 3, 6, 9 ... 24, and which shop lands on which day is drawn per game**
+(`jax_sim.random_unlock_days`):
+
+```
+seed 0: [18, 21,  3,  9,  6, 15, 12, 24]
+seed 1: [ 6,  9, 15, 21, 12,  3, 18, 24]
+seed 2: [21, 24, 12, 15, 18,  6,  3,  9]
+```
+
+A product has **no shop demand at all** until one of its shops opens.
+So how many shops serve a product is a risk measure, and it explains the leader's allocation better than
+market size does -- the objective is size **times robustness**:
+
+| product | shops | drain | market $ | risk | leader runs |
+|---|---|---|---|---|---|
+| WHEAT | 5 | 662 | 16,550 | robust | 40 tiles |
+| STRAWBERRY | 4 | 572 | 68,640 | robust | 41 tiles |
+| MILK | 3 | 500 | 80,000 | robust | 8 cows |
+| TOMATO | 2 | 374 | 22,440 | exposed | 0 |
+| EGG | 2 | 338 | 16,900 | exposed | 0 geese |
+| CARROT | 2 | 338 | 11,830 | exposed | 0 |
+| WOOL | 1 | 284 | 56,800 | **single shop** | only 6 sheep |
+| MELON | 0 | 140 | 35,000 | **no shop** | 20 tiles |
+
+Wool is a $56,800 market and he under-commits, because YARN_STORE can open on day 24.
+`scheduler.expected_first_demand_day` computes the wait exactly, as the minimum of `k` draws without
+replacement: wheat 4.5 days, strawberry 5.4, milk 6.8, wool **13.5**.
+Wool produces at day 7 and waits a week for a buyer, so an early sheep is money asleep.
+
+**Melon is served by no shop**, so its 140 units are fixed base town demand that never grows.
+It is the least scalable product in the game and the one our own searches built a monoculture on.
+
+**And the opponent sells into the same inventory**, so every drain is roughly halved.
+`data/logs/market_ceiling.log` already recorded the $302,380 whole-market figure as "1.0x if split
+evenly between two players" -- and the leader banks $139,121, i.e. **he captures nearly his entire
+share**.
+There is no large untapped market left to discover; the remaining edge is efficiency and robustness.
+
+### A retraction this forces
+
+Task #24 claimed our daily sell cadence is naive and that the leader spaces sales by price-curve shape.
+He does not -- his gaps are 1.0 to 1.4 days.
+He sells continuously **because a fixed tape cannot wait for a demand event it cannot observe**.
+Daily is the robust choice, not the lazy one, and #24 should be closed as wrong.
+
 ## What genuinely needs search
 
 Three things resist closed form.
@@ -149,6 +210,37 @@ Both players sell into the same town inventory, so "melon's 140 units" is contes
 Against a fixed field this is still tractable -- it is a best response, and the leaderboard *is* fixed
 since everyone submits static tapes -- but it is a game, not a solitaire optimisation.
 `data/logs/market_ceiling.log` notes the drain is "1.0x if split evenly between two players".
+
+## The pipeline, run end to end, and what it measured
+
+Three stages, each in the repo, run on the same 16 games:
+
+| stage | what it decides | script | result |
+|---|---|---|---|
+| 1 | the mix | `allocation_calculator.py` -> `build_calculated_genome.py` | **$13,479** |
+| 1 + 2 | mix and days | `+ kagg/search/scheduler.py` | **$17,653** |
+| beam | mix and days together, by search | `beam_chains.py` | **$76,169** |
+
+Stage 1 reproduces the leader's mix from arithmetic and still dies, because it ordered four cows and
+three sheep on day 5 -- $3,100 against a $3,000 bank -- and was broke before anything sold.
+
+Stage 2 adds greedy-by-payback under a day-by-day cash simulation and recovers only **23%** of what the
+beam finds.
+That is the important negative result, and it corrects the thesis: **the mix is arithmetic, but the
+schedule is not solvable by a simple greedy rule.**
+
+Two reasons visible in the output:
+
+* **Greedy-by-affordability is not greedy-by-value.** The scheduler buys a parcel the first day it
+  clears, which on day 0 means spending $1,000 of a $3,000 bank on land and starving the seed budget --
+  the exact mistake the day-0 land hardcode used to make.
+* **The interactions are what matter.** Which chain to fund first, whether to buy land or seeds with the
+  same dollar, and how those choices compound over 30 days is a genuine combinatorial problem. The beam
+  scores whole seasons and sees it; a forward greedy rule with a crude revenue model does not.
+
+So the search is not redundant. It is *cheaper* when seeded with the computed mix -- a scheduler searches
+~12 integers rather than 1e16 -- but something has to search the schedule, and right now only the beam
+does it well.
 
 ## How to search it: the tool ordering
 
