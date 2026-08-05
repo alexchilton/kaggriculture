@@ -453,8 +453,14 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
     parcels_by_day = {d: sum(1 for L in land_days if L <= d) for d in range(R.SEASON_DAYS)}
     board = _board(parcels_by_day)
 
+    # **BUY_LAND gets a turn to itself.** `build_script_submission.py:90` appends it LAST and then
+    # truncates the turn at `maxMarketOrdersPerTurn` = 10, so on a day that hires eight hands and
+    # buys seed it falls off the end -- silently. Measured: the farm held ONE quadrant for the whole
+    # season while carrying $1,494 on day 7 against a $1,000 parcel, so the tape's day-8 pens in NE
+    # had nowhere to stand and the herd stalled at 8 against 14.
+    # Turn 1 keeps it early enough that the day's own work can use the ground.
     for d in land_days:
-        t = d * TPD
+        t = d * TPD + 1
         if t < script.T:
             script.buy_land[t] += 1
 
@@ -471,7 +477,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         usable = board.get(day, [])
 
         # ---- ground for what the schedule asks for today
-        build_orders = []
+        build_orders, restock = [], []
         n_build = row.get("builds", 0)
         places = row.get("places") or []
         # `if want_builds:` and not `is not None` -- a day carrying plant tiles but no build tiles
@@ -488,6 +494,16 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             # both ops test shed-adjacency. Failing that, as near the shed as the board allows.
             if want_builds is not None:
                 spot, animal = tuple(want_builds[i][0]), want_builds[i][1] or animal
+                # **A PLACE onto a tile that already holds a pen is a RESTOCK, not a build.**
+                # The tape's day-10 `build_tiles` names (4,4), which has held a pen since day 0 -- it
+                # is putting a fresh animal into a structure whose occupant escaped
+                # (`kaggriculture.py:786`: two consecutive unfed days and the animal is gone, the
+                # structure stays). Treating it as a build overwrote our own pen record and lost the
+                # slot, which is why the herd stalled at 8 against the tape's 14 from day 9.
+                if spot in farm.pens:
+                    farm.pens[spot] = dict(animal=animal, placed=day, last_feed=day)
+                    restock.append((spot, animal))
+                    continue
             else:
                 # **Only shed cells the farm actually owns.** `shed_access_tiles()` is the ring round
                 # the shed -- the only cells where PICKUP, DROP and a shed PLACE work -- and the herd
@@ -563,6 +579,11 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
                 script.buy_seed[day * TPD, R.CROPS.index(crop)] += int(qty)
 
         tasks = _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant)
+        # Restocked pens: the structure already stands, so it is PICKUP, PLACE, FEED, CARE with no
+        # BUILD. Ranked with the builds, because an empty pen earns nothing until it is filled.
+        for tile, animal in restock:
+            tasks.append(dict(tile=tile, ops=["PLACE", "FEED", "CARE"],
+                              need={animal: 1, "WHEAT": 1}, kind="build", animal=animal, _rank=0))
         # Tiles the tape replants today: harvest the standing crop and sow the new one in one visit.
         for tile, crop in replant_here:
             tasks.append(dict(tile=tile, ops=["HARVEST", "DIG", "PLANT", "WATER"], need={},
@@ -661,7 +682,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             for k in range(6):
                 if left <= 0:
                     break
-                slot = day * TPD + 1 + k * 3
+                slot = day * TPD + 2 + k * 3      # +2: turn 1 is reserved for BUY_LAND
                 if slot < script.T:
                     script.buy_product[slot, w] += min(per, left)
                 left -= per
