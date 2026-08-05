@@ -95,13 +95,18 @@ def test_a_pen_on_unaffordable_ground_does_not_appear_somewhere_else():
 def test_ground_bought_out_of_revenue_is_still_allowed():
     """The other side of the rule, and the one that matters more.
 
-    Waiting is worth up to +$22,911 (`data/logs/land_day7.log`) and the leader buys on days 7 and 10,
-    so a late parcel must NOT be refused just because the opening bank could not have covered it. Only
-    orders placed before any revenue can exist are held to the $3,000 stake.
+    Waiting is worth real money and the leader buys on days 7 and 10, so a late parcel must NOT be
+    refused just because the opening bank could not have covered it on day 0.
+
+    Uses a **one-parcel** tile deliberately. `SE_TILE` needs all three parcels -- $7,000 -- and since
+    2026-08-05 the gate weighs the amount as well as the day, so $7,000 on day 10 is correctly refused
+    against an estimated $3,000 bank. That refusal is the point of the gate, not a regression: what has
+    to keep working is the cheap parcel the leader actually buys.
     """
-    _script, used, skipped = C.decode(_genome(SE_TILE, land_day=10, start_day=14), 8)
-    assert skipped == 0, "a parcel funded by ten days of revenue was refused as unaffordable"
-    assert any(u[0] == "ranch" and SE_TILE in u[2] for u in used)
+    ne = next(t for t in C.RANCH_TILES if R.land_purchases_for(t) == 1)
+    _script, used, skipped = C.decode(_genome(ne, land_day=7, start_day=11), 8)
+    assert skipped == 0, "a $1,000 parcel funded by a week of revenue was refused as unaffordable"
+    assert any(u[0] == "ranch" and ne in u[2] for u in used)
 
 
 def test_the_border_tile_is_where_it_actually_lands():

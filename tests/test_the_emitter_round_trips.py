@@ -67,14 +67,27 @@ def tape_to_placements(script):
     op = np.asarray(script.unit_op)
     crop = np.asarray(script.unit_crop)
     item = np.asarray(script.unit_item)
+    hire = np.asarray(script.hire)
     placements = collections.defaultdict(lambda: dict(plants=[], builds=[]))
     pending = {}
+
+    # **Spawn comes from the day's hire cadence, not from a per-unit table.** `_spawn_hand` picks the
+    # min-occupancy shed-access tile when the HIRE settles, so `R.spawn_tile` only describes a crew
+    # hired in a single turn -- which the emitter no longer does, because that put hand 3 on the trapped
+    # `(5,5)` corner. Walking from the old table recovered the wrong tile for every hand and 2,640 of
+    # 4,895 cells changed on re-emission; the emitter was fine and the reader was stale.
+    def day_spawn(day):
+        hands = int(hire[day * TPD:(day + 1) * TPD].sum())
+        return R.dawn_crew(hands)[1]
+
     for u in range(op.shape[1]):
-        pos = R.spawn_tile(u)
+        spawn = day_spawn(0)
+        pos = spawn.get(u, R.SPAWN)
         for t in range(op.shape[0]):
             day = t // TPD
             if t % TPD == 0:
-                pos = R.spawn_tile(u)          # the dawn teleport
+                spawn = day_spawn(day)         # the dawn teleport, onto that day's own spawn tile
+                pos = spawn.get(u, R.SPAWN)
             nm = names.get(int(op[t, u]), "PASS")
             if nm in D:
                 dx, dy = D[nm]

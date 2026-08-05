@@ -17,6 +17,7 @@ Nothing here is a threshold I chose; every right-hand side is a count off his re
 
 import collections
 import json
+import math
 import pathlib
 import sys
 
@@ -126,21 +127,37 @@ def test_land_is_bought_on_the_day_he_buys_it(sched, tape):
     assert not wrong, "\n  " + "\n  ".join(wrong)
 
 
-def test_the_crew_is_hired_once_at_dawn_and_never_larger_than_his(sched, tape):
+def test_the_crew_is_hired_two_at_a_time_early_and_is_never_larger_than_his(sched, tape):
     """`hire[t]` is a COUNT of HIRE orders at turn `t`, and the ladder is walked once per order.
 
     Writing the crew size into all 24 turns of a day emitted 96 hires on day 0 instead of 4, climbed
     the Fibonacci ladder inside the day, and drained $3,000 to $76 before the farm existed -- the
     tape banked $0 with an empty crew all season. The hands are dismissed every night
-    (`reference/kaggriculture.py:849`), so it must be re-issued each dawn and only at dawn.
+    (`reference/kaggriculture.py:849`), so it must be re-issued each dawn.
+
+    **This test used to demand "and only at dawn", and that half of it was wrong.** `_spawn_hand`
+    (`kaggriculture.py:508`) picks the min-occupancy shed-access tile *at the moment the HIRE settles*,
+    so a whole crew hired in one turn puts hand 3 on `(5,5)` -- SE, both neighbours locked, unable to
+    move at all -- and every hand after it somewhere dead reckoning does not predict. Measured: every
+    unit spent 139-505 turns on a tile the emitter did not believe in and 76 of 126 PLANT ops were
+    silently refused. Two per turn is what makes the spawn tile predictable, and it is what the tape
+    itself does: `[(1, 2), (2, 2), (3, 2)]` on day 1.
+
+    So the assertion is now the cadence rather than the single turn: at most two orders in any turn, and
+    all of them inside the first turns of the day, before the crew is needed.
     """
     hire = np.asarray(tape["script"].hire)
     wrong = []
     for day, row in sorted(sched.items()):
         dawn = int(hire[day * TPD]) if day * TPD < len(hire) else 0
-        rest = int(hire[day * TPD + 1:(day + 1) * TPD].sum())
-        if rest:
-            wrong.append(f"day {day}: {rest} HIRE orders after dawn; the ladder is walked per order")
+        window = hire[day * TPD:(day + 1) * TPD]
+        for h, n in enumerate(window):
+            if int(n) > 2:
+                wrong.append(f"day {day} hour {h}: {int(n)} HIRE orders in one turn; the third lands "
+                             f"on (5,5) and cannot move")
+        late = [h for h, n in enumerate(window) if int(n) and h > max(1, math.ceil(row.get("hires", 0) / 2))]
+        if late:
+            wrong.append(f"day {day}: HIRE at hours {late}, past the point the crew is needed")
         # Compared against HIRES ORDERED, not hands owned. On day 1 the tape issues 6 HIRE orders
         # and is only ever observed holding 4 hands: it is sitting on $42, and `_do_hire` returns
         # silently when `farm["money"] < cost`, so the last two no-op. Asserting `hires <= hands`
