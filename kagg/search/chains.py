@@ -32,7 +32,32 @@ from kagg.search import routines as R
 # Whole-season town drain per product, from `kagg/economics/market.py`'s schedule as measured in
 # `data/logs/market_ceiling.log`. This is the number of units the town removes, i.e. how much can be
 # sold before inventory gluts and the price collapses toward the floor.
-DRAIN_UNITS = {"WHEAT": 662, "CARROT": 338, "TOMATO": 374, "STRAWBERRY": 572, "MELON": 140}
+#
+# **The animal products were missing until 2026-08-05, and they are half the game.** This dict held the
+# five crops only, so $151,750 of demand -- including MILK, the single largest market at $78,432 -- was
+# invisible to every allocation argument the project has made. With them in, the ranking is:
+#
+#     MILK   500 x 160 = $78,432      <- the biggest market in the game
+#     STRAW  572 x 120 = $66,586
+#     WOOL   284 x 200 = $56,736
+#     MELON  140 x 250 = $35,000
+#     TOMATO 374 x  60 = $21,574
+#     EGG    338 x  50 = $16,582
+#     WHEAT  662 x  25 = $15,986      <- seventh of eight, and yet the leader plants 40 tiles of it
+#     CARROT 338 x  35 = $11,484
+#                        $302,380 total
+#
+# That immediately explains the leader's farm, and `scripts/allocation_calculator.py` reproduces it:
+# a cow yields 66 milk a season so 7.6 cows fill the drain -- **he runs 8**; a sheep yields 48 wool so
+# 5.9 fill it -- **he runs 6**; and geese are the worst pen into the smallest animal market, so he runs
+# none. The herd is not a strategy to be searched, it is drain divided by yield.
+#
+# Wheat is the exception that proves the rule. Its own market is nearly worthless, seventh of eight,
+# and he plants 40 tiles anyway -- because it is an **input**: 14 pens eat ~420 units a season, $10,500
+# of feed, and wheat is the only crop that returns cash by day 3 to fund the day-7 land. A revenue
+# ranking scores it last; it belongs in the plan on cost avoidance and cash timing.
+DRAIN_UNITS = {"WHEAT": 662, "CARROT": 338, "TOMATO": 374, "STRAWBERRY": 572, "MELON": 140,
+               "EGG": 338, "MILK": 500, "WOOL": 284}
 
 # **Two block sizes, because how often a tile is watered decides how many a unit can hold.**
 # Watering every tile every day costs ~3 turns per tile, so a 24-turn day fits four and six raises.

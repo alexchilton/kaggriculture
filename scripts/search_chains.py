@@ -44,6 +44,14 @@ ap.add_argument("--slots", type=int, default=8, help="chain instances per genome
 ap.add_argument("--generations", type=int, default=30)
 ap.add_argument("--pop", type=int, default=64)
 ap.add_argument("--elite", type=float, default=0.2)
+ap.add_argument("--resample", action="store_true", default=True,
+                help="new board draw every generation; the default, and see evaluate()")
+ap.add_argument("--no-resample", dest="resample", action="store_false",
+                help="score every generation on one fixed draw (overfits; for comparison only)")
+ap.add_argument("--seed-genome", default="data/chain_search_groups/best_beam_genome.npz",
+                help="start from the beam's answer; the ES restructures what the beam cannot")
+ap.add_argument("--holdout", type=int, default=8,
+                help="unseen board draws to score the final genome on")
 ap.add_argument("--smooth", type=float, default=0.3, help="how much of the old distribution to keep")
 ap.add_argument("--boards", type=int, default=4)
 ap.add_argument("--opponents", default="heuristic,rancher,homestead,carrot")
@@ -106,8 +114,20 @@ def _run(state0, cand):
 _STATES = {}
 
 
-def evaluate(genomes):
-    """`(wins[N], mean_money[N], skipped[N])` for a population of genomes."""
+def evaluate(genomes, seed=None):
+    """`(wins[N], mean_money[N], skipped[N])` for a population, on the board draw `seed`.
+
+    **`seed` is resampled every generation, and that is not optional.** With it fixed, thirty
+    generations of five hundred candidates all fit the same sixteen games, and CLAUDE.md records what
+    that costs: "a fixed 3-seed objective reported +40% where held-out seeds said +12.8%", and "11
+    accepted moves in 14 generations for +1.6%". The whole point of an ES here is that it can
+    restructure a genome where the beam cannot; overfitting one board draw would spend that freedom on
+    noise.
+
+    The states are cached per `(batch, seed)` because `_run` is jitted on the batch shape, so a new
+    seed costs a `J.reset` but no recompile.
+    """
+    seed = args.sim_seed if seed is None else seed
     scripts, skips = [], []
     for g in genomes:
         script, _used, skipped = C.decode(g, N_SLOTS)
@@ -115,10 +135,11 @@ def evaluate(genomes):
         skips.append(skipped)
     b = len(scripts)
     cand = {f: jnp.asarray(np.stack([s[f][:T] for s in scripts])) for f in FIELDS}
-    if b not in _STATES:
-        unlocks = boards.unlock_array(N_OPP, args.boards, b, seed=args.sim_seed)
-        _STATES[b] = J.reset(len(unlocks), unlock_schedule=unlocks, seed=args.sim_seed)
-    mine, theirs = _run(_STATES[b], cand)
+    key = (b, seed)
+    if key not in _STATES:
+        unlocks = boards.unlock_array(N_OPP, args.boards, b, seed=seed)
+        _STATES[key] = J.reset(len(unlocks), unlock_schedule=unlocks, seed=seed)
+    mine, theirs = _run(_STATES[key], cand)
     mine, theirs = np.asarray(mine), np.asarray(theirs)
     return (mine > theirs).sum(axis=0).astype(float), mine.mean(axis=0), np.asarray(skips)
 
@@ -128,10 +149,24 @@ rng = np.random.default_rng(args.rng)
 # one with 3. Ragged, hence a list rather than an array.
 probs = [np.full(int(k), 1.0 / int(k)) for k in GENE_SIZES]
 
+# Start from the beam's answer when there is one. The beam finds a good basin cheaply and cannot
+# restructure out of it -- greedy forward selection commits a slot and `--refine` only sweeps timing --
+# which is exactly the division of labour: beam for the basin, ES to rearrange inside and out of it.
 seed_g = C.seeded_genome(N_SLOTS)
+if args.seed_genome:
+    sp = pathlib.Path(args.seed_genome)
+    if sp.exists():
+        loaded = np.asarray(np.load(sp)["genome"], dtype=np.int64)
+        if loaded.size == N_GENES:
+            seed_g = loaded
+            print(f"seeded from {sp}")
+        else:
+            # A stride change makes an old genome unreadable rather than merely stale; say so.
+            print(f"ignoring {sp}: {loaded.size} genes against {N_GENES} for {N_SLOTS} slots")
+    else:
+        print(f"ignoring {sp}: not found")
 w, m, sk = evaluate(seed_g[None])
-print(f"seeded genome (leaders' measured allocation): {w[0]:.0f}/{N_PAIRS} wins, "
-      f"${m[0]:,.0f}, {sk[0]} chains skipped\n")
+print(f"seed genome: {w[0]:.0f}/{N_PAIRS} wins, ${m[0]:,.0f}, {sk[0]} chains skipped\n")
 
 out = pathlib.Path(args.out)
 out.mkdir(parents=True, exist_ok=True)
@@ -141,10 +176,13 @@ t0 = time.time()
 for gen in range(args.generations):
     sampled = np.stack([np.asarray([rng.choice(len(p), p=p) for p in probs])
                         for _ in range(args.pop - 1)])
-    # The incumbent always survives, so a generation can never report worse than the last.
+    # The incumbent is always in the population, so it is **re-scored on this generation's board draw**
+    # alongside its challengers. Without that it would keep whatever score its lucky draw gave it and
+    # could never be displaced -- the winner's curse made permanent.
     pop = np.concatenate([best[2][None], sampled])
 
-    wins, money, skipped = evaluate(pop)
+    gen_seed = args.sim_seed + gen * 1_000_003 if args.resample else args.sim_seed
+    wins, money, skipped = evaluate(pop, seed=gen_seed)
     order = np.lexsort((money, wins))[::-1]
     n_elite = max(2, int(args.elite * args.pop))
     elite = pop[order[:n_elite]]
@@ -154,21 +192,42 @@ for gen in range(args.generations):
         fresh = counts / counts.sum()
         probs[j] = args.smooth * p + (1.0 - args.smooth) * fresh
 
+    # Compare on the SAME draw: index 0 is the incumbent, freshly scored this generation. Comparing a
+    # challenger's new score against the incumbent's remembered one is how a search wanders.
     k = int(order[0])
-    if (float(wins[k]), float(money[k])) > (best[0], best[1]):
+    if (float(wins[k]), float(money[k])) > (float(wins[0]), float(money[0])):
         best = (float(wins[k]), float(money[k]), pop[k].copy())
         np.savez_compressed(out / "best_chain_genome.npz", genome=best[2], wins=best[0],
                             money=best[1], slots=N_SLOTS, gen=gen)
+    else:
+        best = (float(wins[0]), float(money[0]), best[2])
 
-    print(f"gen {gen:>3} | best {best[0]:.0f}/{N_PAIRS} ${best[1]:>10,.0f} | "
-          f"this gen {wins[k]:.0f}/{N_PAIRS} ${money[k]:>10,.0f} | "
+    print(f"gen {gen:>3} | seed {gen_seed:>10} | incumbent {wins[0]:.0f}/{N_PAIRS} "
+          f"${money[0]:>10,.0f} | best this gen {wins[k]:.0f}/{N_PAIRS} ${money[k]:>10,.0f} | "
           f"elite wins {wins[order[:n_elite]].mean()/N_PAIRS:.2f} | "
           f"skipped {skipped.mean():.1f}/{N_SLOTS} | {time.time()-t0:.0f}s", flush=True)
 
 script, used, skipped = C.decode(best[2], N_SLOTS)
-print(f"\nbest: {best[0]:.0f}/{N_PAIRS} wins, ${best[1]:,.0f}, {skipped} chains skipped")
+print(f"\nbest on its own draw: {best[0]:.0f}/{N_PAIRS} wins, ${best[1]:,.0f}, "
+      f"{skipped} chains skipped")
 for u in used:
     print("   ", u)
+
+# **Held out.** The search saw every board draw it was scored on, so its own number is optimistic by
+# construction. These draws it has never seen, and the spread across them is the honest answer --
+# CLAUDE.md: "seed variance is ~15%. Always quote the seed range."
+holdout = [args.sim_seed + 500_000 + i for i in range(args.holdout)]
+if holdout:
+    hw, hm = [], []
+    for sd in holdout:
+        w1, m1, _ = evaluate(best[2][None], seed=sd)
+        hw.append(float(w1[0])); hm.append(float(m1[0]))
+    print(f"\nheld out on {len(holdout)} unseen draws: "
+          f"wins {np.mean(hw):.1f}/{N_PAIRS} (min {min(hw):.0f}, max {max(hw):.0f}), "
+          f"money ${np.mean(hm):,.0f} (${min(hm):,.0f} - ${max(hm):,.0f})")
+    print(f"in-search money ${best[1]:,.0f} vs held-out ${np.mean(hm):,.0f} "
+          f"({np.mean(hm) / max(best[1], 1) - 1:+.1%}) -- the winner's curse, measured")
+
 print(f"\nwrote {out / 'best_chain_genome.npz'}")
 print("NOT a competitive number yet: recorded opponents, weeds off, one sim seed. Score it on "
       "kagg.arena across fresh seeds before believing it.")
