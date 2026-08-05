@@ -235,7 +235,7 @@ class Script:
 
 def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
           collect_fertilizer=True, sell_fertilizer=True, buy_land=True, buy_feed=True,
-          feed_every=None):
+          feed_every=None, build_every=1):
     """Build pens on `tile`, stock them, and keep every animal fed for the rest of the season.
 
     `tile` takes a single tile or a list of them. **A list is one chain, one unit, one slot** --
@@ -387,6 +387,8 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
         raise ValueError("feed_every must be at least 1")
     if feed_every > 2:
         raise ValueError("feed_every above 2 starves the herd: two missed feeds and it escapes")
+    if build_every < 1:
+        raise ValueError("build_every must be at least 1")
     feed_shifts = [tiles[i::feed_every] for i in range(feed_every)]
 
     def day_loop(day, setup):
@@ -402,8 +404,23 @@ def ranch(script, animal, tile, start_day, land_day=0, sell=True, unit=None,
         if d >= script.T:
             return
         # Pens built so far, and the one being raised today.
-        n_live = min(len(tiles), max(0, day - start_day))
-        building = tiles[n_live] if n_live < len(tiles) else None
+        # **How fast the group fills, which is a cash decision and not a fact about pens.**
+        # This was `day - start_day`: one pen every single day, unconditionally. With four chains all
+        # starting on day 0 that buys four animals a day for four days -- $6,800 against a $3,000 bank --
+        # so most of them silently no-op while the feed and hire bills carry on. Measured: 16 ordered,
+        # 8 realised, bank $301 on day 10, and a faithful copy of the leader's shape banked $10,875
+        # where a three-cow plan banked $38,948.
+        #
+        # The leader's herd arrives 4 on day 0, then +2, +1, +4, +1, +2 through day 10. He is not
+        # building slowly because pens are slow; he is building at the rate his revenue funds.
+        # Pen `i` is raised on day `start_day + i*build_every`. A pen counts as *live* only from the day
+        # after it is placed, so `live` is the pens whose build day has strictly passed -- a **ceiling**
+        # division, not a floor. Flooring it left the day-0 animal out of `live` until day 3, so it went
+        # unfed for two consecutive nights, escaped, and the whole plan banked exactly $0.
+        elapsed = max(0, day - start_day)
+        n_live = min(len(tiles), -(-elapsed // build_every))
+        building = (tiles[n_live] if n_live < len(tiles) and elapsed % build_every == 0
+                    else None)
         live = tiles[:n_live]
         if not live and building is None:
             return

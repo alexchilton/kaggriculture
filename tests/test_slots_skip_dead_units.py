@@ -41,66 +41,85 @@ def test_the_premise_the_se_spawn_is_locked_without_every_parcel():
     assert sum(R.LAND_PRICES) == 7000 > C.OPENING_BANK
 
 
-def test_working_units_never_include_an_se_spawn():
-    """The vocabulary itself, so no caller has to remember the rule."""
-    units = C.working_units(12)
-    assert len(units) == 12
-    assert len(set(units)) == 12, f"duplicate units would interleave two chains: {units}"
-    for u in units:
-        assert R.spawn_tile(u) != SE, f"unit {u} spawns on {SE} and cannot move"
+
+# ---------------------------------------------------------------------------------------------------
+# SUPERSEDED 2026-08-05. The three tests that stood here asserted a property of `working_units()` --
+# that it must exclude SE-spawn units -- and that mechanism is gone.
+#
+# The fact they measured is real and is kept below: unit 3 wakes on `(5,5)` in SE, and driven onto a NW
+# block it banks $2,408 against unit 0's $9,331, because a move onto locked ground is silently ignored
+# and its walk stops at the border. What was wrong was the conclusion drawn from it -- "those units are
+# inert for the season" -- and the fix chosen. Skipping them left them **hired and idle**: hands are
+# hired in sequence, so reaching unit 14 pays for hands 1-14, and 14 chains then needed 17 hands at
+# $4,180/day, i.e. $125,400 a season against the leader's $7,916 for twelve.
+#
+# They are not inert. One NORTH step from `(5,5)` lands on `(5,4)`, which is NE -- the first $1,000
+# parcel -- and a full-season melon chain there emits 247 ops at 15 of 23 turns.
+#
+# So `decode()` now **assigns** the lowest-numbered free unit that can actually reach a chain's ground
+# on that chain's start day, instead of looking up a static slot -> unit map. The tests below state that
+# contract, which is strictly stronger: it fixes the money, keeps the hire count at one hand per chain,
+# and refuses the unreachable combinations that the old map emitted as phantoms.
+# ---------------------------------------------------------------------------------------------------
 
 
-def test_the_first_working_units_are_the_cheapest_ones():
-    """Skipping must not reorder: unit 0 is free (the farmer) and low indices cost fewer hires."""
-    assert C.working_units(8) == [0, 1, 2, 4, 5, 6, 8, 9]
+def test_decode_never_puts_a_chain_on_a_unit_that_cannot_reach_its_ground():
+    """The contract. A chain is emitted on a reachable unit or it is refused and counted."""
+    rng = np.random.default_rng(0)
+    for _ in range(40):
+        genome = rng.integers(0, 6, size=C.n_genes(8), dtype=np.int64)
+        script, used, skipped = C.decode(genome, 8)
+        land_days = sorted(C.land_schedule(genome, 8))
+        for u in range(script.U):
+            turns = np.flatnonzero(np.asarray(script.unit_op)[:, u] != 0)
+            if not len(turns):
+                continue
+            start_day = int(turns[0]) // R.TURNS_PER_DAY
+            parcels = sum(1 for d in land_days if d <= start_day)
+            spawn = tuple(R.spawn_tile(u))
+            if R.land_purchases_for(spawn) <= parcels:
+                continue
+            x, y = spawn
+            escapes = any(0 <= nx < R.BOARD_SIZE and 0 <= ny < R.BOARD_SIZE
+                          and R.land_purchases_for((nx, ny)) <= parcels
+                          for nx, ny in ((x, y - 1), (x, y + 1), (x - 1, y), (x + 1, y)))
+            assert escapes, (
+                f"unit {u} starts work on day {start_day} from {spawn}, which needs "
+                f"{R.land_purchases_for(spawn)} parcels against {parcels} owned, and cannot step onto "
+                f"owned ground -- every op it emits lands on the wrong tile")
 
 
-@pytest.mark.parametrize("n_slots", [1, 4, 8, 12])
-def test_a_genome_drives_only_working_units(n_slots):
-    """The whole-genome form: no chain may be written onto a dead unit."""
-    g = np.zeros((n_slots, len(C.GENES)), dtype=np.int64)
-    for slot in range(n_slots):
-        g[slot] = (C.KINDS.index("grow"), R.CROPS.index("MELON"), slot % len(C.BLOCKS),
-                   C.START_DAY_CHOICES.index(2), C.LAND_DAY_CHOICES.index(0), 0, 0)
-    script, _used, _skipped = C.decode(g.reshape(-1), n_slots)
-    ops = np.asarray(script.unit_op)
-    moves = {R.OP["NORTH"], R.OP["SOUTH"], R.OP["EAST"], R.OP["WEST"]}
-    for u in range(ops.shape[1]):
-        if R.spawn_tile(u) != SE:
-            continue
-        # A `ranch` on the SE *cell* is the one legitimate use of an SE unit: the pen stands on the
-        # spawn tile itself, needs no movement, and the chain buys the parcel that unlocks it. What
-        # must never happen is a unit being asked to *walk* from a tile it cannot leave.
-        assert not (set(ops[:, u].tolist()) & moves), \
-            f"unit {u} spawns on {SE}, cannot leave it, and was given movement ops"
+def test_one_chain_costs_the_same_whichever_slot_holds_it():
+    """Slot index must not be a price. It was: slot 3 drove unit 3 and banked an eighth of slot 2.
 
-
-def test_slot_three_is_worth_what_slot_two_is_worth():
-    """The money form, and the point of the exercise.
-
-    Before the fix slot 3 drove unit 3 and banked $1,920 against slot 2's $15,515 on an identical
-    chain. Not exact afterwards -- a higher unit index hires more hands every dawn, which is real --
-    but the same order of magnitude rather than an eighth.
+    With assignment by reachability the cheapest free unit is taken, so a lone chain is identical in
+    every slot and only the *number* of chains drives the hire ladder.
     """
-    import jax.numpy as jnp
-    from kagg.sim import jax_sim as J
-
-    fields = ("unit_op", "unit_crop", "unit_item", "unit_qty", "sell", "buy_seed",
-              "buy_product", "buy_animal", "hire", "buy_land")
     block = [b for b in C.BLOCKS if C.land_cost(b[0]) == 0][0]
+    bi = C.BLOCKS.index(block)
 
-    def bank(slot):
-        s = R.Script()
-        R.grow(s, "MELON", list(block), plant_day=2, unit=C.working_units(8)[slot])
-        a = s.arrays()
-        state = J.reset_with_shops(1, seed=0)
-        for t in range(s.T):
-            acts = {f: jnp.asarray(np.stack([np.asarray(a[f][t]),
-                                             np.zeros_like(np.asarray(a[f][t]))])[None])
-                    for f in fields}
-            state = J.step(state, J.Actions(**acts), weed_chance=0.0)
-        return float(np.asarray(state.farm.money)[0, 0])
+    def tape(slot):
+        g = np.zeros((8, len(C.GENES)), dtype=np.int64)
+        g[slot] = [C.KINDS.index("grow"), R.CROPS.index("MELON"), bi,
+                   C.START_DAY_CHOICES.index(2), C.LAND_DAY_CHOICES.index(0), 0, 0, 0]
+        script, _used, skipped = C.decode(g.reshape(-1), 8)
+        return int((np.asarray(script.unit_op) != 0).sum()), int(np.asarray(script.hire).max()), skipped
 
-    two, three = bank(2), bank(3)
-    assert three > two * 0.85, (
-        f"slot 3 banks ${three:,.0f} against slot 2's ${two:,.0f}; it is still on a dead unit")
+    first = tape(0)
+    for slot in range(1, 8):
+        assert tape(slot) == first, (
+            f"slot {slot} decodes to {tape(slot)} against slot 0's {first}; the slot index is still "
+            f"pricing the chain")
+
+
+def test_n_chains_never_need_more_than_n_hands():
+    """No idle paid hands. This is the whole reason the skip was wrong."""
+    rng = np.random.default_rng(1)
+    for _ in range(30):
+        genome = rng.integers(0, 6, size=C.n_genes(8), dtype=np.int64)
+        script, used, _skipped = C.decode(genome, 8)
+        busy = sum(1 for u in range(script.U)
+                   if (np.asarray(script.unit_op)[:, u] != 0).any())
+        hired = int(np.asarray(script.hire).max())
+        assert hired <= busy, (
+            f"{busy} units do work but {hired} hands are hired; {hired - busy} are paid and idle")

@@ -56,6 +56,10 @@ from kagg.search import routines as R
 # and he plants 40 tiles anyway -- because it is an **input**: 14 pens eat ~420 units a season, $10,500
 # of feed, and wheat is the only crop that returns cash by day 3 to fund the day-7 land. A revenue
 # ranking scores it last; it belongs in the plan on cost avoidance and cash timing.
+#: Highest unit index a chain may be assigned. The hire ladder makes anything past the high
+#: teens self-defeating, so this is a backstop rather than a target.
+MAX_UNITS = 20
+
 DRAIN_UNITS = {"WHEAT": 662, "CARROT": 338, "TOMATO": 374, "STRAWBERRY": 572, "MELON": 140,
                "EGG": 338, "MILK": 500, "WOOL": 284}
 
@@ -644,12 +648,26 @@ def decode(genome, n_slots):
     claimed = set()
     # One central schedule, so two chains wanting the same quadrant on different days do not buy it
     # twice -- and a chain on SW does not drag SE along behind it. See `land_schedule`.
-    for day in land_schedule(genome, n_slots):
+    land_days = sorted(land_schedule(genome, n_slots))
+    for day in land_days:
         t = day * R.TURNS_PER_DAY
         if 0 <= t < script.T:
             script.buy_land[t] += 1
 
+    def parcels_by(day):
+        """Parcels the farm owns **on `day`**, which is what reachability must be judged against.
+
+        The season-end count is the wrong clock. Units cycle NW/NE/SW/SE, so units 1, 2 and 3 wake on
+        tiles that are LOCKED on day 0 however much land gets bought later -- and a chain that starts
+        before its ground or its spawn is unlocked walks into a locked border, stops, and does a whole
+        season of work on the wrong tile without raising. Judging by the end of the season declared
+        those chains legal, which is how a replica of the leader's ramp emitted 13 chains and planted
+        zero tiles.
+        """
+        return sum(1 for d in land_days if d <= day)
+
     plan = []
+    busy_units = set()
     for slot in range(n_slots):
         kind = KINDS[int(g[slot, 0]) % N_KINDS]
         if kind == "off":
@@ -683,12 +701,31 @@ def decode(genome, n_slots):
         # fertilizer sales ordered -- and **zero planted tiles**, because the six crop chains had been
         # handed units 7-12. Every one of them was a phantom. This is the check that turns that into a
         # counted refusal.
-        pen_unit = (R.unit_for_cell(ground[0])
-                    if kind == "ranch" and ground[0] in RANCH_CELLS and len(ground) == 1
-                    else units[slot])
-        if not unit_can_reach(pen_unit, tile, affordable):
-            skipped += 1
-            continue
+        # **The unit is assigned, not looked up.** A static `slot -> unit` map cannot be right, because
+        # whether a unit is usable depends on the chain's ground and start day, not on its index:
+        #
+        # - skipping SE-spawn units (the old `working_units`) leaves them hired and idle, and reaching
+        #   unit 14 then costs 17 hands -- $125,400 a season against the leader's $7,916;
+        # - handing slot k unit k blindly puts chains on units that wake on locked ground, where the walk
+        #   stops at the border and a whole season of ops lands on the wrong tile. Slot 3 banked $2,408
+        #   against slot 2's $9,331 that way.
+        #
+        # So take the lowest-numbered unit that is free and can actually reach this ground today. Lowest
+        # keeps the hire ladder short; reachability keeps the chain real. A shed-cell pen still uses the
+        # hand that wakes on it, since anyone else would have to walk there for no reason.
+        if kind == "ranch" and ground[0] in RANCH_CELLS and len(ground) == 1:
+            pen_unit = R.unit_for_cell(ground[0])
+            if not unit_can_reach(pen_unit, tile, parcels_by(start_day)):
+                skipped += 1
+                continue
+        else:
+            pen_unit = next((u for u in range(MAX_UNITS)
+                             if u not in busy_units
+                             and unit_can_reach(u, tile, parcels_by(start_day))), None)
+            if pen_unit is None:
+                skipped += 1
+                continue
+        busy_units.add(pen_unit)
         # **Emission is deferred so pens can claim their turns before crop blocks.**
         # Two chains may now share a unit (`Script.claim`), and the order they claim in decides whether
         # they fit. A shed pen is zero-movement when it goes first, but if a crop block has already run
@@ -702,10 +739,10 @@ def decode(genome, n_slots):
         # Ground is still claimed above in **slot order**, so "earlier slots win" is unchanged and the
         # same genome still decodes to the same tape. Only the turn-claim order differs.
         plan.append((0 if kind == "ranch" else 1, slot, kind, what_i, block_i, start_day,
-                     land_day, fert_i, trade_i, feed_i))
+                     land_day, fert_i, trade_i, feed_i, pen_unit))
 
-    for _rank, slot, kind, what_i, block_i, start_day, land_day, fert_i, trade_i, feed_i in sorted(
-            plan, key=lambda r: (r[0], r[1])):
+    for (_rank, slot, kind, what_i, block_i, start_day, land_day, fert_i, trade_i, feed_i,
+         chain_unit) in sorted(plan, key=lambda r: (r[0], r[1])):
         try:
             if kind == "ranch":
                 # The `block` gene selects a pen *group*, so one slot can hold up to four animals.
@@ -717,7 +754,7 @@ def decode(genome, n_slots):
                 # otherwise every remote pen would collide on unit 0 and interleave its walks.
                 R.ranch(script, animal=animal, tile=list(group), start_day=start_day,
                         land_day=land_day,
-                        unit=None if cell in RANCH_CELLS and len(group) == 1 else units[slot],
+                        unit=chain_unit,
                         sell_fertilizer=bool(trade_i % 2), buy_land=False,
                         buy_feed=not bool(feed_i % 2))
                 claimed.update(group)
@@ -728,7 +765,7 @@ def decode(genome, n_slots):
                 # Holding the harvest is only meaningful for the crop the animals eat.
                 hold = bool(feed_i % 2) and crop == "WHEAT"
                 R.grow(script, crop, list(block), plant_day=start_day, land_day=land_day,
-                       unit=units[slot], fertilize=bool(fert_i % 2),
+                       unit=chain_unit, fertilize=bool(fert_i % 2),
                        buy_fertilizer=bool(trade_i % 2), buy_land=False, sell=not hold,
                        water_every=WATER_EVERY_FOR_BLOCK[block])
                 claimed.update(block)
