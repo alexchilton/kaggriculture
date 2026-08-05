@@ -606,11 +606,14 @@ FERTILIZER_ACTIVE_DAYS = 3
 CROP_TABLE = {
     # `first`/`max_day` are ages in days since planting; `ongoing` crops are never cleared by a
     # harvest and accrue to a lifetime cap instead. Mirrored from `kagg.sim.tiles`, pinned by tests.
-    "WHEAT":      {"first": 2,  "max_day": 4,  "max_yield": 6, "ongoing": False},
-    "CARROT":     {"first": 2,  "max_day": 3,  "max_yield": 4, "ongoing": False},
-    "TOMATO":     {"first": 8,  "max_day": 8,  "max_yield": 4, "ongoing": True},
-    "STRAWBERRY": {"first": 10, "max_day": 10, "max_yield": 4, "ongoing": True},
-    "MELON":      {"first": 10, "max_day": 12, "max_yield": 6, "ongoing": False},
+    # `interval` is the production cadence `_daily_refresh_plants` uses for an ongoing crop -- it was
+    # missing here, which meant nothing in the emitter could tell when a strawberry tile actually
+    # produces. Strawberry is every SECOND day, tomato every day.
+    "WHEAT":      {"first": 2,  "max_day": 4,  "max_yield": 6, "ongoing": False, "interval": 0},
+    "CARROT":     {"first": 2,  "max_day": 3,  "max_yield": 4, "ongoing": False, "interval": 0},
+    "TOMATO":     {"first": 8,  "max_day": 8,  "max_yield": 4, "ongoing": True,  "interval": 1},
+    "STRAWBERRY": {"first": 10, "max_day": 10, "max_yield": 4, "ongoing": True,  "interval": 2},
+    "MELON":      {"first": 10, "max_day": 12, "max_yield": 6, "ongoing": False, "interval": 0},
 }
 
 # `_DX`/`_DY` in `kagg.sim.ops`: NORTH is dy=-1, SOUTH dy=+1, EAST dx=+1, WEST dx=-1. So north is
