@@ -69,10 +69,68 @@ def slot(kind, what, block, start_day, land_day, fertilize=0, fert_trade=0, feed
 
 rows, taken = [], set()
 
-# ---------------------------------------------------------------- animals first, largest groups first
-# They are the working capital, not the yield: a fed animal sets `fertilizer_available` every night and
-# COLLECT_FERTILIZER costs no action, so the herd sells from day 1 while milk does not arrive until day
-# 8. Measured: withhold the fertilizer income and the same farm banks $0.
+# **Crop blocks are placed FIRST, and that ordering is the whole point of this file.**
+# An 8-tile block uses 22 of the 23 work turns on its own (measured), so a hand holds *either* one big
+# block or a pen group -- never both, whatever the packer does. His 12 hands are therefore about 8
+# blocks (~64 tiles) plus 4 pen groups (14 pens), which is exactly his measured farm.
+#
+# The consequence is geometric: a big block needs eight *contiguous* tiles, and a pen group needs only
+# one to four. Placing the pens first scatters four-tile clumps across NW and leaves no strip long
+# enough for a block -- measured, that lost 6 of 12 chains and the seed decoded to 15 pens and **8 crop
+# tiles**. Blocks first, pens into the gaps, costs the pens nothing because they fit anywhere.
+#
+# Melon is capped near its 140-unit town drain -- it is the one product that actually gluts (+100
+# inventory, 250 -> 150) -- so the bulk is strawberry, matching his 44 plantings against 21 melon.
+# **NW is reserved for the herd, and that is the load-bearing decision.**
+# NW is the only quadrant unlocked on day 0, and the herd is the only thing that must start on day 0 --
+# it is the working capital, selling fertilizer from day 1 while milk does not arrive until day 8. Crops
+# can wait for a parcel; the herd cannot wait for anything.
+#
+# Measured both ways on the same seed, with the land gate forced open so the plan really was emitted:
+#   pens first  -> 15 pens,  8 crop tiles   (blocks fragmented out of existence)
+#   blocks first -> 1 pen,  72 crop tiles, banks **$2** and is dead by day 8 (no fertilizer income)
+# Neither is a farm. The board has room for both only if they are in different quadrants, which is what
+# his tape does: herd near the shed in NW, crop blocks in NE and SW behind the day-7 and day-10 parcels.
+NW_FOR_PENS = True
+grow_order = sorted(range(len(C.BLOCKS)),
+                    key=lambda i: (0 if max(R.land_purchases_for(tuple(t))
+                                            for t in C.BLOCKS[i]) > 0 else 1,
+                                   -len(C.BLOCKS[i])))
+tiles, melon_tiles = 0, 0
+n_grow_slots = max(0, args.slots - 4)          # reserve four slots for the pen groups
+for i in grow_order:
+    if len(rows) >= n_grow_slots:
+        break
+    block = C.BLOCKS[i]
+    if set(block) & taken:
+        continue
+    if NW_FOR_PENS and all(R.land_purchases_for(tuple(t)) == 0 for t in block):
+        continue                                # pure-NW block: leave the ground for the herd
+    # Start the day after the block's quadrant can be bought, never before: `_apply_unit_action` bails
+    # on a LOCKED tile before it reaches PLANT, so an early block plants nothing, silently, all season.
+    need = max(R.land_purchases_for(tuple(t)) for t in block)
+    start = 0 if need == 0 else (sorted(LAND_DAYS)[need - 1] + 1 if need <= len(LAND_DAYS) else None)
+    if start is None or start >= R.SEASON_DAYS or not ground_ok(block, start):
+        continue
+    crop = "MELON" if melon_tiles < 20 else "STRAWBERRY"
+    if crop == "MELON":
+        melon_tiles += len(block)
+    # **`land_day` is a DEADLINE carried by the chain that needs the ground, not a farm-level
+    # schedule.** `_land_requests` reads it only off slots whose own tile needs a parcel, and takes the
+    # earliest such day per parcel. Writing 7 and 10 onto two NW slots -- which need no land -- left
+    # every NE and SW slot at 99, so `land_schedule` returned `[99, 100]`, `parcels_by(day)` was 0 all
+    # season, and all six big off-NW blocks were skipped as unreachable. That is why the farm never
+    # left NW's 25 tiles no matter which order pens and blocks were placed in.
+    rows.append(slot(KIND_GROW, R.CROPS.index(crop), i, start,
+                     LAND_NEVER if need == 0 else C.LAND_DAY_CHOICES.index(sorted(LAND_DAYS)[need - 1])))
+    taken.update(block)
+    tiles += len(block)
+
+# ---------------------------------------------------------------- animals into what is left
+# The herd is the working capital, not the yield: a fed animal sets `fertilizer_available` every night
+# and COLLECT_FERTILIZER costs no action, so it sells from day 1 while milk does not arrive until day 8.
+# Measured -- withhold that income and the same farm banks $0. So pens start on day 0 regardless of
+# what else is scheduled, and `fert_trade=0` keeps `sell_fertilizer` on.
 ranch_order = sorted(range(len(C.RANCH_GROUPS)), key=lambda i: -len(C.RANCH_GROUPS[i]))
 pens = 0
 for i in ranch_order:
@@ -81,45 +139,13 @@ for i in ranch_order:
     group = C.RANCH_GROUPS[i]
     if set(group) & taken or not ground_ok(group, 0):
         continue
-    # `fert_trade=0` keeps `sell_fertilizer` on, which is the income above. 8 cows then sheep, as he does.
-    animal = 0 if pens < 8 else 1
-    what = R.ANIMAL_NAMES.index("COW") if animal == 0 else R.ANIMAL_NAMES.index("SHEEP")
+    what = R.ANIMAL_NAMES.index("COW" if pens < 8 else "SHEEP")
     rows.append(slot(KIND_RANCH, what, i, 0, LAND_NEVER, fert_trade=0))
     taken.update(group)
     pens += len(group)
 
-# ---------------------------------------------------------------- then the biggest crop blocks
-# Melon is capped near its 140-unit town drain -- it is the one product that actually gluts (+100
-# inventory, 250 -> 150) -- so the bulk is strawberry, as his 44 plantings against 21 melon.
-grow_order = sorted(range(len(C.BLOCKS)), key=lambda i: -len(C.BLOCKS[i]))
-tiles, melon_tiles = 0, 0
-for i in grow_order:
-    if len(rows) >= args.slots:
-        break
-    block = C.BLOCKS[i]
-    if set(block) & taken:
-        continue
-    # Start the day after the block's quadrant can be bought, never before.
-    need = max(R.land_purchases_for(tuple(t)) for t in block)
-    start = 0 if need == 0 else (sorted(LAND_DAYS)[need - 1] + 1 if need <= len(LAND_DAYS) else None)
-    if start is None or start >= R.SEASON_DAYS or not ground_ok(block, start):
-        continue
-    crop = "MELON" if melon_tiles < 20 else "STRAWBERRY"
-    if crop == "MELON":
-        melon_tiles += len(block)
-    rows.append(slot(KIND_GROW, R.CROPS.index(crop), i, start, LAND_NEVER))
-    taken.update(block)
-    tiles += len(block)
-
 while len(rows) < args.slots:
     rows.append(slot(KIND_OFF, 0, 0, 0, LAND_NEVER))
-
-# ---------------------------------------------------------------- the land schedule, one parcel per day
-# Written onto the first slots that will actually run, because `decode` reads the land days off the
-# genome's `land_day` genes rather than a separate field.
-for k, day in enumerate(sorted(LAND_DAYS)):
-    if k < len(rows):
-        rows[k][GI["land_day"]] = C.LAND_DAY_CHOICES.index(day)
 
 genome = np.vstack(rows).reshape(-1)
 np.savez(args.out, genome=genome)

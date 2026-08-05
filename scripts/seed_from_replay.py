@@ -86,6 +86,9 @@ def main():
 
     frames = {f: [] for f in FIELDS}
     crew_curve = []
+    # Per-turn money for both seats, `[T, P]`, matching `extract_seed_script.py`. The optimiser prints
+    # `money[-1]` as the seed's baseline, so a scalar here is an IndexError at startup.
+    money_curve = []
     op_census = collections.Counter()
 
     # `steps[0].action` is the reset placeholder; applying it shifts every day boundary by a
@@ -115,16 +118,21 @@ def main():
                 arr = arr[::-1].copy()
             frames[f].append(arr)
         crew_curve.append(np.array(crew[::-1] if a.seat == 1 else crew))
+        recorded = (steps[t][a.seat].get("observation") or {}).get("farms")
+        banks = ([float(recorded[i]["money"]) for i in range(2)] if recorded
+                 else (money_curve[-1] if money_curve else [0.0, 0.0]))
+        money_curve.append(np.array(banks[::-1] if a.seat == 1 else banks, dtype=np.float64))
 
     script = {f: np.stack(frames[f]) for f in FIELDS}
     crew = np.stack(crew_curve)
     out = pathlib.Path(a.out or f"data/seed_scripts/replay_{episode.stem}_seat{a.seat}.npz")
     out.parent.mkdir(parents=True, exist_ok=True)
-    money = float(rewards[a.seat]) if a.seat < len(rewards) else 0.0
+    money = np.stack(money_curve)
     np.savez_compressed(out, **script, money=money, crew=crew)
+    final = float(rewards[a.seat]) if a.seat < len(rewards) else float(money[-1, 0])
 
     lossy = _interleaved_turns(steps)
-    print(f"{episode} seat {a.seat}: ${money:,.0f} over {len(steps)} turns -> {out}")
+    print(f"{episode} seat {a.seat}: ${final:,.0f} over {len(steps)} turns -> {out}")
     print(f"crew per turn: mean {crew[:, 0].mean():.1f}, max {crew[:, 0].max()}")
     print(f"unit ops written: {dict(op_census.most_common())}")
     print(f"market orders: {int(script['sell'].sum())} sold, "

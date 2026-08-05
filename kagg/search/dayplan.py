@@ -288,7 +288,7 @@ def _can_leave(spawn, parcels):
     return False
 
 
-def _assign(script, day, tasks, max_hands, units, parcels=0):
+def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
     """Pack today's tasks onto today's hands. Nearest-neighbour tours, cheapest hand first.
 
     This is the whole point of the module, so it is worth being explicit about what it does *not* do:
@@ -311,6 +311,14 @@ def _assign(script, day, tasks, max_hands, units, parcels=0):
     batches, spawn, ready = R.dawn_crew(max(0, max_hands - 1))
     usable_units = [u for u in units[:max_hands]
                     if u in spawn and _can_leave(spawn[u], parcels)]
+
+    # **A hand cannot draw an animal before the animal is paid for** -- PLACE needs it in the unit's own
+    # inventory, PICKUP takes it from the shed, and BUY_ANIMAL only settles at the END of its turn.
+    # Holding the leading units until the day's last purchase settled was tried and REVERTED: it cost
+    # more than it bought, because those are the same units that plant. Judged on the criterion rather
+    # than on money, plants went from matching the tape day by day to 12 against 17 on day 1, pens 7 -> 6
+    # and animals 6 -> 1 by day 10. `animal_ready` is threaded through and deliberately unused; the fix
+    # has to be per TASK, not per unit-day, so a hand can plant early and fetch its beast afterwards.
     for unit in usable_units:
         if not pending:
             break
@@ -491,11 +499,59 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
     # one, because on day 10 the bank does not reach $2,000 until hour 20 -- the tape sells all day and
     # buys last. Ordering early is not conservative here; it is the difference between owning SW and
     # routing into it for twenty days.
-    for d in land_days:
-        for h in (schedule[d].get("land_turns") or [1]):
-            t = d * TPD + int(h)
-            if t < script.T:
-                script.buy_land[t] += 1
+    # **If the schedule carries the tape's own book, place it order for order at the recorded turn.**
+    # Aggregating to a day total and re-inventing the lots loses the structure the market is priced on:
+    # `market_price` quotes a BUY_PRODUCT at post-buy inventory, so a SELL and a BUY of one product in
+    # the SAME turn net about zero, and the tape uses that all season to move wheat from the town into
+    # the shed for free. Six equal buys and six equal sells on alternating turns pays the spread instead:
+    # day 2 came to -$89 against the tape's +$76 on identical daily totals, and that $165 is where the
+    # whole cash divergence starts -- day 3 opens $45 against $217, and a short bank silently kills
+    # BUY_ANIMAL, which is why 11 pens ever held 5 animals.
+    #
+    # HIRE is the one exclusion. Its cost is the Fibonacci partial sum over the day and does not depend
+    # on which turn each order sits in, while our two-per-turn cadence IS load-bearing -- `_spawn_hand`
+    # picks by occupancy at settle time, so a third order in one turn puts a hand on the trapped `(5,5)`
+    # corner and dead reckoning stops working.
+    # **OFF, and this is not a silent disable -- it is a measured regression on the criterion.** The book
+    # is right about the money: emitting it verbatim took day 3 from $45 to $196 against the tape's $217
+    # and days 0-3 from a $172 gap to $21. It is wrong about the herd. The tape buys its day-0 animals at
+    # hours 0-3, our tours draw from the shed at hour 1, and BUY_ANIMAL only settles at the END of its
+    # turn -- so two of the four PLACEs no-op and day 1 holds 2 animals against the tape's 4. Animals
+    # compound; cash on day 3 does not. Day-by-day state went 5 fail/2 pass to 6 fail/1 pass.
+    #
+    # Holding the leading units until the last purchase settles was tried and is also worse: those are
+    # the units that plant, and 12 lost turns on day 0 took plants from matching to 12 against 17.
+    #
+    # The fix is per TASK, not per unit-day: an animal's PICKUP has to sit after its purchase turn while
+    # the same hand still plants early -- which means the tour must be able to return to the shed
+    # mid-day instead of drawing everything in one trip before it leaves. Until that exists this stays
+    # off, `tests/test_the_market_book_is_the_tapes_turn_by_turn.py` stays red, and the $165 a day the
+    # invented lot structure costs is a known open item rather than a forgotten one.
+    USE_TAPE_BOOK = False
+    book = {d: [o for o in (schedule[d].get("orders") or []) if o[1] != "HIRE"] for d in days}
+    have_book = USE_TAPE_BOOK and any(book.values())
+    if have_book:
+        cols = {"SELL": (script.sell, R.PRODUCTS),
+                "BUY_SEED": (script.buy_seed, R.CROPS),
+                "BUY_PRODUCT": (script.buy_product, R.PRODUCTS),
+                "BUY_ANIMAL": (script.buy_animal, R.ANIMAL_NAMES)}
+        for d, orders in book.items():
+            for hour, op, item, qty in orders:
+                t = d * TPD + int(hour)
+                if t >= script.T:
+                    continue
+                if op == "BUY_LAND":
+                    script.buy_land[t] += int(qty)
+                elif op in cols:
+                    arr, names = cols[op]
+                    if item in names:
+                        arr[t, names.index(item)] += int(qty)
+    else:
+        for d in land_days:
+            for h in (schedule[d].get("land_turns") or [1]):
+                t = d * TPD + int(h)
+                if t < script.T:
+                    script.buy_land[t] += 1
 
     # **Ascending unit id, not nearest-the-shed.** `build_plan` maps unit 0 to the farmer and units
     # 1.. to the hands, so using unit k at all requires k hires -- and the ladder is the Fibonacci
@@ -613,10 +669,11 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # word. The tape buys its seed at hour 3, after the parcel at hour 2. `spend_turn` is 0 on every
         # other day, so nothing else moves.
         spend_turn = 3 if any(h <= 2 for h in (row.get("land_turns") or [])) else 0
-        for crop, qty in (row.get("seeds") or {}).items():
-            if crop in R.CROPS:
-                t = min(day * TPD + spend_turn, script.T - 1)
-                script.buy_seed[t, R.CROPS.index(crop)] += int(qty)
+        if not have_book:
+            for crop, qty in (row.get("seeds") or {}).items():
+                if crop in R.CROPS:
+                    t = min(day * TPD + spend_turn, script.T - 1)
+                    script.buy_seed[t, R.CROPS.index(crop)] += int(qty)
 
         tasks = _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant)
         # Restocked pens: the structure already stands, so it is PICKUP, PLACE, FEED, CARE with no
@@ -667,13 +724,18 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # theirs on turn 1 -- so the draw happened before the purchase and the PLACE silently no-oped.
         # Measured: 4 pens standing with 2 animals in them, and the farm never recovered.
         # The season total is unchanged, only the turn, so market fidelity is untouched.
-        for a, qty in (row.get("animals_bought") or {}).items():
-            if a in R.ANIMAL_NAMES and day * TPD < script.T:
-                t = min(day * TPD + spend_turn, script.T - 1)
-                script.buy_animal[t, R.ANIMAL_NAMES.index(a)] += int(qty)
+        if not have_book:
+            for a, qty in (row.get("animals_bought") or {}).items():
+                if a in R.ANIMAL_NAMES and day * TPD < script.T:
+                    t = min(day * TPD + spend_turn, script.T - 1)
+                    script.buy_animal[t, R.ANIMAL_NAMES.index(a)] += int(qty)
 
+        # The turn after the day's last BUY_ANIMAL settles. 0 on a day that buys none.
+        animal_ready = max((int(h) + 1 for h, op, _i, _q in (row.get("orders") or [])
+                            if op == "BUY_ANIMAL"), default=0)
         done, left, used = _assign(script, day, tasks, workers, unit_order,
-                                   parcels=parcels_by_day.get(day, 0))
+                                   parcels=parcels_by_day.get(day, 0),
+                                   animal_ready=animal_ready)
 
         # **Hire what the day actually used, not what it wanted.** The ladder is Fibonacci and resets
         # every dawn, so an unused hand is not free -- it is the most expensive rung of that day's
@@ -722,6 +784,8 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         buys = row.get("buys") or {}
         wheat_needed = int(buys.get("WHEAT", 0))
         fert_needed = int(buys.get("FERTILIZER", 0))
+        if have_book:
+            wheat_needed = fert_needed = 0
         if wheat_needed:
             # In lots across the day rather than one block, for the slot cap above and because the
             # ask walks up with the town's inventory as a single large order eats through it.
@@ -765,7 +829,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
                                 done=len(done),
                                 turns=want_turns, pens=len(farm.pens), crops=len(farm.crops)))
 
-    if sell:
+    if sell and not have_book:
         _sell_from_schedule(script, schedule)
 
     return script, dict(refused=refused, days=report_days,

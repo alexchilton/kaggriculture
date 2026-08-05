@@ -54,10 +54,18 @@ ap.add_argument("--sim-seed", type=int, default=0)
 ap.add_argument("--holdout", type=int, default=8,
                 help="unseen board draws to score the final genome on")
 ap.add_argument("--out", default="data/chain_search_local")
+# Coarse grids for the macro moves. The full cross-product of block x land_day x start_day is far too
+# large; these are the days that matter -- the leader buys on 7 and 10, and a chain starting before its
+# ground arrives is the defect this is meant to avoid. Single-gene sweeps still cover every day, so the
+# fine timing is found there once the structure is right.
+ap.add_argument("--land-day-moves", default="0,4,7,10,14")
+ap.add_argument("--start-day-moves", default="0,2,5,8,11,14,18")
 args = ap.parse_args()
 
 N_SLOTS = args.slots
 CHUNK = args.chunk
+LAND_DAY_MOVES = [int(x) for x in args.land_day_moves.split(",")]
+START_DAY_MOVES = [int(x) for x in args.start_day_moves.split(",")]
 
 OPPONENTS = []
 for name in args.opponents.split(","):
@@ -152,7 +160,22 @@ def gene_values(slot, gene_i, genome):
 
 
 def neighbours(genome):
-    """Every single-gene change, as `(genome, slot, gene_name, value)`."""
+    """Every single-gene change, plus the coordinated moves single changes cannot reach.
+
+    **Why macro moves are necessary and not a luxury.** Some genes are only worth anything together, and
+    steepest descent one gene at a time cannot cross the valley between:
+
+    * `block` and `land_day`. Moving a chain to NE without funding the parcel buys land on whatever day
+      `land_day` already says -- day 0 for most slots, the cash trap. Setting `land_day` alone does
+      nothing at all, because a chain on NW needs no parcel: every one of the six land_day genes in the
+      best genome of 2026-08-05 was **inert**, and sweeping all 31 values changed not one turn. That is
+      the reason a farm on 25 tiles never bought its way onto 75.
+    * filling an OFF slot. It needs a `kind`, a `block` and a `start_day` at once; any one alone is a
+      no-op or a loss. Two slots sat idle at $81,102 for exactly this reason.
+
+    This is the same argument `routines.py` makes about partial chains -- a prefix is money-negative, so
+    the fix is to make the whole thing one move -- applied a level up.
+    """
     g = np.asarray(genome, dtype=np.int64).reshape(N_SLOTS, len(C.GENES))
     out = []
     for slot in range(N_SLOTS):
@@ -163,6 +186,48 @@ def neighbours(genome):
                 h = g.copy()
                 h[slot, gi] = v
                 out.append((h.reshape(-1), slot, name, v))
+
+    b_i, l_i, k_i, s_i = (C.GENES.index(n) for n in ("block", "land_day", "kind", "start_day"))
+    land_days = [C.LAND_DAY_CHOICES.index(d) for d in LAND_DAY_MOVES
+                 if d in C.LAND_DAY_CHOICES]
+
+    # (block, land_day) jointly: move a chain onto ground that needs buying AND fund the parcel.
+    for slot in range(N_SLOTS):
+        kind = C.KINDS[int(g[slot, 0]) % len(C.KINDS)]
+        if kind == "off":
+            continue
+        pool = C.RANCH_GROUPS if kind == "ranch" else C.BLOCKS
+        for bi, ground in enumerate(pool):
+            if R.land_purchases_for(ground[0]) == 0:
+                continue                      # no parcel needed, so the pairing adds nothing
+            for li in land_days:
+                h = g.copy()
+                h[slot, b_i] = bi
+                h[slot, l_i] = li
+                out.append((h.reshape(-1), slot, "block+land_day",
+                            f"{ground[0]}@{C.LAND_DAY_CHOICES[li]}"))
+
+    # Fill an OFF slot: kind, block, start_day and land_day together.
+    for slot in range(N_SLOTS):
+        if C.KINDS[int(g[slot, 0]) % len(C.KINDS)] != "off":
+            continue
+        for kind in ("grow", "ranch"):
+            pool = C.RANCH_GROUPS if kind == "ranch" else C.BLOCKS
+            for bi, ground in enumerate(pool):
+                need = R.land_purchases_for(ground[0])
+                for sd in START_DAY_MOVES:
+                    if sd not in C.START_DAY_CHOICES:
+                        continue
+                    for li in (land_days if need else [C.LAND_DAY_CHOICES.index(0)]):
+                        if need and C.LAND_DAY_CHOICES[li] > sd:
+                            continue          # ground must arrive before the chain starts
+                        h = g.copy()
+                        h[slot, k_i] = C.KINDS.index(kind)
+                        h[slot, b_i] = bi
+                        h[slot, s_i] = C.START_DAY_CHOICES.index(sd)
+                        h[slot, l_i] = li
+                        out.append((h.reshape(-1), slot, f"fill:{kind}",
+                                    f"{ground[0]}@d{sd}/land{C.LAND_DAY_CHOICES[li]}"))
     return out
 
 

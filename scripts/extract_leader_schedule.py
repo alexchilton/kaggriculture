@@ -44,7 +44,7 @@ seat = d["info"]["TeamNames"].index(args.team)
 
 day_rows = collections.defaultdict(lambda: dict(
     builds=[], places=[], plants=[], animals_bought=collections.Counter(),
-    seeds=collections.Counter(), land=0, land_turns=[], hires=0, sells=collections.Counter(),
+    seeds=collections.Counter(), land=0, land_turns=[], orders=[], hires=0, sells=collections.Counter(),
     buys=collections.Counter(), money_dawn=None, hands=0))
 
 # **From `steps[1:]`, like every other reader in this project.** `steps[0].action` is the
@@ -78,6 +78,14 @@ for t, step in enumerate(d["steps"][1:]):
         if not o:
             continue
         n = int(o[2]) if len(o) > 2 else 1
+        # **The whole book, hour by hour.** Aggregating to a day total throws away the one thing the
+        # market cares about: `market_price` quotes a BUY at post-buy inventory, so a SELL and a BUY of
+        # the same product **in the same turn** net to about zero -- the tape's day 0 hour 5 is
+        # `BUY WHEAT 1 + SELL WHEAT 1 -> +$0`, moving wheat from town to shed for free, and it does that
+        # all season. Re-inventing the lots as six equal buys and six equal sells on alternating turns
+        # pays the spread every time: day 2 came to -$89 against the tape's +$76 on identical daily
+        # totals, and that $165 is the origin of the whole cash divergence.
+        row["orders"].append([hour, o[0], (o[1] if len(o) > 1 else None), n])
         if o[0] == "BUY_ANIMAL":
             row["animals_bought"][o[1]] += n
         elif o[0] == "BUY_SEED":
@@ -166,6 +174,7 @@ out = {str(day): dict(
     hires=day_rows[day]["hires"],
     land=day_rows[day]["land"],
     land_turns=day_rows[day]["land_turns"],
+    orders=day_rows[day]["orders"],
     builds=len(day_rows[day]["builds"]),
     places=day_rows[day]["places"],
     plants=day_rows[day]["plants"],

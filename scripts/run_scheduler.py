@@ -33,6 +33,11 @@ ap.add_argument("--sim-seed", type=int, default=0)
 ap.add_argument("--slots", type=int, default=12)
 ap.add_argument("--reserve", default="0,300,800,1500", help="cash reserves to sweep")
 ap.add_argument("--out", default="data/chain_search_scheduled")
+# **1.0, not 0.5.** Halving every drain for the opponent's share was added without measuring it and it
+# halves the farm: 4 cows and 3 sheep instead of 8 and 6. The unhalved mix is the one that reproduces
+# the leader exactly, and he wins against opponents who also sell -- so the drain a player can actually
+# take is closer to the whole thing than to half.
+ap.add_argument("--share", type=float, default=1.0)
 args = ap.parse_args()
 
 OPPONENTS = []
@@ -91,12 +96,12 @@ from kagg.economics import production as P
 def herd_target(a):
     an = R.ANIMALS[a]
     events = max(0, (R.SEASON_DAYS - an["first_yield_day"]) // max(an["interval"], 1))
-    return int(np.ceil(C.DRAIN_UNITS[an["product"]] * S.OPPONENT_SHARE / max(events * an["max_held"], 1)))
+    return int(np.ceil(C.DRAIN_UNITS[an["product"]] * args.share / max(events * an["max_held"], 1)))
 
 
 def tiles_target(c):
     y = max(P.TILE_YIELD_FERTILIZED[c], P.TILE_YIELD_PER_SEASON[c])
-    return int(np.ceil(C.DRAIN_UNITS[c] * S.OPPONENT_SHARE / max(y, 1e-9)))
+    return int(np.ceil(C.DRAIN_UNITS[c] * args.share / max(y, 1e-9)))
 
 
 print("stage 1 -- the mix, halved for the opponent's share of every drain")
@@ -109,10 +114,19 @@ print(f"  {targets}   (leader: 8 cow, 6 sheep, 41 straw, 20 melon, 40 wheat)\n")
 used_tiles, mix = set(), []
 
 
+# **Never SE.** Reaching it costs all three parcels -- $7,000 -- and the leader never buys it: he owns
+# NW, NE and SW, 75 tiles, for $3,000. Letting the allocator fall back to "any block" sprawled 18 chains
+# over 92 tiles including four blocks behind the $7,000 gate, and the farm banked $2,147 with nine chains
+# refused. A mix that cannot be reached is not a mix.
+MAX_PARCELS = 2
+
+
 def take(pool, want_free):
     for b in pool:
         tiles = tuple(b) if isinstance(b[0], tuple) else (b,)
         if set(tiles) & used_tiles:
+            continue
+        if R.land_purchases_for(tiles[0]) > MAX_PARCELS:
             continue
         if want_free and C.land_cost(tiles[0]) > 0:
             continue
