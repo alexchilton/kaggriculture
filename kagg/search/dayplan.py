@@ -300,11 +300,19 @@ def _assign(script, day, tasks, max_hands, units):
             done.append(nxt)
             pending.remove(nxt)
 
-        # A shed-adjacent hand DROPs what it is holding so the produce can be sold this afternoon;
-        # out in a field DROP cannot reach the shed and the dusk auto-deposit handles it instead.
-        if pos in SHED and any("HARVEST" in t["ops"] or "COLLECT_FERTILIZER" in t["ops"]
-                               for t in take):
-            if len(seq) < budget:
+        # **Walk back to the shed and DROP when the hand is carrying produce.** DROP tests
+        # shed-adjacency, so a hand that finishes out in a field cannot use it and its harvest sits in
+        # `carried` until the dusk auto-deposit -- which means it cannot be SOLD until the next dawn.
+        # Requiring the tour to happen to end on a shed tile emitted 8 drops a season against the
+        # tape's 80. The walk is only worth it if the turns are there, so it is attempted and skipped
+        # rather than forced.
+        if any("HARVEST" in t["ops"] or "COLLECT_FERTILIZER" in t["ops"] for t in take):
+            home = min(SHED, key=lambda c: _steps(pos, c))
+            back = _walk(pos, home)
+            if len(seq) + len(back) + 1 <= budget:
+                for m in back:
+                    seq.append((m, None, None))
+                pos = home
                 seq.append(("DROP", None, None))
 
         seq = seq[:budget]
@@ -504,11 +512,12 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # The schedule's figure REPLACES our estimate rather than bounding it. Taking the larger of
         # the two over-bought 135 units of wheat across the season, which is cash spent on feed the
         # tape did not buy and produce the shed then has to hold.
+        # Unconditional, including the days the schedule buys nothing. Applying it only where the
+        # schedule happened to list a product left our own estimate firing everywhere else, which is
+        # where the remaining 135 units of over-bought wheat were coming from.
         buys = row.get("buys") or {}
-        if "WHEAT" in buys:
-            wheat_needed = int(buys["WHEAT"])
-        if "FERTILIZER" in buys:
-            fert_needed = int(buys["FERTILIZER"])
+        wheat_needed = int(buys.get("WHEAT", 0))
+        fert_needed = int(buys.get("FERTILIZER", 0))
         if wheat_needed:
             # In lots across the day rather than one block, for the slot cap above and because the
             # ask walks up with the town's inventory as a single large order eats through it.
