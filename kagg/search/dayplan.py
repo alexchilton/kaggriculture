@@ -518,6 +518,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             if not CROP[c["crop"]]["ongoing"] and day - c["planted"] >= CROP[c["crop"]]["max_day"])
         replant = collections.Counter()
 
+        replant_here = []
         want_plants = (placements.get(day) or {}).get("plants") or None
         wanted = ([(tuple(t), c) for t, c in want_plants] if want_plants is not None
                   else [(None, c) for c in (row.get("plants") or [])])
@@ -527,10 +528,17 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             if crop not in CROP:
                 continue
             if fixed_tile is not None:
-                # The tape says this tile. If something is standing on it, it is a replant of that
-                # tile -- which is exactly what `(4,1)` does, wheat on day 0 and strawberry on day 4.
-                if not farm.free(fixed_tile):
-                    farm.crops.pop(fixed_tile, None)
+                # The tape says this tile, and it REPLANTS -- (4,1) is wheat on day 0 and strawberry
+                # on day 4, 131 plantings over 64 tiles. A tile that still holds a crop has to be
+                # harvested before it can be planted, in the same visit: dropping the old crop from
+                # our model and emitting a bare PLANT left the tile occupied in the game, so the
+                # PLANT was refused and the ground stayed dead. Measured: 18 live tiles on day 4
+                # collapsing to 9 by day 6 while the tape held 18.
+                if not farm.free(fixed_tile) and fixed_tile in farm.crops:
+                    old = farm.crops.pop(fixed_tile)
+                    replant_here.append((fixed_tile, crop))
+                    script.buy_seed  # seeds come off the schedule; nothing to order here
+                    continue
                 spot = fixed_tile
             else:
                 spot = _nearest_free(farm, usable)
@@ -555,6 +563,12 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
                 script.buy_seed[day * TPD, R.CROPS.index(crop)] += int(qty)
 
         tasks = _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant)
+        # Tiles the tape replants today: harvest the standing crop and sow the new one in one visit.
+        for tile, crop in replant_here:
+            tasks.append(dict(tile=tile, ops=["HARVEST", "DIG", "PLANT", "WATER"], need={},
+                              kind="replant", crop=crop, _rank=2))
+            farm.crops[tile] = dict(crop=crop, planted=day, last_water=day,
+                                    last_harvest=day, fert_until=-1)
 
         # ---- the crew. His, not ours: the ladder resets every dawn and is Fibonacci, so hiring the
         # peak from day 0 costs more than the farm earns. `hire` is the count wanted that turn.
