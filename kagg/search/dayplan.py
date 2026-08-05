@@ -161,9 +161,23 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
             tasks.append(dict(tile=tile, ops=["HARVEST", "DIG", "PLANT", "WATER"], need={},
                               kind="replant", crop=c["crop"], was=c["crop"]))
             continue
-        # Two consecutive dry days kill the tile (`_daily_refresh_plants`), so every other day is the
-        # legal maximum and it is what he runs: 851 waterings over ~61 tiles is 0.46/tile/day.
-        if day - c["last_water"] >= 2:
+        # **A one-shot crop's yield IS its watering, so inside the window it is watered every day.**
+        #
+        # `ops.py`/`kaggriculture.py:373-386`: WATER on a NON-ongoing crop, inside
+        # `[(max_yield_day + 1) // 2, max_yield_day]`, adds 1 to `yield_units` directly -- 2 if the
+        # tile is fertilized -- capped at `max_yield`. And `_daily_refresh_plants` skips one-shot
+        # crops outright (`kaggriculture.py:756-757`, `if not cd["ongoing"]: continue`), so every unit
+        # such a tile ever produces came from a WATER op inside that window. Wheat's window is three
+        # days wide; watering every other day collects two of the three, forever, on every wheat tile.
+        #
+        # Ongoing crops are the opposite: the nightly refresh grows them on a fixed interval whether
+        # or not anyone watered, and watering only prevents the two-dry-day death and gates the
+        # fertilizer doubling. Measured in `routines.py:708-771` -- melon daily $15,575 against
+        # $11,167 on alternate days (-28%), strawberry the reverse at +52%. One rule for both crop
+        # kinds was wrong for three of the five.
+        in_window = (not info["ongoing"]
+                     and (info["max_day"] + 1) // 2 <= age <= info["max_day"])
+        if in_window or day - c["last_water"] >= 2:
             ops.append("WATER")
         if info["ongoing"]:
             # Produces on a fixed interval once mature; harvesting between intervals is a wasted turn.
