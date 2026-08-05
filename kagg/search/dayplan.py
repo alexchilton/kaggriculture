@@ -587,12 +587,14 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # own market book -- what it bought, what it sold, how much and on which day -- and inventing
         # a substitute for it was the largest single divergence in the A/B diff: 320 units of SELL a
         # day against the tape's 17-55, and a third of its wheat.
+        # **Animals are bought at dawn, before any hand tries to draw one.**
+        # Spreading them across turns 1-4 the way the tape does looks faithful, but our hands PICKUP
+        # theirs on turn 1 -- so the draw happened before the purchase and the PLACE silently no-oped.
+        # Measured: 4 pens standing with 2 animals in them, and the farm never recovered.
+        # The season total is unchanged, only the turn, so market fidelity is untouched.
         for a, qty in (row.get("animals_bought") or {}).items():
-            if a in R.ANIMAL_NAMES:
-                for i in range(int(qty)):
-                    slot = day * TPD + 1 + (i % (TPD - 1))
-                    if slot < script.T:
-                        script.buy_animal[slot, R.ANIMAL_NAMES.index(a)] += 1
+            if a in R.ANIMAL_NAMES and day * TPD < script.T:
+                script.buy_animal[day * TPD, R.ANIMAL_NAMES.index(a)] += int(qty)
 
         done, left, used = _assign(script, day, tasks, workers, unit_order,
                                    parcels=parcels_by_day.get(day, 0))
