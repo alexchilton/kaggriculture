@@ -421,7 +421,13 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
             farm.crops[spot] = dict(crop=crop, planted=day, last_water=day,
                                     last_harvest=day, fert_until=-1)
             plant_orders.append((spot, crop))
-            script.buy_seed[day * TPD, R.CROPS.index(crop)] += 1
+
+        # Seeds come off the schedule like every other market order. Counting one per planting we
+        # managed to place under-ordered by 23 across the season, because the tape buys seed for the
+        # plantings it intends, not for the ones a packer found room for.
+        for crop, qty in (row.get("seeds") or {}).items():
+            if crop in R.CROPS:
+                script.buy_seed[day * TPD, R.CROPS.index(crop)] += int(qty)
 
         tasks = _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant)
 
@@ -436,8 +442,15 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # the unit budget. Reading it as the unit count cost us a whole worker every day of the
         # season -- 4 units on day 0 against his 5 -- while the packer dropped his plantings for want
         # of turns.
-        workers = min((row.get("hands", 0) or 0) + 1, max(1, math.ceil(want_turns / WORK_TURNS)))
-        workers = max(workers, 1)
+        # **Take the crew from the schedule, not from our own estimate of the work.**
+        # `want_turns` is what OUR task generator asked for, and it under-generates: on day 7 it
+        # wanted 9 waterings where the tape did 27. Deriving the crew from it closed a loop --
+        # under-generate work, conclude fewer hands are needed, do less work, starve. Measured
+        # against the tape on days 4-7 it ran 2-3 hands where the tape ran 6-8, and the bank went
+        # from ahead on day 3 to 5% of the tape's by day 7 and never recovered.
+        #
+        # The schedule's hand count is a fact off the tape. Use it.
+        workers = max(1, (row.get("hands", 0) or 0) + 1)
 
         # **Spread across the day, one animal a turn.** `_process_market` truncates each turn's
         # queue to `maxMarketOrdersPerTurn` = 10 (`reference/kaggriculture.py:534`) and drops the rest
@@ -445,10 +458,16 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # past the tenth slot. His day 0 issues 39 orders across 23 turns, buying animals one at a
         # time on turns 1-4 and wheat in 2-6 unit lots all day, interleaved with sells that fund the
         # next buy. Ours issued nine orders on turn 0 and nothing afterwards.
-        for i, (_t, a) in enumerate(build_orders):
-            slot = day * TPD + 1 + (i % (TPD - 1))
-            if slot < script.T:
-                script.buy_animal[slot, R.ANIMAL_NAMES.index(a)] += 1
+        # Everything below is READ off the schedule rather than invented. The schedule is the tape's
+        # own market book -- what it bought, what it sold, how much and on which day -- and inventing
+        # a substitute for it was the largest single divergence in the A/B diff: 320 units of SELL a
+        # day against the tape's 17-55, and a third of its wheat.
+        for a, qty in (row.get("animals_bought") or {}).items():
+            if a in R.ANIMAL_NAMES:
+                for i in range(int(qty)):
+                    slot = day * TPD + 1 + (i % (TPD - 1))
+                    if slot < script.T:
+                        script.buy_animal[slot, R.ANIMAL_NAMES.index(a)] += 1
 
         done, left, used = _assign(script, day, tasks, workers, unit_order)
 
@@ -467,7 +486,11 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # It has to be re-issued EVERY dawn because `_end_of_day` does `farm["hands"] = []`
         # (`reference/kaggriculture.py:849`): the hands are dismissed nightly and the ladder resets,
         # which is why a crew of 12 costs its whole partial sum ($376) every single day.
-        need = max(used) if used else 0
+        # **The schedule records the hires, so issue them.** Deriving the crew from `used` -- the
+        # units our own packer happened to fill -- ran 2-3 hands on days 4-7 where the tape ran 6-8,
+        # because our task generator under-generates and the crew was being sized from it. That closes
+        # a loop: fewer hands, less work done, fewer hands next time.
+        need = int(row.get("hires", 0) or 0) or (max(used) if used else 0)
         t0 = day * TPD
         if t0 < script.T:
             script.hire[t0] = max(int(script.hire[t0]), need)
@@ -478,6 +501,14 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
         # ---- book-keeping so tomorrow knows what happened, including tiles that cleared
         wheat_needed = sum(t["need"].get("WHEAT", 0) for t in done)
         fert_needed = sum(t["need"].get("FERTILIZER", 0) for t in done)
+        # The schedule's figure REPLACES our estimate rather than bounding it. Taking the larger of
+        # the two over-bought 135 units of wheat across the season, which is cash spent on feed the
+        # tape did not buy and produce the shed then has to hold.
+        buys = row.get("buys") or {}
+        if "WHEAT" in buys:
+            wheat_needed = int(buys["WHEAT"])
+        if "FERTILIZER" in buys:
+            fert_needed = int(buys["FERTILIZER"])
         if wheat_needed:
             # In lots across the day rather than one block, for the slot cap above and because the
             # ask walks up with the town's inventory as a single large order eats through it.
@@ -522,10 +553,35 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
                                 turns=want_turns, pens=len(farm.pens), crops=len(farm.crops)))
 
     if sell:
-        _sell_everything(script, schedule)
+        _sell_from_schedule(script, schedule)
 
     return script, dict(refused=refused, days=report_days,
                         pens=len(farm.pens), crops=len(farm.crops))
+
+
+def _sell_from_schedule(script, schedule):
+    """Sell exactly what the schedule records, on the day it records it.
+
+    The invented version ordered 8 products x 40 units every day -- 320 against the tape's 17-55 --
+    and no lot size fixed it, because the shape was wrong and not the scale. The tape sells small
+    amounts of whatever it happens to hold, all season, with one 358-unit dump on day 12. That is not
+    a cadence to be guessed at; it is written down.
+    """
+    for day, row in schedule.items():
+        for prod, qty in (row.get("sells") or {}).items():
+            if prod not in R.PRODUCTS:
+                continue
+            qty = int(qty)
+            i = R.PRODUCTS.index(prod)
+            # Spread across the day so a busy market day cannot run past the ten-order cap.
+            lots = max(1, min(6, qty))
+            per, left = qty // lots, qty
+            for k in range(lots):
+                t = day * TPD + 2 + k * 3
+                n = per if k < lots - 1 else left
+                if t < script.T and n > 0:
+                    script.sell[t, i] += n
+                left -= per
 
 
 def _sell_everything(script, schedule):
@@ -538,9 +594,14 @@ def _sell_everything(script, schedule):
     # One product per turn, late in the day. Eight SELL orders in the same turn as the day's buys
     # ran past the ten-slot cap and most of them were discarded before they were ever quoted -- and a
     # buy issued in that same turn quotes against a book the dropped sells never lifted.
+    # **Small daily lots, not a standing 40 of everything.** The flat version ordered 320 units of
+    # SELL every day against the tape's 17-55, and an order that large is not free even when the shed
+    # cannot fill it: the town's posted price walks down as its inventory rises, so dumping a whole
+    # day's produce in one order sells the tail of it into a market our own first units just spoiled.
+    # The tape sells in small lots all season and saves its one big dump for day 12.
     products = ("WHEAT", "STRAWBERRY", "MELON", "MILK", "WOOL", "FERTILIZER", "CARROT", "TOMATO")
     for day in range(1, R.SEASON_DAYS):
         for i, p in enumerate(products):
             t = day * TPD + 2 + i * 2
             if t < script.T:
-                script.sell[t, R.PRODUCTS.index(p)] += 40
+                script.sell[t, R.PRODUCTS.index(p)] += 8
