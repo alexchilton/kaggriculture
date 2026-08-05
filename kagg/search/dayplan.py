@@ -252,15 +252,26 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
     return tasks
 
 
-def _cost(task, pos):
-    """Turns to reach `task` from `pos` and do it, including a draw made at the stop itself.
+def _cost(task, pos, detour=True):
+    """Turns to reach `task` from `pos` and do it, including every draw the stop itself makes.
 
     A stop on a shed cell draws what it needs where it stands, and those PICKUPs are turns like any
     other. Leaving them out of the estimate let the packer accept a tour it could not finish, and
-    `seq[:budget]` then silently cut the tail -- which showed up as WATER and DROP falling when
-    PICKUP rose.
+    `seq[:cap]` then silently cut the tail -- which showed up as WATER and DROP falling when PICKUP rose.
+
+    **An animal stop is charged the walk back to the shed as well.** The beast is drawn on a detour at
+    its own stop rather than in the pre-batch, so that the PICKUP lands after BUY_ANIMAL settles. That
+    detour is real turns, and omitting it put all four of day 0's pens on unit 0 with a tour longer than
+    the day: CARE landed twice against the tape's six and FEED three times against four, with a hand
+    idle for twelve turns and the report claiming 21 of 21 tasks done.
     """
-    n = _steps(pos, task["tile"]) + len(task["ops"])
+    beasts = [a for a in (task.get("need") or {}) if a in R.ANIMAL_NAMES] if detour else []
+    n = len(task["ops"])
+    if beasts and task["tile"] not in SHED:
+        home = min(SHED, key=lambda c: _steps(pos, c))
+        n += _steps(pos, home) + len(beasts) + _steps(home, task["tile"])
+    else:
+        n += _steps(pos, task["tile"])
     if task["tile"] in SHED and task["need"]:
         n += len(task["need"])
     return n
@@ -288,7 +299,7 @@ def _can_leave(spawn, parcels):
     return False
 
 
-def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
+def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0, cut=None):
     """Pack today's tasks onto today's hands. Nearest-neighbour tours, cheapest hand first.
 
     This is the whole point of the module, so it is worth being explicit about what it does *not* do:
@@ -298,6 +309,7 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
     """
     pending = list(tasks)
     done, used_units = [], []
+    cut = {} if cut is None else cut
     # **Take the crew first, THEN drop the units that cannot move.** Filtering before the slice let a
     # dropped unit shift the whole window up: a crew of five became slots `[0, 1, 2, 4, 5]`, and the
     # farm owns slots 0-4 on a four-hand day, so every op written to slot 5 was dropped by the harness
@@ -325,13 +337,18 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
         script.hold(day, unit, ready[unit])
         # One step onto `(4,4)`, always. Every tour then starts from the shed, which is both what the
         # PICKUP gate needs and what keeps the next hire batch's occupancy predictable.
+        # **Only detour for the beast if it is not in the shed yet when this hand starts.** The detour
+        # exists so the PICKUP lands after BUY_ANIMAL settles, and it costs ~3 turns a pen. When the
+        # purchase is already settled -- which it is whenever the animals go out at dawn -- the pre-batch
+        # draw is both cheaper and correct, and paying the detour anyway refused 4 of day 0's 21 tasks.
+        detour = animal_ready > ready[unit]
         arrival = [(m, None, None) for m in _walk(spawn[unit], SPAWN)]
         cap = script.turns_left(day, unit)
         budget = cap - len(arrival)
         if budget <= 0:
             continue
         pos = SPAWN
-        seq, carried = list(arrival), collections.Counter()
+        seq, carried, marks = list(arrival), collections.Counter(), []
 
         # Everything a hand will carry must be drawn in one trip to the shed, before it leaves: PICKUP
         # is gated on a shed-access tile that is *unlocked* (`ops.py:216`), and only `(4,4)` is always
@@ -352,11 +369,12 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
                 if task in take:
                     continue
                 # Only what must be carried AWAY from the shed needs the outward trip.
-                projected = want + (collections.Counter(task["need"])
-                                    if task["tile"] not in SHED else collections.Counter())
+                projected = want + (collections.Counter(
+                    {k: v for k, v in task["need"].items() if not (detour and k in R.ANIMAL_NAMES)})
+                    if task["tile"] not in SHED else collections.Counter())
                 # Already standing on the shed, so the outward trip is the draw itself and no walk.
                 prefix = len(projected) if projected else 0
-                add = _cost(task, cursor)
+                add = _cost(task, cursor, detour=detour)
                 if prefix + spent + add > budget:
                     continue
                 # **Rank picks the hand's FIRST stop; distance picks every stop after it.**
@@ -392,7 +410,8 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
                 # draw happens on the tour's first turn. Two of the tape's four day-0 PLACEs no-oped that
                 # way. Drawn mid-tour instead (below), which puts the PICKUP after the purchase without
                 # holding back the hand's planting, which is what the per-unit-day version got wrong.
-                away.update({k: v for k, v in task["need"].items() if k not in R.ANIMAL_NAMES})
+                away.update({k: v for k, v in task["need"].items()
+                             if not (detour and k in R.ANIMAL_NAMES)})
         if away:
             for m in _walk(pos, SPAWN):
                 seq.append((m, None, None))
@@ -403,12 +422,14 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
 
         # **Animal stops go last**, so the draw for them lands as late in the day as the tour allows.
         # `sorted` is stable, so everything else keeps the greedy order it was chosen in.
-        take.sort(key=lambda t: any(a in R.ANIMAL_NAMES for a in (t.get("need") or {})))
+        if detour:
+            take.sort(key=lambda t: any(a in R.ANIMAL_NAMES for a in (t.get("need") or {})))
 
         # Nearest-neighbour from where the hand now stands. The tour is short (rarely over eight
         # stops) so the greedy order is within a step or two of optimal and costs nothing to compute.
         for nxt in take:
-            beasts = {k: v for k, v in (nxt.get("need") or {}).items() if k in R.ANIMAL_NAMES}
+            beasts = ({k: v for k, v in (nxt.get("need") or {}).items() if k in R.ANIMAL_NAMES}
+                      if detour else {})
             if beasts and nxt["tile"] not in SHED:
                 # Back to the shed for the beast, then out to its pen. Costs the walk and buys the
                 # PLACE, which is worth roughly $100 a day in fertilizer alone for the rest of the season.
@@ -432,6 +453,10 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
                 seq.append((name, item, crop))
             done.append(nxt)
             pending.remove(nxt)
+            # Where this task's ops end, so an overrun can hand back whole tasks instead of cutting
+            # mid-op. A half-emitted pen -- BUILD and PLACE but no FEED or CARE -- is worse than one that
+            # was never started, because the turns are spent either way and the animal starves.
+            marks.append((len(seq), nxt, pos))
 
         # **Walk back to the shed and DROP when the hand is carrying produce.** DROP tests
         # shed-adjacency, so a hand that finishes out in a field cannot use it and its harvest sits in
@@ -448,7 +473,28 @@ def _assign(script, day, tasks, max_hands, units, parcels=0, animal_ready=0):
                 pos = home
                 seq.append(("DROP", None, None))
 
-        seq = seq[:cap]
+        # **A cut is reported, never silent.** Anything past `cap` is discarded by the harness, and the
+        # task has already been counted in `done` -- so without this the report says 21 of 21 on a day
+        # that fed two pens of four. Pinned by `tests/test_no_op_is_silently_truncated_off_a_tour.py`.
+        if len(seq) > cap:
+            # Roll back to the last task that fits whole, and put the rest back in `pending` so another
+            # hand can take them. Cutting mid-tour instead reported `21 of 21 done` for a day 0 that fed
+            # two pens of four, while a hand sat idle for twelve turns.
+            while marks and marks[-1][0] > cap:
+                _end, task, _p = marks.pop()
+                done.remove(task)
+                pending.append(task)          # handed back, not lost -- another hand may still take it
+            keep = marks[-1][0] if marks else 0
+            # Only a MID-OP remainder is a real loss: the task boundary rollback above hands whole tasks
+            # back to `pending`, and anything that finds no other hand surfaces as a refusal the caller
+            # counts. `keep` can only exceed `cap` if the arrival prefix alone overran, which would be a
+            # cost-model bug rather than a packing decision, so it is reported rather than absorbed.
+            if keep > cap:
+                cut[day] = cut.get(day, 0) + (keep - cap)
+                keep = cap
+            seq = seq[:keep]
+            if marks:
+                pos = marks[-1][2]
         t0 = script.claim(day, unit, len(seq), what=f"day {day} tour")
         for i, (name, item, crop) in enumerate(seq):
             if name == "PICKUP":
@@ -491,7 +537,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
     placements = placements or {}
     script = R.Script()
     farm = Farm()
-    refused, report_days = [], []
+    refused, report_days, truncated = [], [], {}
 
     days = sorted(schedule)
     land_days = [d for d in days if schedule[d]["land"]]
@@ -750,12 +796,15 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
                     t = min(day * TPD + spend_turn, script.T - 1)
                     script.buy_animal[t, R.ANIMAL_NAMES.index(a)] += int(qty)
 
-        # The turn after the day's last BUY_ANIMAL settles. 0 on a day that buys none.
-        animal_ready = max((int(h) + 1 for h, op, _i, _q in (row.get("orders") or [])
-                            if op == "BUY_ANIMAL"), default=0)
+        # The turn after the day's last BUY_ANIMAL settles -- read off **our own** emitted orders, not the
+        # tape's. Taking it from `row["orders"]` said hour 4 on day 0 because that is when the tape
+        # finishes buying, while we order at dawn and the beast is in the shed by turn 1. Every hand then
+        # paid a ~3-turn detour it did not need and day 0 refused 4 of its 21 tasks.
+        window = script.buy_animal[day * TPD:(day + 1) * TPD]
+        animal_ready = max((h + 1 for h in range(window.shape[0]) if window[h].any()), default=0)
         done, left, used = _assign(script, day, tasks, workers, unit_order,
                                    parcels=parcels_by_day.get(day, 0),
-                                   animal_ready=animal_ready)
+                                   animal_ready=animal_ready, cut=truncated)
 
         # **Hire what the day actually used, not what it wanted.** The ladder is Fibonacci and resets
         # every dawn, so an unused hand is not free -- it is the most expensive rung of that day's
@@ -852,7 +901,7 @@ def emit(schedule, fertilize=True, sell=True, crop_for=None, placements=None):
     if sell and not have_book:
         _sell_from_schedule(script, schedule)
 
-    return script, dict(refused=refused, days=report_days,
+    return script, dict(refused=refused, days=report_days, truncated=truncated,
                         pens=len(farm.pens), crops=len(farm.crops))
 
 
