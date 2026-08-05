@@ -137,6 +137,9 @@ def make_agent(schedule, me=0):
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
         # ------------------------------------------------------------------ what the BOARD needs now
+        # Carried stock, computed once: a task whose input is neither in the shed nor in a hand must not be
+        # queued at all, or the unit that takes it deadlocks holding a job it can never start.
+        wheat_carried = any(collections.Counter(iv).get("WHEAT", 0) > 0 for iv in invs)
         tasks = []
         for y, r in enumerate(tiles):
             for x, cell in enumerate(r):
@@ -172,7 +175,13 @@ def make_agent(schedule, me=0):
                             and (shed.get("FERTILIZER", 0) > 0 or carried)):
                         tasks.append((RANK["FERTILIZE"], t, "FERTILIZE", "FERTILIZER"))
                 elif "animal" in cell:
-                    if not cell["fed_today"]:
+                    # **Only queue a FEED if the wheat exists somewhere.** Without this a unit took the
+                    # job, walked to the shed, found it empty, PASSed -- and because it still HELD the job
+                    # it re-picked the same FEED next turn and froze there. Measured on the winner's
+                    # schedule: FEED 0 with 83 idle unit-turns and live animals in the pens, day after day,
+                    # because rank 0 kept every hand queued behind wheat that never arrived. Same silent
+                    # shape as the rest: a failed precondition that does nothing instead of reporting.
+                    if not cell["fed_today"] and (shed.get("WHEAT", 0) > 0 or wheat_carried):
                         tasks.append((RANK["FEED"], t, "FEED", "WHEAT"))
                     if not cell["cared_today"]:
                         tasks.append((RANK["CARE"], t, "CARE", None))
@@ -272,6 +281,13 @@ def make_agent(schedule, me=0):
                 if pos in SHED and shed.get(item, 0) > 0:
                     shed[item] -= 1
                     acts.append(["PICKUP", item, 1])
+                    continue
+                if shed.get(item, 0) <= 0:
+                    # Nothing to fetch. RELEASE the job so this hand does something useful, instead of
+                    # standing on a shed cell passing while it holds the highest-priority task on the board.
+                    state["assigned"].pop(u, None)
+                    claimed.discard(tile)
+                    acts.append(["PASS"])
                     continue
                 home = min(SHED, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
                 m = _step_towards(pos, home, unlocked)
