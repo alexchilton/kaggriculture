@@ -631,11 +631,21 @@ def make_agent(schedule, me=0, router=True):
         # ordering is exactly what decided whether BUY_LAND cleared at all.
         for prod in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"):
             have = int(shed.get(prod, 0))
-            # **Hold back a few fertilizer.** Applied to a watered, producing tile it doubles the yield --
-            # a strawberry tile is 4 units at $120, so doubling beats the $100 the unit sells for. Dumping
-            # the whole shed every turn is why FERTILIZE never fired at all.
+            # **Hold back fertilizer the FIELD can use -- not a constant.** Applied to a watered,
+            # producing tile it doubles the yield (a strawberry tile is 4 units at $120, so doubling
+            # beats the $100 the unit sells for), and dumping the whole shed every turn is why
+            # FERTILIZE never fired at all. But the reserve used to be a flat 4, which on any day the
+            # shed holds four or fewer cancels the sale ENTIRELY, whether or not a single tile could
+            # take it. Measured on Seb's day 1, where his plan and ours are otherwise near-identical:
+            # he sells 4 and ends on $356, we sell 0 and end on $189. Four fertilizer at the realised
+            # ~$42 is the whole $167 gap -- on the day the bank has to start compounding if the day-4
+            # parcel is ever to clear. `crop_ops` already knows which tiles fertilizing pays on, so
+            # ask it rather than guessing a number.
             if prod == "FERTILIZER":
-                have = max(0, have - 4)
+                want = sum(1 for r in tiles for c in r
+                           if isinstance(c, dict) and c.get("kind") == "PLANT"
+                           and "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(c, day, True)])
+                have = max(0, have - min(4, want))
             # **Never sell the herd's feed.** WHEAT is both a crop we grow and the feed we buy, and the
             # sell list dumps whatever the shed holds. Measured per turn on day 13 with eleven animals:
             #     h0  BUY_PRODUCT WHEAT 11   shed 0 -> 11
@@ -684,17 +694,14 @@ def make_agent(schedule, me=0, router=True):
             if need_by is not None and day >= need_by and money >= LAND_PRICES[owned]:
                 orders.append(["BUY_LAND"])
                 money -= LAND_PRICES[owned]
-            elif need_by is not None and day >= need_by:
-                # **RESERVE the parcel once it is due.** A floor is not enough: everything below this
-                # line -- animals, seeds, feed, hires -- spends from the same bank, so an overdue
-                # parcel is permanently outbid by whatever is cheaper. Driving Seb's plan, which wants
-                # land on days 4, 6 and 10, the second parcel arrived on day 16 and the third on day
-                # 19-20, identically on every one of twelve seeds: a hard money constraint, not noise.
-                # He farms a hundred tiles from day 10 and we farmed them from day 20.
-                #
-                # Zeroing the spendable bank starves the cheaper purchases until the land clears,
-                # which is what "buy land on day 6" has to mean if it is to mean anything.
-                money = 0.0
+            # **Do NOT reserve the parcel by starving everything else.** Tried: once a parcel is
+            # overdue, zero the spendable bank so nothing cheaper can outbid it. On the original
+            # schedule that was +$895; on Seb's plan, where the parcel stays overdue for ten days, it
+            # took the season from $59,816 to **$2,345 with a $0 minimum** -- the farm cannot buy feed,
+            # so the herd starves and there is never any revenue to buy the land with either.
+            #
+            # The land is late because the farm is poor, not because the land is outbid. Reserving
+            # treats the symptom and removes the only mechanism that could fix the cause.
 
         # Animals: only when the bank covers the cost, so the purchase can never silently no-op.
         # **Buy against the CUMULATIVE target, not today's row.** `animals_bought` is a per-day figure and

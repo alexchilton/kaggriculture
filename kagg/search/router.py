@@ -315,7 +315,13 @@ def plant_prize(crop, day):
     price = BASE_PRICE[crop]
     days_left = R.SEASON_DAYS - 1 - day
     if not info["ongoing"]:
-        if days_left < info["first"]:
+        # **A one-shot crop pays only through a HARVEST, and HARVEST is only offered once the yield
+        # window has SHUT** (`_one_shot_is_finished`). So the crop must reach age `max_day` with a turn
+        # left to collect it -- reaching `first_yield_day` buys nothing at all. Gating on `first`
+        # planted wheat that could never be collected: 32 of 66 wheat plantings sat unharvested at
+        # season end against the tape's 1 of 66, each costing a seed, a PLANT turn and a WATER turn,
+        # and holding ground that a later replant could have used.
+        if days_left < info["max_day"]:
             return 0
         window_end = min(info["max_day"], days_left)
         waters = window_end - (info["max_day"] + 1) // 2 + 1

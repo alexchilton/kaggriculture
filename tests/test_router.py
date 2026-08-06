@@ -573,6 +573,67 @@ def test_the_sell_quota_is_re_offered_every_turn(kg):
     assert RT.crop_ops(dict(thirsty, consecutive_unwatered=0), 3, have_fertilizer=False) == []
 
 
+def test_the_fertilizer_reserve_is_not_held_against_a_field_that_cannot_use_it():
+    """A flat hold-back of four blocks the WHOLE sale on any day the shed holds four or fewer.
+
+    Measured on Seb's day 1 (`scripts/first_two_days_all_params.py 11 --days 2`), where his plan and
+    ours are otherwise near-identical -- same 17 plants, same 8 pastures, same 7 hires:
+
+        SELL FERTILIZER      ours 0    his 4
+        money at dusk      ours $189   his $356
+
+    The gap is $167 and four fertilizer at the realised ~$42 is $168. That is the entire day, and it
+    is the day the bank has to start compounding from if the day-4 parcel is ever going to clear.
+
+    The reserve itself is right -- fertilizer applied to a producing tile doubles the yield, and
+    dumping the shed every turn is why FERTILIZE never fired at all. What is wrong is that it is
+    held unconditionally, against a field with nothing to apply it to. Reserve what the FIELD can
+    actually use today, not a constant.
+    """
+    board = blank_board()
+    # Two pens and nothing growing: there is no tile FERTILIZE could be worth anything on.
+    board[1][1] = {"kind": "PASTURE"}
+    board[1][2] = {"kind": "PASTURE"}
+    # `empty_sched` only decorates day 0, and this is a day-1 measurement, so put the quota on
+    # every day -- otherwise the assertion passes on an empty row and measures nothing.
+    sched = empty_sched()
+    for r in sched.values():
+        r["sells"] = {"FERTILIZER": 4}
+    agent = schedule_agent.make_agent(sched, 0, router=True)
+    farm = {"tiles": board, "money": 200, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {"FERTILIZER": 4}, "seeds": {}, "inventories": [{}]}
+    act = agent({"day": 1, "hour": 0, "farms": [farm], "private": priv, "step": RT.TPD})
+    sold = sum(o[2] for o in act["market"] if o[:2] == ["SELL", "FERTILIZER"])
+    assert sold == 4, f"four fertilizer held back from a field with no crop at all: {act['market']}"
+
+
+def test_the_fertilizer_reserve_still_stands_where_the_field_can_use_it():
+    """The other half of the rule: a producing tile keeps its fertilizer off the sell list.
+
+    Dumping the whole shed every turn is what stopped FERTILIZE ever firing, so relaxing the reserve
+    must not relax it on the case it was written for.
+    """
+    board = blank_board()
+    for x in range(4):
+        board[1][x] = dict(kind="PLANT", crop="STRAWBERRY", planted_day=0, watered_today=False,
+                           consecutive_unwatered=0, yield_units=0, fertilized_until_day=-1)
+    # Ask the prize model which day it actually wants to fertilize on rather than guessing one --
+    # picking a day the model is silent about would pass this test while measuring nothing.
+    day = next(d for d in range(1, 20)
+               if "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(board[1][0], d, True)])
+    sched = empty_sched()
+    for r in sched.values():
+        r["sells"] = {"FERTILIZER": 4}
+    agent = schedule_agent.make_agent(sched, 0, router=True)
+    farm = {"tiles": board, "money": 200, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {"FERTILIZER": 4}, "seeds": {}, "inventories": [{}]}
+    act = agent({"day": day, "hour": 0, "farms": [farm], "private": priv, "step": day * RT.TPD})
+    sold = sum(o[2] for o in act["market"] if o[:2] == ["SELL", "FERTILIZER"])
+    assert sold == 0, f"sold the fertilizer four producing strawberries want: {act['market']}"
+
+
 def test_feeding_a_healthy_animal_outranks_a_melon():
     """An unfed animal produces nothing that day, so the feed is not worth one unit of milk.
 
@@ -753,3 +814,23 @@ def test_a_wheat_reaches_its_plain_yield_and_is_harvested_once(kg):
     assert tally["HARVEST"] == 1, dict(tally)
     assert tally["WATER"] == 4, dict(tally)          # day 0 keeps it alive, days 2-4 are the yield
     assert priv["shed"].get("WHEAT", 0) == 4, priv["shed"]
+
+
+def test_a_one_shot_crop_is_not_planted_if_its_window_cannot_finish():
+    """`plant_prize` gates on `first_yield_day`, which is the wrong end of the crop's life.
+
+    A one-shot crop only banks anything through a HARVEST, and HARVEST is only offered once the yield
+    window has shut (`_one_shot_is_finished`). So a wheat needs to reach age `max_yield_day` = 4 with
+    a turn left to harvest it, not merely age 2. Gating on `first` planted wheat that could never be
+    collected: 32 of 66 wheat plantings sat unharvested at season end against the tape's 1 of 66.
+
+    Each one costs a $10 seed, a PLANT turn and a WATER turn for nothing, and occupies ground.
+    """
+    last = RT.R.SEASON_DAYS - 1
+    assert RT.plant_prize("WHEAT", last - 5) > 0          # sown day 24, age 4 on day 28, a day spare
+    # Sown day 26: age 4 lands on day 30 and the season ends on 29, so it can NEVER be harvested --
+    # yet `days_left` 2 clears `first_yield_day` 2 and the old rule priced it at $25.
+    assert RT.plant_prize("WHEAT", last - 3) == 0
+    assert RT.plant_prize("MELON", last - 5) == 0         # melon needs age 12; hopeless this late
+    # An ongoing crop is unaffected: it pays from `first_yield_day` onwards and needs no window.
+    assert RT.plant_prize("STRAWBERRY", last - 11) > 0
