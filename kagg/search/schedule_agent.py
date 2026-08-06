@@ -375,6 +375,19 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # The turns cost nothing: this only fires once the tour is done and the unit would PASS. DROP
         # moves the WHOLE inventory and DELETES anything the shed has no room for
         # (`kaggriculture.py:333`), so it is refused when the shed is near full.
+        # **TRIED and REVERTED: drop the surplus whenever standing on the shed, not only at tour end.**
+        # The symptom is real and traced (`scripts/where_the_cow_goes.py`, seed 11 day 4 of Seb's plan):
+        # the crew harvests from h5 and the first DROP lands at h19, so `SELL WHEAT` cannot be offered
+        # until h19 and the bank sits at $316 all day. Everything bank-gated queues behind it -- the COW
+        # settles at h19, by which point the free pens are three steps away with four turns left
+        # (PICKUP + 3 moves + PLACE = 5), so it is never placed, and day 5's seed order half-fills.
+        #
+        # Dropping anything held beyond `Node.needs` for the rest of the tour MEASURED as a loss over
+        # twelve seeds at weedSpawnChance 0.005: our schedule $119,281 -> $104,009, Seb's $96,064 ->
+        # $84,913. It also broke `test_wheat_already_in_a_hand_feeds_the_herd_with_an_EMPTY_shed`: a
+        # unit holding feed on a shed cell dumped it back, because `needs` is what the ROUTE will draw
+        # at the depot and not what the unit is already carrying for the jobs ahead of it. Getting the
+        # harvest home earlier is still the right goal; this accounting is not the way to it.
         if act == ["PASS"] and not st["route"] and any(v > 0 for v in inv.values()):
             if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
                 if pos in depots:
