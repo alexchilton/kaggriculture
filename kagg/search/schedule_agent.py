@@ -757,6 +757,13 @@ def make_agent(schedule, me=0, router=True):
         # Count wheat a unit is CARRYING as stock. The router draws a whole day's feed in one PICKUP, so
         # the shed reads empty while the crew holds plenty, and buying against the shed alone re-bought
         # the same feed every day.
+        # **TRIED and REVERTED: counting wheat standing ripe in our own field as stock.** The waste it
+        # targets is real -- we bought five wheat on Seb's day 4, a day whose HARVEST of 14 wheat is
+        # identical in both columns, so ~$300 went on feed we already owned. But owned is not
+        # AVAILABLE: standing wheat needs a HARVEST, a DROP and a walk, and most of the season's wheat
+        # is still growing. Counting it silences the feed order and the herd starves. Twelve seeds at
+        # weedSpawnChance 0.005: our schedule $118,761 -> $87,403, Seb's $92,773 -> $54,419. The feed
+        # chain needs stock it can pick up THIS turn, which is the shed and the crew, and nothing else.
         on_hand = int(shed.get("WHEAT", 0)) + sum(collections.Counter(iv).get("WHEAT", 0)
                                                  for iv in invs)
         # **Buy two days, not one.** `alive` is the day's CONSUMPTION, and ordering exactly the

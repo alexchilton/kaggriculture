@@ -710,6 +710,61 @@ def test_a_thin_bank_buys_the_feed_it_can_afford_instead_of_none(kg):
                           f"but the day ordered {ordered}")
 
 
+def test_a_days_wheat_reserve_was_measured_at_two_days_and_one_day_lost_money():
+    """TRIED: `FEED_DAYS = 1`, on the theory that the two-day hold-back blocks the day-4 wheat sale.
+
+    The chain is real -- on Seb's day 4 he sells 49 wheat and we sell 38, and the 11-unit difference
+    is exactly our `FEED_DAYS * alive` reserve of 12. That leaves us on $532 against his $1,143, so at
+    dawn on day 5 the seed order half-fills (5 strawberry of 10) and five tiles never get planted.
+
+    But halving the reserve is not the fix. Twelve seeds at weedSpawnChance 0.005:
+
+        FEED_DAYS   our schedule   Seb's schedule
+            2         $118,761        $92,773
+            1         $112,525        $88,817
+
+    -$6,236 and -$3,956. The reserve is not idle capital: it is the slack in shed -> PICKUP -> walk ->
+    FEED, and our tours need more of it than his tape does. Reverted; this pins the two.
+    """
+    assert schedule_agent.FEED_DAYS == 2
+
+
+def test_counting_field_wheat_as_feed_stock_was_measured_a_31358_dollar_loss():
+    """TRIED: count `yield_units` on our own WHEAT tiles towards `on_hand` in the feed order.
+
+    The waste is real. On Seb's day 4 we buy five wheat while `HARVEST 14` is identical in both
+    columns -- ~$300 spent on feed already growing in the field, on the day the day-6 parcel has to
+    be funded, and he buys one.
+
+    MEASURED over twelve seeds at weedSpawnChance 0.005:
+
+        our schedule   $118,761 -> $87,403     -$31,358
+        Seb's schedule $ 92,773 -> $54,419     -$38,354
+
+    Owned is not AVAILABLE. Standing wheat needs a HARVEST, a DROP and a walk, and most of the
+    season's wheat is still growing, so counting it silences the feed order and the herd starves --
+    the same shape as the $47,933 replace-what-escapes mistake. The feed chain needs stock that can be
+    picked up THIS turn: the shed and the crew, nothing else. This pins the reverted state.
+    """
+    board = blank_board()
+    for x in range(4):
+        board[1][x] = dict(kind="PLANT", crop="WHEAT", planted_day=0, watered_today=True,
+                           consecutive_unwatered=0, yield_units=4, fertilized_until_day=-1)
+    board[3][3] = dict(kind="PASTURE", animal="COW", fed_today=False, cared_today=False,
+                       last_fed_day=0, produce_ready=False)
+    agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
+    farm = {"tiles": board, "money": 5000, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+    ordered = 0
+    for hour in range(RT.TPD):
+        act = agent({"day": 6, "hour": hour, "farms": [farm], "private": priv,
+                     "step": 6 * RT.TPD + hour})
+        ordered += sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
+    assert ordered > 0, (f"the feed order went silent with sixteen units of our own wheat standing "
+                         f"in the field -- that arm measured -$31,358 and must stay reverted")
+
+
 def test_a_unit_that_has_finished_carries_the_harvest_home(kg):
     """A tour with no return leg cannot sell anything it picks up until the following dawn.
 
