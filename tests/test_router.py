@@ -800,6 +800,63 @@ def test_the_feed_budget_uses_the_live_quote_not_a_hardcoded_sixty(kg):
                            f"ordered {ordered} -- the budget is still the hardcoded $60")
 
 
+def test_an_animal_drawn_from_the_shed_is_placed_the_same_day(kg):
+    """The cow rode around in a pocket all day and was dropped back home unplaced.
+
+    Seed 11, day 4 on Seb's plan, per turn:
+
+        h1   shed{COW: 1}       bought and settled
+        h3   carry{COW: 1}      a unit DREW it for a PLACE
+        h12  carry{COW: 1}      still carried, through fifteen other jobs
+        h19  shed{COW: 1}       dropped back home, never placed
+
+    Two empty pastures stood free the whole day, and the tape places its cow the same day: `PLACE 0
+    against 1`, `tile:animal 6 against 7`. An animal in a pocket produces nothing, eats nothing and
+    cannot be cared for, so a whole animal-day is lost -- and FEED/CARE are the two ops that correlate
+    hardest with money on the leaderboard.
+
+    **This test does NOT reproduce it.** Written three ways -- cow in the shed at dawn, cow arriving at
+    hour 1 after the routes were planned, and the same on an eight-unit farm with six mandatory feeds
+    and a field of ripe melons -- the executor places it every time. So the season failure needs some
+    condition this board does not have, and the "carried all day" reading of the per-turn dump is not
+    yet a diagnosis: the COW leaves the carry around h13 and is back in the shed by h19, which is also
+    consistent with the return leg walking it home and DROPping it unplaced.
+
+    Kept as a guard on the path that does work, so a future change to the draw-and-place handoff cannot
+    silently break the case that is currently correct.
+    """
+    board = blank_board()
+    board[1][1] = {"kind": "PASTURE"}
+    board[1][2] = {"kind": "PASTURE"}
+    # Match day 4: six animals already on the board, every one of them a MANDATORY feed, plus a field
+    # of ripe melons. The PLACE has to compete with all of it rather than being the only job going.
+    for x, y in [(4, 4), (5, 4), (4, 5), (3, 4), (4, 3), (3, 3)]:
+        board[y][x] = kg._new_animal("COW", 0)
+    for x in range(0, 4):
+        board[0][x] = dict(kind="PLANT", crop="MELON", planted_day=0, watered_today=False,
+                           consecutive_unwatered=0, yield_units=0, fertilized_until_day=-1)
+    # The cow arrives at hour 1, NOT at dawn -- BUY_ANIMAL settles during the turn, so the day's
+    # routes were planned on a shed that had no cow in it. Handing it over at dawn passes already;
+    # the whole failure is that the plan is a day old by the time the animal exists.
+    farm = {"tiles": board, "money": 100000, "farmer": [4, 4],
+            "hands": [list(RT.R.spawn_tile(i + 1)) for i in range(7)],
+            "unlocked_quadrants": ["NW"]}
+    private = {"shed": {"WHEAT": 20}, "seeds": {}, "inventories": [{} for _ in range(8)]}
+    agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
+    tally = collections.Counter()
+    for hour in range(RT.TPD):
+        if hour == 1:
+            private["shed"]["COW"] = 1
+        act = agent({"day": 0, "hour": hour, "farms": [farm], "private": private, "step": hour})
+        for i, a in enumerate([act["farmer"], *act["hands"]][:8]):
+            if isinstance(a, list) and a:
+                tally[a[0]] += 1
+                kg._apply_unit_action(farm, private, i, a, 10, 0, RT.TPD, 100)
+    placed = sum(1 for r in farm["tiles"] for c in r if isinstance(c, dict) and "animal" in c)
+    assert placed == 7, (f"a cow that arrived at hour 1 was never placed -- ops: {dict(tally)}, "
+                         f"carried at dusk: {[iv for iv in private['inventories'] if iv]}")
+
+
 def test_a_unit_that_has_finished_carries_the_harvest_home(kg):
     """A tour with no return leg cannot sell anything it picks up until the following dawn.
 
