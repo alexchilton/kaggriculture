@@ -779,8 +779,20 @@ def make_agent(schedule, me=0, router=True):
         # Protecting $189 by starving four animals is the wrong trade twice over: an escape is a
         # deterministic $400-$500 write-off (`kaggriculture.py:786`) and a fed animal produces today.
         # `ordered` accumulates, so the balance is retried on later turns as the day's sales land.
+        # **Budget at the LIVE quote, not a hardcoded $60.** WHEAT's `I0` is 10,000 against a book that
+        # opens at exactly 10,000, so its price runs from $25 at the season's open toward $125 as the
+        # shops drain it (`kaggriculture.py:177`). A flat $60 is wrong in both directions at once: it
+        # under-buys 2.4x on an open book -- $300 buys twelve wheat at $25 and the guard allowed five --
+        # and over-orders 2x on a drained one, where the surplus silently fails to fill.
+        #
+        # **Keep the throttle the wrong price was applying by accident.** Feed is a recurring daily
+        # cost; seed, pens and land are the one-offs that compound. On a cheap book the true quote lets
+        # the whole bank go on two days of feed, and twelve seeds at weedSpawnChance 0.005 say that is
+        # worse than being throttled: live quote alone took our schedule $118,761 -> $112,913. Half the
+        # bank, at the right price, is $119,281 and takes Seb's plan $92,773 -> $96,064.
+        quote = int(((obs.get("market") or {}).get("prices") or {}).get("WHEAT", 60)) or 60
         short = FEED_DAYS * alive - on_hand - state["ordered"][("feed", "WHEAT")]
-        short = min(short, int(money // 60))
+        short = min(short, int(money * 0.5 // quote))
         if alive and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short

@@ -765,6 +765,41 @@ def test_counting_field_wheat_as_feed_stock_was_measured_a_31358_dollar_loss():
                          f"in the field -- that arm measured -$31,358 and must stay reverted")
 
 
+def test_the_feed_budget_uses_the_live_quote_not_a_hardcoded_sixty(kg):
+    """WHEAT's `I0` is 10,000, so its price runs from $25 at the season's open toward $125 as the book
+    drains (`kaggriculture.py:177`), and the observation carries the live quote in
+    `obs["market"]["prices"]`. Budgeting the feed order at a hardcoded $60 is therefore wrong in both
+    directions at once: it under-buys by 2.4x on an open book and over-orders by 2x on a drained one.
+
+    Six animals want twelve wheat. At the opening quote of $25 that is $300, and at most half the bank
+    goes on feed, so $600 buys all twelve -- not the five that $600 // 60 // 2 allows.
+
+    The half-bank cap is deliberate and measured. Feed is a recurring daily cost and seed, pens and
+    land are the one-offs that compound, so committing the whole bank to feed on a cheap book starves
+    them. The hardcoded $60 was doing this by accident on an open book; twelve seeds at
+    weedSpawnChance 0.005 say to keep the throttle and fix the price:
+
+        $60 flat                 our $118,761   Seb $92,773
+        live quote, no cap       our $112,913   Seb $96,328
+        live quote + half bank   our $119,281   Seb $96,064
+    """
+    board = blank_board()
+    for x, y in [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)]:
+        board[y][x] = kg._new_animal("COW", 0)
+    agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
+    farm = {"tiles": board, "money": 600, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+    market = {"prices": {"WHEAT": 25}, "inventory": {"WHEAT": 10000}}
+    # ONE turn. Summing the day passes on the hardcoded $60 anyway: the bank in a hand-built obs is
+    # never debited, so the `ordered` retry reaches twelve over three turns regardless of the budget.
+    act = agent({"day": 1, "hour": 0, "farms": [farm], "private": priv,
+                 "market": market, "step": RT.TPD})
+    ordered = sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
+    assert ordered == 12, (f"half of $600 buys twelve wheat at the live quote of $25, but the turn "
+                           f"ordered {ordered} -- the budget is still the hardcoded $60")
+
+
 def test_a_unit_that_has_finished_carries_the_harvest_home(kg):
     """A tour with no return leg cannot sell anything it picks up until the following dawn.
 
