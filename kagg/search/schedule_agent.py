@@ -765,10 +765,19 @@ def make_agent(schedule, me=0, router=True):
         # and 227 wheat-unit-days in the shed against the tape's 990 -- it runs a buffer of more than
         # two days per animal. Wool realises an identical price in both runs ($236 against $234) and we
         # still bank $10,575 less of it, so the shortfall is animal-days not worked, not price.
+        # **Buy what the bank covers, not all-or-nothing.** `money >= 60 * short` cancelled the WHOLE
+        # order when it could not pay for it, so a thin bank fed nothing at all. Measured on Seb's day 1
+        # with four animals and an empty shed: the order is eight wheat, needs $480, the bank held $189,
+        # and we bought ZERO -- FEED ran 3 against his 5 while his shed carried wheat all afternoon.
+        # Protecting $189 by starving four animals is the wrong trade twice over: an escape is a
+        # deterministic $400-$500 write-off (`kaggriculture.py:786`) and a fed animal produces today.
+        # `ordered` accumulates, so the balance is retried on later turns as the day's sales land.
         short = FEED_DAYS * alive - on_hand - state["ordered"][("feed", "WHEAT")]
-        if alive and short > 0 and len(orders) < 9 and money >= 60 * short:
+        short = min(short, int(money // 60))
+        if alive and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short
+            money -= 60 * short
 
         # Hire TWO a turn. `_spawn_hand` picks by occupancy when the HIRE settles, so a third order in one
         # turn puts a hand on `(5,5)` in SE with both neighbours locked, unable to move for the whole day.

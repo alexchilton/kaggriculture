@@ -683,6 +683,33 @@ def test_the_feed_is_bought_with_a_day_of_slack(kg):
     assert ordered >= 10, f"five animals bought {ordered} wheat for the day -- no slack at all"
 
 
+def test_a_thin_bank_buys_the_feed_it_can_afford_instead_of_none(kg):
+    """`money >= 60 * short` is ALL-OR-NOTHING: it cancels the whole order, so the herd eats nothing.
+
+    Measured on Seb's day 1 with four animals and an empty shed. The order is eight wheat (two days'
+    slack) at ~$60, so it needs $480 and the bank held $189 -- the guard fired, we bought zero feed,
+    and FEED ran 3 against his 5. His shed carried WHEAT 3 all afternoon; ours carried none.
+
+    Starving four animals to protect $189 is the wrong trade in both directions: an escape is a
+    deterministic $400-$500 write-off (`kaggriculture.py:786`) and a fed animal produces the same day.
+    Buy what the bank covers.
+    """
+    board = blank_board()
+    for x, y in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+        board[y][x] = kg._new_animal("COW", 0)
+    agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
+    farm = {"tiles": board, "money": 189, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+    ordered = 0
+    for hour in range(RT.TPD):
+        act = agent({"day": 1, "hour": hour, "farms": [farm], "private": priv,
+                     "step": RT.TPD + hour})
+        ordered += sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
+    assert ordered >= 3, (f"$189 covers three wheat and four animals are hungry, "
+                          f"but the day ordered {ordered}")
+
+
 def test_a_unit_that_has_finished_carries_the_harvest_home(kg):
     """A tour with no return leg cannot sell anything it picks up until the following dawn.
 
