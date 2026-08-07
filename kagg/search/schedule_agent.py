@@ -83,6 +83,50 @@ MIN_OPPORTUNISTIC_DROP = 4
 #: again on the day-by-day trace -- so it must be switchable to be attributable.
 OPPORTUNISTIC_DROP = True
 
+#: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
+ORDER_SLOTS = 10
+
+#: Whether an order that does not fit the turn is UN-COUNTED, so it is retried, instead of being
+#: silently deleted while its bookkeeping stands.
+#:
+#: We appended freely and truncated at the end, so from day 11 every turn built 13-15 orders:
+#:
+#:     d11  n=14  {HIRE: 12, SELL: 2}      d13  n=15  {HIRE: 12, SELL: 3}
+#:     d12  n=14  {HIRE: 12, SELL: 2}      d14  n=13  {HIRE: 12, SELL: 1}
+#:
+#: Ten survived. The 2-5 lost HIREs still incremented `state["hired"]`, and every BUY_ANIMAL -- which
+#: the animal block appends LAST -- was deleted outright while `state["bought"]` and the bank were
+#: both charged for it. Both counters then read as satisfied, so neither was ever retried. The
+#: animal block's own comment is careful that "a failed order does not increment it (the `money >=`
+#: test guards that)"; truncation is a second way to fail that the guard cannot see.
+#:
+#: Measured on Seb's tape, seed 11: the schedule buys nine SHEEP across days 9-14 and we sent the env
+#: ZERO, herd stuck at the 2 we started with while nine pens stood empty and wheat we would have
+#: converted to wool piled to 63 units against his flat 19. Hires ran 2-6 short of his from day 10,
+#: which is the 23%-smaller crew and the late-season idle.
+#:
+#: HIRE is what spills, because deferring one inside a day is free -- `hires_today` is a per-DAY
+#: fibonacci counter, so 5+1+1 costs exactly the $33 that 7-at-once costs (measured, day 3). A
+#: deferred PLACE loses the day's feed and care with it, so the animal keeps the slot.
+FIT_ORDER_SLOTS = True
+
+
+def _fit_slots(orders, state):
+    """The turn's orders, cut to what the env will actually accept, with the losers un-counted."""
+    if not FIT_ORDER_SLOTS:
+        return orders[:ORDER_SLOTS]
+    if len(orders) <= ORDER_SLOTS:
+        return list(orders)
+    # Drop surplus HIREs from the LAST one backwards: slot order is load-bearing for everything else
+    # (a SELL only funds a BUY that sits in a later slot), and the hires are homogeneous, so which
+    # one goes is free while where the others sit is not.
+    over = len(orders) - ORDER_SLOTS
+    hires = [i for i, o in enumerate(orders) if o[0] == "HIRE"]
+    cut = set(hires[-over:]) if hires else set()
+    state["hired"] -= len(cut)
+    return [o for i, o in enumerate(orders) if i not in cut][:ORDER_SLOTS]
+
+
 #: Whether `sells` is read as a CUMULATIVE target (a missed row is retried until it is filled) or as
 #: the old per-day row (a row that landed on an empty shed is forfeited). Switchable for the same
 #: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
@@ -1358,6 +1402,7 @@ def make_agent(schedule, me=0, router=True):
                     orders.append(["HIRE"])
                     state["hired"] += 1
 
-        return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:], "market": orders[:10]}
+        return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
+                "market": _fit_slots(orders, state)}
 
     return agent

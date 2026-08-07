@@ -1888,6 +1888,59 @@ def test_day_four_matches_seb_on_every_op_it_works():
         + "\n".join(f"    {k:<20} {v}" for k, v in sorted(diff.items())))
 
 
+@pytest.mark.slow
+def test_an_animal_order_past_the_tenth_slot_is_not_counted_as_bought():
+    """A BUY_ANIMAL appended past slot ten is deleted by `orders[:10]`, and charged for anyway.
+
+    Only ten market orders survive a turn (`kaggriculture.py:535`, and we truncate to match at
+    `schedule_agent.py:1377`). The animal block appends, so it lands wherever the day's SELLs, HIREs,
+    BUY_SEEDs and BUY_PRODUCTs have already left it -- and by day 9 that is well past ten. Measured
+    at hour 0 on Seb's tape, seed 11, the moment the block runs:
+
+        d12  want SHEEP 8   bought 7   money 5254   seed_bill 0   orders ALREADY 14
+        d13  want SHEEP 10  bought 8   money 8814   seed_bill 0   orders ALREADY 15
+        d14  want SHEEP 11  bought 10  money 9306   seed_bill 0   orders ALREADY 13
+
+    The bank is not the constraint and neither is the pasture. `state["bought"]` climbs 2 -> 3 -> 5
+    -> 7 -> 8 -> 10 -> 11 and `money` is debited each time, so the counter reads as satisfied while
+    the env is handed none of it. That is precisely the retry the block's own comment protects --
+    "a failed order does not increment it (the `money >=` test guards that)" -- except truncation is
+    a second way to fail that the guard does not see.
+
+    The visible damage: the schedule asks for nine SHEEP across days 9-14 and our herd never leaves
+    the 2 we started with, while nine pens stand empty. The tape reaches 11 sheep by day 14. Wheat
+    we would have converted to wool piles up in the shed to 63 units against his flat 19.
+
+    `ANIMAL_OVER_HIRE` does not save it. That fix pops ONE hire to make room, which was right when
+    the list stood at exactly ten on day 4; at fifteen it frees one slot out of five needed.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    sent = collections.Counter()
+    for t in range(24 * 15):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if 9 <= t // 24 <= 14:
+            for o in (a0["market"] or []):
+                if o and o[0] == "BUY_ANIMAL":
+                    sent[o[1]] += 1
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+
+    herd = collections.Counter(
+        c["animal"] for r in env.state[0].observation["farms"][0]["tiles"]
+        for c in r if isinstance(c, dict) and c.get("animal"))
+    assert sent["SHEEP"] >= 1, (
+        f"the schedule buys 9 SHEEP across days 9-14 and we sent {dict(sent)} to the env; "
+        f"herd at day 15 is {dict(herd)}. Every order was truncated past slot ten")
+
+
 def test_the_days_seed_is_bought_before_the_days_livestock():
     """A seed not bought on its day is a plant not made, and day 6 is a planting day.
 
