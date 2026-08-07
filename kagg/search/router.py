@@ -201,6 +201,41 @@ RETURN_LEG = True
 #: which is exactly where a node that turns out to be fake does the most damage.
 CLOSED_TOUR = True
 
+#: Turns charged for the DROP that ends a carrying tour. `delta` already prices the depot DRAW -- one
+#: turn per item picked up, plus the detour -- but nothing has ever priced putting the load DOWN, so
+#: the return leg, the opportunistic drop and `DELIVER_THE_SELL_ROW` are all free at plan time and
+#: cost a real turn at run time. Measured 2026-08-07 over days 0-12 of seed 11, restricted to stops
+#: the unit actually reached: depot cells were planned at 77 turns and took 114 (63% of visits
+#: overrun), field tiles 410 against 454. See `docs/service_undercount_2026-08-07.md`.
+#: **TRIED and REVERTED at 1 and 2.** A flat charge on the homeward leg is the wrong SHAPE: the
+#: overrun the probe found is concentrated on DEPOT-TILE nodes (63% of visits, +48%), not at tour
+#: ends. At 1 the first day it touches regresses -- d2 4 -> 6 and d5 7 -> 8 -- which under "days
+#: match IN ORDER" is disqualifying, even though d6, d7 and d8 all improve (11->10, 15->13, 13->12).
+#: At 2 it is a rout: d6 11 -> 19, d7 15 -> 20, d10 19 -> 24.
+HOMEWARD_DROP_TURNS = 0
+
+#: Extra turns added to a node's service when its tile is a shed-access cell. Pens sit ON those cells
+#: by design, so a unit servicing one also PICKUPs and DROPs there, and none of that is in `node.ops`
+#: -- which is why d0 u0 at (4,4) was planned at 1 turn and took 7.
+#:
+#: **TRIED and REVERTED at 1, 2 and 3**, alongside `HOMEWARD_DROP_TURNS` above:
+#:
+#:                d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11
+#:     0 (ships)   7  6  4  7  7  7 11 15 13 15  19  20
+#:     1           7  6  6  7  9 12 13 13 14 19  23  24
+#:     2           7  7  6  7  9  9 13 15 10 17  19  21
+#:     3           7  6  5  7  9  7 11 14 11 12  20  24
+#:
+#: Every arm regresses d2 and d4, the earliest days it touches, and days are matched IN ORDER.
+#:
+#: **The under-count is real; making the estimate honest is not the fix.** Both levers price the
+#: missing turns correctly and both make day-matching worse, because a cheaper tour packs more stops
+#: and that happens to reproduce the tape's day shape better than an accurate one does. So the two
+#: constants stay at 0 as documentation of a measured dead end, and a delivery node is NOT gated on
+#: correcting the estimate the way `docs/idle_at_h10_2026-08-07.md` proposed -- inflating costs is
+#: not a route to it. Anything that adds a stop has to EARN its turns, not be handed them.
+DEPOT_NODE_EXTRA_SERVICE = 0
+
 #: Whether the shed's stock of an animal is a budget shared across units, the way turns already are.
 #: See the note in `plan_routes`. Off restores the pre-2026-08-07 behaviour, where one COW and three
 #: empty pens produced three full-prize PLACE nodes and two units were sent to fetch the same animal.
@@ -458,6 +493,9 @@ def plant_prize(crop, day):
 # nodes
 # ---------------------------------------------------------------------------------------------
 
+_DEPOT_TILES = frozenset(tuple(t) for t in R.shed_access_tiles())
+
+
 class Node:
     """One tile, every op worth doing there today, and what must be drawn at the depot first."""
 
@@ -467,7 +505,8 @@ class Node:
         self.tile = tile
         self.ops = [(op, item) for op, item, _p in ops]
         self.prize = sum(p for _o, _i, p in ops)
-        self.service = len(ops)
+        self.service = len(ops) + (DEPOT_NODE_EXTRA_SERVICE
+                                   if tuple(tile) in _DEPOT_TILES else 0)
         self.needs = collections.Counter(i for o, i, _p in ops if i and o in DRAWN)
         # **A PLACE draws the feed for the animal it is about to put in the pen.**
         # `build_nodes` cannot emit a FEED node for a tile until an animal is standing on it, so the
@@ -742,7 +781,7 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None, supply=None):
             route.insert(i, n)
         if not route or not any(o in YIELDING for m in route for o, _i in m.ops):
             return 0
-        return min(dist(route[-1].tile, d) for d in depots)
+        return min(dist(route[-1].tile, d) for d in depots) + HOMEWARD_DROP_TURNS
 
     def cdelta(u, n, i):
         """Marginal cost of the insertion with the walk home priced in. See `CLOSED_TOUR`.
