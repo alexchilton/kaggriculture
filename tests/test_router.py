@@ -27,6 +27,7 @@ sys.path.insert(0, ".")
 
 from kagg.search import router as RT
 from kagg.search import schedule_agent
+from kagg.search.schedule_agent import FEED_DAYS
 
 REF = pathlib.Path("reference/kaggriculture.py")
 
@@ -102,11 +103,29 @@ def test_a_melon_water_inside_the_window_is_worth_a_whole_melon():
     assert ops[0][2] == RT.BASE_PRICE["MELON"] == 250
 
 
-def test_a_melon_water_outside_the_window_is_worth_nothing():
-    """Age 5 is one day before the window: watering buys no yield, so it must not be queued."""
+def test_a_melon_water_outside_the_window_buys_survival_at_half_price():
+    """Age 5 is one day before the window: the water buys no YIELD, only survival.
+
+    It used not to be queued at all unless the tile was already a day dry, and that made the crew
+    water on alternate days. The tape does not: seed 11, waters per live plant tile, ours against his
+    before the change --
+
+        day     1     2     3     4     5     6     7     8     9    10    11    12
+        ours 0.06  1.00  0.58  1.32  0.33  0.78  1.28  0.67  1.36  0.57  1.22  0.54
+        tape 1.06  1.06  1.00  1.05  0.84  1.00  1.50  0.78  1.03  0.80  1.15  0.87
+
+    On day 1 both boards hold 17 tiles and he waters 18 times to our 1. So the op is now offered
+    every day, at HALF the tile's remaining value while a day of slack is left and the full value
+    once the tile is thirsty -- present enough to be taken when the tour has room, cheap enough to
+    yield to real work when it does not. Melon's remaining value here is $1,500, so the offer is $750.
+    """
     cell = dict(kind="PLANT", crop="MELON", planted_day=0, watered_today=False,
                 consecutive_unwatered=0, yield_units=0, fertilized_until_day=-1)
-    assert RT.crop_ops(cell, 5, have_fertilizer=False) == []
+    slack = RT.crop_ops(cell, 5, have_fertilizer=False)
+    assert slack == [("WATER", None, 750.0)], slack
+
+    thirsty = RT.crop_ops(dict(cell, consecutive_unwatered=1), 5, have_fertilizer=False)
+    assert thirsty == [("WATER", None, 1500.0)], thirsty
 
 
 def test_an_ongoing_crop_is_watered_only_to_stop_it_weeding():
@@ -787,17 +806,24 @@ def test_the_feed_budget_uses_the_live_quote_not_a_hardcoded_sixty(kg):
     for x, y in [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)]:
         board[y][x] = kg._new_animal("COW", 0)
     agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
-    farm = {"tiles": board, "money": 600, "farmer": [4, 4], "hands": [],
+    # **$150, not $600, and that is forced by `FEED_ORDER_CAP`.** This test needs the BUDGET to be
+    # what limits the first order, and at $600 the live quote allows twelve while the cap allows four,
+    # so the order reads 4 whichever price is used and discriminates nothing. Summing the day instead
+    # is vacuous for the reason this test was tightened once already: a hand-built obs never debits
+    # the bank, so `money * 0.5 // quote` is recomputed intact every turn and the `ordered` retry
+    # reaches twelve over three turns under $60 as well.
+    #
+    # Half of $150 is $75, which buys THREE wheat at the live $25 and ONE at the hardcoded $60. Both
+    # sit under the cap, so the first order still separates the two budgets.
+    farm = {"tiles": board, "money": 150, "farmer": [4, 4], "hands": [],
             "unlocked_quadrants": ["NW"]}
     priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
     market = {"prices": {"WHEAT": 25}, "inventory": {"WHEAT": 10000}}
-    # ONE turn. Summing the day passes on the hardcoded $60 anyway: the bank in a hand-built obs is
-    # never debited, so the `ordered` retry reaches twelve over three turns regardless of the budget.
     act = agent({"day": 1, "hour": 0, "farms": [farm], "private": priv,
                  "market": market, "step": RT.TPD})
     ordered = sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
-    assert ordered == 12, (f"half of $600 buys twelve wheat at the live quote of $25, but the turn "
-                           f"ordered {ordered} -- the budget is still the hardcoded $60")
+    assert ordered == 3, (f"half of $150 buys three wheat at the live quote of $25, but the turn "
+                          f"ordered {ordered} -- the budget is still the hardcoded $60")
 
 
 def test_an_animal_drawn_from_the_shed_is_placed_the_same_day(kg):
@@ -980,13 +1006,23 @@ def test_a_wheat_reaches_its_plain_yield_and_is_harvested_once(kg):
 
     Anything under four means the tile was demolished mid-window; the measured value before the fix
     was two.
+
+    **FIVE waters, not four, and the fifth one is waste.** Wheat's window is ages 2-4, so the day-1
+    water added by the every-day survival offer buys no yield whatever -- the tile is watered on 2, 3
+    and 4 regardless and could never have reached `consecutive_unwatered >= 2`. The yield is
+    unchanged at 4 units, so the cost is one turn on a short-window crop.
+
+    That is a real and accepted cost of matching the tape's watering cadence, priced here rather than
+    hidden: on a one-tile board with an idle hand the offer is always taken, while in a season it
+    competes for the tour. The refinement that would remove it -- offer the early water only when the
+    tile could actually weed before its next in-window water is due -- is NOT implemented.
     """
     board = blank_board()
     sched = empty_sched(plants=["WHEAT"], seeds={"WHEAT": 1})
     tally, _farm, priv = micro(kg, board, sched, days=6, hands=1, seeds={"WHEAT": 1})
     assert tally["PLANT"] == 1, dict(tally)
     assert tally["HARVEST"] == 1, dict(tally)
-    assert tally["WATER"] == 4, dict(tally)          # day 0 keeps it alive, days 2-4 are the yield
+    assert tally["WATER"] == 5, dict(tally)   # day 0 survival, day 1 waste, days 2-4 the yield
     assert priv["shed"].get("WHEAT", 0) == 4, priv["shed"]
 
 
@@ -1008,3 +1044,89 @@ def test_a_one_shot_crop_is_not_planted_if_its_window_cannot_finish():
     assert RT.plant_prize("MELON", last - 5) == 0         # melon needs age 12; hopeless this late
     # An ongoing crop is unaffected: it pays from `first_yield_day` onwards and needs no window.
     assert RT.plant_prize("STRAWBERRY", last - 11) > 0
+
+
+def test_the_feed_order_is_never_capped_below_the_herds_daily_need(kg):
+    """PINNED NEGATIVE. Capping one BUY_PRODUCT to meter the day's buying STARVES a large herd.
+
+    The motivating measurement is real and still unfixed: on day 0 the leader places sixteen
+    BUY_PRODUCT WHEAT of 1-6 across h1-h22 interleaved with ten SELLs -- 41 orders over 18 of the 24
+    hours -- against our 12 orders over 4 hours, and `market_price` moves with every unit so a block
+    order walks itself up the curve (`kaggriculture.py:177`).
+
+    But `FEED_ORDER_CAP = 4` is the wrong instrument. It shrinks the ONE order rather than adding
+    orders, and a ceiling below the herd's daily need can never fund it. Seb runs 19 animals = 38
+    wheat a day at `FEED_DAYS = 2`. Animals in pens, seed 11, Seb's schedule:
+
+        day        14   15   16   17   20   25   29
+        cap = 4    14   12    7    8    8    8    8
+        no cap     15   17   17   17   17   17   17
+
+    The herd starved from day 15 and never came back, and because `COLLECT_FERTILIZER` is one op per
+    animal per day it took the fertilizer chain with it -- 233 collected against the tape's 379.
+
+    Fixing the cadence means MORE orders at full size, never a smaller order.
+    """
+    board = blank_board()
+    for i in range(11):
+        board[i // 5][i % 5] = kg._new_animal("COW", 0)
+    agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
+    farm = {"tiles": board, "money": 100000, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+    act = agent({"day": 13, "hour": 0, "farms": [farm], "private": priv,
+                 "step": 13 * RT.TPD})
+    ordered = sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
+    assert ordered == FEED_DAYS * 11, (
+        f"eleven animals need {FEED_DAYS * 11} wheat and the order asked for {ordered}; "
+        f"a cap here starves the herd: {act['market']}")
+
+
+def test_a_sell_row_that_landed_on_an_empty_shed_is_recovered_later(kg):
+    """`sells` was the last per-day target in this file; every other one is already cumulative.
+
+    `plants`, `builds` and `animals_bought` were each converted to "what the schedule has asked for
+    through today, minus what I have actually done", every time for the same reason: a row that
+    could not be filled on the day it appeared was silently forfeited and never retried.
+
+    Measured on Seb's tape, seed 11, and it is the largest single divergence left. He sells
+    `MELON: 18` on day 10 and asks for no melon again until day 16. Our melons ripen one day later,
+    so the day-10 row fires against an EMPTY shed and days 11-15 ask for zero -- we hold exactly
+    those 18 melons from day 11 to day 15 with **$2 in the bank**, cannot afford the $4,000 third
+    parcel until day 16, and farm 25 fewer tiles for six days. The plant deficit tracks it almost
+    unit for unit (-26 plants against -25 tiles on day 12), and that is where the harvest gap and
+    everything downstream of it comes from.
+    """
+    board = blank_board()
+    agent = schedule_agent.make_agent(empty_sched(sells={"MELON": 18}), 0, router=True)
+    farm = {"tiles": board, "money": 3000, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    act = agent({"day": 3, "hour": 0, "farms": [farm], "step": 3 * RT.TPD,
+                 "private": {"shed": {"MELON": 18}, "seeds": {}, "inventories": [{}]}})
+    offered = [o for o in act["market"] if o[:2] == ["SELL", "MELON"]]
+    assert offered == [["SELL", "MELON", 18]], (
+        f"day 0 asked for 18 melons against an empty shed; by day 3 the shed holds them and the "
+        f"offer must still stand: {act['market']}")
+
+
+def test_a_carried_sell_row_never_offers_more_than_the_biggest_day_ever_asked(kg):
+    """The carry recovers a MISSED row; it must not become a licence to dump the shed.
+
+    `market_price` falls monotonically in inventory and a SELL walks n units down that curve one at
+    a time, so a bigger offer clears at a worse mean price -- measured as wool 123 units -> 138 for
+    REVENUE $29,041 -> $21,811. The per-offer rate is the thing
+    `test_the_sell_quota_is_re_offered_every_turn` protects, so the carry is capped at the largest
+    single day the schedule ever asks for. Two missed rows of 5 may be recovered, but only 5 at a
+    time, over as many turns as it takes.
+    """
+    sched = empty_sched()
+    sched[0]["sells"] = {"MELON": 5}
+    sched[1]["sells"] = {"MELON": 5}
+    agent = schedule_agent.make_agent(sched, 0, router=True)
+    farm = {"tiles": blank_board(), "money": 3000, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    act = agent({"day": 3, "hour": 0, "farms": [farm], "step": 3 * RT.TPD,
+                 "private": {"shed": {"MELON": 20}, "seeds": {}, "inventories": [{}]}})
+    offered = [o for o in act["market"] if o[:2] == ["SELL", "MELON"]]
+    assert offered == [["SELL", "MELON", 5]], (
+        f"two rows of 5 went unfilled, but the offer rate stays 5: {act['market']}")

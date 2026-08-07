@@ -216,16 +216,33 @@ def crop_ops(cell, day, have_fertilizer):
                     fertilized = True
             if not cell["watered_today"]:
                 out.append(("WATER", None, price * (2 if fertilized else 1)))
-        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
+        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 0:
             # Outside the window water buys nothing but survival, and it is only needed on the day
             # the tile would otherwise weed. This is the every-SECOND-day rule, derived. It is
             #
             # It is NOT mandatory, though the loss is real and permanent. Promoting it into the
             # mandatory pass alongside fourteen pens was measured over twelve seeds at **-$2,804**:
             # harvests recovered 296 -> 318 and feeding fell straight back, 321 -> 301, because a pass
-            # that contains everything cannot triage. The prize below is already the tile's whole
-            # remaining value, which is the honest number; it simply has to compete.
-            out.append(("WATER", None, _crop_remaining(cell, day)))
+            # that contains everything cannot triage.
+            #
+            # **Offered EVERY day, not only on the brink, and discounted on the day of slack.** Gating
+            # on `consecutive_unwatered >= 1` made the crew water on alternate days, which the tape
+            # does not: seed 11, waters per live plant tile, ours against his --
+            #
+            #     day     1     2     3     4     5     6     7     8     9    10    11    12
+            #     ours 0.06  1.00  0.58  1.32  0.33  0.78  1.28  0.67  1.36  0.57  1.22  0.54
+            #     tape 1.06  1.06  1.00  1.05  0.84  1.00  1.50  0.78  1.03  0.80  1.15  0.87
+            #
+            # On day 1 the boards are identical at 17 tiles and he waters 18 times to our 1. Watering
+            # only at `>= 1` leaves every tile permanently one missed turn from `>= 2`, which is a
+            # WEED and refuses PLANT for the rest of the season -- at `weedSpawnChance 0.0` our weed
+            # count still rose, so every one of those was self-inflicted.
+            #
+            # The discount is what keeps this from becoming the mandatory pass by another route: a
+            # tile with a day of slack left offers half its remaining value, so it is taken when the
+            # tour has room and yields to real work when it does not.
+            thirsty = cell["consecutive_unwatered"] >= 1
+            out.append(("WATER", None, _crop_remaining(cell, day) * (1.0 if thirsty else 0.5)))
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
         # fertilizer bonus on a production day. Watering it on any other day is pure walk.

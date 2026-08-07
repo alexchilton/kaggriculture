@@ -54,6 +54,42 @@ SHED_CAPACITY = 100
 #: over two. Also the multiplier the sell guard protects, so raising it withholds more wheat from sale.
 FEED_DAYS = 2
 
+#: **TRIED and REVERTED: cap one BUY_PRODUCT to 4 so the day's feed is metered across the hours.**
+#: The motivating measurement is real -- the leader places sixteen WHEAT buys of 1-6 across h1-h22 on
+#: day 0 against our single block, and `market_price` moves with every unit -- but a ceiling per order
+#: cannot fund a large herd. Seb runs 19 animals, which is 38 wheat a day at `FEED_DAYS = 2`, and the
+#: herd starved out from day 15. Animals in pens, seed 11, Seb's schedule, day 16 onward:
+#:
+#:     cap = 4     7  8  8  8  8 ... 8
+#:     no cap     17 17 17 17 17 ... 17
+#:
+#: Meter by placing MORE orders, never by shrinking the one order that feeds the herd.
+FEED_ORDER_CAP = None
+
+#: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
+#: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
+#: one or two units at a time turns every such moment into a 1-turn DROP.
+MIN_OPPORTUNISTIC_DROP = 4
+
+#: Whether the opportunistic mid-tour DROP below runs at all. A flag rather than an edit because it
+#: was measured on final bank (-$8,292 over twelve seeds) and re-applied here without being measured
+#: again on the day-by-day trace -- so it must be switchable to be attributable.
+OPPORTUNISTIC_DROP = True
+
+#: Whether `sells` is read as a CUMULATIVE target (a missed row is retried until it is filled) or as
+#: the old per-day row (a row that landed on an empty shed is forfeited). Switchable for the same
+#: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
+CUMULATIVE_SELLS = True
+
+#: How many days an uncovered sell row stays offerable. **The backlog must expire.** Carrying it
+#: forever is not "cumulative", it is unbounded: on the old leader's plan the schedule asks to sell
+#: more than we ever produce, so the uncovered remainder grew every day and the offer pinned at the
+#: season's largest row on every turn from about day 19 -- byte-identical to the runaway `asked - sold`
+#: ledger it was meant to replace, and money -19,407 -> -30,262 against that tape. The measured bug is
+#: a ONE day slip (Seb's melons ripen a day after his `MELON: 18` row), so the window only has to be
+#: wide enough to cover a late harvest.
+SELL_CARRY_DAYS = 3
+
 LAND_PRICES = R.LAND_PRICES
 
 #: Task priority. Pen work first because it is nearly free -- the herd lives on the shed cells, so FEED,
@@ -366,6 +402,35 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 pins.pop(node.tile, None)
             break
 
+        # ------------------------------------------------------------------ opportunistic mid-tour drop
+        # Pens sit ON shed-access tiles by design (`_refresh_pins`), so a unit servicing them already
+        # stands at a depot repeatedly through the day. Firing only when the tour-walk already chose a
+        # MOVE means this never outranks a real op at the current tile.
+        #
+        # BOTH gates are required, and each one is a test that went red without it. `future_needs`,
+        # recomputed fresh every turn, answers "does MY OWN remaining tour want this good" and stops
+        # the PICKUP/DROP thrash -- a unit ferrying wheat to its own FEED stops is left alone.
+        # `FEED_DAYS * alive`, the farm-wide reserve the SELL guard also protects, stops the theft of
+        # the self-healing material: when a unit's nodes fail it goes idle and the `if idle:` top-up
+        # re-plans it from `load[u]`, that unit's OWN inventory, which only works while the wheat is
+        # still in hand.
+        if (OPPORTUNISTIC_DROP and act[0] in STEP and pos in depots
+                and any(v > 0 for v in inv.values())):
+            future_needs = collections.Counter()
+            for n in st["route"]:
+                future_needs.update(n.needs)
+            own_route_needs_it = any(future_needs.get(it, 0) > 0 for it, qty in inv.items() if qty > 0)
+            alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
+            farm_wheat = shed.get("WHEAT", 0) + carried.get("WHEAT", 0)
+            wheat_ok = (inv.get("WHEAT", 0) == 0
+                        or farm_wheat - inv.get("WHEAT", 0) >= FEED_DAYS * alive)
+            if (not own_route_needs_it and wheat_ok and sum(inv.values()) >= MIN_OPPORTUNISTIC_DROP
+                    and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
+                for item, qty in inv.items():
+                    if qty > 0:
+                        shed[item] = shed.get(item, 0) + qty
+                act = ["DROP"]
+
         # ------------------------------------------------------------------ the return leg
         # A one-way sweep cannot sell what it picks up. Measured against the tape on days 1-3 of seed
         # 11: `EAST 0/10, 0/17, 0/15` and `SOUTH 0/13, 0/14, 0/14` -- our crew never turned back towards
@@ -413,7 +478,8 @@ def make_agent(schedule, me=0, router=True):
     sched = {int(k): v for k, v in schedule.items()}
     state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter(),
                  pins={}, routes={}, crew=-1, planted=collections.Counter(),
-                 ordered=collections.Counter())
+                 ordered=collections.Counter(), shed_max=collections.Counter(),
+                 uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
 
     def agent(obs, config=None):
         day = int(obs.get("day", 0) or 0)
@@ -432,6 +498,23 @@ def make_agent(schedule, me=0, router=True):
         row = sched.get(day, {})
 
         if day != state["day"]:              # hands are dismissed nightly, so every claim is stale
+            # **Carry forward only the part of yesterday's sell row the shed could never have covered.**
+            # The observation carries no fill log, so a fill cannot be counted directly -- but the offer
+            # stands on every one of the 24 turns, so the largest the shed reached yesterday is the most
+            # that row could possibly have shifted. What is left is demand that never had a chance, and
+            # it is the only part worth retrying. A cumulative `asked - sold` ledger was tried first and
+            # ran away: the credit under-counts whenever a DROP lands on the same turn as a fill, so
+            # `owed` never reached zero and the offer pinned at the season's largest row every turn from
+            # about day 19 -- 63 strawberries at a time. On the old leader tape that turned a trace that
+            # was better on every field through day 18 into money -19,407 -> -30,262.
+            for d in range(max(0, state["day"]), day):
+                left = collections.Counter()
+                for p, q in ((sched.get(d, {}) or {}).get("sells") or {}).items():
+                    short = int(q) - state["shed_max"][p]
+                    if short > 0:
+                        left[p] = short
+                state["uncovered"].append(left)
+                state["shed_max"] = collections.Counter()
             # `ordered` is per-day book-keeping for market orders that must happen ONCE, not once per
             # turn. Without it the agent re-issued the day's animals and seed on all 24 turns -- day 0
             # bought four animals at turn 0 and four more at turn 1 until the bank was empty, which is why
@@ -642,6 +725,25 @@ def make_agent(schedule, me=0, router=True):
         alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
         # SELL first: the proceeds have to be in the bank before anything below spends them, and that
         # ordering is exactly what decided whether BUY_LAND cleared at all.
+        #
+        # **`sells` is a CUMULATIVE target, like every other target in this file.** `plants`, `builds`
+        # and `animals_bought` were each converted from a per-day row for the same reason: a row that
+        # could not be filled on the day it appeared was silently forfeited and never retried. Sells
+        # was the last one left per-day, and it was the largest divergence on Seb's tape. He sells
+        # `MELON: 18` on day 10 and asks for no melon again until day 16; our melons ripen one day
+        # later, so the day-10 row fired against an EMPTY shed. We then held those 18 melons from day
+        # 11 to day 15 on **$2**, could not afford the $4,000 third parcel until day 16, and farmed 25
+        # fewer tiles for six days -- a plant deficit that tracked the missing land almost unit for
+        # unit (-26 plants against -25 tiles on day 12) and is the source of the harvest gap.
+        #
+        for p, q in shed.items():
+            state["shed_max"][p] = max(state["shed_max"][p], int(q))
+        rate = collections.Counter()
+        for d in sorted(sched):
+            if d > day:
+                break
+            for p, q in (sched[d].get("sells") or {}).items():
+                rate[p] = max(rate[p], int(q))
         for prod in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"):
             have = int(shed.get(prod, 0))
             # **Hold back fertilizer the FIELD can use -- not a constant.** Applied to a watered,
@@ -658,7 +760,7 @@ def make_agent(schedule, me=0, router=True):
                 want = sum(1 for r in tiles for c in r
                            if isinstance(c, dict) and c.get("kind") == "PLANT"
                            and "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(c, day, True)])
-                have = max(0, have - min(4, want))
+                have = max(0, have - want)
             # **Never sell the herd's feed.** WHEAT is both a crop we grow and the feed we buy, and the
             # sell list dumps whatever the shed holds. Measured per turn on day 13 with eleven animals:
             #     h0  BUY_PRODUCT WHEAT 11   shed 0 -> 11
@@ -668,7 +770,18 @@ def make_agent(schedule, me=0, router=True):
             # surplus above one wheat per animal may go.
             if prod == "WHEAT":
                 have = max(0, have - FEED_DAYS * alive)
-            n = min(have, int((row.get("sells") or {}).get(prod, 0)))
+            # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
+            # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
+            # so a bigger offer clears at a worse mean price -- measured as wool 123 units -> 138 for
+            # REVENUE $29,041 -> $21,811. `rate` is the largest single day the schedule ever asks for,
+            # so two missed rows of 5 are recovered 5 at a time over as many turns as it takes, and the
+            # per-offer rate the standing offer relies on is unchanged.
+            if CUMULATIVE_SELLS:
+                today = int((row.get("sells") or {}).get(prod, 0))
+                carry = sum(u[prod] for u in state["uncovered"])
+                n = min(have, today + carry, rate[prod])
+            else:
+                n = min(have, int((row.get("sells") or {}).get(prod, 0)))
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
             # whole stack clears near what the LAST unit fetches. Measured over one season as the herd
@@ -804,12 +917,24 @@ def make_agent(schedule, me=0, router=True):
         # worse than being throttled: live quote alone took our schedule $118,761 -> $112,913. Half the
         # bank, at the right price, is $119,281 and takes Seb's plan $92,773 -> $96,064.
         quote = int(((obs.get("market") or {}).get("prices") or {}).get("WHEAT", 60)) or 60
+        # **Sizing this order is not the lever; the number of orders is.** Feeding the SCHEDULED herd
+        # rather than the living one (`max(alive, cumulative animals_bought through day+1)`) was tried
+        # here and made day 1 worse, not better: seed 11, ours minus tape, WHEAT -13 -> -15 with the
+        # bank $124 HIGHER, i.e. the bigger order filled less. The reason is one line further out --
+        # every order this agent places lands at hour 0 or 1 and then the market half is silent for
+        # 22 hours, so a single 8-unit block walks `market_price` up the curve inside one order. The
+        # tape places sixteen separate WHEAT buys of 1-6 across h1-h22, interleaved with ten sells,
+        # and the shops restock every 4 steps so the book recovers between them. Fix the cadence
+        # before touching the size.
         short = FEED_DAYS * alive - on_hand - state["ordered"][("feed", "WHEAT")]
         short = min(short, int(money * 0.5 // quote))
         if alive and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short
-            money -= 60 * short
+            # Debit at the price we just QUOTED, not the old hardcoded $60. Charging $60 for wheat
+            # bought at $25 understates the running bank by $35 a unit, and every later order on the
+            # same day -- seed, animals, the second feed top-up -- is sized against that wrong bank.
+            money -= quote * short
 
         # Hire TWO a turn. `_spawn_hand` picks by occupancy when the HIRE settles, so a third order in one
         # turn puts a hand on `(5,5)` in SE with both neighbours locked, unable to move for the whole day.
