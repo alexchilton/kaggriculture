@@ -25,6 +25,14 @@ sys.path.insert(0, ".")
 from kagg.search import schedule_agent
 
 TAPES = {
+    # Downloaded 2026-08-07 21:16. Seb WINS this one 143,772 to Leon Christians' 127,114 and holds all
+    # four quadrants to Leon's three. A materially more aggressive plan than `seb` below: land on days
+    # 4, 6 and 10 against 5, 9 and 11, and 23 pens against ~15.
+    # Its `configuration` records `townCenterSellInterval = 12`, i.e. it was played on the PRE-rebalance
+    # economy -- same as the ladder, which had not picked up 1.32.6 as of that evening. Check that field
+    # on any future download before trusting a comparison against it.
+    "seb2": ("data/seed_scripts/top_guys/90751101.json",
+             "data/seed_scripts/top_guys/90751101/schedule.json", "Seb (allegedly)"),
     "seb": ("data/seed_scripts/top_guys/90494364.json",
             "data/seed_scripts/top_guys/90494364/schedule.json", "Seb (allegedly)"),
     "oldleader": ("data/seed_scripts/new_leader/90016067.json",
