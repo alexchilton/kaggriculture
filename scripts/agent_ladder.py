@@ -88,6 +88,49 @@ def play(make_us, theirs, seed, weeds, tally=None):
     return float(farm["money"]), env
 
 
+def play_live(make_a, make_b, seed, weeds):
+    """Both seats driven by LIVE agents, so the shared order book is genuinely contested.
+
+    **Every other arm in this file drives seat 1 from a fixed replay, and that is a blind spot with a
+    measured price.** Two of our own leaderboard games:
+
+        opponent       our units sold   milk price d15-29   final
+        Sophie                   1058               101.1   $103,367  LOST
+        Mohit Babel              1017               225.1   $128,735  WON
+
+    We sold MORE units in the game we lost and banked $25,368 less. `market_price` falls monotonically
+    in a book BOTH seats sell into (`kaggriculture.py:177`), and it is shallow where we live -- fifty
+    units of milk above I0 takes it from $160 to $55. A tape opponent contests only in whatever way
+    that one recorded season happened to, so no measurement taken against it says anything about a
+    game against a player selling the same goods at the same time.
+
+    That is this project's own "never tune or evaluate against `starter` alone" rule, and both attempts
+    to make selling cleverer -- the 0.5x price floor at -$16,025 and the per-day quota cap at -$2,653 --
+    were scored in exactly that blind spot. Neither number is evidence about a contested market.
+
+    A mirror is the HARSHEST contention available: identical crop mix, identical sell cadence, the same
+    goods hitting the book on the same turn. It is deliberately not a selection criterion -- CLAUDE.md
+    records that a mirror answers "what is best if both sides play it", which is a symmetric
+    equilibrium and pointed the melon count the wrong way twice. Use it as a STRESS TEST for the
+    market half, and select on the field.
+
+    Returns `(bank_a, bank_b)`.
+    """
+    env = _env(seed, weeds)
+    a, b = make_a(), make_b()
+    for _t in range(719):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        x, y = a(o0), b(o1)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": x["farmer"], "hands": list(x["hands"])[:n0], "market": x["market"]},
+                  {"farmer": y["farmer"], "hands": list(y["hands"])[:n1], "market": y["market"]}])
+        if env.state[0].status == "DONE":
+            break
+    farms = env.state[0].observation["farms"]
+    return float(farms[0]["money"]), float(farms[1]["money"])
+
+
 def play_tape(mine, theirs, seed, weeds):
     env = _env(seed, weeds)
     for t in range(min(len(mine), 719)):
@@ -134,12 +177,37 @@ def main():
                            theirs, s, args.weeds, tally)[0] for s in seeds]
         ops[label] = tally
 
+    # The contested arm. Seat 1 is our own agent, so both seats sell the same goods on the same turns
+    # into one book -- the only arm here that can see market contention at all.
+    mirror = None
+    if "mirror" in arms:
+        pairs = [play_live(lambda: schedule_agent.make_agent(sched, 0, router=True),
+                           lambda: schedule_agent.make_agent(sched, 1, router=True),
+                           s, args.weeds) for s in seeds]
+        got["4. router vs ROUTER (contested book)"] = [p[0] for p in pairs]
+        mirror = pairs
+
     base = statistics.mean(next(iter(got.values())))
     print(f"seeds {seeds}   weedSpawnChance {args.weeds}   both seats driven from the tape")
     print(f"{'':<40} {'mean':>10} {'min':>10} {'max':>10} {'% of arm 1':>11}")
     for label, v in got.items():
         print(f"  {label:<38} ${statistics.mean(v):>9,.0f} ${min(v):>9,.0f} "
               f"${max(v):>9,.0f} {100 * statistics.mean(v) / base:>10.0f}%")
+    if mirror:
+        # Money is not the point of this arm; contention is. Both seats run the SAME policy, so the
+        # bank each ends on is a statement about the shared book, not about strategy -- and a mirror
+        # win rate is 0.5 by construction, which is exactly why it must not be selected on.
+        both = [b for pair in mirror for b in pair]
+        print(f"\n  contested book: mean bank per seat ${statistics.mean(both):>9,.0f}   "
+              f"min ${min(both):,.0f}   max ${max(both):,.0f}")
+        solo = got.get("3. schedule -> agent(router) -> game")
+        if solo:
+            tax = statistics.mean(solo) - statistics.mean(both)
+            print(f"  the same agent against a TAPE banks ${statistics.mean(solo):,.0f}, so a genuinely "
+                  f"contested\n  order book costs ${tax:,.0f} a season "
+                  f"({100 * tax / max(1.0, statistics.mean(solo)):.0f}%). Any change to the market half "
+                  f"must be\n  scored HERE, not against the tape.")
+
     for label, tally in ops.items():
         n = len(seeds)
         work = {k: v // n for k, v in tally.items()

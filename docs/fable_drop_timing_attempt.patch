@@ -1,0 +1,105 @@
+diff --git a/kagg/search/schedule_agent.py b/kagg/search/schedule_agent.py
+index e2d74e5..331e642 100644
+--- a/kagg/search/schedule_agent.py
++++ b/kagg/search/schedule_agent.py
+@@ -54,6 +54,14 @@ SHED_CAPACITY = 100
+ #: over two. Also the multiplier the sell guard protects, so raising it withholds more wheat from sale.
+ FEED_DAYS = 2
+ 
++#: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
++#: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
++#: one or two units at a time turns every such moment into a 1-turn DROP -- MEASURED as a net loss on
++#: the 12-seed ladder (our schedule $119,281 -> $110,989) even though it gets the FIRST DROP of the day
++#: from h19 to h5 and places the day-4 cow the trace was built around. DROP 116 -> 137 a season for a
++#: HARVEST count that fell 300 -> 294: the extra trips outbid the fieldwork they were meant to free up.
++MIN_OPPORTUNISTIC_DROP = 4
++
+ LAND_PRICES = R.LAND_PRICES
+ 
+ #: Task priority. Pen work first because it is nearly free -- the herd lives on the shed cells, so FEED,
+@@ -366,6 +374,55 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
+                 pins.pop(node.tile, None)
+             break
+ 
++        # ------------------------------------------------------------------ opportunistic mid-tour drop
++        # Pens sit ON shed-access tiles by design (`_refresh_pins`), so a unit servicing them already
++        # stands at a depot repeatedly through the day -- the only question is whether it banks the load
++        # before walking away or carries it to the next stop. Firing only when `act` came out of the walk
++        # above as a MOVE (`act[0] in STEP`) means this never competes with an actual op: a FEED, HARVEST
++        # or PLACE at the current tile always wins, exactly as the tour-walk already decided.
++        #
++        # **TRIED and REVERTED THREE TIMES (see docs/fable_drop_timing_2026-08-06.md): key "surplus" on
++        # `Node.needs`, first as a flat per-item floor, then as this unit's own remaining route recomputed
++        # fresh and re-booked into `st["draw"]` for a same-depot redraw, then a FARM-WIDE `FEED_DAYS`
++        # threshold with no per-unit awareness at all.** The first two broke
++        # `test_wheat_already_in_a_hand_feeds_the_herd_with_an_EMPTY_shed`: a unit's OWN nodes can fail
++        # (the depot-draw race on turn 0, when the shed is genuinely empty and `st["draw"]` silently
++        # clears -- pre-existing, unrelated to this block) and go idle, and the `if idle:` top-up below
++        # re-plans it fresh using `load[u]` -- that unit's OWN CURRENT INVENTORY -- which absorbs newly
++        # orphaned FEED nodes at ZERO depot cost as long as the wheat is still physically in hand.
++        # Emptying a unit's hand because ITS CURRENT route does not need the rest removes the raw material
++        # that self-healing relies on. The third broke `test_feeding_three_pens_costs_exactly_one_shed_trip`
++        # and `test_a_hand_spawned_on_a_locked_shed_cell_walks_to_one_we_own` at FEED 0: with the shed
++        # already stocked past the reserve, it read a unit's OWN just-PICKED-UP, still-in-transit wheat as
++        # "surplus" and dropped it straight back the next turn, forcing an endless PICKUP/DROP loop that
++        # never reached a pen.
++        #
++        # So this needs BOTH gates at once. `future_needs`, recomputed fresh from the live route every
++        # turn, answers "does MY OWN remaining tour want this good" and is what stops the PICKUP/DROP
++        # thrash -- a unit actively ferrying wheat to its own FEED stops always has `future_needs["WHEAT"]
++        # > 0` and is left alone. `FEED_DAYS * alive`, the same farm-wide reserve the SELL guard protects
++        # a few hundred lines down, is what stops the self-healing theft -- it only clears WHEAT that is
++        # surplus across the WHOLE farm (shed plus every hand), not merely surplus to this one route, so a
++        # unit with an empty tour and no future needs (`test_wheat_already_in_a_hand`'s hand, holding
++        # exactly the herd's total requirement) still keeps its load. FERTILIZER and animals get only the
++        # first gate -- they are lower-stakes and not what this bug is about, so the conservative choice is
++        # to leave them to the unmodified end-of-day return leg whenever this unit's own route wants any.
++        if act[0] in STEP and pos in depots and any(v > 0 for v in inv.values()):
++            future_needs = collections.Counter()
++            for n in st["route"]:
++                future_needs.update(n.needs)
++            own_route_needs_it = any(future_needs.get(it, 0) > 0 for it, qty in inv.items() if qty > 0)
++            alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
++            farm_wheat = shed.get("WHEAT", 0) + carried.get("WHEAT", 0)
++            wheat_ok = (inv.get("WHEAT", 0) == 0
++                       or farm_wheat - inv.get("WHEAT", 0) >= FEED_DAYS * alive)
++            if (not own_route_needs_it and wheat_ok and sum(inv.values()) >= MIN_OPPORTUNISTIC_DROP
++                    and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
++                for item, qty in inv.items():
++                    if qty > 0:
++                        shed[item] = shed.get(item, 0) + qty
++                act = ["DROP"]
++
+         # ------------------------------------------------------------------ the return leg
+         # A one-way sweep cannot sell what it picks up. Measured against the tape on days 1-3 of seed
+         # 11: `EAST 0/10, 0/17, 0/15` and `SOUTH 0/13, 0/14, 0/14` -- our crew never turned back towards
+@@ -375,19 +432,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
+         # The turns cost nothing: this only fires once the tour is done and the unit would PASS. DROP
+         # moves the WHOLE inventory and DELETES anything the shed has no room for
+         # (`kaggriculture.py:333`), so it is refused when the shed is near full.
+-        # **TRIED and REVERTED: drop the surplus whenever standing on the shed, not only at tour end.**
+-        # The symptom is real and traced (`scripts/where_the_cow_goes.py`, seed 11 day 4 of Seb's plan):
+-        # the crew harvests from h5 and the first DROP lands at h19, so `SELL WHEAT` cannot be offered
+-        # until h19 and the bank sits at $316 all day. Everything bank-gated queues behind it -- the COW
+-        # settles at h19, by which point the free pens are three steps away with four turns left
+-        # (PICKUP + 3 moves + PLACE = 5), so it is never placed, and day 5's seed order half-fills.
++        # **TRIED and REVERTED: drop the surplus whenever standing on the shed, not only at tour end,
++        # keying "surplus" on `inv[item] > node.needs[item]` per item.** The symptom is real and traced
++        # (`scripts/where_the_cow_goes.py`, seed 11 day 4 of Seb's plan): the crew harvests from h5 and
++        # the first DROP lands at h19, so `SELL WHEAT` cannot be offered until h19 and the bank sits at
++        # $316 all day. Everything bank-gated queues behind it -- the COW settles at h19, by which point
++        # the free pens are three steps away with four turns left (PICKUP + 3 moves + PLACE = 5), so it
++        # is never placed, and day 5's seed order half-fills.
+         #
+         # Dropping anything held beyond `Node.needs` for the rest of the tour MEASURED as a loss over
+         # twelve seeds at weedSpawnChance 0.005: our schedule $119,281 -> $104,009, Seb's $96,064 ->
+         # $84,913. It also broke `test_wheat_already_in_a_hand_feeds_the_herd_with_an_EMPTY_shed`: a
+         # unit holding feed on a shed cell dumped it back, because `needs` is what the ROUTE will draw
+-        # at the depot and not what the unit is already carrying for the jobs ahead of it. Getting the
+-        # harvest home earlier is still the right goal; this accounting is not the way to it.
++        # at the depot and not what the unit is already carrying for the jobs ahead of it -- and DROP
++        # cannot take only the surplus half of one item and leave the rest, so a per-item floor was never
++        # going to be sound. The `future_needs` + re-booked-`draw` version above is the fix for that.
+         if act == ["PASS"] and not st["route"] and any(v > 0 for v in inv.values()):
+             if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
+                 if pos in depots:
