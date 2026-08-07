@@ -2671,3 +2671,63 @@ def test_a_unit_does_not_walk_to_a_stop_it_cannot_service():
     assert not wasted, (
         f"units walked toward stops yielding them no ops on day 6: {dict(wasted)}; "
         f"u2 alone burns five turns reaching a FEED it has no wheat for")
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason="the d10 melon harvest never reaches the shed in time to pay for it")
+def test_the_fourth_parcel_is_bought_on_day_ten_like_the_tape():
+    """We take the fourth quadrant a day late, and a day of 25 tiles compounds all season.
+
+    Seed 11, weeds off, Seb's tape. Banks at dawn, ours against his:
+
+        d9   1522 / 1491   (+31, we are AHEAD)
+        d10  1638 / 3104   (-1466)
+        d11  3273 / 3912   tiles 75 / 100
+
+    The whole deficit is created inside day 9, and it is not spending -- it is stock we are
+    forbidden to sell. `sh:wool` is +8 at d10 dawn: eight wool, ~$279 each at base, ~$2,232 sitting
+    in the shed while the $4,000 parcel goes unbought.
+
+    The sell block caps every product at `today + carry`, where `today` is the schedule ROW's count
+    for that product. The row is an absolute figure read off HIS trajectory, so anything we hold
+    beyond it can never be offered -- `carry` recovers a row we MISSED, and there is nothing at all
+    for stock the row never named.
+
+    `land_turns` is in TAPE_ONLY and therefore stripped, so this is our own decision: the agent buys
+    the first turn `money + pending >= LAND_PRICES[owned]`, and on day 10 that never comes true.
+
+    **The cause is the late-delivery defect, not the sell cap.** Absolute shed levels at dawn:
+
+        sh:melon   d10  0/0     d11  18/0
+        sh:wool    d10  8/0     d11   0/0
+
+    The 18 melons are harvested DURING day 10. The tape holds none at day 11 dawn because he sells
+    them the same day; ours reach the shed only at day 11 dawn, so at day 10's dusk they were still
+    in hands and came in on the overnight sweep. Day 10's row asks for exactly 18 melons and we sell
+    none. That is `test_the_afternoons_collections_reach_the_shed_before_the_market_closes` again,
+    and it is worth a land parcel here rather than the two fertilizer it was first priced on.
+
+    A fix that lifts the sell row's cap when a parcel is due was tried and measured NO CHANGE -- by
+    day 10 the wool is only 8 units and the melons are not in the shed to sell at any cap.
+
+    Asserts the outcome the user asked for: the parcel lands on day 10, so day 11 opens on 100 tiles.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    for t in range(24 * 11):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+
+    tiles = env.state[0].observation["farms"][0]["tiles"]
+    owned = sum(1 for row in tiles for c in row if c != "LOCKED")
+    assert owned == 100, (
+        f"day 11 opens on {owned} tiles against the tape's 100; the fourth parcel slipped to day 11 "
+        f"because day 10 never reached $4,000 while 8 unsellable wool sat in the shed")
