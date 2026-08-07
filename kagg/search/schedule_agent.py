@@ -263,6 +263,27 @@ def _fit_slots(orders, state):
 #: Whether `sells` is read as a CUMULATIVE target (a missed row is retried until it is filled) or as
 #: the old per-day row (a row that landed on an empty shed is forfeited). Switchable for the same
 #: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
+#: Days that send the schedule's whole `hands` row at hour 0 instead of dripping it out against the
+#: landing-square model. Day 4 was pinned first and took `unit-turns` 184/208 -> 208/208.
+#:
+#: **TRIED and REVERTED 2026-08-07: pin days 0-3 as well.** They are the only days left carrying a
+#: crew deficit -- `unit-turns` 182/185 on all four, which is exactly the two hands missing at h1
+#: plus the one missing at h2, since Seb has all 8 units standing by h1 and we reach 8 only at h3.
+#: The deficit is real and it is NOT `_fit_slots` (day 0 hour 0 emits 9 orders, under the ten-slot
+#: cap) -- it is this drip, which lands hires 5 / 1 / 1 across hours 0, 1 and 2.
+#:
+#: Pinning them recovers the three turns and measures clearly WORSE:
+#:
+#:                       d0 d1 d2 d3 d4 d5
+#:     drip (day 4 only)  7  6  4  7  7  7
+#:     pin days 0-3      10 11  8  9  9 10
+#:
+#: Twelve cells across the six earliest days, which under "days match IN ORDER" is the worst place
+#: to spend them. Sending the crew out at hour 0 changes where every unit routes, and the movement
+#: rows diverge by more than the extra turns are worth. Pinning ALL thirty days measures identically
+#: to pinning 0-3, so nothing later is being left on the table either.
+HIRE_PINNED_DAYS = frozenset({4})
+
 CUMULATIVE_SELLS = True
 
 #: Whether the final day ignores every sell cap and offers the whole shed. Stock has no terminal
@@ -1371,8 +1392,7 @@ def make_agent(schedule, me=0, router=True):
         # The drip below is left alone on every other day because it is what makes days 0-3 exact --
         # hires land better spread over three hours than all in one, since `_spawn_hand` reads
         # occupancy at the moment each HIRE settles and by hour 1 the dawn pair has walked off.
-        HIRE_PINNED_DAY = 4
-        if HIRE_FIRST and day == HIRE_PINNED_DAY and hour == 0:
+        if HIRE_FIRST and day in HIRE_PINNED_DAYS and hour == 0:
             for _ in range(int(row.get("hands", 0) or 0)):
                 orders.append(["HIRE"])
                 state["hired"] += 1
