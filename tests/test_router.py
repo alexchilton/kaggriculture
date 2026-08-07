@@ -2353,3 +2353,73 @@ def test_fed_today_relieves_the_herd_floor_instead_of_re_triggering_it(kg):
     assert ordered == 0, (f"dawn shed already met the two-day floor for six animals and the schedule "
                           f"asked for nothing, but same-day feeding alone triggered {ordered} more "
                           f"wheat to be bought -- the floor is chasing consumption it already covered")
+
+
+# ---------------------------------------------------------------------------------------------
+# the deliver ferry: a rule that only fires AT the depot cannot send a unit there
+# ---------------------------------------------------------------------------------------------
+
+def _mid_tour_state(hour, next_stop=(2, 2), pos=(3, 3), held=None):
+    """One unit, committed mid-tour, holding produce today's sell row still owes the shed.
+
+    Returns everything `_router_acts` needs. The unit stands at `pos` with `next_stop` still in its
+    route; the only depot is `(4, 4)`, since the other three shed-access cells are outside NW.
+    Stepping toward the stop and stepping toward the depot are DISJOINT sets of compass moves here,
+    which is what makes the assertion unambiguous.
+    """
+    board = blank_board()
+    sched = empty_sched()
+    sched[0]["sells"] = {"MELON": 12}
+    state = dict(pins={}, routes={}, crew=1, seen_urgent=set(),
+                 planted=collections.Counter(), planted_dawn=collections.Counter())
+    node = RT.Node(next_stop, [("WATER", None, RT.BASE_PRICE["MELON"])])
+    state["routes"] = {0: dict(route=[node], depot=(4, 4), draw={}, cost=1 + RT.dist(pos, next_stop))}
+    return dict(state=state, sched=sched, day=0, hour=hour, tiles=board, units=[list(pos)],
+                invs=[dict(held or {"MELON": 12})], shed=collections.Counter(),
+                seeds=collections.Counter(), unlocked={"NW"})
+
+
+def test_a_hand_full_of_the_days_sell_row_walks_it_in_when_there_are_turns_to_spare():
+    """`DELIVER_THE_SELL_ROW` can only fire on a depot cell, so it waits for an incidental visit.
+
+    That is the 16-of-22 ceiling measured on day 9 and the 12 melons still in two hands at hour 23 of
+    day 10 (`docs/idle_at_h10_2026-08-07.md` 2e) -- the market reads the shed and nothing else, and
+    both carriers only started walking home once their routes emptied, at hour 17. One arrived on
+    hour 23; the other never did.
+
+    The executor already contains this shape pointing the other way: the draw ferry preempts a
+    committed tour to fetch from the shed. This is its mirror -- preempt to DELIVER, then resume.
+
+    The test is SLACK against the detour, never the load's value against the route's. The route is
+    resumed, not abandoned, so the two are not being traded off at all. At hour 4 the unit has 19
+    turns, needs 3 to finish its tour and 4 to walk home from the last stop, and the detour costs 5.
+    """
+    acts = schedule_agent._router_acts(**_mid_tour_state(hour=4))
+    assert acts[0][0] in ("EAST", "SOUTH"), (
+        f"holding MELON 12 that the day's sell row still owes the shed, with 12 turns of slack and a "
+        f"5-turn detour home, the unit emitted {acts[0]} -- it walked on toward (2,2) and the melons "
+        f"cannot reach the market until the overnight sweep")
+
+
+def test_the_ferry_does_not_fire_when_the_detour_would_not_fit():
+    """The guard, so the fix cannot over-apply: no spare turns means keep the route.
+
+    Green before the fix and after. An abandoned FEED can cost an animal outright, while a load that
+    sells tomorrow instead of today loses roughly a tenth of its price -- so when the slack is not
+    there the answer is not "weigh the two", it is "keep the route".
+    """
+    acts = schedule_agent._router_acts(**_mid_tour_state(hour=20))
+    assert acts[0][0] in ("NORTH", "WEST"), (
+        f"only 3 turns left and a 5-turn detour, but the unit emitted {acts[0]} instead of finishing "
+        f"the tour it is committed to")
+
+
+def test_the_ferry_ignores_a_load_the_sell_row_never_asked_for():
+    """A wheat-only ferry is carrying its own FEED stops' input and must never be diverted.
+
+    Same census as `DELIVER_THE_SELL_ROW` -- `min(held, owed)` summed against `MIN_SELL_ROW_DROP` --
+    so this exclusion is inherited rather than re-implemented. Green before and after.
+    """
+    acts = schedule_agent._router_acts(**_mid_tour_state(hour=4, held={"WHEAT": 12}))
+    assert acts[0][0] in ("NORTH", "WEST"), (
+        f"the day's row asks for MELON and the unit carries WHEAT, but it emitted {acts[0]}")

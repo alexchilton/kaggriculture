@@ -127,6 +127,58 @@ DELIVER_THE_SELL_ROW = True
 #: than the sale returns and `work` falls 25 ops on day 8 alone.
 MIN_SELL_ROW_DROP = 6
 
+#: **Send a carrier home mid-tour, then resume it.** `DELIVER_THE_SELL_ROW` can only fire on a depot
+#: cell, so it waits for an incidental visit -- which is the 16-of-22 ceiling on day 9 and the 12
+#: melons still in two hands at hour 23 of day 10 (`docs/idle_at_h10_2026-08-07.md` 2e). A rule that
+#: only fires AT the shed cannot send a unit there.
+#:
+#: This is the mirror of the draw ferry below: preempt the tour, walk home, act, resume. It replaces
+#: a MOVE with a different MOVE, so it can never delete a work op on the turn it fires, and it needs
+#: no new drop code -- on arrival `DELIVER_THE_SELL_ROW` fires as it stands.
+#:
+#: **The test is SLACK against the detour, never the load's value against the route's.** The route is
+#: resumed, not abandoned, so the two are never traded off. Where the slack genuinely is not there
+#: the answer is "keep the route": an abandoned FEED can cost an animal outright, while a load that
+#: sells tomorrow instead of today gives up roughly a tenth of its price.
+#:
+#: Deliberately NOT in `build_nodes`. Fable's second review (`docs/fable_delivery_node_2026-08-07.md`)
+#: withdrew the delivery-node proposal on measurement: priced honestly a delivery node's prize is
+#: gating value, which is not computable at plan time, so it inserts last and is always refused;
+#: made mandatory it is placed first unconditionally and re-permutes every yielding tour's spine.
+#: Either way it pays the d2 permutation tax (see `router.py`) on days that are currently exact.
+#:
+#: **ON, but measured as very nearly inert, and the census below is why.** Seed 11, weeds off, d0-d11:
+#:
+#:     day-by-day cells   d9 15 -> 14, every other day byte-identical.  No regression.
+#:     sellables in hands at hour 23   IDENTICAL on all twelve days (d10 stays 14, d11 stays 20)
+#:
+#: So it does NOT fix the defect it was built for. Gate census over the 818 off-depot unit-turns that
+#: were holding a sellable (`scratchpad/ferry_gates.py`, `data/logs/ferry_gates.log`):
+#:
+#:      304  37.2%   today's row still owes only 1 of the load
+#:      182  22.2%   ... owes 0
+#:      174  21.3%   no committed route -- the return leg already covers these
+#:       57   7.0%   no slack
+#:      100  12.2%   ... owes 2 to 5
+#:        1   0.1%   FIRES
+#:
+#: The binding constraint is the CENSUS, not the slack: `owed_sale` is the row minus what the shed
+#: already holds, so by mid-morning the row rarely still owes six units of precisely what one unit
+#: happens to carry. The 12 melons stranded in hands on day 10 are not owed by the row at all -- that
+#: day's `sell` is 35/35, exact. They are surplus the row never names, which is a DIFFERENT and much
+#: riskier change (the broad version of it measured -$15,272 over twelve seeds).
+#:
+#: Kept ON because it is a strict in-order improvement with nothing regressed, and because it is the
+#: right structure for that change if the census is ever relaxed. It is NOT load-bearing today.
+DELIVER_FERRY = True
+
+#: Turns of slack held back before the ferry will divert. It exists because `Node.service` is
+#: `len(ops)` fixed at plan time and the executor re-derives ops on arrival, so a tour's remaining
+#: cost is under-stated by ~27% on field tiles (`docs/service_undercount_2026-08-07.md`). A flat
+#: reserve rather than a multiplier, because the under-count is a property of the board's live state
+#: and not of the tour's length.
+DELIVER_FERRY_MARGIN = 3
+
 #: Diagnostic sink for the opportunistic drop. `None` ships. Set it to a list and every unit-turn
 #: spent standing on a depot holding something appends one `(act, gate)` pair naming the FIRST gate
 #: that refused, or `"fires"`. It exists because lowering `MIN_OPPORTUNISTIC_DROP` to 3 and to 2
@@ -424,6 +476,20 @@ def _mobile(pos, unlocked):
     return any(_owned((x + dx, y + dy), unlocked)
                for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0))
                if 0 <= x + dx < R.BOARD_SIZE and 0 <= y + dy < R.BOARD_SIZE)
+
+
+def _route_turns(pos, route, depots):
+    """Turns a committed tour still needs: the legs, the service at each stop, and the walk home.
+
+    The same quantity `plan_routes` charged against the budget when it accepted the tour, recomputed
+    from where the unit actually stands. It inherits that model's known under-count -- `Node.service`
+    is `len(ops)` fixed at plan time -- which is what `DELIVER_FERRY_MARGIN` holds back for.
+    """
+    at, turns = tuple(pos), 0
+    for node in route:
+        turns += RT.dist(at, node.tile) + node.service
+        at = tuple(node.tile)
+    return turns + min(RT.dist(at, d) for d in depots)
 
 
 def _step_towards(src, dst, unlocked):
@@ -798,6 +864,28 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 pins.pop(node.tile, None)
             break
 
+        # ------------------------------------------------------------------ the deliver ferry
+        # See `DELIVER_FERRY`. Placed AFTER the tour walk has chosen `act`, so a real op at the tile the
+        # unit is standing on always wins, and before the opportunistic drop, which it cannot reach
+        # anyway -- that one requires a depot cell and this one only fires off them.
+        #
+        # `deliverable` is the census `DELIVER_THE_SELL_ROW` uses below, computed here so both share
+        # one definition: only what TODAY'S row still owes counts, so a unit ferrying wheat to its own
+        # FEED stops is never diverted.
+        deliverable = sum(min(q, owed_sale.get(it, 0)) for it, q in inv.items()
+                          if q > 0 and owed_sale.get(it, 0) > 0)
+        if (DELIVER_FERRY and act[0] in STEP and pos not in depots
+                and deliverable >= MIN_SELL_ROW_DROP
+                and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
+            home = min(depots, key=lambda c: RT.dist(pos, c))
+            nxt = tuple(st["route"][0].tile) if st["route"] else home
+            slack = (TPD - hour - 1) - _route_turns(pos, st["route"], depots)
+            detour = RT.dist(pos, home) + 1 + RT.dist(home, nxt) - RT.dist(pos, nxt)
+            if detour <= slack - DELIVER_FERRY_MARGIN:
+                m = _step_towards(pos, home, unlocked)
+                if m:
+                    act = [m]
+
         # ------------------------------------------------------------------ opportunistic mid-tour drop
         # Pens sit ON shed-access tiles by design (`_refresh_pins`), so a unit servicing them already
         # stands at a depot repeatedly through the day. Firing only when the tour-walk already chose a
@@ -850,8 +938,6 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # its wheat -- but the wheat lands in the shed on the tile the unit is standing on, and the
         # `PICKUP` branch above draws it straight back next turn. One turn, against a product that
         # would otherwise sit unsold until the overnight sweep.
-        deliverable = sum(min(q, owed_sale.get(it, 0)) for it, q in inv.items()
-                          if q > 0 and owed_sale.get(it, 0) > 0)
         if (DELIVER_THE_SELL_ROW and (act[0] in STEP or act == ["PASS"]) and pos in depots
                 and deliverable >= MIN_SELL_ROW_DROP
                 and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
