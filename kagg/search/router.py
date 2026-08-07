@@ -118,6 +118,37 @@ SERVICE_ROUND = 10
 #: animal on the same trip and PLACE it the turn after the pen goes up.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
 
+#: Ops that put a sellable item into the unit's own inventory. The market only ever reads the SHED,
+#: so anything still in a hand at dusk is unsold -- it arrives overnight, a turn too late.
+YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
+
+#: Whether a tour that ends on a YIELDING node reserves the walk back to the nearest depot.
+#:
+#: The tour is otherwise costed as an OPEN route -- walk plus service from where the unit stands,
+#: nothing for getting back -- which is correct for a tile that only consumes and wrong for one that
+#: yields. Measured on Seb's tape, seed 11, day 3: our u4 collects a fertilizer, its tour ends at
+#: hour 17 seven steps out, the return leg turns it home on hour 18 and it walks into dusk without
+#: arriving. `sell 4/5`, day-4 dawn bank $388 against his $482, and $388 does not buy a $400 cow.
+#:
+#: This is a RESERVE, not work: it is charged against the budget at every acceptance test and never
+#: added to `cost`, so it shortens a tour rather than booking turns the unit does not spend. Off
+#: restores the open route exactly.
+RETURN_LEG = True
+
+#: Cost an insertion as a CLOSED tour -- `delta + homeward(after) - homeward(before)` -- rather than
+#: charging a flat return reserve at acceptance. It is the textbook closed-tour marginal and it is
+#: exact at every insertion position, not only when the node lands at the current end of the route,
+#: so a far node can be resequenced onto the way back instead of being refused outright.
+#: It needs `SUPPLY_LEDGER`: on its own it MEASURED as day 3 `sell` 5/5 -> 3/5 and day 4 `place`
+#: 1/1 -> 0/1, because costing the tour honestly sorts a phantom PLACE node to the tail of the day,
+#: which is exactly where a node that turns out to be fake does the most damage.
+CLOSED_TOUR = True
+
+#: Whether the shed's stock of an animal is a budget shared across units, the way turns already are.
+#: See the note in `plan_routes`. Off restores the pre-2026-08-07 behaviour, where one COW and three
+#: empty pens produced three full-prize PLACE nodes and two units were sent to fetch the same animal.
+SUPPLY_LEDGER = True
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -502,7 +533,7 @@ def _two_opt(start, seq, keep_prefix=0):
     return best
 
 
-def plan_routes(units, nodes, budget, depots=SHED, carry=None):
+def plan_routes(units, nodes, budget, depots=SHED, carry=None, supply=None):
     """Assign nodes to units and order each unit's tour. Returns `{unit: [Node, ...]}`.
 
     Greedy cheapest-insertion on **prize / marginal cost**, which is the standard Team Orienteering
@@ -527,6 +558,31 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
     # item-bearing stop as a fresh shed trip sent a unit with an empty hand to an empty shed while
     # another stood holding the feed: eight wheat carried, four hungry animals, FEED 0, herd gone.
     held = {u: collections.Counter((carry or {}).get(u) or {}) for u in range(len(units))}
+    # **The shed's stock of a DRAWN item is a shared budget, exactly like turns.** `build_nodes`
+    # prices a PLACE per DESTINATION TILE and gates it only on `shed[a] > 0`, so one COW and three
+    # empty pens produce three nodes each worth the full $1,840. `held` and `depot` are per-unit and
+    # nothing here notices that two units have claimed the same animal. Scarcity was enforced only at
+    # execution -- first unit to a depot takes it, every later claimant's PICKUP draws nothing and
+    # walks a full round trip to a pen with no animal in it.
+    #
+    # Measured on Seb's tape, seed 11, day 3: one COW, pens at (0,3), (1,3) and (0,4) all offered
+    # from hour 1 to hour 17, two units sent. The day is exact anyway only because both wasted trips
+    # land early enough to recover from -- which is why the closed-tour marginal broke it. Costing the
+    # tour correctly ranks a phantom node last, and the tail of the day is where a fake node does the
+    # most damage.
+    #
+    # **Only the animals.** Applied to every DRAWN item this MEASURED as a day-0 regression --
+    # `feed` and `care` 4/4 -> 3/4 -- because the day-0 shed holds no wheat at dawn and every wheat
+    # arrives later by BUY_PRODUCT. A plan that refuses to book feed against a shed that is empty
+    # right now is refusing work that will be fundable by the time the unit walks there, and the
+    # bought wheat comes in bulk so no unit's draw denies another's.
+    #
+    # An animal is the opposite on both counts: it is bought one at a time, it is the input to a
+    # chain with a same-day deadline, and a second claimant on the same COW gets nothing at all.
+    # `None` means unconstrained, for the synthetic router tests that pass no shed.
+    stock = None if supply is None or not SUPPLY_LEDGER else collections.Counter(
+        {k: v for k, v in supply.items() if k in R.ANIMAL_NAMES})
+    booked = collections.Counter()
     left = list(nodes)
 
     def seq(u):
@@ -542,6 +598,12 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
         off = 1 if depot_at[u] is not None else 0
         at = i + off
         prev = s[at - 1] if at > 0 else units[u]
+        # **A tour that yields is CLOSED: the depot is its last node.** Appending it here rather than
+        # reserving turns separately is the whole difference between ordering a tour and truncating
+        # one. As a reserve it refused the insertion outright, so day 4 lost a water and the far-corner
+        # harvest at (0,1) -- which then rotted past its `max_lifespan_step` and cost a DIG on day 5.
+        # As a closing node it only makes a far last stop *dearer* than the same stop taken mid-tour,
+        # which is exactly the ordering the tape plays: work until hour 15-17, then walk in.
         nxt = s[at] if at < len(s) else None
         d = dist(prev, n.tile) + (dist(n.tile, nxt) - dist(prev, nxt) if nxt else 0)
         extra = n.service
@@ -557,13 +619,83 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
                 extra += sum(1 for it in short if depot[u][it] == 0)
         return d + extra
 
+    # **TRIED and REVERTED: put the walk home in the RATIO, as `delta + homeward(after) - homeward(now)`.**
+    # It is the textbook closed-tour marginal and it is exact at every insertion position, so it
+    # should have let a far node be resequenced onto the way back rather than refused. On day 4 it
+    # did exactly that -- `water` 16/17 -> 17/17, `harvest` 13/14 -> 14/14, and the day-5 DIG on the
+    # rotted (0,1) tile disappeared. It still broke two earlier things:
+    #
+    #     d3  sell 5/5 -> 3/5      fertilizer stranded again, `pickup` 7/3, two units walking in at 23
+    #     d4  place 1/1 -> 0/1     feed and care 7/7 -> 6/7; the animal chain lost to the reordering
+    #
+    # So the ratio was not the whole defect either. The likely remainder: `budget` is `TPD - hour - 1`
+    # and only IDLE units are replanned, so a unit committed at hour 6 keeps a tour costed against a
+    # budget that no longer exists, and the closed cost it was accepted under stops being true. Any
+    # next attempt should fix the stale budget first and re-measure, not re-derive the marginal.
+
     def _uncovered(u, n):
         """What this node needs that the unit is not already carrying, after everything assigned so far."""
         return {it: c - held[u][it] for it, c in n.needs.items() if c > held[u][it]}
 
+    def claim(u, n):
+        """The animals this node's PLACE ops must draw, after what the unit already carries.
+
+        **PLACE only, never BUILD.** `BUILD` is in `DRAWN` and carries the animal name too, so
+        counting it as a claim MEASURED as day 0 `build_pasture` 8/8 -> 4/8: pens are built ahead of
+        the animals that will fill them -- the tape builds eight on day 0 having bought four -- and a
+        build does not consume the animal, it only says which one the pen is for.
+        """
+        want = collections.Counter(i for o, i in n.ops if o == "PLACE" and i in R.ANIMAL_NAMES)
+        return {it: c - held[u][it] for it, c in want.items() if c > held[u][it]}
+
+    def in_stock(u, n):
+        """Is the animal this node would place actually left, after earlier units' commitments?"""
+        if stock is None:
+            return True
+        return all(booked[it] + q <= stock[it] for it, q in claim(u, n).items())
+
+    def homeward(u, n=None, i=None):
+        """Turns reserved to walk home, if this tour would end holding something sellable.
+
+        See `RETURN_LEG`. Zero unless the route yields, and measured from the LAST tile rather than
+        from every yielding one, because one shed trip empties the whole hand.
+
+        **TRIED and REVERTED: close the tour instead, by making the depot `delta`'s final node.** It
+        is the better-shaped idea -- it makes a far last stop dearer than the same stop taken
+        mid-tour, rather than refusing it -- and on day 4 it worked exactly as intended, taking
+        `water` to 17/17 and `harvest` to 14/14 and rescuing the far-corner tile at (0,1) whose
+        expiry costs a DIG on day 5. But it let units range further out on DAY 3, which was exact:
+        `sell` went 5/5 -> 3/5, u0 and u2 both still walking home at hours 21-23, fertilizer reaching
+        the shed one unit at a time on hours 6, 14 and 18 against his two big drops.
+        Day 3 comes before day 4. The reserve stays until something does both.
+        """
+        if not RETURN_LEG:
+            return 0
+        route = list(routes[u])
+        if n is not None:
+            route.insert(i, n)
+        if not route or not any(o in YIELDING for m in route for o, _i in m.ops):
+            return 0
+        return min(dist(route[-1].tile, d) for d in depots)
+
+    def cdelta(u, n, i):
+        """Marginal cost of the insertion with the walk home priced in. See `CLOSED_TOUR`.
+
+        Telescoping: `used[u]` therefore always holds the cost of the CLOSED tour as it stands, so
+        acceptance is a plain `used[u] + cdelta <= budget` with no separate reserve.
+        """
+        if not CLOSED_TOUR:
+            return delta(u, n, i)
+        return delta(u, n, i) + homeward(u, n, i) - homeward(u)
+
+    def reserve(u, n, i):
+        """The return leg still charged separately, which under `CLOSED_TOUR` is already in `cdelta`."""
+        return 0 if CLOSED_TOUR else homeward(u, n, i)
+
     def commit(u, n, i, c):
         """Put `n` at position `i` of unit `u`, paying `c` turns and booking whatever it must draw."""
         short = _uncovered(u, n)
+        booked.update(claim(u, n))          # before `held` is spent below
         routes[u].insert(i, n)
         used[u] += c
         # Consume the load first, and only draw the remainder. `held` going down as stops are added
@@ -606,9 +738,12 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
 
             best_u = min(range(len(units)), key=lambda u: (chain_cost(u), used[u]))
             for n in sorted(chain, key=lambda n: -n.prize):
-                spot = min(((delta(best_u, n, i), i) for i in range(len(routes[best_u]) + 1)),
+                if not in_stock(best_u, n):
+                    continue
+                spot = min(((cdelta(best_u, n, i), i) for i in range(len(routes[best_u]) + 1)),
                            default=None)
-                if spot is None or used[best_u] + spot[0] > budget[best_u]:
+                if (spot is None
+                        or used[best_u] + spot[0] + reserve(best_u, n, spot[1]) > budget[best_u]):
                     continue                  # no room today; it stays in `left` for the general pass
                 commit(best_u, n, spot[1], spot[0])
                 left.remove(n)
@@ -647,9 +782,11 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
                 best = None
                 for n in remaining:
                     for u in range(len(units)):
+                        if not in_stock(u, n):
+                            continue
                         for i in range(len(routes[u]) + 1):
-                            c = delta(u, n, i)
-                            if used[u] + c > cap[u]:
+                            c = cdelta(u, n, i)
+                            if used[u] + c + reserve(u, n, i) > cap[u]:
                                 continue
                             score = n.prize / max(1, c)
                             if best is None or score > best[0]:
@@ -670,9 +807,17 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
         cost = _path_len(start, ordered) + sum(n.service for n in new)
         if depot_at[u] is not None:
             cost += dist(units[u], depot_at[u]) + len(depot[u])
-        if cost <= budget[u]:
+        # 2-opt reorders an OPEN path, so it can shorten the walk out and still leave the tour ending
+        # further from the shed. Close the cost the same way `delta` does before comparing, or the
+        # reorder is judged on a shorter path than the unit actually walks.
+        home = (min(dist(ordered[-1], d) for d in depots)
+                if RETURN_LEG and ordered
+                and any(o in YIELDING for m in new for o, _i in m.ops) else 0)
+        if cost + home <= budget[u]:
             routes[u] = new
-            used[u] = cost
+            # Under `CLOSED_TOUR` every `used[u]` already carries the walk home, so the reordered
+            # tour must be booked the same way or the next insertion is costed against a short tour.
+            used[u] = cost + home if CLOSED_TOUR else cost
 
     return {u: dict(route=routes[u], depot=depot_at[u], draw=depot[u], cost=used[u])
             for u in routes}
