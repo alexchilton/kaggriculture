@@ -24,12 +24,20 @@ testpaths = ["tests"]
 # per-process, so the suite is embarrassingly parallel and barely touched by anything else. Measured
 # on a 14-core box: 387s serial, 131s with `-n auto`. Add `-n0` to any command to get back a single
 # process (needed for `--pdb`, and quicker when you are iterating on one test).
-addopts = "-n auto"
+addopts = "-n auto -m 'not slow'"
 markers = [
-    # A test earns this mark by being an *integration* check -- it runs the CEM search, scans the
-    # replay archive on disk, or plays whole seasons through the ladder -- not merely by being slow.
-    # These are the suite's critical path: the ~10 marked tests are 165s of its 387s serial cost.
-    # Unit tests must stay in the default set, however long they take, because they are the ones
-    # that have to run on every edit.
-    "slow: integration test; deselect with -m 'not slow'",
+    # A whole test MODULE earns this mark -- via the `pytest_collection_modifyitems` hook and the
+    # `SLOW_MODULES` list in `tests/conftest.py`, not a per-test decorator -- by being JAX fast-sim
+    # parity, RL training, or an integration check (CEM search, replay-archive scan, arena/ladder,
+    # a full episode through the reference environment). Deselected by default so the everyday run
+    # stays a few-seconds inner loop; `pyproject.toml`'s `addopts` carries the `-m 'not slow'` filter.
+    #
+    #   pytest                 -- default: fast unit tests only, the ones that run on every edit
+    #   pytest -m slow         -- only the deselected suites (parity + RL training + integration)
+    #   pytest -m ''           -- everything, no filter
+    #
+    # Unit tests -- including ones that pin live game rules and are not fast -- must stay in the
+    # default set regardless of runtime, because they are the ones that have to run on every edit.
+    # See `tests/conftest.py` for which modules are marked and why.
+    "slow: JAX fast-sim parity, RL training, or integration test; deselect with -m 'not slow'",
 ]
