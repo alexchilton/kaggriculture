@@ -1931,9 +1931,6 @@ def test_the_biggest_sale_takes_the_earliest_slot():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason=(
-    "open: two SHEEP sit in the shed at dusk on days 14-17 with two to three pens standing empty. "
-    "The placement is not blocked, it is slow -- the last animal lands on day 28"))
 def test_a_bought_animal_does_not_sit_in_the_shed_beside_an_empty_pen():
     """An animal in the shed produces nothing. A pen without one produces nothing. We hold both.
 
@@ -2199,10 +2196,6 @@ def test_the_shed_is_empty_when_the_season_ends():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason=(
-    "open: `DELIVER_THE_SELL_ROW` ships ON and takes day 9 from 10 of the row's 22 to 16, with the "
-    "day-10 dawn bank 1552 -> 2509. The last 6 need a DEPOT NODE inside the tour: the flag can only "
-    "fire when a unit already happens to stand on a depot, and cannot make one walk there"))
 def test_the_days_sell_row_reaches_the_shed_before_dusk():
     """The market reads the SHED. Produce riding around in a hand all day is produce not sold.
 
@@ -2469,3 +2462,53 @@ def test_day_six_sells_the_wool_as_soon_as_the_walk_allows():
     assert first_sell is not None and first_sell <= 3, (
         f"day 6's first SELL is hour {first_sell}; hour 3 is what the walk allows and what the $800 "
         f"strawberry order needs")
+
+
+@pytest.mark.slow
+def test_a_pen_is_not_built_on_the_far_edge_while_near_ground_is_free():
+    """Pens are permanent daily FEED + CARE + COLLECT, so their distance is paid ~20 times a season.
+
+    `5247b1b` measured his exact DAY-0 tiles and found them worth 2 cells of 150, concluding pen
+    geometry is not a lever. That measurement is right and its conclusion does not generalise, because
+    day 0 is the one day where the two layouts are distance-IDENTICAL: ours sit on y=3,4 and his on
+    y=2,3, and the Manhattan sum from the depot at (4,4) is 22 for both. Day 6 is 23 for both too.
+
+    The difference appears when the later quadrants unlock. At day 11's dawn:
+
+        ours  dist sum 51, 15 pens, including (5,0), (8,0), (9,0) -- 22 of the 51 in three pens
+        his   dist sum 44, 15 pens, furthest (8,4) at 4; the rest go SOUTH into SW at
+              (1,6), (2,5), (2,6), (4,6), (4,7), all within 5
+
+    `field_order` sweeps quadrant-major and anchors each quadrant at its own shed corner, so it is
+    near-first WITHIN a quadrant. But pens draw from the same sweep as crops, and by day 10 the near
+    tiles of NE are planted, so a new pen falls to the tail of that quadrant -- y=0, nine steps out --
+    while SW's near band sits empty.
+
+    Fixed by `PEN_NEAREST_DEPOT_FROM_DAY`, and the DAY GATE is the whole of why it works. Applied to
+    the whole season the same rule costs 13 cells (130 -> 143, d0 7->8 and d2 4->7), because on the
+    early days our layout already matches his distance exactly and siting nearer makes us LESS like
+    him. Applied from day 9 it leaves d0-d8 byte-identical and takes d9 14 -> 12 and d10 19 -> 18.
+    The damage and the benefit are simply on different days.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    pens = []
+    for t in range(24 * 12):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t == 24 * 11:
+            pens = [(x, y) for y, row in enumerate(o0["farms"][0]["tiles"])
+                    for x, c in enumerate(row)
+                    if isinstance(c, dict) and (c.get("kind") in ("PASTURE", "COOP") or c.get("animal"))]
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    far = sorted(p for p in pens if abs(p[0] - 4) + abs(p[1] - 4) > 5)
+    assert not far, (
+        f"pens at {far} sit more than 5 steps from the depot at day 11; his furthest in the whole "
+        f"game is (8,4) at 4. Distance sums: ours {sum(abs(x-4)+abs(y-4) for x, y in pens)}, his 44")

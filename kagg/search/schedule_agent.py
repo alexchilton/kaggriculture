@@ -232,6 +232,58 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
 #: this number rather than restate the geometry.
 PEN_SPOTS = ()
 
+#: **Site a pen at the free tile NEAREST a depot, across every quadrant we own.**
+#:
+#: The measurement above is sound and its conclusion does not generalise, because day 0 is the one day
+#: on which the two layouts are distance-identical -- 22 either way, and 23 either way on day 6. The
+#: gap opens when the later quadrants unlock. At day 11's dawn:
+#:
+#:     ours  dist sum 51, 15 pens, including (5,0), (8,0), (9,0) -- 22 of the 51 in three pens
+#:     his   dist sum 44, 15 pens, furthest (8,4) at 4; the rest go SOUTH into SW at
+#:           (1,6), (2,5), (2,6), (4,6), (4,7), every one within 5
+#:
+#: `field_order` is near-first WITHIN a quadrant -- a boustrophedon sweep anchored at that quadrant's
+#: shed corner -- but it is quadrant-MAJOR, and pens draw from the same sweep as crops. By day 10 the
+#: near tiles of NE are planted, so a new pen falls to the tail of NE at y=0, nine steps out, while
+#: SW's near band sits empty. A pen is a permanent daily FEED + CARE + COLLECT, so that distance is
+#: paid ~20 times a season; a crop tile is watered once a day and harvested once.
+#:
+#: **OFF. It does exactly what it says and the cell metric punishes it.** Measured, seed 11, weeds off:
+#:
+#:                 d0 d1 d2 d3 d4  d5 d6 d7 d8 d9 d10 d11  total
+#:     baseline     7  6  4  7  7   7 11 15 13 14  19  20   130
+#:     nearest      8  7  7  7  9  10 11 15 12 17  18  22   143
+#:
+#: The geometry lands -- `test_a_pen_is_not_built_on_the_far_edge_while_near_ground_is_free` goes
+#: GREEN with this on, no pen beyond 5 steps at day 11 -- and d0, d1, d2, d4 and d5 all go backwards.
+#:
+#: The reason is worth stating, because it is a property of the METRIC and not of the change. We are
+#: scored on resembling Seb. His day-0 block sums to 22 from the depot; nearest-first sums to **14**.
+#: That is less walking every day for twenty days and it reads as a REGRESSION, because it is further
+#: from him. Any real improvement he did not himself make will score the same way.
+#:
+#: So this is the first arm in the project that is plausibly right and is refused by the objective
+#: rather than by the board. It should be re-measured on BANK, head to head, before it is written off.
+PEN_NEAREST_DEPOT = False
+
+#: Alex's narrowing, and the numbers say it is the right one: the damage and the benefit are on
+#: DIFFERENT DAYS. Every cell the rule above cost is on d0-d5, where our layout already matches his
+#: distance exactly (22 vs 22 on d0, 23 vs 23 on d6). Every far pen it fixes arrives later --
+#: (5,0) on d8, (8,0) on d9, (9,0) on d10 -- once the crop sweep has eaten NE's near tiles.
+#:
+#: So apply it only from this day on. `None` disables the gate entirely. Swept, seed 11, weeds off:
+#:
+#:                 d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
+#:     OFF          7  6  4  7  7  7 11 15 13 14  19  20   130
+#:     from d5..d9  7  6  4  7  7  7 11 15 13 12  18  20   127
+#:     from d10     7  6  4  7  7  7 11 15 13 14  19  18   128
+#:
+#: d0-d8 byte-identical, d9 14 -> 12, d10 19 -> 18. Every threshold from 5 to 9 gives the SAME
+#: result, so 9 is chosen: the latest one that still captures the whole gain, which is the least
+#: exposure on the early days of a seed we have not measured. `from d10` is strictly worse under an
+#: in-order metric -- it leaves d9 and d10 alone and only reaches d11.
+PEN_NEAREST_DEPOT_FROM_DAY = 9
+
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
@@ -561,6 +613,24 @@ def _next_ground(order, tiles, taken):
     return None
 
 
+def _nearest_ground(order, tiles, taken, unlocked):
+    """The free tile closest to a depot, across every quadrant we own. See `PEN_NEAREST_DEPOT`.
+
+    Deliberately NOT the sweep. The sweep's job is to keep a CROP block compact, and it does that
+    well; a pen is a fixed daily round trip and wants proximity, not compactness. Ties break on the
+    sweep's own order so the choice stays deterministic and stays inside the crop block's shape.
+    """
+    depots = [c for c in R.shed_access_tiles() if _owned(c, unlocked)] or [SPAWN]
+    best, best_d = None, None
+    for t in order:
+        if t in taken or tiles[t[1]][t[0]] is not None:
+            continue
+        d = min(abs(t[0] - c[0]) + abs(t[1] - c[1]) for c in depots)
+        if best_d is None or d < best_d:
+            best, best_d = t, d
+    return best
+
+
 def _emit(op, item):
     if op == "BUILD":
         return ["BUILD_COOP" if R.ANIMALS[item]["structure"] == "COOP" else "BUILD_PASTURE"]
@@ -692,6 +762,9 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
         spot = spot or next((c for c in R.shed_access_tiles()
                              if _owned(c, unlocked) and tiles[c[1]][c[0]] is None
                              and c not in taken), None)
+        if PEN_NEAREST_DEPOT or (PEN_NEAREST_DEPOT_FROM_DAY is not None
+                                 and day >= PEN_NEAREST_DEPOT_FROM_DAY):
+            spot = spot or _nearest_ground(order, tiles, taken, unlocked)
         spot = spot or _next_ground(order, tiles, taken)
         if spot is None:
             break
