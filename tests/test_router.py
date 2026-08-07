@@ -103,26 +103,23 @@ def test_a_melon_water_inside_the_window_is_worth_a_whole_melon():
     assert ops[0][2] == RT.BASE_PRICE["MELON"] == 250
 
 
-def test_a_melon_water_outside_the_window_buys_survival_at_half_price():
+def test_a_melon_water_outside_the_window_is_offered_only_on_the_brink():
     """Age 5 is one day before the window: the water buys no YIELD, only survival.
 
-    It used not to be queued at all unless the tile was already a day dry, and that made the crew
-    water on alternate days. The tape does not: seed 11, waters per live plant tile, ours against his
-    before the change --
+    So it is offered on the day the tile would otherwise weed and on no other day. A tile at
+    `consecutive_unwatered = 0` cannot die tonight, and water does nothing else for it.
 
-        day     1     2     3     4     5     6     7     8     9    10    11    12
-        ours 0.06  1.00  0.58  1.32  0.33  0.78  1.28  0.67  1.36  0.57  1.22  0.54
-        tape 1.06  1.06  1.00  1.05  0.84  1.00  1.50  0.78  1.03  0.80  1.15  0.87
-
-    On day 1 both boards hold 17 tiles and he waters 18 times to our 1. So the op is now offered
-    every day, at HALF the tile's remaining value while a day of slack is left and the full value
-    once the tile is thirsty -- present enough to be taken when the tour has room, cheap enough to
-    yield to real work when it does not. Melon's remaining value here is $1,500, so the offer is $750.
+    **This test previously asserted the opposite** -- a half-price offer every day -- on the strength
+    of a table showing "the tape" watering ~1.06 per live tile daily, 18 times on day 1 against our 1.
+    That table is the OLD LEADER's tape. Seb's, which is the stronger of the two and the one we match,
+    waters on alternate days: d0 17, **d1 0**, d2 17, d3 14, reaching dawn on day 2 with all 17 tiles
+    sitting at 1 and taking zero weeds through day 7. `router.py`'s own header had said so all along
+    ("water every tile every day" measured at -$18,569); only this branch had drifted.
     """
     cell = dict(kind="PLANT", crop="MELON", planted_day=0, watered_today=False,
                 consecutive_unwatered=0, yield_units=0, fertilized_until_day=-1)
     slack = RT.crop_ops(cell, 5, have_fertilizer=False)
-    assert slack == [("WATER", None, 750.0)], slack
+    assert slack == [], f"a tile watered yesterday must not be offered water: {slack}"
 
     thirsty = RT.crop_ops(dict(cell, consecutive_unwatered=1), 5, have_fertilizer=False)
     assert thirsty == [("WATER", None, 1500.0)], thirsty
@@ -1130,3 +1127,394 @@ def test_a_carried_sell_row_never_offers_more_than_the_biggest_day_ever_asked(kg
     offered = [o for o in act["market"] if o[:2] == ["SELL", "MELON"]]
     assert offered == [["SELL", "MELON", 5]], (
         f"two rows of 5 went unfilled, but the offer rate stays 5: {act['market']}")
+
+
+def test_the_crew_is_bought_before_the_goods_when_the_bank_can_only_cover_one():
+    """HIRE is appended LAST, after SELL/LAND/ANIMAL/SEED/FEED have already debited `money`.
+
+    Measured on Seb's tape, seed 11. `scripts/when_the_crew_arrives.py` prints the hour each HIRE was
+    sent and the bank at that moment. Day 6 we open on $711 against his $869, want 8 hands, and go:
+
+        ours  (0,$711) (0,$711) (1,$10) (1,$10) (2,$5) (2,$5) (3,$0) (3,$0)
+        tape  (0,$869) x8
+
+    The bank is gone by hour 1 -- not spent on hands, spent on seed and feed between our first pair of
+    hires and our third -- so six of the eight HIREs fail outright and the day is worked by five hands
+    instead of eight. 135 unit-turns against his 208. `_hire_cost` is `mult * fib(hires_today)` and
+    `hires_today` is a per-DAY counter, so the crew costs exactly the same whenever it is bought: there
+    is no saving in dribbling, only a bank that a later order can empty first.
+
+    A hand hired at hour 0 works 23 turns. Nothing downstream recovers a turn that was never available,
+    which is why this sits ahead of every routing question.
+    """
+    sched = empty_sched(hands=4, seeds={"MELON": 6}, plants=["MELON"] * 6)
+    agent = schedule_agent.make_agent(sched, 0, router=True)
+    farm = {"tiles": blank_board(unlocked=("NW", "NE")), "money": 400, "farmer": [4, 4],
+            "hands": [], "unlocked_quadrants": ["NW", "NE"]}
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+    act = agent({"day": 0, "hour": 0, "farms": [farm], "private": priv, "step": 0})
+    hires = [o for o in act["market"] if o[0] == "HIRE"]
+    seeds = [o for o in act["market"] if o[0] == "BUY_SEED"]
+    assert len(hires) == 4, f"wanted the whole crew first, got {len(hires)}: {act['market']}"
+    assert act["market"].index(hires[0]) < (act["market"].index(seeds[0]) if seeds else 99), \
+        f"HIRE must precede BUY_SEED in the list: {act['market']}"
+
+
+def test_a_claim_is_released_when_an_idle_unit_would_arrive_far_sooner():
+    """A claimed tile was off limits for the rest of the day, however far off its claimant was.
+
+    Measured on Seb's tape, seed 11, day 0. A PLACE node is available from hour 9, and replans DO run
+    -- at hours 9, 14, 15, 16, 17 and 18. The work was visible and the planner was running the whole
+    time. The pen was simply claimed at hour 6 by a unit with a long tour, and
+
+        busy = {n.tile for u, st in routes.items() if u not in idle for n in st["route"]}
+
+    subtracts every claimed tile from what an idle unit is allowed to take. So the animal waited for
+    its claimant and was placed at **hour 18**, by which point it cannot be fed: the shed is four moves
+    off and the budget at hour 20 is `24 - 20 - 1 = 3`. That is `feed -2` and `care -2` on day 0.
+
+    Same shape as the `sells` bug: a decision taken when the board looked one way outliving the board.
+    A claim is only worth honouring while the claimant is the one who arrives first.
+    """
+    class N:
+        def __init__(self, tile, service=1):
+            self.tile, self.service = tile, service
+
+    #   unit 0 (committed) starts at the shed (4,4) and tours (4,3) -> (0,0) -> (0,4).
+    #   walking its own tour in order:  (4,3) at turn 2,  (0,0) at turn 10,  (0,4) at turn 15.
+    #   unit 1 (idle) stands at (0,3): 4 from (4,3), 3 from (0,0), 1 from the pen at (0,4).
+    units = [(4, 4), (0, 3)]
+    routes = {0: {"route": [N((4, 3)), N((0, 0)), N((0, 4))]}}
+    idle = [1]
+    busy = schedule_agent._claimed_tiles(units, routes, idle, margin=4)
+
+    assert (0, 4) not in busy, \
+        "unit 1 is one step from the pen and unit 0 is 15 turns off -- the claim must be released"
+    assert (4, 3) in busy, \
+        "unit 0 reaches (4,3) on turn 2 and unit 1 is 4 away, so that claim stands"
+    assert (0, 4) in schedule_agent._claimed_tiles(units, routes, idle, margin=None), \
+        "margin=None must restore the old all-claims-are-permanent rule exactly"
+
+    # A head start inside the margin is not enough to break up a tour: claimant arrives on turn 2,
+    # the idle unit is 2 away, so it wins by nothing once the margin is applied.
+    near = schedule_agent._claimed_tiles([(2, 0), (3, 0)], {0: {"route": [N((1, 0))]}}, [1], margin=4)
+    assert (1, 0) in near, "a 2-turn head start is inside the margin; the claim should stand"
+
+
+def test_seb_day_zero_places_every_animal_early_enough_to_feed_it():
+    """Replans fire on a CREW change or an idle unit -- never on new work appearing.
+
+    Pinned against the real tape rather than a hand-built board, because three synthetic versions of
+    this all passed: `micro` gives every unit a short tour, so a unit falls idle almost at once and the
+    idle top-up covers the bug. It only bites when the crew is fully committed for hours at a stretch.
+
+    Measured on Seb's tape, seed 11, day 0, by spying on every `plan_routes` call:
+
+        hr  9  1 unit,  1 node,  PLACE offered=[]          <- the one free pen was excluded as claimed
+        hr 10-13   NO CALL AT ALL                          <- pens 3,4,5 become placeable in here
+        hr 14  2 units, 5 nodes, PLACE offered=[5] assigned=[4]
+        hr 16  3 units, 3 nodes, PLACE offered=[3] assigned=[]   budget 7, a shed trip costs more
+
+    The crew is stable at 8 from hour 6 and every unit has crop work, so nothing goes idle and nothing
+    replans while four pens sit empty and four animals ride around in unit inventories. By the time a
+    unit does fall idle the budget is `24 - hour - 1` and a PLACE needs a shed trip, so the node is
+    offered and cannot be afforded. The last two animals land at hour 18 and are never fed:
+
+        ours   PLACE [3, 6, 18, 18]   FEED [6, 11]         CARE [7, 12]
+        tape   PLACE [4, 6, 11, 13]   FEED [9, 11, 17, 19] CARE [12, 17, 20, 20]
+
+    which is `feed -2` / `care -2` on day 0 against the tape.
+
+    Two theories were measured and rejected on the way here, recorded so they are not retried: tour
+    ORDERING is not the constraint, because the node is not in any tour to be ordered; and claim
+    exclusion is not sufficient -- `STEAL_MARGIN` moved one placement 18 -> 16 and left feed and care
+    untouched. The trigger has to include the work, not just the workers.
+    """
+    import json
+    import pathlib as _pl
+    from kaggle_environments import make
+
+    replay = "data/seed_scripts/top_guys/90494364.json"
+    schedule = "data/seed_scripts/top_guys/90494364/schedule.json"
+    team = "Seb (allegedly)"
+    tape_only = ("plant_tiles", "build_tiles", "land_turns", "orders")
+
+    d = json.loads(_pl.Path(replay).read_text())
+    seat = d["info"]["TeamNames"].index(team)
+    acts = [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
+             "hands": list((s.get("action") or {}).get("hands") or []),
+             "market": list((s.get("action") or {}).get("market") or [])}
+            for s in (step[1 - seat] or {} for step in d["steps"][1:])]
+    sched = {int(k): v for k, v in json.loads(_pl.Path(schedule).read_text()).items()}
+    thin = {k: {a: b for a, b in v.items() if a not in tape_only} for k, v in sched.items()}
+
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    placed, fed = [], []
+    for t in range(24):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]:
+            if x and x[0] == "PLACE":
+                placed.append(t)
+            if x and x[0] == "FEED":
+                fed.append(t)
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": acts[t]["farmer"], "hands": list(acts[t]["hands"])[:n1],
+                   "market": acts[t]["market"]}])
+
+    assert len(placed) == 4, f"the schedule places four animals on day 0; got {placed}"
+    assert max(placed) <= 13, (
+        f"last PLACE at hour {max(placed)} (tape: 13). A shed round trip is ~8 turns against a budget "
+        f"of 24-hour-1, so an animal placed this late can never be fed. PLACE {placed}, FEED {fed}")
+    assert len(fed) >= 4, f"every animal placed should be fed the same day; PLACE {placed}, FEED {fed}"
+
+
+def test_a_placement_late_in_the_day_is_worth_less_than_one_at_dawn():
+    """`PLACE` is priced at `cost + remaining` whatever the hour, and that flat price is the real bug.
+
+    An animal placed at hour 6 is fed, cared for and starts its production clock the same day. One
+    placed at hour 18 gets none of that: a FEED needs a shed round trip of about eight turns against a
+    budget of `24 - hour - 1`, so it stands unfed and uncared until tomorrow. Measured on Seb's tape,
+    seed 11, day 0, where our last two animals land at hour 18 -- `feed -2` and `care -2`.
+
+    Because the price does not move, the planner has no reason to serve the node early. Forcing it to
+    (an `URGENT_OPS` replan trigger) simply made it outbid something else: PLANT fell 17 -> 16 and
+    `test_the_whole_day_zero_schedule_is_executed` went red. That is the coupling -- work, route and a
+    bank that all draw on the same turns -- and it cannot be resolved by forcing an op whose stated
+    value is a lie.
+
+    Pricing the hour in resolves both directions at once: an early placement wins on merit, and a late
+    one correctly loses to a plant instead of being forced through.
+    """
+    pen = [[{"kind": "PASTURE"}]]
+    shed = {"COW": 1}
+
+    early = RT.build_nodes(pen, day=0, shed=shed, carried={}, unlocked=("NW",), pinned={}, hour=2)
+    late = RT.build_nodes(pen, day=0, shed=shed, carried={}, unlocked=("NW",), pinned={}, hour=20)
+    assert early and late, "the pen is placeable at both hours; only the price should move"
+    assert early[0].prize > late[0].prize, (
+        f"a dawn placement must outprice a dusk one: {early[0].prize} vs {late[0].prize}")
+
+    # And the default must be unchanged, so every existing caller and every pinned number still holds.
+    same = RT.build_nodes(pen, day=0, shed=shed, carried={}, unlocked=("NW",), pinned={})
+    assert same[0].prize == early[0].prize, "omitting `hour` must price as the start of the day"
+
+
+def test_only_the_one_genuinely_walled_spawn_slot_is_skipped_and_hiring_continues():
+    """The spawn guard stopped hiring at the first walled slot, throwing away four good hands with it.
+
+    Of the four shed-access tiles, only `(5,5)` is genuinely walled while we own NW alone:
+
+        (4,4) NW  escapes to (3,4), (4,3)
+        (5,4) NE  escapes to (4,4)          <- fine
+        (4,5) SW  escapes to (4,4)          <- fine
+        (5,5) SE  neighbours (4,5) and (5,4) are both LOCKED   <- the only trap
+
+    `_spawn_hand` fills them least-occupied-first, ties NWSE, so seven hires land
+    `(5,4) (4,5) (5,5) (4,4) (5,4) (4,5) (5,5)` -- only the 3rd and 7th are stuck. `break` discarded
+    hires 3 to 7, four of which were perfectly good, and that is what forced the old two-a-turn dribble:
+
+        break at walled     0,2,2,4,4,6,7 = 144 hand-turns (-17 vs tape)   50/112 cells differ
+        hire all anyway     0,7,7,7,7,7,7 = 161 (+0)  but two hands idle    50/112
+        skip the slot       0,5,6,7,7,7,7 = 158 (-3)  and all seven work    42/108
+
+    Measured on Seb's tape, seed 11, days 0-3. Skipping the slot and carrying on is best on both counts:
+    nearly the tape's hand-turns, with no hand wasted.
+    """
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+
+    def hires(unlocked, onto_locked):
+        old = schedule_agent.HIRE_ONTO_LOCKED
+        schedule_agent.HIRE_ONTO_LOCKED = onto_locked
+        try:
+            agent = schedule_agent.make_agent(empty_sched(hands=6), 0, router=True)
+            farm = {"tiles": blank_board(unlocked=unlocked), "money": 100000, "farmer": [4, 4],
+                    "hands": [], "unlocked_quadrants": list(unlocked)}
+            act = agent({"day": 0, "hour": 0, "farms": [farm], "private": priv, "step": 0})
+            return len([o for o in act["market"] if o[0] == "HIRE"])
+        finally:
+            schedule_agent.HIRE_ONTO_LOCKED = old
+
+    # Six wanted, one slot walled: five go out now and the sixth follows next turn, once a hand has
+    # stepped off its spawn tile and freed a good slot. Never two.
+    assert hires(("NW",), onto_locked=False) == 5
+    # NE unlocks (5,5)'s escape square, so nothing is walled and the whole row goes at once.
+    assert hires(("NW", "NE"), onto_locked=False) == 6
+    # The flag takes the walled slot too, which is only worth doing once a stuck hand can be given
+    # depot work -- it is a loader, not a vehicle. Measured worse until then: 50 cells against 42.
+    assert hires(("NW",), onto_locked=True) == 6
+
+
+def test_day_zero_matches_seb_op_for_op():
+    """**The day-0 gate. Every number, ours against the tape, and exact means identical.**
+
+    Seb's tape, seed 11, weeds off. Day 0 is the whole of the pre-land-buy window's first day and the
+    agreed definition of the executor working: if day 0 matches op for op, the schedule is being played
+    faithfully and the hire/spawn questions downstream resolve themselves.
+
+    What already matches, and must not regress:
+
+        plant 17   water 17   build_pasture 8   place 4   pickup 5
+        buy_seed 17   buy_product 8   buy_animal 4   hire 7
+        dawn: money 3000, tiles 25, pens 0, every crop 0, every animal 0, shed 0
+
+    What does not, as of this commit:
+
+        feed        3/4     one animal placed at hour 20 is never fed
+        care        3/4     and so never cared
+        drop        0/1     the tape banks a load at hour 2; we never DROP on day 0
+        north      21/24    same tiles, different tour shape --
+        south       2/13    we work the board WESTWARD, the tape SOUTHWARD
+        east        6/4
+        west       30/20
+        pass       66/64
+        unit-turns 182/185  three hand-turns, from the one walled spawn slot we skip
+
+    The open question behind feed/care/drop: FEED is priced `MANDATORY`, its wheat is in the shed from
+    hour 4, and no unit serves it until hour 15. Eight hours in which the highest-priced node on the
+    board goes untouched.
+    """
+    import json
+    import pathlib as _pl
+    from kaggle_environments import make
+
+    d = json.loads(_pl.Path("data/seed_scripts/top_guys/90494364.json").read_text())
+    seat = d["info"]["TeamNames"].index("Seb (allegedly)")
+    tape = [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
+             "hands": list((s.get("action") or {}).get("hands") or []),
+             "market": list((s.get("action") or {}).get("market") or [])}
+            for s in (step[1 - seat] or {} for step in d["steps"][1:])]
+    mine = [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
+             "hands": list((s.get("action") or {}).get("hands") or []),
+             "market": list((s.get("action") or {}).get("market") or [])}
+            for s in (step[seat] or {} for step in d["steps"][1:])]
+    sched = {int(k): v for k, v in json.loads(
+        _pl.Path("data/seed_scripts/top_guys/90494364/schedule.json").read_text()).items()}
+    thin = {k: {a: b for a, b in v.items()
+                if a not in ("plant_tiles", "build_tiles", "land_turns", "orders")}
+            for k, v in sched.items()}
+
+    def day_zero(policy):
+        env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+        env.reset(2)
+        tally = collections.Counter()
+        for t in range(24):
+            o0, o1 = env.state[0].observation, env.state[1].observation
+            a0 = policy(o0, t)
+            n0 = len(o0["farms"][0].get("hands") or [])
+            n1 = len(o0["farms"][1].get("hands") or [])
+            for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]:
+                if x:
+                    tally[x[0]] += 1
+            for o in (a0["market"] or []):
+                if o:
+                    tally[o[0]] += int(o[2]) if len(o) > 2 else 1
+            env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0],
+                       "market": a0["market"]},
+                      {"farmer": tape[t]["farmer"], "hands": list(tape[t]["hands"])[:n1],
+                       "market": tape[t]["market"]}])
+        return tally
+
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    ours = day_zero(lambda o, t: agent(o))
+    his = day_zero(lambda o, t: mine[t])
+
+    fields = sorted(set(ours) | set(his))
+    diff = {k: f"{ours[k]}/{his[k]}" for k in fields if ours[k] != his[k]}
+    assert not diff, (
+        f"day 0 is not exact -- {len(diff)} of {len(fields)} ops differ (ours/tape):\n"
+        + "\n".join(f"    {k:<20} {v}" for k, v in sorted(diff.items())))
+
+
+def _seb_tape():
+    """Seb's replay, our seat's actions, his seat's actions, and the schedule stripped to shipping keys."""
+    import json
+    import pathlib as _pl
+    d = json.loads(_pl.Path("data/seed_scripts/top_guys/90494364.json").read_text())
+    seat = d["info"]["TeamNames"].index("Seb (allegedly)")
+
+    def acts(idx):
+        return [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
+                 "hands": list((s.get("action") or {}).get("hands") or []),
+                 "market": list((s.get("action") or {}).get("market") or [])}
+                for s in (step[idx] or {} for step in d["steps"][1:])]
+
+    sched = {int(k): v for k, v in json.loads(
+        _pl.Path("data/seed_scripts/top_guys/90494364/schedule.json").read_text()).items()}
+    thin = {k: {a: b for a, b in v.items()
+                if a not in ("plant_tiles", "build_tiles", "land_turns", "orders")}
+            for k, v in sched.items()}
+    return acts(seat), acts(1 - seat), thin
+
+
+def _tally_day(policy, opp, day):
+    """Every unit op and market order our seat emits during `day`, playing `opp` in the other seat."""
+    from kaggle_environments import make
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    tally = collections.Counter()
+    for t in range(24 * (day + 1)):
+        o0 = env.state[0].observation
+        a0 = policy(o0, t)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == day:
+            for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]:
+                if x:
+                    tally[x[0]] += 1
+            for o in (a0["market"] or []):
+                if o:
+                    tally[o[0]] += int(o[2]) if len(o) > 2 else 1
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": opp[t]["farmer"], "hands": list(opp[t]["hands"])[:n1],
+                   "market": opp[t]["market"]}])
+    return tally
+
+
+def test_day_one_matches_seb_op_for_op():
+    """**The day-1 gate**, the same contract as day 0: exact means no op differs.
+
+    Day 1's whole character is that the tape does almost nothing. It waters **nothing** -- 17 live
+    tiles, every one of them left at `consecutive_unwatered = 1` overnight, watered again on day 2 --
+    and spends the day feeding, caring, collecting fertilizer and placing the one cow the row asks for.
+    25 work turns against our 40, and it idles 131 turns to our 82.
+
+    Watering on alternate days is not a risk the tape is running; it is the rule. `consecutive_unwatered`
+    starts at 1 on the planting day and only weeds the tile at 2, so a tile watered on day 0 is safe
+    through day 1 and must be watered again on day 2. Water buys nothing else for an ongoing crop --
+    `_daily_refresh_tiles` accrues yield regardless -- and outside its window it buys nothing for a
+    one-shot either. The tape ends day 7 with zero weeds doing this.
+    """
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    ours = _tally_day(lambda o, t: agent(o), his, 1)
+    theirs = _tally_day(lambda o, t: mine[t], his, 1)
+
+    fields = sorted(set(ours) | set(theirs))
+    diff = {k: f"{ours[k]}/{theirs[k]}" for k in fields if ours[k] != theirs[k]}
+    assert not diff, (
+        f"day 1 is not exact -- {len(diff)} of {len(fields)} ops differ (ours/tape):\n"
+        + "\n".join(f"    {k:<20} {v}" for k, v in sorted(diff.items())))
+
+
+def test_a_crop_watered_yesterday_is_not_watered_again_today():
+    """The every-second-day rule, at the prize level, for both crop kinds.
+
+    A tile with `consecutive_unwatered = 0` cannot weed tonight, and water does not make an ongoing
+    crop produce. Offering it anyway is what put 17 dead WATER turns on our day 1. A tile at 1 is on
+    the brink and must be offered.
+    """
+    day = 8
+    for crop, ongoing in (("TOMATO", True), ("MELON", False)):
+        for debt, wanted in ((0, False), (1, True)):
+            cell = {"kind": "PLANT", "crop": crop, "planted_day": day - 1, "yield_units": 0,
+                    "watered_today": False, "consecutive_unwatered": debt, "fertilized_until_day": -1}
+            ops = RT.crop_ops(cell, day, have_fertilizer=False)
+            got = any(o == "WATER" for o, _i, _p in ops)
+            assert got is wanted, (
+                f"{crop} (ongoing={ongoing}) at consecutive_unwatered={debt}: "
+                f"WATER offered={got}, expected {wanted} -- ops {ops}")

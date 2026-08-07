@@ -66,6 +66,13 @@ FEED_DAYS = 2
 #: Meter by placing MORE orders, never by shrinking the one order that feeds the herd.
 FEED_ORDER_CAP = None
 
+#: Most WHEAT bought in one order. **This is a cadence control, not the cap `FEED_ORDER_CAP` was.**
+#: That one bounded the DAY's feed and starved a 19-animal herd; this bounds a single order while the
+#: day's target is re-offered every turn, so the herd still gets everything it needs -- just spread.
+#: `market_price` moves per unit inside one order and the shops restock every 4 steps, so eight orders
+#: of 1 clear cheaper than one of 8. The tape buys 1 at a time, eight times, across hours 5-19.
+BUY_DRIP = 1
+
 #: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
 #: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
 #: one or two units at a time turns every such moment into a 1-turn DROP.
@@ -80,6 +87,63 @@ OPPORTUNISTIC_DROP = True
 #: the old per-day row (a row that landed on an empty shed is forfeited). Switchable for the same
 #: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
 CUMULATIVE_SELLS = True
+
+#: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
+#: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
+#: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
+#:
+#: Measured on Seb's tape, seed 11, by `scripts/when_the_crew_arrives.py`. He issues every HIRE at
+#: hour 0; we dribble two an hour across hours 0-3 and append them LAST, after SELL, LAND, ANIMAL,
+#: SEED and FEED have already spent the bank. Two costs, and they are independent:
+#:
+#:     ordering   day 6 we open on $711, want 8 hands, and go (0,$711) (0,$711) (1,$10) (1,$10)
+#:                (2,$5) (2,$5) (3,$0) (3,$0) -- the bank is gone by hour 1, spent on seed and feed
+#:                between our second hire and our third, so six of eight HIREs fail and the day is
+#:                worked by five hands. `_hire_cost` is `mult * fib(hires_today)` and `hires_today`
+#:                is a per-DAY counter, so the crew costs the same whenever it is bought. Dribbling
+#:                saves nothing and lets a later order empty the bank first.
+#:     the cap    two-a-turn is a proxy for a real trap: with the farmer on `(4,4)` the third hire of
+#:                a turn lands on `(5,5)`, whose only neighbours `(4,5)` and `(5,4)` are LOCKED while
+#:                we own NW alone, so it cannot move all day. But `LAND_ORDER = ["NE", "SW", "SE"]`
+#:                unlocks `(5,4)` -- that hand's escape square -- with the FIRST parcel, and the cap
+#:                then costs 12, 73, 12, 35 and 26 hand-turns on days 5-8 and 10 for nothing.
+#:
+#: A hand hired at hour 0 works 23 turns; the same hand at hour 4 works 19. Nothing downstream
+#: recovers a turn that was never available, which is why this sits ahead of every routing question.
+HIRE_FIRST = True
+
+#: Ops whose VALUE decays with the hour they are served, so the work appearing is itself a reason to
+#: replan. Empty disables the trigger and restores the old crew-change-or-idle rule exactly.
+#:
+#: PLACE is the whole list because what follows it is time-critical: an animal must be fed and cared
+#: for on the day it lands, and a FEED costs a shed round trip of about eight turns against a budget
+#: of `24 - hour - 1`. Placed at hour 18 it simply cannot be served. Nothing else on the board works
+#: that way -- a melon watered at hour 3 or hour 20 yields the same melon.
+URGENT_OPS = ()          # measured NET NEGATIVE once hiring was fixed: 42 cells against 39
+
+#: Whether to hire a hand that will spawn walled in -- on a shed-access corner whose neighbours are all
+#: LOCKED. It cannot move or BUILD, but PICKUP and DROP test shed-adjacency only and it is standing on
+#: a shed tile, so it works as a loader. Off restores the old refusal, which cost -17 hand-turns a day
+#: on one quadrant: our day-0 crew ramped 0,2,2,4,4,6,7 against the tape's 0,7,7,7,7,7,7.
+HIRE_ONTO_LOCKED = False
+
+#: How many turns sooner an idle unit must reach a claimed tile before it may take it off the unit
+#: that claimed it. `None` disables stealing entirely and restores the old rule, where every tile in
+#: a committed tour is off limits to everyone else for the rest of the day.
+#:
+#: **This is the open-loop problem again, moved from the schedule to the work.** `sells` forfeited a
+#: row that could not be filled on its day; a claim forfeits work to a unit that cannot reach it.
+#: Measured on Seb's tape, seed 11, day 0: a PLACE node is available from hour 9 and replans run at
+#: hours 9, 14, 15, 16, 17 and 18 -- the work is visible and the planner IS running -- but the pen was
+#: claimed at hour 6 by a unit with a long tour, so every idle unit after that was forbidden to take
+#: it and the animal was placed at **hour 18**. Placed that late it cannot be fed: the shed is four
+#: moves away and the budget at hour 20 is `24 - 20 - 1 = 3`, so it goes unfed and uncared, which is
+#: `feed -2` and `care -2` against the tape on day 0.
+#:
+#: A claim is not a freehold. It is only worth honouring while the claimant is the one who gets there
+#: first. If a stolen node's original owner arrives to find nothing to do it goes idle and is topped
+#: up on the next turn, so the loss is bounded at one turn and the gain is the whole afternoon.
+STEAL_MARGIN = None      # measured NET NEGATIVE once hiring was fixed: 46 cells against 39
 
 #: How many days an uncovered sell row stays offerable. **The backlog must expire.** Carrying it
 #: forever is not "cumulative", it is unbounded: on the old leader's plan the schedule asks to sell
@@ -240,6 +304,49 @@ def _live_ops(tile, cell, day, inv, pins, seeds):
     return [(o, i) for o, i, _p in ops]
 
 
+def _eta_along(start, route):
+    """Turn each tile of a committed tour is actually reached, walking the tour in order.
+
+    Manhattan distance plus service, which is what `plan_routes` costs an insertion at, so the two
+    agree about what "sooner" means. Only the ORDER matters here, not the absolute turn.
+    """
+    out, t, pos = {}, 0, tuple(start)
+    for n in route:
+        t += abs(n.tile[0] - pos[0]) + abs(n.tile[1] - pos[1]) + n.service
+        out.setdefault(n.tile, t)
+        pos = n.tile
+    return out
+
+
+def _claimed_tiles(units, routes, idle, margin):
+    """Tiles an idle unit may NOT take, given who claimed them and when they will actually arrive.
+
+    The old rule was `every tile in any committed tour`, which makes a claim permanent: a pen claimed
+    at hour 6 by a unit twenty steps away is closed to a unit standing next to it at hour 9. See
+    `STEAL_MARGIN` for the measurement -- that is exactly how day 0's last two animals reached their
+    pens at hour 18 and went unfed.
+
+    A tile is released only when an idle unit reaches it at least `margin` turns sooner than its
+    claimant, so a tour is never broken up for a marginal gain.
+    """
+    claimed = {}
+    for u, st in routes.items():
+        if u in idle:
+            continue
+        for tile, eta in _eta_along(units[u], st.get("route") or ()).items():
+            if eta < claimed.get(tile, 1 << 30):
+                claimed[tile] = eta
+    if margin is None:
+        return set(claimed)
+    busy = set()
+    for tile, eta in claimed.items():
+        soonest = min((abs(tile[0] - units[u][0]) + abs(tile[1] - units[u][1]) for u in idle),
+                      default=1 << 30)
+        if soonest + margin >= eta:
+            busy.add(tile)
+    return busy
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -316,14 +423,27 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     load = {u: collections.Counter(invs[u] if u < len(invs) else {}) for u in range(len(units))}
 
     def nodes_for(skip):
-        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins)
+        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
     # vehicle at all, and planning work onto it silently deletes that work for the day.
     live = [u for u in range(len(units)) if _mobile(units[u], unlocked)]
 
-    if state["crew"] != len(live) or not routes:
+    # **New work is a replan trigger, not just new workers.** See `URGENT_OPS`. The crew stabilises by
+    # mid-morning and every unit is committed, so between the last hire and the first idle unit nothing
+    # replans -- on Seb's day 0 that is hours 10-13, exactly when four pens finish and become placeable.
+    # The animals waited, went in at hour 18, and could no longer be fed.
+    # Key on (tile, op), never on the tile alone. A pen is BUILT and then PLACEd on the SAME square, so
+    # the tile is already sitting in the builder's route when the PLACE node appears -- subtracting
+    # routed *tiles* silently swallowed every new placement and the trigger never fired once.
+    urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
+              for o, _i in n.ops if o in URGENT_OPS} if URGENT_OPS else set()
+    routed = {(n.tile, o) for st in routes.values() for n in st["route"] for o, _i in n.ops}
+    fresh = urgent - state["seen_urgent"] - routed
+    state["seen_urgent"] = urgent
+
+    if state["crew"] != len(live) or not routes or fresh:
         # A full replan only when the crew changes -- hands are hired through the morning, so the dawn
         # plan genuinely cannot know how many vehicles it has.
         sub = RT.plan_routes([units[u] for u in live], nodes_for(set()),
@@ -336,7 +456,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         if idle:
             # **Top up the idle units only.** Replanning everybody would break the commitment of a unit
             # already three steps into a tour, which is the thrash the per-turn greedy had.
-            busy = {n.tile for u, st in routes.items() if u not in idle for n in st["route"]}
+            busy = _claimed_tiles(units, routes, idle, STEAL_MARGIN)
             sub = RT.plan_routes([units[u] for u in idle], nodes_for(busy),
                                  [budget[u] for u in idle], depots,
                                  {k: load[u] for k, u in enumerate(idle)})
@@ -477,7 +597,8 @@ def make_agent(schedule, me=0, router=True):
     """
     sched = {int(k): v for k, v in schedule.items()}
     state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter(),
-                 pins={}, routes={}, crew=-1, planted=collections.Counter(),
+                 pins={}, routes={}, crew=-1, seen_urgent=set(),
+                 planted=collections.Counter(),
                  ordered=collections.Counter(), shed_max=collections.Counter(),
                  uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
 
@@ -520,7 +641,7 @@ def make_agent(schedule, me=0, router=True):
             # bought four animals at turn 0 and four more at turn 1 until the bank was empty, which is why
             # it reached day 1 on $61 and could then never afford a hand again.
             state.update(day=day, assigned={}, hired=0, ordered=collections.Counter(), tour={},
-                         routes={}, crew=-1)          # `pins` and `planted` survive the night by design
+                         routes={}, crew=-1, seen_urgent=set())   # `pins` and `planted` survive by design
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
@@ -805,6 +926,55 @@ def make_agent(schedule, me=0, router=True):
             if n > 0 and len(orders) < 5:
                 orders.append(["SELL", prod, n])
 
+        # **The crew comes before the goods.** See `HIRE_FIRST`. SELL stays above this because it only
+        # raises the bank; everything BELOW spends it, and a hand that is not standing at dawn cannot be
+        # bought back later in the day -- the turns are simply gone. The cost is unchanged either way:
+        # `_hire_cost` is `mult * fib(hires_today)`, a per-DAY counter.
+        #
+        # The limit is not a count but a landing square, and it has to be computed from where the crew
+        # ACTUALLY stands. `_spawn_hand` takes the least-occupied shed-access tile, ties NWSE, counting
+        # the units present at the moment the HIRE settles -- so occupancy must come from `units`, not
+        # from a spawn table. `routines.spawn_order` was tried here and is wrong for this: it models
+        # every unit as still sitting on its spawn tile, but by hour 1 the dawn pair has walked off to
+        # the fields, which frees `(5,4)` and `(4,5)` again. Assuming otherwise reported `(5,5)` as the
+        # next landing square from hour 1 onward and refused to hire for the rest of the day -- crew
+        # collapsed to two hands and 70 unit-turns a day against the tape's 208, measured, far worse
+        # than the flat cap it replaced.
+        #
+        # The only bad tile is one with no unlocked orthogonal neighbour to step out to. On one quadrant
+        # that stops at 2, as the old flat cap did; on two or more it stops at nothing, because the first
+        # parcel unlocks NE at `(5,4)` and that is `(5,5)`'s way out.
+        if HIRE_FIRST:
+            target = int(row.get("hands", 0) or 0)
+            if state["hired"] < target and hour < 8:
+                shed_tiles = R.shed_access_tiles()
+                occ = {t: 0 for t in shed_tiles}
+                for pos in units:
+                    if tuple(pos) in occ:
+                        occ[tuple(pos)] += 1
+                for _ in range(target - state["hired"]):
+                    x, y = min(occ.items(), key=lambda kv: (kv[1], shed_tiles.index(kv[0])))[0]
+                    walled = not any(0 <= b < len(tiles) and 0 <= a < len(tiles[0])
+                                     and tiles[b][a] != "LOCKED"
+                                     for a, b in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)))
+                    # A walled-in hand is stuck, not useless: it spawns ON a shed-access tile, and
+                    # PICKUP and DROP test shed-adjacency only, so it can load and unload all day. It
+                    # cannot BUILD and cannot walk. Refusing the hire outright cost -17 hand-turns a
+                    # day while we owned one quadrant, and the tape takes all seven and uses the stuck
+                    # ones as shed loaders. `_hire_cost` is per-DAY, so the crew price is unchanged.
+                    # **Skip the walled slot, do not stop hiring.** Of the four shed-access tiles only
+                    # `(5,5)` is genuinely walled while we own NW alone: `(5,4)` and `(4,5)` both have
+                    # `(4,4)` as an unlocked neighbour and step out fine. The spawn order for seven
+                    # hires is `(5,4) (4,5) (5,5) (4,4) (5,4) (4,5) (5,5)`, so only the 3rd and 7th are
+                    # stuck -- and `break` threw away hires 3 to 7, four of which were perfectly good.
+                    # That is what forced the old two-a-turn dribble and cost -17 hand-turns a day.
+                    if walled and not HIRE_ONTO_LOCKED:
+                        occ[(x, y)] += 1     # this slot is taken; the NEXT hire lands elsewhere
+                        continue
+                    occ[(x, y)] += 1
+                    orders.append(["HIRE"])
+                    state["hired"] += 1
+
         # **Land: the schedule's day is a FLOOR, and the agent buys the first turn it can pay.** The tape
         # takes the $2,000 parcel at day 10 hour 20, after selling all day. Ordering on a fixed hour lost
         # it silently and cost 25 tiles for the rest of the season.
@@ -926,27 +1096,49 @@ def make_agent(schedule, me=0, router=True):
         # tape places sixteen separate WHEAT buys of 1-6 across h1-h22, interleaved with ten sells,
         # and the shops restock every 4 steps so the book recovers between them. Fix the cadence
         # before touching the size.
-        short = FEED_DAYS * alive - on_hand - state["ordered"][("feed", "WHEAT")]
+        #
+        # **The schedule's own `buys` row was never read.** Wheat came only from the herd formula above,
+        # so day 0 bought `FEED_DAYS * alive` as the herd grew -- 2, then 2, then 1, then 1 = 6 -- while
+        # the row asks for 8 and the tape takes exactly 8. Same bug class as `sells`: a row the executor
+        # simply ignores. Measured on Seb's tape, seed 11, day 0:
+        #
+        #     tape   1 wheat at hours 5, 7, 9, 11, 12, 14, 17, 19   = 8, one per order
+        #     ours   2 at hr3, 2 at hr7, 1 at hr14, 1 at hr22       = 6, in blocks
+        #
+        # The row is the day's target and the herd formula is a FLOOR under it, never a ceiling -- a
+        # herd bigger than the schedule planned must still eat. `BUY_DRIP` meters it one unit per turn,
+        # which is the cadence the comment above asks for: `market_price` moves per unit inside a single
+        # order, and the shops restock every 4 steps, so eight orders of 1 clear cheaper than one of 8.
+        wanted = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
+        owed = wanted - state["ordered"][("buys", "WHEAT")]
+        # **The drip meters the schedule top-up; it NEVER bounds what the herd must eat.** That is the
+        # whole difference from `FEED_ORDER_CAP`, which capped the herd's own need at 4 and starved a
+        # 19-animal herd from day 15. The herd floor goes out at full size in one order; only the part
+        # of the row above that floor is spread across the day.
+        herd = FEED_DAYS * alive - on_hand - state["ordered"][("feed", "WHEAT")]
+        short = max(herd, min(max(0, owed), BUY_DRIP))
         short = min(short, int(money * 0.5 // quote))
-        if alive and short > 0 and len(orders) < 9:
+        if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short
+            state["ordered"][("buys", "WHEAT")] += short
             # Debit at the price we just QUOTED, not the old hardcoded $60. Charging $60 for wheat
             # bought at $25 understates the running bank by $35 a unit, and every later order on the
             # same day -- seed, animals, the second feed top-up -- is sized against that wrong bank.
             money -= quote * short
 
-        # Hire TWO a turn. `_spawn_hand` picks by occupancy when the HIRE settles, so a third order in one
-        # turn puts a hand on `(5,5)` in SE with both neighbours locked, unable to move for the whole day.
-        # **Count ORDERS issued today, not orders plus hands.** `have = len(units) - 1 + hired` counted
-        # every landed hire twice -- once in `hands` and once in `hired` -- so a target of 4 was reported
-        # met at 2 and the crew never grew. Hands are dismissed nightly and `hires_today` resets with them,
-        # so the orders issued today are exactly the crew we should end up with.
-        target = int(row.get("hands", 0) or 0)
-        if state["hired"] < target and hour < 8:
-            for _ in range(min(2, target - state["hired"])):
-                orders.append(["HIRE"])
-                state["hired"] += 1
+        if not HIRE_FIRST:
+            # Hire TWO a turn. `_spawn_hand` picks by occupancy when the HIRE settles, so a third order in
+            # one turn puts a hand on `(5,5)` in SE with both neighbours locked, unable to move all day.
+            # **Count ORDERS issued today, not orders plus hands.** `have = len(units) - 1 + hired` counted
+            # every landed hire twice -- once in `hands` and once in `hired` -- so a target of 4 was
+            # reported met at 2 and the crew never grew. Hands are dismissed nightly and `hires_today`
+            # resets with them, so the orders issued today are exactly the crew we should end up with.
+            target = int(row.get("hands", 0) or 0)
+            if state["hired"] < target and hour < 8:
+                for _ in range(min(2, target - state["hired"])):
+                    orders.append(["HIRE"])
+                    state["hired"] += 1
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:], "market": orders[:10]}
 

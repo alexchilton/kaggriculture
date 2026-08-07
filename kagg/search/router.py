@@ -100,6 +100,20 @@ MANDATORY = 100_000
 #: a depot stop no matter that it carries an item name.
 SEED_COST = {"WHEAT": 10, "CARROT": 20, "TOMATO": 50, "STRAWBERRY": 100, "MELON": 80}
 
+#: Turns a unit needs to place an animal and then actually serve it the same day: walk to the shed,
+#: draw wheat, walk back, FEED and CARE. Below this many turns left, a placement banks no product
+#: today, and `build_nodes` prices it accordingly.
+#: Ops forming the animal chain, assigned WHOLE to one unit before anything else. Empty restores plain
+#: cheapest-insertion over every node. See the block in `plan_routes` for the day-0 measurement.
+#: Whether a PLACE node also draws one WHEAT, for the feed that placement necessarily creates. Off
+#: restores the old needs exactly. See `Node.__init__` for the day-0 measurement.
+PLACE_DRAWS_FEED = True
+
+CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells against 42,
+                        # last PLACE pushed hour 20 -> 22. Our four pens are not one tour.
+
+SERVICE_ROUND = 10
+
 #: Ops whose item really is drawn at the shed. `BUILD` is here because the unit may as well carry the
 #: animal on the same trip and PLACE it the turn after the pen goes up.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
@@ -216,33 +230,31 @@ def crop_ops(cell, day, have_fertilizer):
                     fertilized = True
             if not cell["watered_today"]:
                 out.append(("WATER", None, price * (2 if fertilized else 1)))
-        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 0:
+        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
             # Outside the window water buys nothing but survival, and it is only needed on the day
-            # the tile would otherwise weed. This is the every-SECOND-day rule, derived. It is
+            # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
+            # `consecutive_unwatered` starts at 1 on the planting day and weeds the tile at 2, so a
+            # tile watered yesterday is safe tonight and only the ones at 1 are on the brink.
             #
             # It is NOT mandatory, though the loss is real and permanent. Promoting it into the
             # mandatory pass alongside fourteen pens was measured over twelve seeds at **-$2,804**:
             # harvests recovered 296 -> 318 and feeding fell straight back, 321 -> 301, because a pass
             # that contains everything cannot triage.
             #
-            # **Offered EVERY day, not only on the brink, and discounted on the day of slack.** Gating
-            # on `consecutive_unwatered >= 1` made the crew water on alternate days, which the tape
-            # does not: seed 11, waters per live plant tile, ours against his --
+            # **This gate was widened to `>= 0` and then narrowed back, and the widening was an
+            # error of attribution.** The justification was a table of waters per live plant tile
+            # showing "the tape" watering ~1.06 every day against our alternating 0.06/1.00, with
+            # day 1 at 18 waters to our 1. That table is real, and it is the OLD LEADER's tape.
+            # Measured on the same harness the same day, seed 11, waters ours/tape:
             #
-            #     day     1     2     3     4     5     6     7     8     9    10    11    12
-            #     ours 0.06  1.00  0.58  1.32  0.33  0.78  1.28  0.67  1.36  0.57  1.22  0.54
-            #     tape 1.06  1.06  1.00  1.05  0.84  1.00  1.50  0.78  1.03  0.80  1.15  0.87
+            #     oldleader   d0 16/17   d1 17/18   d2 18/19   d3 18/19      waters daily
+            #     seb         d0 17/17   d1 17/0    d2 17/17   d3 17/14      waters alternate days
             #
-            # On day 1 the boards are identical at 17 tiles and he waters 18 times to our 1. Watering
-            # only at `>= 1` leaves every tile permanently one missed turn from `>= 2`, which is a
-            # WEED and refuses PLANT for the rest of the season -- at `weedSpawnChance 0.0` our weed
-            # count still rose, so every one of those was self-inflicted.
-            #
-            # The discount is what keeps this from becoming the mandatory pass by another route: a
-            # tile with a day of slack left offers half its remaining value, so it is taken when the
-            # tour has room and yields to real work when it does not.
-            thirsty = cell["consecutive_unwatered"] >= 1
-            out.append(("WATER", None, _crop_remaining(cell, day) * (1.0 if thirsty else 0.5)))
+            # The two tapes genuinely differ here, and Seb -- the stronger tape, and the one we are
+            # matching -- reaches dawn on day 2 with all 17 tiles sitting at `consecutive_unwatered
+            # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
+            # day 1 is 17 work turns and ~31 walk turns for nothing at all.
+            out.append(("WATER", None, _crop_remaining(cell, day)))
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
         # fertilizer bonus on a production day. Watering it on any other day is pure walk.
@@ -364,13 +376,28 @@ class Node:
         self.prize = sum(p for _o, _i, p in ops)
         self.service = len(ops)
         self.needs = collections.Counter(i for o, i, _p in ops if i and o in DRAWN)
+        # **A PLACE draws the feed for the animal it is about to put in the pen.**
+        # `build_nodes` cannot emit a FEED node for a tile until an animal is standing on it, so the
+        # feed that MUST follow a placement is invisible at plan time and no wheat is ever drawn for
+        # it. Measured on Seb's tape, seed 11, day 0: u0 leaves the shed at hour 6 carrying a cow and
+        # no wheat, builds at (2,3) on hour 9, places on hour 10, and then stands beside a hungry
+        # animal with an empty route on hour 11. The wheat only arrives on a second shed trip at
+        # hour 15 -- and the same unit walks over an unfed sheep at (3,4) on the way to fetch it.
+        #
+        # PICKUP is unbounded and the shed trip is already being made for the animal, so carrying the
+        # feed on the same trip costs nothing but the draw itself. The tape does exactly this: it
+        # picks up at hours 1, 3 AND 8, moving animals and wheat together.
+        if PLACE_DRAWS_FEED:
+            for o, _i, _p in ops:
+                if o == "PLACE":
+                    self.needs["WHEAT"] += 1
         self.mandatory = any(p >= MANDATORY for _o, _i, p in ops)
 
     def __repr__(self):
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
 
 
-def build_nodes(tiles, day, shed, carried, unlocked, pinned):
+def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -413,8 +440,22 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned):
                     if ANIMALS[a]["structure"] != kind:
                         continue
                     if shed.get(a, 0) > 0 or carried.get(a, 0) > 0:
-                        ops = [("PLACE", a, ANIMALS[a]["cost"] + _animal_remaining(
-                            {"animal": a, "placed_day": day}, day))]
+                        # **Price the hour in.** A placement is not worth the same all day: an animal
+                        # put in a pen at dawn is fed, cared for and starts producing today, while one
+                        # placed at dusk gets none of that -- a FEED is a shed round trip of ~8 turns
+                        # against a budget of `TPD - hour - 1`. Measured on Seb's tape, seed 11, day 0,
+                        # our last two animals land at hour 18 and are never fed: `feed -2`, `care -2`.
+                        #
+                        # A flat price gives the planner no reason to serve it early, and FORCING it to
+                        # (an urgent-op replan trigger) just makes it outbid something else -- PLANT
+                        # fell 17 -> 16 and an existing day-0 test went red. Pricing the hour honestly
+                        # fixes both directions: a dawn placement wins on merit, a dusk one correctly
+                        # loses to a plant rather than being forced through.
+                        served = ANIMALS[a]["cost"] + _animal_remaining(
+                            {"animal": a, "placed_day": day}, day)
+                        if TPD - hour - 1 < SERVICE_ROUND:
+                            served -= BASE_PRICE[ANIMALS[a]["product"]]
+                        ops = [("PLACE", a, max(1.0, served))]
                         break
             elif kind == "WEED":
                 # Worth exactly the planting it unblocks, so late in the season a weed is furniture.
@@ -533,6 +574,44 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None):
             if depot_at[u] is None:
                 depot_at[u] = min(depots, key=lambda t: dist(t, units[u]))
             depot[u].update(short)
+
+    # ------------------------------------------------------------------ the animal chain, kept whole
+    # **PICKUP -> PLACE -> FEED -> CARE is a chain, not four independent prizes.** It has real
+    # precedence and a same-day deadline: an animal must be in a pen before it can be fed, and fed
+    # before CARE banks anything (`pending_care_bonus` is consumed only on a day the animal is also
+    # fed). Cheapest-insertion has no representation for either, so it interleaves the chain with
+    # fungible work and fragments it across units and hours.
+    #
+    # Measured on Seb's tape, seed 11, day 0. Both sides plant 17, water 17, build 8 pastures and
+    # place 4 animals -- the schedule lands either way. The whole difference is the chain:
+    #
+    #     tape u0   B u d u L ^ L v u ^ < L ^ L v v > c ^ < c     places at 4, 6, 11, 13
+    #     ours u0   B u L < < B L ^ B < B . v > > > u ^ < < L <   places at 2, 6, and 20
+    #
+    # The tape dedicates one unit to the chain and never lets it build. Ours places two animals, wanders
+    # off to BUILD_PASTURE at hours 5, 8 and 10, returns for a pickup at 16 and places the fourth at
+    # hour 20 -- too late to feed or care it. That is the entire day-0 work gap: FEED 3/4, CARE 3/4.
+    #
+    # So the chain is assigned first, whole, to the single unit that serves it cheapest. Everything
+    # after it is order-free and still goes to plain cheapest-insertion.
+    if CHAIN_OPS:
+        chain = [n for n in left if any(o in CHAIN_OPS for o, _i in n.ops)]
+        if chain:
+            def chain_cost(u):
+                pos, total = units[u], 0
+                for n in chain:
+                    total += dist(pos, n.tile) + n.service
+                    pos = n.tile
+                return total
+
+            best_u = min(range(len(units)), key=lambda u: (chain_cost(u), used[u]))
+            for n in sorted(chain, key=lambda n: -n.prize):
+                spot = min(((delta(best_u, n, i), i) for i in range(len(routes[best_u]) + 1)),
+                           default=None)
+                if spot is None or used[best_u] + spot[0] > budget[best_u]:
+                    continue                  # no room today; it stays in `left` for the general pass
+                commit(best_u, n, spot[1], spot[0])
+                left.remove(n)
 
     order = sorted(left, key=lambda n: -n.prize)
     # Mandatory nodes are assigned in their own pass, so a hungry animal cannot be outbid on ratio by a
