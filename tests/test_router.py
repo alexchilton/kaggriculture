@@ -1888,6 +1888,100 @@ def test_day_four_matches_seb_on_every_op_it_works():
         + "\n".join(f"    {k:<20} {v}" for k, v in sorted(diff.items())))
 
 
+def test_the_biggest_sale_takes_the_earliest_slot():
+    """Slot order is priced, because `_process_market` walks slot `i` across BOTH players.
+
+    A sale in slot 1 trades after every slot-0 sale has already walked the book down -- including the
+    opponent's. So which of OUR sells goes first is worth money whenever the opponent sells the same
+    product, and the big one should not queue behind the small one.
+
+    Measured on Seb's tape, seed 11, day 5 hour 0. Identical goods, identical eight hires, one
+    difference:
+
+        ours  [SELL FERTILIZER 2, SELL WHEAT 17, 8x HIRE]   316 -> 925   (+663 net of $54 of hires)
+        tape  [SELL WHEAT 17, SELL FERTILIZER 2, 8x HIRE]   320 -> 965   (+699)
+
+    $36 for putting a 2-unit sale ahead of a 17-unit one. That is the whole of the day-6 dawn gap
+    ($830 against his $869), and it is not cosmetic: day 6's $800 strawberry needs $854 with the
+    day's hires, so $830 fails and $869 clears. Six arms were measured against day 6 on the
+    assumption the bank was simply too thin; the bank was too thin because of this.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    sells = None
+    for t in range(24 * 6):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t == 24 * 5:
+            sells = [o for o in (a0["market"] or []) if o and o[0] == "SELL"]
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    dawn6 = int(env.state[0].observation["farms"][0]["money"])
+
+    worth = [(o[1], int(o[2]) * RT.BASE_PRICE[o[1]]) for o in sells]
+    assert worth == sorted(worth, key=lambda w: -w[1]), (
+        f"day 5 hour 0 offered its sells smallest-first: {worth}")
+    assert dawn6 >= 860, f"day 6 dawn bank {dawn6}, tape 869 -- the sell slots cost the difference"
+
+
+@pytest.mark.slow
+def test_a_bought_animal_does_not_sit_in_the_shed_beside_an_empty_pen():
+    """An animal in the shed produces nothing. A pen without one produces nothing. We hold both.
+
+    Measured on Seb's tape, seed 11, at dusk -- our own shed and our own board:
+
+        day 14  shed {SHEEP: 3}   4 empty pens   herd SHEEP 8, COW 7
+        day 19  shed {SHEEP: 3}   4 empty pens   unchanged for six days
+        day 20  shed {SHEEP: 2}   3 empty pens
+        day 25  shed {SHEEP: 1}   2 empty pens
+        day 28  shed {}           1 empty pen    -- the last one lands with a day to play
+
+    One placement per five days, with units idle 6-31 turns on those same days and the pens standing
+    open the whole time. The tape has all 19 pens filled from day 14 and a herd flat at 11 while ours
+    oscillates 8, 9, 8, 8, 9, 10 -- every dip is an animal that starved and escaped
+    (`kaggriculture.py:786`) and was later replaced out of the same idle stock.
+
+    This is the bug `build_nodes` already documents -- "a SHEEP bought seed 11 day 5 hour 1 was not
+    PLACEd until day 8 hour 9, three days idle in the shed, while later COWs kept taking the one open
+    pasture" -- diagnosed as real, left open because the fix tried then (rank every pasture by
+    same-turn value) cost $5,676. It is now ten days long, not three, and the COW contention that
+    framed it is absent: nothing is competing for these pens.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    stranded = []
+    for t in range(24 * 18):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+        if t % 24 == 23 and t // 24 >= 14:
+            o = env.state[0].observation
+            shed = (o.get("private") or {}).get("shed") or {}
+            tiles = o["farms"][0]["tiles"]
+            held = {k: int(v) for k, v in shed.items() if k in R.ANIMAL_NAMES and v}
+            free = sum(1 for r in tiles for c in r if isinstance(c, dict)
+                       and c.get("kind") in ("PASTURE", "COOP") and "animal" not in c)
+            if held and free:
+                stranded.append((t // 24, held, free))
+
+    assert not stranded, (
+        "an animal sat in the shed at dusk with a pen standing empty (day, shed, empty pens):\n"
+        + "\n".join(f"    day {d}  {h}  {f} empty" for d, h, f in stranded))
+
+
 @pytest.mark.slow
 def test_an_animal_order_past_the_tenth_slot_is_not_counted_as_bought():
     """A BUY_ANIMAL appended past slot ten is deleted by `orders[:10]`, and charged for anyway.

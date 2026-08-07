@@ -130,6 +130,42 @@ ORDER_SLOTS = 10
 FIT_ORDER_SLOTS = True
 
 
+#: Whether the turn's SELLs are ranked biggest-first among themselves before they are sent.
+#:
+#: `_process_market` walks slot `i` across BOTH players, so a sale in slot 1 trades only after every
+#: slot-0 sale has walked the book down -- the opponent's included. Which of our own sells goes first
+#: is therefore priced whenever the opponent is selling the same product, and we were emitting them
+#: in product-loop order, which is arbitrary with respect to size.
+#:
+#: Measured on Seb's tape, seed 11, day 5 hour 0 -- identical goods, identical eight hires:
+#:
+#:     ours  [SELL FERTILIZER 2, SELL WHEAT 17, 8x HIRE]   316 -> 925   (+663 net of $54 of hires)
+#:     tape  [SELL WHEAT 17, SELL FERTILIZER 2, 8x HIRE]   320 -> 965   (+699)
+#:
+#: $36 for putting a 2-unit sale ahead of a 17-unit one, and that is the entire day-6 dawn gap.
+#: Ranking is by `n * BASE_PRICE`, not by the live quote: the bases are what the router already plans
+#: against precisely because the ORDER they induce is stable while the quotes move.
+SELL_BIGGEST_FIRST = True
+
+
+def _order_sells(orders):
+    """The same orders, with the SELLs ranked biggest-first among the slots they already occupy."""
+    if not SELL_BIGGEST_FIRST:
+        return orders
+    at = [i for i, o in enumerate(orders) if o and o[0] == "SELL"]
+    if len(at) < 2:
+        return orders
+    # Rewrite only the SELL slots, leaving every other order exactly where it sits -- the atomic
+    # orders' positions relative to the sells are load-bearing (a BUY settles after that slot's SELL)
+    # and must not move.
+    ranked = sorted((orders[i] for i in at),
+                    key=lambda o: -int(o[2]) * RT.BASE_PRICE.get(o[1], 0))
+    out = list(orders)
+    for i, o in zip(at, ranked):
+        out[i] = o
+    return out
+
+
 def _fit_slots(orders, state):
     """The turn's orders, cut to what the env will actually accept, with the losers un-counted."""
     if not FIT_ORDER_SLOTS:
@@ -1426,6 +1462,6 @@ def make_agent(schedule, me=0, router=True):
                     state["hired"] += 1
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
-                "market": _fit_slots(orders, state)}
+                "market": _order_sells(_fit_slots(orders, state))}
 
     return agent
