@@ -83,6 +83,40 @@ MIN_OPPORTUNISTIC_DROP = 4
 #: again on the day-by-day trace -- so it must be switchable to be attributable.
 OPPORTUNISTIC_DROP = True
 
+#: Diagnostic sink for the opportunistic drop. `None` ships. Set it to a list and every unit-turn
+#: spent standing on a depot holding something appends one `(act, gate)` pair naming the FIRST gate
+#: that refused, or `"fires"`. It exists because lowering `MIN_OPPORTUNISTIC_DROP` to 3 and to 2
+#: measured byte-identical to 4 while `scripts/depot_chances.py` showed the chances arriving as often
+#: as the tape's -- so the threshold is not the gate, and guessing which one is has already cost a
+#: day elsewhere in this file.
+DROP_TRACE = None
+
+
+def _trace_drop(sink, act, st, inv, shed, carried, tiles):
+    """Name the first gate that refuses this drop. Pure observation; changes nothing."""
+    if not OPPORTUNISTIC_DROP:
+        gate = "flag off"
+    elif act[0] not in STEP:
+        gate = f"not a STEP ({act[0]})"
+    else:
+        future_needs = collections.Counter()
+        for n in st["route"]:
+            future_needs.update(n.needs)
+        alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
+        farm_wheat = shed.get("WHEAT", 0) + carried.get("WHEAT", 0)
+        if any(future_needs.get(it, 0) > 0 for it, qty in inv.items() if qty > 0):
+            gate = "own route needs it"
+        elif not (inv.get("WHEAT", 0) == 0
+                  or farm_wheat - inv.get("WHEAT", 0) >= FEED_DAYS * alive):
+            gate = "feed reserve"
+        elif sum(inv.values()) < MIN_OPPORTUNISTIC_DROP:
+            gate = f"under floor ({sum(inv.values())})"
+        elif sum(shed.values()) + sum(inv.values()) > SHED_CAPACITY:
+            gate = "shed full"
+        else:
+            gate = "fires"
+    sink.append((act[0], gate))
+
 #: Pen tiles to fill BEFORE the shed cells and the field sweep, in order. Empty is the shipping
 #: behaviour and must stay empty on main -- this exists so the *ceiling* of a pen-geometry change can
 #: be measured by pinning the tape's own tiles, before any general rule is written to earn them.
@@ -688,6 +722,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # the self-healing material: when a unit's nodes fail it goes idle and the `if idle:` top-up
         # re-plans it from `load[u]`, that unit's OWN inventory, which only works while the wheat is
         # still in hand.
+        if DROP_TRACE is not None and pos in depots and any(v > 0 for v in inv.values()):
+            _trace_drop(DROP_TRACE, act, st, inv, shed, carried, tiles)
         if (OPPORTUNISTIC_DROP and act[0] in STEP and pos in depots
                 and any(v > 0 for v in inv.values())):
             future_needs = collections.Counter()
@@ -803,6 +839,10 @@ def make_agent(schedule, me=0, router=True):
             # it reached day 1 on $61 and could then never afford a hand again.
             state.update(day=day, assigned={}, hired=0, ordered=collections.Counter(), tour={},
                          routes={}, crew=-1, seen_urgent=set())   # `pins` and `planted` survive by design
+            # `planted` is cumulative for the season, so a day's own progress is the difference from
+            # this mark. Only the non-router seed path needs it: under `router` the demand is read off
+            # the live PLANT pins, which pop as they are planted and so reconcile themselves.
+            state["planted_dawn"] = collections.Counter(state["planted"])
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
@@ -1177,9 +1217,11 @@ def make_agent(schedule, me=0, router=True):
         if router:
             want_seed.update(v[1] for v in state["pins"].values() if v[0] == "PLANT")
         else:
-            want_seed.update({c: int(q) for c, q in (row.get("seeds") or {}).items()})
-        seed_bill = sum(RT.SEED_COST.get(c, 0) * max(0, int(q) - int(seeds.get(c, 0))
-                                                     - state["ordered"][("seed", c)])
+            for c, q in (row.get("seeds") or {}).items():
+                # The static row does not shrink as the day is planted, so net off today's own plants.
+                done = state["planted"][c] - state["planted_dawn"][c]
+                want_seed[c] = max(0, int(q) - done)
+        seed_bill = sum(RT.SEED_COST.get(c, 0) * max(0, int(q) - int(seeds.get(c, 0)))
                         for c, q in want_seed.items())
 
         # **The crew comes before the goods.** See `HIRE_FIRST`. SELL stays above this because it only
@@ -1328,17 +1370,46 @@ def make_agent(schedule, me=0, router=True):
                 state["bought"][a] += 1
                 money -= R.ANIMALS[a]["cost"]
 
-        # **TRIED and REVERTED: order the seed rows dearest crop first.** A BUY_SEED fills only what
+        # **TAKEN 2026-08-07: order the seed rows dearest crop first.** A BUY_SEED fills only what
         # the bank covers, so under a thin bank the row order decides which crop gets planted, and the
         # tape places its day-6 strawberry ($800) before its melon ($480) on a bank of $802. Copying
         # that ordering measured WORSE on the day it was derived from: `plant` 8/14 -> 7/14 and
         # `sell` 18/19 -> 10/19. Filling the cheap block whole plants more tiles than filling the dear
         # one whole, and the tiles are what the day is for.
-        for crop, qty in want_seed.items():
-            short = int(qty) - int(seeds.get(crop, 0)) - state["ordered"][("seed", crop)]
+        #
+        # **RE-MEASURED 2026-08-07 once the bank was repaired, because the first reading was taken
+        # against a bank this ordering could not survive.** Day 6's dawn was $830 then and $869 now
+        # (the sell-slot fix), and $869 - $54 of hires clears the $800 strawberry where $830 did not.
+        # So the arm genuinely changed meaning, and on the re-measurement it is TAKEN:
+        #
+        #                    d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11   total
+        #     without         7  6  4  7  7  7 13 20 15 15  24  22    147
+        #     dearest first   7  6  4  7  7  7 12 18 17 17  24  23    149
+        #
+        # Read on its own it was a TRADE, not a free win: it bought d6 and d7, the two earliest
+        # unfixed days, and paid for them with d8 and d9. Days are matched IN ORDER, so buying the
+        # earlier pair was the improvement even though the total rose by 2.
+        #
+        # Its price was that the melon block stopped filling -- `peak["MELON"] < 6`, exactly the
+        # mechanism the paragraph above describes -- which is what exposed the missing retry below.
+        # With that fixed the trade-off is GONE: the dear block fills first and the cheap one is
+        # re-offered until the day's sales cover it, so both land. d6-d11 read 11 15 13 15 18 20.
+        for crop, qty in sorted(want_seed.items(),
+                                key=lambda kv: -RT.SEED_COST.get(kv[0], 0) * int(kv[1])):
+            # **No cross-turn `ordered` credit on the seed row.** A BUY_SEED the env rejects for want of
+            # funds is silent -- there is no failure in the observation, only seed that never arrives --
+            # and crediting the attempt made the rejection PERMANENT for the rest of the day. Day 6 of
+            # Seb's tape, seed 11: dearest-first spends $800 of the $869 dawn on strawberry, the melon
+            # is offered at h1 against $15, it is refused, and the row's 6 melon are never re-offered.
+            # Peak melon held all day: 0. The tape offers its melon at h2 in the same order list as
+            # `SELL WOOL x6`, sell first, so the wool funds the seed inside one turn.
+            #
+            # Re-offering every turn cannot run away, because both terms are live: under `router`
+            # `want_seed` is the remaining PLANT pins, which pop as they are planted, and `seeds` is
+            # what is actually held. Once the buy lands, `short` is zero on the next turn by itself.
+            short = int(qty) - int(seeds.get(crop, 0))
             if short > 0 and len(orders) < 9:
                 orders.append(["BUY_SEED", crop, short])
-                state["ordered"][("seed", crop)] += short
 
         # Feed: one wheat per animal per day, BOUGHT. A wheat tile yields six units and sits on ground
         # worth far more as melon, so growing feed is a bad trade.

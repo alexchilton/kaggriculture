@@ -1931,6 +1931,9 @@ def test_the_biggest_sale_takes_the_earliest_slot():
 
 
 @pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason=(
+    "open: two SHEEP sit in the shed at dusk on days 14-17 with two to three pens standing empty. "
+    "The placement is not blocked, it is slow -- the last animal lands on day 28"))
 def test_a_bought_animal_does_not_sit_in_the_shed_beside_an_empty_pen():
     """An animal in the shed produces nothing. A pen without one produces nothing. We hold both.
 
@@ -1952,6 +1955,18 @@ def test_a_bought_animal_does_not_sit_in_the_shed_beside_an_empty_pen():
     pasture" -- diagnosed as real, left open because the fix tried then (rank every pasture by
     same-turn value) cost $5,676. It is now ten days long, not three, and the COW contention that
     framed it is absent: nothing is competing for these pens.
+
+    **Committed unrun in `f31e50e`** -- the `slow` mark meant the fast suite skipped it, and it in
+    fact raised `NameError` rather than asserting anything. Fixed and run 2026-08-07. The window is
+    now shorter than the docstring above, because the seed-retry fix moved the whole back end:
+
+        day 14  shed {SHEEP: 2}   2 empty pens
+        day 15  shed {SHEEP: 2}   2 empty pens
+        day 16  shed {SHEEP: 2}   3 empty pens
+        day 17  shed {SHEEP: 2}   3 empty pens
+
+    Held as a strict xfail so it cannot rot back into a note: the day it stops failing, the suite
+    says so.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
@@ -1971,7 +1986,7 @@ def test_a_bought_animal_does_not_sit_in_the_shed_beside_an_empty_pen():
             o = env.state[0].observation
             shed = (o.get("private") or {}).get("shed") or {}
             tiles = o["farms"][0]["tiles"]
-            held = {k: int(v) for k, v in shed.items() if k in R.ANIMAL_NAMES and v}
+            held = {k: int(v) for k, v in shed.items() if k in RT.R.ANIMAL_NAMES and v}
             free = sum(1 for r in tiles for c in r if isinstance(c, dict)
                        and c.get("kind") in ("PASTURE", "COOP") and "animal" not in c)
             if held and free:
@@ -2137,16 +2152,43 @@ def test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry():
         f"Nothing reaches the shed early enough to fund the $800 strawberry order")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "day 6 is not solved: the seed reserve takes plant 4/14 -> 8/14, but the day's bill is $1,280 "
-    "against a dawn bank of $802 and the strawberry block still cannot fill. The tape funds its "
-    "melon out of a SELL WOOL 6 at hour 2; our day-6 sells are 18 of his 19 and land later"))
-def test_day_six_plants_every_tile_the_row_asks_for():
-    """The open day-6 gap, held as a failing gate rather than a note nobody reads.
+def test_a_seed_order_the_bank_could_not_cover_is_offered_again():
+    """A BUY_SEED the env refuses for want of funds is SILENT, so it must be re-offered until it lands.
 
-    Day 6 is the first day on 50 tiles and the row asks 14 plants and 17 waters -- 31 of the day's
-    71 work ops. We reach 8 and 10. The seed money is the whole mechanism: see
-    `test_the_days_seed_is_bought_before_the_days_livestock` for the measurement.
+    The observation carries no rejection: a refused order looks exactly like an order never placed,
+    and the only trace is seed that never arrives. The agent used to credit the attempt in
+    `state["ordered"]`, which resets at dawn and so made a single morning refusal permanent for the
+    whole day. Seb's tape, seed 11, day 6: the row asks 6 melon, the melon is offered once at hour 1
+    against a bank of $15, and peak melon held that day was 0 against a row of 6.
+
+    Six melon ($480) wanted against $100. Nothing can fill, so the offer must still be standing on
+    the next turn -- and on the turn after that.
+    """
+    sched = empty_sched(plants=["MELON"] * 6, seeds={"MELON": 6})
+    agent = schedule_agent.make_agent(sched, 0, router=True)
+    farm = {"tiles": blank_board(), "money": 100, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
+    offered = []
+    for hour in range(4):
+        act = agent({"day": 0, "hour": hour, "farms": [farm], "private": priv, "step": hour})
+        offered.append(sum(o[2] for o in act["market"] if o[:2] == ["BUY_SEED", "MELON"]))
+    assert all(n == 6 for n in offered), (
+        f"the day's 6 melon were offered {offered} across four turns on a bank that never covered "
+        f"them -- a refusal the observation cannot report was treated as a purchase made")
+
+
+def test_day_six_plants_every_tile_the_row_asks_for():
+    """Day 6 is the first day on 50 tiles and the row asks 14 plants -- it now makes all 14.
+
+    Held as a strict xfail from 2026-08-06 while three separate arms failed to move it: the seed
+    reserve, the pen geometry and the drop threshold. None of them was the mechanism. What was:
+    a BUY_SEED the env refuses for want of funds is SILENT -- no failure appears in the
+    observation, only seed that never arrives -- and the agent credited the attempt in
+    `state["ordered"]`, which made the refusal permanent for the rest of the day. The melon was
+    offered once at hour 1 against a bank of $15 and never again; peak melon held all day was 0.
+    Re-offering until it lands takes the day to 14/14. See
+    `test_the_days_seed_is_bought_before_the_days_livestock` for the bank measurement.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
