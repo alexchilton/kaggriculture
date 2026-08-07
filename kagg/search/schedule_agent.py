@@ -83,6 +83,25 @@ MIN_OPPORTUNISTIC_DROP = 4
 #: again on the day-by-day trace -- so it must be switchable to be attributable.
 OPPORTUNISTIC_DROP = True
 
+#: Pen tiles to fill BEFORE the shed cells and the field sweep, in order. Empty is the shipping
+#: behaviour and must stay empty on main -- this exists so the *ceiling* of a pen-geometry change can
+#: be measured by pinning the tape's own tiles, before any general rule is written to earn them.
+#:
+#: **That ceiling has now been measured, and pen geometry is not a lever.** Our day-0 pens sit on
+#: y=3,4 (the depot row) and his on y=2,3, which reads like a real difference and is not one: the
+#: Manhattan sum from (4,4) is **22 for both blocks**. Handing ourselves his exact eight tiles, taken
+#: off his own board rather than off `build_tiles` (which lists 4 tiles for a day he builds 8 pens on,
+#: and mislabels their animals -- see docs/fable_depot_sheep_2026-08-07.md):
+#:
+#:               d0  d1  d2  d3  d4  d5  d6  d7  d8  d9 d10 d11   total
+#:     baseline   7   6   4   7   7   7  14  21  15  16  23  23    150
+#:     his tiles  6   7   7   6   8   7  14  21  15  14  25  18    148
+#:
+#: Two cells out of 150, with d1 6->7 and d2 4->7 going backwards. So the early-day move diffs are
+#: NOT downstream of where the pens are, and any future "his layout is better" argument has to beat
+#: this number rather than restate the geometry.
+PEN_SPOTS = ()
+
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
@@ -450,8 +469,12 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
         a = wanted[have] if have < len(wanted) else "COW"
         # A pen ON a shed-access cell runs its whole daily loop -- draw feed, feed, care, collect,
         # harvest -- without a single move, so those four cells are worth more than any field tile.
-        spot = next((c for c in R.shed_access_tiles()
-                     if _owned(c, unlocked) and tiles[c[1]][c[0]] is None and c not in taken), None)
+        spot = next((tuple(c) for c in PEN_SPOTS
+                     if tuple(c) not in taken and _owned(tuple(c), unlocked)
+                     and tiles[c[1]][c[0]] is None), None)
+        spot = spot or next((c for c in R.shed_access_tiles()
+                             if _owned(c, unlocked) and tiles[c[1]][c[0]] is None
+                             and c not in taken), None)
         spot = spot or _next_ground(order, tiles, taken)
         if spot is None:
             break
