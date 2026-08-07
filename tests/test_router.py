@@ -2152,6 +2152,58 @@ def test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry():
         f"Nothing reaches the shed early enough to fund the $800 strawberry order")
 
 
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason=(
+    "open: `DELIVER_THE_SELL_ROW` ships ON and takes day 9 from 10 of the row's 22 to 16, with the "
+    "day-10 dawn bank 1552 -> 2509. The last 6 need a DEPOT NODE inside the tour: the flag can only "
+    "fire when a unit already happens to stand on a depot, and cannot make one walk there"))
+def test_the_days_sell_row_reaches_the_shed_before_dusk():
+    """The market reads the SHED. Produce riding around in a hand all day is produce not sold.
+
+    Day 9 of Seb's tape, seed 11, is where the season breaks. At d9 dawn we are $76 AHEAD -- bank
+    1567 to his 1491 -- and by d10 dawn we are $1,552 behind. Nothing else on that day differs:
+    plant 9/9, water 31/31, harvest 4/4, hire 11/11, buy_animal 1/1. Only the selling:
+
+        row asks   sells {WOOL: 8, FERTILIZER: 8, MILK: 6}   -- 22 units
+        tape       ships all 22, the wool at h7
+        ours       ships 10
+
+    We are not short of goods. At h12 our crew carries WOOL 8, MILK 6, FERTILIZER 10, WHEAT 6 and
+    the shed reads EMPTY, and it is still empty at h23 with the 8 wool in hand. They reach the shed
+    overnight and show up as `sh:wool 8/0` at d10 dawn, a day late.
+
+    The mechanic the tape uses: unit actions resolve BEFORE the market phase within a turn, so a
+    DROP and the SELL of what that drop just delivered settle together. His h7 holds WOOL 8 and
+    orders `SELL WOOL 8` on the same turn.
+
+    Ours cannot, because the only unconditional delivery is the return leg, and that fires on
+    `act == ["PASS"] and not st["route"]` -- the unit must be entirely out of work. Day 9 has 24
+    idle unit-turns out of ~312, so routes do not empty until dusk and the produce rides along.
+
+    Priced honestly: the book moves, but slowly. Dumping 36 melon takes the price 278 -> 250 and
+    fertilizer drifts 83 -> 79 over two days. Selling late costs ~10%; not selling costs 100%.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    sold = 0
+    for t in range(24 * 10):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == 9:
+            sold += sum(int(o[2]) for o in (a0["market"] or []) if o and o[0] == "SELL")
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    assert sold >= 20, (
+        f"day 9's row asks to sell 22 units and the tape ships all 22; we offered {sold}. "
+        f"The goods are in our crew's hands, not in the shed the market reads")
+
+
 def test_a_seed_order_the_bank_could_not_cover_is_offered_again():
     """A BUY_SEED the env refuses for want of funds is SILENT, so it must be re-offered until it lands.
 

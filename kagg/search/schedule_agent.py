@@ -83,6 +83,50 @@ MIN_OPPORTUNISTIC_DROP = 4
 #: again on the day-by-day trace -- so it must be switchable to be attributable.
 OPPORTUNISTIC_DROP = True
 
+#: Whether a unit standing at a depot delivers a load containing product today's SELL row still owes,
+#: ignoring the `own_route_needs_it` and `MIN_OPPORTUNISTIC_DROP` gates. A flag because the broad
+#: version of this ("drop any surplus at any shed visit") measured -$15,272 over twelve seeds, and the
+#: narrowing is the whole claim -- so it has to be switchable to stay attributable.
+#:
+#: **ON.** Measured on Seb's tape, seed 11, weeds off, at `MIN_SELL_ROW_DROP = 6`:
+#:
+#:     day 9 SELL units      10/22  ->  16/22      closer
+#:     day 10 dawn bank    1552/3104 -> 2509/3104  +$957
+#:     day-by-day cells, d0-d9        identical
+#:     day-by-day cells, season  531  ->  540      9 WORSE, first regression on d10
+#:
+#: It was nearly left OFF on the cell count. The argument for ON, which is Fable's and is right:
+#: **day 10's OFF-match is two errors cancelling.** OFF, day 9 ships 10 of 22 and leaves 12 units of
+#: backlog, which `CUMULATIVE_SELLS` re-offers, so day 10 offers 23 + 12 = 35 and coincidentally
+#: equals his 35. ON, day 9 ships 16, leaves 6, and day 10 offers 29. The match was the backlog, not
+#: the behaviour, and it dissolves the moment any earlier day is fixed -- d0-d8 still carry 4 to 15
+#: cells each. Suppressing the tape's own verified mechanism to preserve an accidental match is
+#: optimising the proxy. The earliest day the two configurations differ in substance is day 9, and
+#: there ON is strictly closer on both measures the cell counter is too coarse to score: `sell` is
+#: one differing cell whether we ship 10 or 16.
+#:
+#: Day 9 `work` also goes 89/91 -> 91/91, exact.
+#:
+#: What this does NOT fix: day 10 idle is 72 without it and 73 with it. That is a separate defect.
+DELIVER_THE_SELL_ROW = True
+
+#: How many units of the day's still-owed SELL row a load must contain before the delivery above is
+#: worth the turn. Swept on the day-by-day cells, days 0-11:
+#:
+#:     1   d0=7 d1=6 d2=5 d3=7 d4=7 d5=10 d6=13 d7=19 d8=21 d9=27 d10=20 d11=26   catastrophic
+#:     2   d0=7 d1=6 d2=4 d3=7 d4=7 d5=8  d6=11 d7=15 d8=13 d9=15 d10=19 d11=20
+#:     3   identical to 2
+#:     4   identical to 2
+#:     6   d0=7 d1=6 d2=4 d3=7 d4=7 d5=7  d6=11 d7=15 d8=13 d9=15 d10=19 d11=20   best
+#:
+#: **Treat this as "somewhere in 2 to 6", not as a tuned value.** 6 is separated from 2/3/4 by a
+#: single day-5 cell on ONE seed, which is inside the noise this project has measured repeatedly.
+#:     8   back to the unflagged baseline -- it stops firing
+#:
+#: At 1 it fires for a single fertilizer: DROP is all-or-nothing, so the re-PICKUP costs more turns
+#: than the sale returns and `work` falls 25 ops on day 8 alone.
+MIN_SELL_ROW_DROP = 6
+
 #: Diagnostic sink for the opportunistic drop. `None` ships. Set it to a list and every unit-turn
 #: spent standing on a depot holding something appends one `(act, gate)` pair naming the FIRST gate
 #: that refused, or `"fires"`. It exists because lowering `MIN_OPPORTUNISTIC_DROP` to 3 and to 2
@@ -581,6 +625,13 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # before PICKUP is ever reached, so treating all four as depots strands the hand for the whole day.
     depots = tuple(c for c in R.shed_access_tiles() if _owned(c, unlocked)) or (SPAWN,)
     load = {u: collections.Counter(invs[u] if u < len(invs) else {}) for u in range(len(units))}
+    # What today's SELL row still owes the shed. The market reads the shed and nothing else, so a
+    # product the row wants is worth nothing while it rides in a hand. See `DELIVER_THE_SELL_ROW`.
+    owed_sale = collections.Counter({p: int(q) for p, q in (sched.get(day, {}).get("sells") or {}).items()
+                                     if int(q) > 0})
+    for p, q in shed.items():
+        if q > 0:
+            owed_sale[p] -= q
 
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
@@ -740,6 +791,38 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     if qty > 0:
                         shed[item] = shed.get(item, 0) + qty
                 act = ["DROP"]
+
+        # ------------------------------------------------------------------ deliver the day's sell row
+        # **The market reads the SHED.** Produce in a hand is worth nothing until it is dropped, and
+        # the reference resolves unit actions BEFORE the market phase inside a turn -- so a DROP and
+        # the SELL of what that drop just delivered settle together. The tape does exactly this: seed
+        # 11 day 9 hour 7 it holds WOOL 8 and orders `SELL WOOL 8` on the same turn.
+        #
+        # Day 9 is where the season broke. At its dawn we were $76 AHEAD; by day 10's we were $1,552
+        # behind, with plant 9/9, water 31/31, harvest 4/4 and hire 11/11 -- only the selling differed,
+        # 10 units against the row's 22. Not for want of goods: at h12 the crew held WOOL 8, MILK 6,
+        # FERTILIZER 10, WHEAT 6 and the shed read EMPTY, still empty at h23.
+        #
+        # This is deliberately NARROWER than the arm that was tried and cost $15,272 over twelve seeds
+        # ("drop the surplus whenever standing on the shed"). That one dumped ANY load at ANY shed
+        # visit, including the feed a unit was carrying for its own stops. This fires only when the
+        # load contains a product TODAY'S SELL ROW STILL OWES, so a wheat-only ferry is never touched.
+        #
+        # `own_route_needs_it` and the `MIN_OPPORTUNISTIC_DROP` floor are both skipped here on purpose.
+        # DROP is all-or-nothing (`kaggriculture.py:333`), so a mixed load cannot shed its wool without
+        # its wheat -- but the wheat lands in the shed on the tile the unit is standing on, and the
+        # `PICKUP` branch above draws it straight back next turn. One turn, against a product that
+        # would otherwise sit unsold until the overnight sweep.
+        deliverable = sum(min(q, owed_sale.get(it, 0)) for it, q in inv.items()
+                          if q > 0 and owed_sale.get(it, 0) > 0)
+        if (DELIVER_THE_SELL_ROW and (act[0] in STEP or act == ["PASS"]) and pos in depots
+                and deliverable >= MIN_SELL_ROW_DROP
+                and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
+            for item, qty in inv.items():
+                if qty > 0:
+                    shed[item] = shed.get(item, 0) + qty
+                    owed_sale[item] -= qty
+            act = ["DROP"]
 
         # ------------------------------------------------------------------ the return leg
         # A one-way sweep cannot sell what it picks up. Measured against the tape on days 1-3 of seed
