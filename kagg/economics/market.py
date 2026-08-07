@@ -18,6 +18,8 @@ than copied, so this module cannot drift away from ground truth.
 
 from kaggle_environments.envs.kaggriculture import kaggriculture as kg
 
+from kagg.sim import town as W
+
 # Re-exported so callers need not reach into the env module themselves.
 PRODUCTS = list(kg.PRODUCTS)
 SHOPS = dict(kg.SHOPS)
@@ -35,7 +37,10 @@ def price(item, inventory, params=None):
 
 
 def _center_multiplier(day):
-    return next(m for threshold, m in kg.TOWN_CENTER_DEMAND_SCHEDULE if day >= threshold)
+    # 1.32.6 deleted the ramp entirely; a flat 1 is what the installed env then does. See
+    # `kagg.sim.town.CENTER_SCHEDULE` for the full note.
+    schedule = getattr(kg, "TOWN_CENTER_DEMAND_SCHEDULE", [(0, 1)])
+    return next(m for threshold, m in schedule if day >= threshold)
 
 
 def shops_active_at(step, unlocks, turns_per_day=TURNS_PER_DAY):
@@ -53,7 +58,7 @@ def town_drain(
     unlocks,
     turns_per_day=TURNS_PER_DAY,
     shop_interval=4,
-    center_interval=12,
+    center_interval=None,
 ):
     """Units of each product the town removes from the market at `step`.
 
@@ -61,6 +66,9 @@ def town_drain(
     `shop_interval`, the town centre on steps divisible by `center_interval`, and a
     single-product shop pulls double.
     """
+    # `None` means "whatever the installed env says": 12 through 1.32.5, 24 from 1.32.6.
+    if center_interval is None:
+        center_interval = W.CENTER_INTERVAL
     drain = {item: 0 for item in PRODUCTS}
 
     if step % shop_interval == 0:

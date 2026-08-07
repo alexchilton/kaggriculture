@@ -31,12 +31,28 @@ def _mask_for(unlocks, day):
 
 
 def test_center_multiplier_matches_the_schedule():
-    assert int(center_multiplier(0)) == 1
-    assert int(center_multiplier(9)) == 1
-    assert int(center_multiplier(10)) == 2
-    assert int(center_multiplier(19)) == 2
-    assert int(center_multiplier(20)) == 4
-    assert int(center_multiplier(29)) == 4
+    """Against the INSTALLED env's schedule, never against a remembered one.
+
+    This test used to hard-code 1, 1, 2, 2, 4, 4 -- the ramp as it stood through 1.32.5. The
+    "Kaggriculture town rebalance" (merged 2026-08-07, shipped in 1.32.6) deleted
+    `TOWN_CENTER_DEMAND_SCHEDULE` outright and took `townCenterSellInterval` from 12 to 24, so
+    late-season drawdown fell 8x: 4-units-twice-daily became 1-unit-once-daily.
+
+    Hard-coding the old numbers would have turned a rule change into a test failure that reads like
+    our bug, which is the wrong signal entirely. Assert the SHAPE the env declares -- monotonic,
+    non-decreasing, starting at the day-0 value -- so a future rebalance is caught by
+    `test_drain_matches_the_validated_economics_model_at_every_step` as a real divergence rather
+    than by this one as a stale literal.
+    """
+    from kagg.sim.town import CENTER_SCHEDULE
+
+    assert CENTER_SCHEDULE == sorted(CENTER_SCHEDULE), CENTER_SCHEDULE
+    assert CENTER_SCHEDULE[0][0] == 0, f"no day-0 entry: {CENTER_SCHEDULE}"
+    for threshold, mult in CENTER_SCHEDULE:
+        assert int(center_multiplier(threshold)) == mult, (threshold, mult, CENTER_SCHEDULE)
+        if threshold:
+            assert int(center_multiplier(threshold - 1)) <= mult, (threshold, CENTER_SCHEDULE)
+    assert int(center_multiplier(29)) == CENTER_SCHEDULE[-1][1]
 
 
 def test_drain_matches_the_validated_economics_model_at_every_step():

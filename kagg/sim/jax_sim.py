@@ -123,7 +123,7 @@ LAND_PRICES = jnp.asarray(F.LAND_PRICES, dtype=_F)
 
 SHOP_PULL = jnp.asarray(W.SHOP_PULL, dtype=_I)
 CENTER_PULL = jnp.asarray(W.CENTER_PULL, dtype=_I)
-_CENTER_SCHEDULE = tuple(sorted(kg.TOWN_CENTER_DEMAND_SCHEDULE))
+_CENTER_SCHEDULE = tuple(W.CENTER_SCHEDULE)      # flat 1 from env 1.32.6; see `kagg.sim.town`
 
 BASE = jnp.asarray(M.BASE, dtype=_F)
 INV0 = jnp.asarray(M.I0, dtype=_F)
