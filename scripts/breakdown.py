@@ -120,11 +120,29 @@ def run(make0, opp, seed, weeds):
                 ops[t // 24]["_turns"] += 1
                 ops[t // 24]["_move" if op in MOVES else
                              "_pass" if op == "PASS" else "_work"] += 1
+        # **These rows count what was OFFERED, which is not what was bought or sold.** The comment
+        # above insists on counting what the env executes; this loop did the opposite, and it
+        # produced a badly misleading number. Our seed row is deliberately re-offered every turn
+        # until it lands, because a BUY_SEED the env refuses for want of funds is silent -- so on
+        # day 6, `BUY_SEED MELON 6` was emitted eight times against a bank pinned at $15, tallied
+        # as 48 units, and bought exactly zero melon. Read as a fill, that is a phantom `buy_seed
+        # +42` against the tape, which offers each order once.
         for o in (a0["market"] or []):
-            if o:
+            # BUY_SEED is counted below as a FILL instead; every other market row is still an offer.
+            if o and o[0] != "BUY_SEED":
                 ops[t // 24][o[0]] += int(o[2]) if len(o) > 2 else 1
+        seeds_before = dict((o0.get("private") or {}).get("seeds") or {})
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
+        # BUY_SEED as a FILL. Seeds move in exactly two ways -- a buy raises them, a PLANT lowers
+        # them -- so a rise across the step is a purchase that actually landed. A buy and a plant
+        # in the same turn nets out, so this can under-count by the plants of that turn; that is a
+        # bounded error and vastly better than reporting 48 for a day that bought none.
+        seeds_after = (env.state[0].observation.get("private") or {}).get("seeds") or {}
+        for crop, after in seeds_after.items():
+            gained = int(after) - int(seeds_before.get(crop, 0))
+            if gained > 0:
+                ops[t // 24]["BUY_SEED"] += gained
         if env.state[0].status == "DONE":
             break
     bad = [(s, env.state[s].status) for s in (0, 1) if env.state[s].status != "DONE"]
