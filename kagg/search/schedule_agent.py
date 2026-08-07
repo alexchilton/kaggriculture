@@ -140,6 +140,10 @@ ANIMAL_OVER_HIRE = True
 #: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
 SEED_BEFORE_LIVESTOCK = True
 
+#: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
+#: already is. See the note above the seed bill for the day-6 measurement.
+SELLS_FUND_THE_TURN = True
+
 #: Whether to hire a hand that will spawn walled in -- on a shed-access corner whose neighbours are all
 #: LOCKED. It cannot move or BUILD, but PICKUP and DROP test shed-adjacency only and it is standing on
 #: a shed tile, so it works as a loader. Off restores the old refusal, which cost -17 hand-turns a day
@@ -1032,6 +1036,20 @@ def make_agent(schedule, me=0, router=True):
                 # and the order is re-offered next turn.
                 pending += n * int(prices.get(prod, 0) or 0)
 
+        # **Everything below spends this turn's sales, not just BUY_LAND.** `_process_market` walks the
+        # order slots in order and the atomic orders in a slot settle AFTER every earlier slot has
+        # traded, so a purchase queued below the day's sells is funded by them. That is already how the
+        # day-4 parcel clears on a bank of $718; `money + pending` was simply never extended past the
+        # land gate, so seed and livestock could only ever spend yesterday's money.
+        #
+        # Measured on Seb's tape, seed 11, day 6. He buys `BUY_ANIMAL COW 2` and `BUY_SEED MELON 6` --
+        # $1,280 of orders -- at hour 2 on a bank of **$15**, in the same turn as `SELL WOOL 6` and
+        # `SELL FERTILIZER 1`. Ours cannot, so the melon waits for the money to land and the day runs
+        # out of seed.
+        if SELLS_FUND_THE_TURN:
+            money += pending
+            pending = 0
+
         # **Seed against the PINS, not today's row.** A planting deferred because the ground or the bank
         # was not ready still needs its seed on the day it finally happens, and the pins are the only
         # record of what is still outstanding. Falls back to the row when the pins are not in play.
@@ -1302,7 +1320,20 @@ def make_agent(schedule, me=0, router=True):
         # whole difference from `FEED_ORDER_CAP`, which capped the herd's own need at 4 and starved a
         # 19-animal herd from day 15. The herd floor goes out at full size in one order; only the part
         # of the row above that floor is spread across the day.
-        herd = FEED_DAYS * alive - on_hand - state["ordered"][("feed", "WHEAT")]
+        # **A mouth already fed today is not a mouth to buy for.** The floor targets a fixed two-day
+        # supply on EVERY turn and never shrank as the day's own FEED ops consumed it: FEED takes one
+        # wheat from the hand per animal and cannot re-fire once `fed_today` is set
+        # (`reference/kaggriculture.py:480-488`), so `on_hand` falls all afternoon for a completely
+        # legitimate reason and the floor reads the drop as a shortfall.
+        #
+        # Measured on Seb's tape, seed 11, day 5. The top-up correctly buys 4 at hour 1, matching the
+        # row. By hour 8 six of seven animals are fed, `on_hand` has fallen 14 -> 9 purely from that
+        # feeding, and the floor reads `14 - 9 - 4 = 1` and fires a fifth order. `feed` lands 7/7
+        # either way, so the extra unit is never eaten -- it shows up one for one as excess wheat in
+        # day 6's dawn shed, `sh:wheat 8/7`.
+        fed_today = sum(1 for r in tiles for c in r
+                        if isinstance(c, dict) and "animal" in c and c.get("fed_today"))
+        herd = FEED_DAYS * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
         short = max(herd, min(max(0, owed), BUY_DRIP))
         short = min(short, int(money * 0.5 // quote))
         if (alive or owed > 0) and short > 0 and len(orders) < 9:

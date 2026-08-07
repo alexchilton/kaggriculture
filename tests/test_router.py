@@ -1965,3 +1965,50 @@ def test_day_six_plants_every_tile_the_row_asks_for():
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
     assert planted == 14, f"day 6 planted {planted} of the tape's 14"
+
+
+def test_fed_today_relieves_the_herd_floor_instead_of_re_triggering_it(kg):
+    """`herd = FEED_DAYS * alive - on_hand - ordered` targets the FULL two-day buffer on every turn of
+    the day, and never shrinks as the day's OWN feeding consumes wheat that cannot come back. Feeding
+    an animal is not a shortfall -- it is the ration being spent exactly as planned.
+
+    Measured on Seb's tape, seed 11, day 5: dawn shed already holds 27 wheat against a floor of 14 for
+    seven animals, the schedule's own row asks for exactly 4 more, and by hour 1 the agent orders that
+    4 and `owed` reaches 0. Six of the seven animals are fed by hour 8 -- `fed_today` is 6 -- and
+    `on_hand` has fallen to 9 purely from that same-day feeding, which is expected: one day's ration for
+    seven animals is 7, and 9 + 4 already-ordered covers the six fed plus a full day of slack. The
+    unadjusted floor instead reads `14 - 9 - 4 = 1` and fires a FIFTH BUY_PRODUCT the tape never
+    places. It is never eaten -- FEED lands 7/7 on both sides regardless -- and shows up one-for-one as
+    excess wheat carried into day 6's dawn shed (8 against the tape's 7), the first divergence on an
+    otherwise exact board.
+
+    Six animals, a shed stocked to exactly the two-day floor (12) at dawn, and an empty schedule (no
+    `buys` row, so `wanted = 0` and the floor is the ONLY thing that could order anything). The floor
+    is already met at dawn; nothing should ever be ordered. Four of the six get fed by hour 8 -- the
+    physical event `_apply_unit_action` performs on the real engine -- which drains the shed by four
+    and marks those tiles `fed_today`. The formula must read that as spent ration, not a fresh
+    shortfall on top of the ration already spent.
+    """
+    pens = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1)]
+    board = blank_board()
+    for x, y in pens:
+        board[y][x] = kg._new_animal("COW", 0)
+    agent = schedule_agent.make_agent(empty_sched(), 0, router=True)
+    farm = {"tiles": board, "money": 100000, "farmer": [4, 4], "hands": [],
+            "unlocked_quadrants": ["NW"]}
+    priv = {"shed": {"WHEAT": 2 * len(pens)}, "seeds": {}, "inventories": [{}]}
+    ordered = 0
+    fed = 0
+    for hour in range(RT.TPD):
+        # Four of six fed by hour 8, the same shape as Seb's day 5: real consumption, spread through
+        # the morning, well before the floor is re-evaluated dozens more times before dusk.
+        if hour in (2, 4, 6, 8) and fed < 4:
+            x, y = pens[fed]
+            board[y][x]["fed_today"] = True
+            priv["shed"]["WHEAT"] -= 1
+            fed += 1
+        act = agent({"day": 0, "hour": hour, "farms": [farm], "private": priv, "step": hour})
+        ordered += sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
+    assert ordered == 0, (f"dawn shed already met the two-day floor for six animals and the schedule "
+                          f"asked for nothing, but same-day feeding alone triggered {ordered} more "
+                          f"wheat to be bought -- the floor is chasing consumption it already covered")
