@@ -2153,6 +2153,52 @@ def test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry():
 
 
 @pytest.mark.slow
+def test_the_shed_is_empty_when_the_season_ends():
+    """Stock has no terminal value, and we finish the season holding $14,424 of it.
+
+    Seed 11, weeds off, against Seb's replay: the season ends with WHEAT 27 and MILK 48 in the shed
+    at quoted prices of $56 and $269 -- while we lose by $38,593. The gap at day 29's DAWN is only
+    $10,487, so more than a quarter of the season's whole deficit opens on the final day: he banks
+    $33,368 that day and we bank $5,262.
+
+    The cause is not a missing end-game rule. It is the sell row being an ABSOLUTE count read off
+    HIS trajectory. `sched[29]["sells"]` asks `{MILK: 16, WHEAT: 21, FERTILIZER: 3, WOOL: 12}` and we
+    sell exactly 16 milk -- the row, precisely -- while holding 64. He reaches day 29 holding little
+    milk because he sold it all season; we reach it holding 64 because we under-sold earlier.
+    `CUMULATIVE_SELLS` and `SELL_CARRY_DAYS` recover a row we UNDER-delivered; nothing sells stock
+    the row never mentioned.
+
+    The rule that suppresses it is right, for the wrong day. "Holding is not a loss -- shops drain
+    inventory every 4 steps and the town centre every 12, at 4x from day 20, so a collapsed price
+    recovers on its own" is TRUE mid-season and FALSE on the last day, when there is no next day for
+    the book to recover into.
+
+    Expect the price to walk down on the dump -- one season's wool went 123 units to 138 while
+    REVENUE fell $29,041 to $21,811 -- so this asserts STOCK CLEARED, not revenue.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    for t in range(719):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+        if env.state[0].status == "DONE":
+            break
+    shed = (env.state[0].observation.get("private") or {}).get("shed") or {}
+    left = {k: int(v) for k, v in shed.items() if int(v) > 0}
+    assert sum(left.values()) <= 15, (
+        f"the season ended with {sum(left.values())} units still in the shed: {left}. "
+        f"Stock is worth nothing once the game stops")
+
+
+@pytest.mark.slow
 @pytest.mark.xfail(strict=True, reason=(
     "open: `DELIVER_THE_SELL_ROW` ships ON and takes day 9 from 10 of the row's 22 to 16, with the "
     "day-10 dawn bank 1552 -> 2509. The last 6 need a DEPOT NODE inside the tour: the flag can only "

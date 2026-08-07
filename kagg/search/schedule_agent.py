@@ -265,6 +265,22 @@ def _fit_slots(orders, state):
 #: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
 CUMULATIVE_SELLS = True
 
+#: Whether the final day ignores every sell cap and offers the whole shed. Stock has no terminal
+#: value; the caps above it all exist to protect a future day that does not arrive. Measured OFF:
+#: the season ends holding MILK 48 and WHEAT 27, $14,424 at quoted prices, against a $38,593 loss.
+LIQUIDATE_LAST_DAY = True
+
+#: The hour the liquidation starts. Not hour 0: the herd still eats on the last morning, and dumping
+#: the whole book in one turn clears at what the LAST unit fetches -- one season's wool went 123
+#: units to 138 while revenue fell $29,041 to $21,811. Starting mid-afternoon leaves several turns
+#: for the town's own draw (every 4 steps, and every 12 at 4x from day 20) to lift the book between
+#: offers.
+#:
+#: **Flat, not tuned.** Final bank swept on seed 11: h0 $119,666, h8 $119,732, h12 $119,788,
+#: h16 $119,915, h20 $119,807. All five clear the shed to empty and the spread is $249. 16 is the
+#: middle of a flat region, not a peak worth defending.
+LIQUIDATE_FROM_HOUR = 16
+
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
 #: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
@@ -1156,6 +1172,7 @@ def make_agent(schedule, me=0, router=True):
                          if isinstance(c, dict) and c.get("kind") == "PLANT"
                          and c.get("crop") == "WHEAT")
         prices = (obs.get("market") or {}).get("prices") or {}
+        last_day = max(sched) if sched else day
         pending = 0          # cash this turn's sells will have banked by the time BUY_LAND settles
         rate = collections.Counter()
         for d in sorted(sched):
@@ -1231,6 +1248,24 @@ def make_agent(schedule, me=0, router=True):
                 n = min(n, today + carry - state["ordered"][("sold", prod)])
             else:
                 n = min(have, int((row.get("sells") or {}).get(prod, 0)))
+            # **On the last day, hold everything the shed has: stock has no terminal value.**
+            # Every cap above exists to protect a FUTURE day -- the row is a day total, `rate` bounds
+            # one offer, and the whole "holding is not a loss" argument below rests on shops draining
+            # the book every 4 steps and the town centre every 12 so a collapsed price recovers. All
+            # of that is true right up until there is no next day, and then it is exactly backwards.
+            #
+            # Measured, seed 11 weeds off against Seb's replay: the season ends with MILK 48 and
+            # WHEAT 27 in the shed at quoted prices of $269 and $56 -- $14,424 that simply evaporates,
+            # against a $38,593 loss. Day 29's row asks `MILK 16` and we sold precisely 16 of the 64
+            # we held, because the row is an absolute count read off HIS trajectory: he reaches the
+            # last day holding little milk having sold it all season, and we reach it holding four
+            # times the row because we under-sold earlier. The carry recovers a row we MISSED; there
+            # was nothing at all for stock the row never named.
+            #
+            # Raw shed stock, not `have`: the reserves netted out above are a feed buffer and a
+            # fertilizer hold-back for tiles that will never be worked again.
+            if LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR:
+                n = int(shed.get(prod, 0))
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
             # whole stack clears near what the LAST unit fetches. Measured over one season as the herd
@@ -1251,7 +1286,10 @@ def make_agent(schedule, me=0, router=True):
             # centre every 12, at 4x from day 20 (`kaggriculture.py:706-716`), so the book refills
             # continuously and a standing offer collects each recovery. An order is only a request:
             # it fills one unit at a time and stops when the shed empties, so re-offering is free.
-            if n > 0 and len(orders) < 5:
+            # Six products and a cap of five: on the last day the whole shed must fit, so the cap
+            # lifts to nine and leaves one slot for anything queued below.
+            if n > 0 and len(orders) < (9 if (LIQUIDATE_LAST_DAY and day >= last_day
+                                              and hour >= LIQUIDATE_FROM_HOUR) else 5):
                 orders.append(["SELL", prod, n])
                 state["ordered"][("sold", prod)] += n
                 # Proceeds this turn will settle BEFORE any atomic order queued below, because
