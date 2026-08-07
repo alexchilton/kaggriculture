@@ -2423,3 +2423,49 @@ def test_the_ferry_ignores_a_load_the_sell_row_never_asked_for():
     acts = schedule_agent._router_acts(**_mid_tour_state(hour=4, held={"WHEAT": 12}))
     assert acts[0][0] in ("NORTH", "WEST"), (
         f"the day's row asks for MELON and the unit carries WHEAT, but it emitted {acts[0]}")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "held gate. THIRD arm measured and reverted on day 6, 2026-08-07: CASH_SHORT_SELL_FIRST -- serve "
+    "a pen's yielding ops first AND let the deliver ferry preempt a work op, both gated on the day's "
+    "seed bill exceeding the bank so solvent days cannot be touched. The gate held (d0-d5 byte-"
+    "identical, 7 6 4 7 7 7) and the day it was built for got WORSE: d6 11 -> 13, d7 15 -> 16, "
+    "d8 13 -> 17. Same verdict as YIELD_FIRST and DEPOT_PEN_BY_LOAD before it"))
+def test_day_six_sells_the_wool_as_soon_as_the_walk_allows():
+    """The reachable version of the gate above, which asks for an hour the board cannot give.
+
+    At day 6's dawn the crew is ONE unit, the farmer, standing on (4,4). Our two sheep are at (1,4)
+    and (3,4); the tape's are at (4,4) and (4,3), so it harvests without moving and sells on hour 2.
+    We cannot match that hour without moving the pen, and `DEPOT_PEN_BY_LOAD` already measured that
+    route at 52 cells -> 59.
+
+    What IS reachable is hour 3, and hour 3 pays the bill:
+
+        h0  WEST to (3,4)        h2  EAST back to (4,4)
+        h1  HARVEST, 6 wool      h3  DROP + SELL, settling in one turn
+
+    ~$586 of wool on top of the $296 left after the strawberry order covers the $800 seed with room.
+    Today the unit is held at the pen until all four of its ops are exhausted -- FEED, CARE,
+    COLLECT_FERTILIZER, then HARVEST last -- so the wool is not even in hand until hour 4, and the
+    first sell is hour 8.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    first_sell = None
+    for t in range(24 * 7):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == 6 and first_sell is None and any(
+                o and o[0] == "SELL" for o in (a0["market"] or [])):
+            first_sell = t % 24
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    assert first_sell is not None and first_sell <= 3, (
+        f"day 6's first SELL is hour {first_sell}; hour 3 is what the walk allows and what the $800 "
+        f"strawberry order needs")
