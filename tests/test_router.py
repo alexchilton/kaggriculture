@@ -1886,3 +1886,82 @@ def test_day_four_matches_seb_on_every_op_it_works():
     assert not diff, (
         "day 4 is not exact on the ops it works (ours/tape):\n"
         + "\n".join(f"    {k:<20} {v}" for k, v in sorted(diff.items())))
+
+
+def test_the_days_seed_is_bought_before_the_days_livestock():
+    """A seed not bought on its day is a plant not made, and day 6 is a planting day.
+
+    Emission order is SELL, HIRE, BUY_LAND, BUY_ANIMAL, BUY_SEED, BUY_PRODUCT, so livestock always
+    takes the bank first. Measured on Seb's tape, seed 11, day 6 -- the day after the board doubles
+    to 50 tiles, whose row asks `plants {STRAWBERRY: 8, MELON: 6}` and `animals_bought {COW: 2}`:
+
+        tape  h0  BUY_SEED STRAWBERRY 8 + 8 HIRE            bank 869 -> 15
+        tape  h2  BUY_ANIMAL COW 2, BUY_SEED MELON 6, SELL WOOL 6, SELL FERTILIZER 1
+        ours  h0  BUY_ANIMAL COW 1 x2 + 8 HIRE              bank 802 -> 348
+        ours  h1  BUY_PRODUCT WHEAT 5, BUY_SEED MELON 6, BUY_SEED STRAWBERRY 8
+
+    Both orders were placed. Ours delivered **four melon seeds and no strawberry at all**, because
+    $800 of cow went first and a BUY_SEED only fills what the bank covers. Those four seeds are
+    exactly the four plants we make: hours 5, 8, 11 and 14, all by one unit. From hour 15 the board
+    is seedless and the other seven units spend the rest of the day walking -- `plant` 4/14,
+    `water` 7/17, `move` 123 against his 93 on identical unit-turns.
+
+    He defers the cows himself, to hour 2, and funds them out of that turn's wool.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    peak, planted = collections.Counter(), 0
+    for t in range(24 * 7):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == 6:
+            for p, q in ((o0.get("private") or {}).get("seeds") or {}).items():
+                peak[p] = max(peak[p], int(q))
+            planted += sum(1 for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]
+                           if x and x[0] == "PLANT")
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+
+    # What the seed reserve fixes: the melon block now fills whole, because the two cows no longer
+    # take $800 off the top. `plant` 4/14 -> 8/14, `water` 7/17 -> 10/17.
+    assert peak["MELON"] >= 6, (
+        f"day 6 asked for 6 melon seed and the most we ever held was {dict(peak)} -- "
+        f"the livestock spent the bank first")
+    assert planted >= 8, f"day 6 planted {planted}, below the 8 the seed reserve buys"
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "day 6 is not solved: the seed reserve takes plant 4/14 -> 8/14, but the day's bill is $1,280 "
+    "against a dawn bank of $802 and the strawberry block still cannot fill. The tape funds its "
+    "melon out of a SELL WOOL 6 at hour 2; our day-6 sells are 18 of his 19 and land later"))
+def test_day_six_plants_every_tile_the_row_asks_for():
+    """The open day-6 gap, held as a failing gate rather than a note nobody reads.
+
+    Day 6 is the first day on 50 tiles and the row asks 14 plants and 17 waters -- 31 of the day's
+    71 work ops. We reach 8 and 10. The seed money is the whole mechanism: see
+    `test_the_days_seed_is_bought_before_the_days_livestock` for the measurement.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    planted = 0
+    for t in range(24 * 7):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == 6:
+            planted += sum(1 for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]
+                           if x and x[0] == "PLANT")
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    assert planted == 14, f"day 6 planted {planted} of the tape's 14"

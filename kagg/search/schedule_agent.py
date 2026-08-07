@@ -136,6 +136,10 @@ URGENT_OPS = ()
 #: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
 ANIMAL_OVER_HIRE = True
 
+#: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
+#: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
+SEED_BEFORE_LIVESTOCK = True
+
 #: Whether to hire a hand that will spawn walled in -- on a shed-access corner whose neighbours are all
 #: LOCKED. It cannot move or BUILD, but PICKUP and DROP test shed-adjacency only and it is standing on
 #: a shed tile, so it works as a loader. Off restores the old refusal, which cost -17 hand-turns a day
@@ -1028,6 +1032,35 @@ def make_agent(schedule, me=0, router=True):
                 # and the order is re-offered next turn.
                 pending += n * int(prices.get(prod, 0) or 0)
 
+        # **Seed against the PINS, not today's row.** A planting deferred because the ground or the bank
+        # was not ready still needs its seed on the day it finally happens, and the pins are the only
+        # record of what is still outstanding. Falls back to the row when the pins are not in play.
+        #
+        # **Costed HERE, above the livestock, because a seed not bought on its day is a plant not
+        # made.** The order below is SELL, HIRE, BUY_LAND, BUY_ANIMAL, BUY_SEED, so a thin bank was
+        # always spent on animals first. Measured on Seb's tape, seed 11, day 6 -- the day after the
+        # board doubles to 50 tiles, asking `plants {STRAWBERRY: 8, MELON: 6}` against a dawn bank of
+        # $802 and a seed bill of $1,280:
+        #
+        #     tape  h0  BUY_SEED STRAWBERRY 8 + 8 HIRE, bank 869 -> 15
+        #     tape  h2  BUY_ANIMAL COW 2 and BUY_SEED MELON 6, funded by that turn's SELL WOOL 6
+        #     ours  h0  BUY_ANIMAL COW 1 x2 + 8 HIRE, bank 802 -> 348
+        #     ours  h1  BUY_SEED MELON 6, BUY_SEED STRAWBERRY 8  ->  four melon, no strawberry at all
+        #
+        # A BUY_SEED fills only what the bank covers. Those four seeds are exactly the four plants we
+        # make -- one unit, hours 5, 8, 11, 14 -- and from hour 15 the board is seedless while seven
+        # units walk: `plant` 4/14, `water` 7/17, `move` 123 against his 93 on identical unit-turns.
+        # He defers the cows himself, to hour 2. This does not say animals are a bad buy; it says the
+        # seed is due first on the day the ground is waiting for it.
+        want_seed = collections.Counter()
+        if router:
+            want_seed.update(v[1] for v in state["pins"].values() if v[0] == "PLANT")
+        else:
+            want_seed.update({c: int(q) for c, q in (row.get("seeds") or {}).items()})
+        seed_bill = sum(RT.SEED_COST.get(c, 0) * max(0, int(q) - int(seeds.get(c, 0))
+                                                     - state["ordered"][("seed", c)])
+                        for c, q in want_seed.items())
+
         # **The crew comes before the goods.** See `HIRE_FIRST`. SELL stays above this because it only
         # raises the bank; everything BELOW spends it, and a hand that is not standing at dawn cannot be
         # bought back later in the day -- the turns are simply gone. The cost is unchanged either way:
@@ -1159,7 +1192,7 @@ def make_agent(schedule, me=0, router=True):
             # fibonacci price is the same at hour 1, and the hand simply starts an hour later. A
             # placement deferred loses the feed and the care with it.
             for _ in range(max(0, qty - state["bought"][a])):
-                if money < R.ANIMALS[a]["cost"]:
+                if money < R.ANIMALS[a]["cost"] + (seed_bill if SEED_BEFORE_LIVESTOCK else 0):
                     continue
                 if len(orders) >= (10 if ANIMAL_OVER_HIRE else 8):
                     if not ANIMAL_OVER_HIRE:
@@ -1174,14 +1207,12 @@ def make_agent(schedule, me=0, router=True):
                 state["bought"][a] += 1
                 money -= R.ANIMALS[a]["cost"]
 
-        # **Seed against the PINS, not today's row.** A planting deferred because the ground or the bank
-        # was not ready still needs its seed on the day it finally happens, and the pins are the only
-        # record of what is still outstanding. Falls back to the row when the pins are not in play.
-        want_seed = collections.Counter()
-        if router:
-            want_seed.update(v[1] for v in state["pins"].values() if v[0] == "PLANT")
-        else:
-            want_seed.update({c: int(q) for c, q in (row.get("seeds") or {}).items()})
+        # **TRIED and REVERTED: order the seed rows dearest crop first.** A BUY_SEED fills only what
+        # the bank covers, so under a thin bank the row order decides which crop gets planted, and the
+        # tape places its day-6 strawberry ($800) before its melon ($480) on a bank of $802. Copying
+        # that ordering measured WORSE on the day it was derived from: `plant` 8/14 -> 7/14 and
+        # `sell` 18/19 -> 10/19. Filling the cheap block whole plants more tiles than filling the dear
+        # one whole, and the tiles are what the day is for.
         for crop, qty in want_seed.items():
             short = int(qty) - int(seeds.get(crop, 0)) - state["ordered"][("seed", crop)]
             if short > 0 and len(orders) < 9:
