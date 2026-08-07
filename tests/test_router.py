@@ -1004,22 +1004,23 @@ def test_a_wheat_reaches_its_plain_yield_and_is_harvested_once(kg):
     Anything under four means the tile was demolished mid-window; the measured value before the fix
     was two.
 
-    **FIVE waters, not four, and the fifth one is waste.** Wheat's window is ages 2-4, so the day-1
-    water added by the every-day survival offer buys no yield whatever -- the tile is watered on 2, 3
-    and 4 regardless and could never have reached `consecutive_unwatered >= 2`. The yield is
-    unchanged at 4 units, so the cost is one turn on a short-window crop.
+    **FOUR waters, and this used to assert five.** Wheat's window is ages 2-4, so a day-1 water buys
+    no yield whatever -- the tile is watered on 2, 3 and 4 regardless and could never have reached
+    `consecutive_unwatered >= 2`. That fifth water came from the every-day survival offer, and this
+    docstring already called it waste and named the refinement that would remove it as "NOT
+    implemented": offer the early water only when the tile could actually weed first.
 
-    That is a real and accepted cost of matching the tape's watering cadence, priced here rather than
-    hidden: on a one-tile board with an idle hand the offer is always taken, while in a season it
-    competes for the tour. The refinement that would remove it -- offer the early water only when the
-    tile could actually weed before its next in-window water is due -- is NOT implemented.
+    It is implemented now, because the every-day offer turned out to rest on a table measured against
+    the OLD LEADER's tape. Seb waters on alternate days. The yield is unchanged at 4 units -- the
+    `shed` assertion below is the one that would catch a real regression -- and one turn per
+    short-window tile comes back.
     """
     board = blank_board()
     sched = empty_sched(plants=["WHEAT"], seeds={"WHEAT": 1})
     tally, _farm, priv = micro(kg, board, sched, days=6, hands=1, seeds={"WHEAT": 1})
     assert tally["PLANT"] == 1, dict(tally)
     assert tally["HARVEST"] == 1, dict(tally)
-    assert tally["WATER"] == 5, dict(tally)   # day 0 survival, day 1 waste, days 2-4 the yield
+    assert tally["WATER"] == 4, dict(tally)   # day 0 survival, then ages 2, 3, 4 -- the yield
     assert priv["shed"].get("WHEAT", 0) == 4, priv["shed"]
 
 

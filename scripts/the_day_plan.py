@@ -84,7 +84,10 @@ def main():
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     args = ap.parse_args()
-    assert args.day <= 3, "days 0-3 only -- nothing past day 3 is in scope"
+    # Was capped at day 3 while the pre-land-buy window was the whole scope. Days 0-3 now match on
+    # every plant, animal, feed and purchase, so the scope is the first land buy (day 4) to the
+    # second (day 8).
+    assert args.day <= 8, "days 0-8 only -- the window runs to the second land buy"
 
     replay, schedule, team = TAPES[args.tape]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
