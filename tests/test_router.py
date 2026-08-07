@@ -2512,3 +2512,65 @@ def test_a_pen_is_not_built_on_the_far_edge_while_near_ground_is_free():
     assert not far, (
         f"pens at {far} sit more than 5 steps from the depot at day 11; his furthest in the whole "
         f"game is (8,4) at 4. Distance sums: ours {sum(abs(x-4)+abs(y-4) for x, y in pens)}, his 44")
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason="fixable, but every fix measured costs more than it buys")
+def test_the_afternoons_collections_reach_the_shed_before_the_market_closes():
+    """We stop shipping at mid-afternoon; the tape ships until hour 22.
+
+    Day 6 of Seb's tape, seed 11, weeds off. The row asks `{WOOL: 12, FERTILIZER: 7}`. Both sides
+    collect fine -- `collect_fertilizer` is 7/7 -- and both sell all 12 wool. The fertilizer splits:
+
+        ours  1@90 h8, 2@90 h13, 1@90 h14, 1@89 h15   = 5 of 7, last sale h15
+        tape  1,1 h2/h5 then 1@90 h18, 1@90 h20, 2@89 h21, 1@89 h22   = 7 of 7
+
+    His take is $627 to our $449. The two we never sell are in a hand from mid-afternoon and reach
+    the shed only through the overnight sweep, which is why they show up as `sh:ferti 2/0` at day 7's
+    DAWN and as the bulk of that dawn's -$137.
+
+    The same defect is `sh:ferti 2/0` again at day 8's dawn, and 18 melons at day 11's -- day 10's
+    sell row asks for exactly 18 melons and we sell none of them.
+
+    It is NOT a load-size problem, which is why `DELIVER_THE_SELL_ROW` and the deliver ferry both miss
+    it: they gate on a six-unit census and these are ones and twos. It is a time-of-day problem.
+
+    **XFAIL, not skip: a fix exists and was rejected on measurement, not on difficulty.** Dropping the
+    census to 1 from an hour H, and letting the ferry skip its slack test after H, turns this test
+    GREEN. It also makes the day-matching worse at every H that does anything at all -- see the sweep
+    recorded on `MIN_SELL_ROW_DROP` in `schedule_agent.py`. h20+ is inert, h19 pays d7 to buy d11, and
+    h16/h18 cost d4-d6 outright because a hand pulled off a melon WATER (~$250) to rescue a fertilizer
+    ($90) is trading the wrong way round.
+
+    The two stranded units are NOT the same case, which is what the hour gate missed
+    (`scripts/the_stranded_carrier.py`, log in `data/logs/stranded_carrier_d6.log`):
+
+        u2  works until h15, then wanders h16-h23 doing nothing at all. At h18 it stands on (4,3),
+            ONE STEP from the depot at (4,4), holding the fertilizer, with five hours left -- and
+            goes west. Delivering costs it nothing.
+        u5  PLANTs and WATERs continuously from h16 to h23. Delivering costs a plant and a water.
+
+    An hour gate hits both, buying u2's ~$90 and paying u5's ~$250, which is the d4-d6 regression in
+    the sweep. The rule that fits the evidence keys on "this unit has no work left", not on the
+    clock. Note (4,3) is adjacent to the depot ring, not in it -- the ring is exactly (4,4), (4,5),
+    (5,4), (5,5) -- so u2 could not have dropped where it stood.
+
+    Delete the xfail marker if a no-work-left rule turns this green without regressing d0-d5.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    for t in range(24 * 7):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    shed = (env.state[0].observation.get("private") or {}).get("shed") or {}
+    assert int(shed.get("FERTILIZER", 0)) == 0, (
+        f"day 7 dawn holds FERTILIZER {shed.get('FERTILIZER')} that day 6's row still wanted; the "
+        f"tape's shed holds none because it shipped and sold them by hour 22")
