@@ -29,7 +29,13 @@ sys.path.insert(0, ".")
 
 ROOT = pathlib.Path(".")
 TARGET = pathlib.Path("submission/main.py")
-SCHEDULE = ROOT / "data/seed_scripts/new_leader/schedule.json"
+# **Seb's tape, not `new_leader`.** `new_leader`'s rows buy only TWO parcels (days 7 and 10),
+# so it is a 3-quadrant plan by construction and can never reach 100 tiles. Seb's buys three
+# (days 4, 8 and 10) and is the schedule every measurement in this repo is taken against --
+# `scripts/breakdown.py --tape seb`, the whole `tests/test_router.py` day-by-day suite, and
+# every executor fix made on 2026-08-07. Shipping a different one submits an agent that was
+# never measured, which is exactly what this file's own docstring warns about.
+SCHEDULE = ROOT / "data/seed_scripts/top_guys/90494364/schedule.json"
 #: Every module the bundle must carry, in import order, as dotted names. `kagg.economics.production`
 #: is NOT optional and NOT obvious: `routines.py:603` calls `_crops_fertilizer_helps()` at module scope
 #: and that function imports it. A first submission shipped without it and Kaggle logged
