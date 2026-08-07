@@ -127,6 +127,45 @@ DELIVER_THE_SELL_ROW = True
 #: than the sale returns and `work` falls 25 ops on day 8 alone.
 MIN_SELL_ROW_DROP = 6
 
+#: **A late-delivery exemption to this floor was built, measured, and REVERTED. Do not rebuild it.**
+#:
+#: The diagnosis behind it is correct and still stands. Day 6, seed 11: the row asks
+#: `{WOOL: 12, FERTILIZER: 7}`, `collect_fertilizer` is 7/7 so we gather everything the tape does,
+#: and both sides sell all 12 wool. The fertilizer splits:
+#:
+#:     ours  1@90 h8, 2@90 h13, 1@90 h14, 1@89 h15                  = 5 of 7, last sale h15
+#:     tape  1 h2, 1 h5, 1@90 h18, 1@90 h20, 2@89 h21, 1@89 h22     = 7 of 7
+#:
+#: $627 to our $449, which is the bulk of day 7's dawn gap of -$137, and the two we never shipped are
+#: exactly the `sh:ferti 2/0` in that dawn's shed. Same signature at day 8's dawn and at day 11's
+#: (`sh:melon 18/0`, against a day-10 row asking for exactly 18 melons of which we sold none). It is
+#: a TIME-OF-DAY problem, not a load-size one, which is why neither `DELIVER_THE_SELL_ROW` nor the
+#: deliver ferry reaches it: both wait for a six-unit load that never forms.
+#:
+#: The fix -- drop the census to 1 from hour H, and let the ferry skip its slack test after H, since
+#: in the evening the tour is not resumed and slack is near zero by construction -- turned
+#: `test_the_afternoons_collections_reach_the_shed_before_the_market_closes` green and made the
+#: day-matching WORSE. Swept on H against the 120-cell steal-gate baseline:
+#:
+#:               d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
+#:     OFF        7  6  4  7  7  7 11  8 11 14  19  19   120
+#:     from h16   7  6  4  7  9  8 14 12 10 12  17  20   126
+#:     from h18   7  6  4  7  7  7 12 11 11 13  17  20   122
+#:     from h19   7  6  4  7  7  7 11  9 11 14  19  18   120
+#:     from h20   7  6  4  7  7  7 11  8 11 14  19  19   120   byte-identical to OFF
+#:     from h21   (identical to OFF)
+#:     from h22   (identical to OFF)
+#:
+#: h20 and later are INERT -- nothing is left to divert that late, so they are OFF with extra code.
+#: h19 ties on total and is disqualified in order: it pays d7 8 -> 9 to buy d11 19 -> 18. h16 and h18
+#: are simply worse, and the shape says why -- d4, d5 and d6 all regress at h16, because pulling a
+#: hand off work to walk home costs more than the goods. A melon WATER is worth ~$250; the fertilizer
+#: being rescued is $90.
+#:
+#: So the two stranded fertilizer are real and the delivery rule is not how to get them. The unit
+#: should not have been holding them at h13 in the first place -- u2 carries 1 from h13 to h23, does
+#: no work at all after h14, and walks PAST the depot at (4,3) at h18. That is a ROUTING failure, not
+#: a delivery-threshold one, and it is where the next attempt belongs.
 #: **Send a carrier home mid-tour, then resume it.** `DELIVER_THE_SELL_ROW` can only fire on a depot
 #: cell, so it waits for an incidental visit -- which is the 16-of-22 ceiling on day 9 and the 12
 #: melons still in two hands at hour 23 of day 10 (`docs/idle_at_h10_2026-08-07.md` 2e). A rule that
@@ -485,6 +524,36 @@ HIRE_ONTO_LOCKED = False
 #: first. If a stolen node's original owner arrives to find nothing to do it goes idle and is topped
 #: up on the next turn, so the loss is bounded at one turn and the gain is the whole afternoon.
 STEAL_MARGIN = None      # measured NET NEGATIVE once hiring was fixed: 46 cells against 39
+
+#: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
+#: `PEN_NEAREST_DEPOT_FROM_DAY` needed, and for the same reason: the cost and the benefit are on
+#: different days. Re-swept 2026-08-07 against a 127-cell baseline, ungated:
+#:
+#:              d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
+#:     OFF       7  6  4  7  7  7 11 15 13 12  18  20   127
+#:     margin 4  7  7  4  7  8  8 11  8 11 14  19  19   123
+#:
+#: Lowest total and DISQUALIFIED in order -- d1 6->7, d4 7->8, d5 7->8. But d7 15 -> 8 is the biggest
+#: single-day gain anything has produced, and d8 goes 13 -> 11, so stealing is unlocking something
+#: real once the crew is large. Early on a claim is worth honouring: the crew is small, every unit is
+#: committed, and taking a stop off one just moves the work.
+#:
+#: Gated, swept on the day threshold at margin 4:
+#:
+#:               d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
+#:     OFF        7  6  4  7  7  7 11 15 13 12  18  20   127
+#:     from d6    7  6  4  7  7  7 11  8 11 14  19  19   120   <- taken
+#:     from d5    7  6  4  7  7  8 11  8 11 14  19  19   121   d5 regresses
+#:     from d4    7  6  4  7  8  8 11  8 11 14  19  19   122   d4 regresses
+#:     from d7    7  6  4  7  7  7 11 17 14 15  23  17   135
+#:     from d8    7  6  4  7  7  7 11 15 14 16  18  17   129
+#:
+#: d0-d6 byte-identical and d7 15 -> 8, the largest single-day gain measured in this project. It
+#: gives back 2 on d9 and 1 on d10; under an in-order metric the earliest day touched is what counts
+#: and that day improves by seven. Gating LATER than 6 is worse, not better -- d7 and d8 both make
+#: d7 itself worse -- so this is not "steal late", it is "steal once the crew outgrows the work".
+STEAL_FROM_DAY = 6
+STEAL_FROM_DAY_MARGIN = 4
 
 #: How many days an uncovered sell row stays offerable. **The backlog must expire.** Carrying it
 #: forever is not "cumulative", it is unbounded: on the old leader's plan the schedule asks to sell
@@ -859,7 +928,10 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         if idle:
             # **Top up the idle units only.** Replanning everybody would break the commitment of a unit
             # already three steps into a tour, which is the thrash the per-turn greedy had.
-            busy = _claimed_tiles(units, routes, idle, STEAL_MARGIN)
+            margin = STEAL_MARGIN
+            if STEAL_FROM_DAY is not None and day >= STEAL_FROM_DAY:
+                margin = STEAL_FROM_DAY_MARGIN
+            busy = _claimed_tiles(units, routes, idle, margin)
             # **A top-up sees a shed that other units have already spoken for.** `busy` retires
             # claimed TILES, and the oversubscription is across tiles: with one COW and three empty
             # pens, the committed unit holds one pen and the other two are still on offer to whoever
