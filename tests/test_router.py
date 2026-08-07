@@ -2574,3 +2574,100 @@ def test_the_afternoons_collections_reach_the_shed_before_the_market_closes():
     assert int(shed.get("FERTILIZER", 0)) == 0, (
         f"day 7 dawn holds FERTILIZER {shed.get('FERTILIZER')} that day 6's row still wanted; the "
         f"tape's shed holds none because it shipped and sold them by hour 22")
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason="real defect; the obvious fix costs 48 cells and regresses d0")
+def test_a_unit_does_not_walk_to_a_stop_it_cannot_service():
+    """A stop whose input could not be drawn is walked to anyway, then popped on arrival.
+
+    Day 6 of Seb's tape, seed 11. u2 is committed to a FEED at the pasture on (1,3) while carrying
+    only FERTILIZER, and the shed has no WHEAT to draw -- day 6 buys wheat one unit at a time and it
+    is taken as it lands. `_router_acts` handles the failed draw with `st["draw"].clear()`, which
+    abandons the DRAW but leaves the STOP on the route:
+
+        h17 pos=(4,2) inv={FERTILIZER:1} head=(1,3) PASTURE live_ops=[] ops=[FEED WHEAT, CARE]
+        h21 pos=(1,3) inv={FERTILIZER:1} head=(1,3) PASTURE live_ops=[]
+        h22 routelen=0
+
+    `_live_ops` gates FEED on THIS unit's wheat, so the stop is dead from the moment it is assigned.
+    u2 spends five turns walking to it, does nothing on arrival, and wanders to dusk -- carrying an
+    undelivered fertilizer the whole way, which is the visible symptom in
+    `test_the_afternoons_collections_reach_the_shed_before_the_market_closes`.
+
+    Asserts the defect directly rather than through its symptom: no unit should spend turns stepping
+    toward a committed stop that yields it no ops. 20 such turns on day 6, across four units.
+
+    **XFAIL: the defect is real, the obvious fix is not worth it.** Moving the `_live_ops` check above
+    the movement branch -- so a dead head is popped before the walk rather than on arrival -- turns
+    this GREEN and measures 120 -> 168 cells, regressing d0 (7 -> 9) on its own:
+
+        with fix    d0=9  d1=10 d2=7  d3=9  d4=10 d5=10 d6=16 d7=22 d8=17 d9=18 d10=20 d11=20  168
+        without     d0=7  d1=6  d2=4  d3=7  d4=7  d5=7  d6=11 d7=8  d8=11 d9=14 d10=19 d11=19  120
+                    move -176   idle +159
+
+    The `move`/`idle` rows are the explanation: popping cascades. The head pops, the next head is
+    also dead, and the route empties -- then `nodes_for(busy)` has nothing to top it up with, so the
+    unit PASSes to dusk. Walking to a dead stop at least keeps the unit moving toward where the next
+    replan can use it, and often the stop is live by arrival because the day keeps buying inputs
+    (day 6 buys WHEAT at h3, 5, 6, 7, 8, 9, 11, 13, 15).
+
+    Two narrowings were tried and BOTH measured 168, byte-identical to the ungated hoist, so the
+    supply condition never fires: gating the pop on "neither unit nor shed holds any input this
+    stop's ops need", then adding `seeds` to that test (seeds are not in the shed, so PLANT stops
+    always read unsupplied). The regression is the hoist itself, not what it is gated on.
+
+    A fix has to give the freed unit something to do, not just stop it walking. Delete the xfail when
+    one does that without regressing d0-d5.
+    """
+    import collections as _c
+    from kagg.search import schedule_agent as SA
+    from kaggle_environments import make
+
+    mine, his, thin = _seb_tape()
+    wasted = _c.Counter()
+    real = SA._router_acts
+
+    def spy(state, sched_, day, hour, tiles, units, invs, shed, seeds, unlocked):
+        # Measured AFTER the turn is decided, on the action actually emitted. Reading the route
+        # beforehand counts stops the walk block pops in the very same turn without ever stepping,
+        # which over-reports: it scored 19 before the fix and 4 after, where the true after is 0.
+        acts = real(state, sched_, day, hour, tiles, units, invs, shed, seeds, unlocked)
+        if day == 6:
+            for u, st in (state.get("routes") or {}).items():
+                route = st.get("route") or []
+                if not route or u >= len(units) or u >= len(acts):
+                    continue
+                if not acts[u] or acts[u][0] not in SA.STEP:
+                    continue                      # only a STEP is a walk toward the stop
+                if st.get("draw"):
+                    # Walking to the depot to FETCH the item that makes the stop live. The stop reads
+                    # dead right now by construction, and that is correct, not waste.
+                    continue
+                head = tuple(route[0].tile)
+                inv = _c.Counter(invs[u] if u < len(invs) else {})
+                if not SA._live_ops(head, tiles[head[1]][head[0]], day, inv,
+                                    state.get("pins") or {}, seeds):
+                    wasted[u] += 1
+        return acts
+
+    SA._router_acts = spy
+    try:
+        agent = SA.make_agent(thin, 0, router=True)
+        env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+        env.reset(2)
+        for t in range(24 * 7):
+            o0 = env.state[0].observation
+            a0 = agent(o0)
+            n0 = len(o0["farms"][0].get("hands") or [])
+            n1 = len(o0["farms"][1].get("hands") or [])
+            env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0],
+                       "market": a0["market"]},
+                      {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                       "market": his[t]["market"]}])
+    finally:
+        SA._router_acts = real
+
+    assert not wasted, (
+        f"units walked toward stops yielding them no ops on day 6: {dict(wasted)}; "
+        f"u2 alone burns five turns reaching a FEED it has no wheat for")
