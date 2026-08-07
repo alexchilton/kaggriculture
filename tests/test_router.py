@@ -1937,6 +1937,60 @@ def test_the_days_seed_is_bought_before_the_days_livestock():
 
 
 @pytest.mark.xfail(strict=True, reason=(
+    "held gate, not solved. Our first day-6 SELL is hour 8, his is hour 2. Two arms measured and "
+    "reverted 2026-08-07, both recorded in router.py with their numbers: YIELD_FIRST (serve a pen's "
+    "HARVEST/COLLECT before its FEED/CARE) took d2 4->8 and d3 7->8 and left day 6 at 14; "
+    "DEPOT_PEN_BY_LOAD (let the shed-access cells pick their animal by load size) took 52 cells to "
+    "59 and day 6 to 15. The occupant of (4,4) is decided upstream, in the buy/place order"))
+def test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry():
+    """Day 6's whole gap is ONE order that cannot pay, and the tape pays for it with an early sell.
+
+    Traced hour by hour on Seb's tape, seed 11, weeds off. The row asks
+    `{MELON: 6, STRAWBERRY: 8}` and both sides emit `buy_seed` 14/14 -- the orders are identical.
+    Ours delivers 6 melon and no strawberry:
+
+        ours  h0  $830 -> $296   8 HIRE ($54) + BUY_SEED MELON 6 ($480)
+        ours  h1  $296 -> $6     BUY_SEED STRAWBERRY 8 -- an $800 bill against $296
+        ours  h8                 first SELL of the day: WOOL 6 + FERTILIZER 1, ~$586
+
+        tape  h0  $869 -> $15    8 HIRE ($54) + BUY_SEED STRAWBERRY 8 ($800)
+        tape  h2                 SELL WOOL 6; SELL FERTILIZER 1; BUY_SEED MELON 6
+                                 -- one market turn, the sell settling in an earlier slot
+
+    Two separate things pay that bill and he uses both. Dearest-seed-first cannot work on its own
+    here: $830 less $54 of hires is $776, still short of the $800. The early sell is what actually
+    closes it -- the same 6 wool fetched ~$586 at hour 8, so landing it by hour 2 turns $296 into
+    ~$880 against an $800 bill, with room to spare.
+
+    So this gates the mechanism, not the symptom: the day's first load must be sellable early.
+    `test_day_six_plants_every_tile_the_row_asks_for` gates the consequence.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    first_sell, drops = None, []
+    for t in range(24 * 7):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == 6:
+            if first_sell is None and any(o and o[0] == "SELL" for o in (a0["market"] or [])):
+                first_sell = t % 24
+            if any(x and x[0] == "DROP" for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]):
+                drops.append(t % 24)
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+
+    assert first_sell is not None and first_sell <= 2, (
+        f"day 6's first SELL is hour {first_sell}, the tape's is hour 2; drops at {drops}. "
+        f"Nothing reaches the shed early enough to fund the $800 strawberry order")
+
+
+@pytest.mark.xfail(strict=True, reason=(
     "day 6 is not solved: the seed reserve takes plant 4/14 -> 8/14, but the day's bill is $1,280 "
     "against a dawn bank of $802 and the strawberry block still cannot fill. The tape funds its "
     "melon out of a SELL WOOL 6 at hour 2; our day-6 sells are 18 of his 19 and land later"))

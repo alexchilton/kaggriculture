@@ -122,6 +122,63 @@ DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
 #: so anything still in a hand at dusk is unsold -- it arrives overnight, a turn too late.
 YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
+#: Whether a pen's YIELDING ops are served BEFORE its consuming ones, rather than after.
+#:
+#: A stop's ops run in list order, and `animal_ops` built them in the order the rules are written:
+#: FEED, CARE, COLLECT_FERTILIZER, HARVEST. That puts the two ops that produce something sellable
+#: last, so a pen visited at dawn does not yield until its fourth turn.
+#:
+#: Measured on Seb's tape, seed 11, day 6 -- the same pen, the same four ops, opposite order:
+#:
+#:     tape  F  h0 HARVEST  h1 COLLECT_FERTILIZER  h2 DROP  h3 PICKUP  h5 FEED  h6 CARE
+#:     ours  u3 h3 FEED     h4 CARE  h5 COLLECT_FERTILIZER  h6 HARVEST  h7 walk  h8 DROP
+#:
+#: Six wool either way. His are in the shed at hour 2 and pay for that turn's BUY_SEED; ours are in
+#: a hand until hour 8. Day 6's entire gap is one $800 strawberry order placed at hour 1 against a
+#: $296 bank, and an hour-2 sale of that wool covers it.
+#:
+#: **TRIED AND REVERTED 2026-08-07.** It is the right reading of the tape and it does not help,
+#: because the hour it saves is not the hour that is missing. Measured, days 0-6, ours minus tape:
+#: d2 4 -> 8 cells, d3 7 -> 8, money newly diverging on d2 and d3, and **day 6 unchanged at 14**.
+#:
+#: The reason it cannot work on its own: his farmer HARVESTs at hour 0 because the sheep pen IS the
+#: depot tile (4,4). Ours is at (3,4), and the unit that serves it is doing a PICKUP at (4,4) on
+#: hour 1 and does not stand on the pen until hour 3. Re-ordering the ops moves the yield from that
+#: unit's 4th turn to its 1st -- hour 3 rather than hour 6 -- which is still three hours past the
+#: hour-2 sale that pays for the strawberry. The lever is WHERE the pen is, not what order it is
+#: served in; `build_tiles` is in `TAPE_ONLY` and stripped, so we choose our own tiles and chose a
+#: worse one.
+YIELD_FIRST = False
+
+#: Whether the FOUR shed-access cells pick their animal by the size of one harvest, instead of by
+#: position in `R.ANIMAL_NAMES` -- which is `["GOOSE", "COW", "SHEEP"]`, so a COW takes any shared
+#: PASTURE whenever both are in the shed at once.
+#:
+#: Deliberately NOT the reverted global tie-break a few lines below. That one value-ranked EVERY
+#: pasture and measured -$5,676 on the 12-seed ladder, because the season wants 8 COW to 6 SHEEP and
+#: a same-turn ranking reallocates far more pens than the one it was diagnosed on. This ranks only
+#: the four cells where a harvest can be DROPPED without moving, which is a property no field tile
+#: has at any price. The rest of the board keeps the fixed order untouched.
+#:
+#: Measured on Seb's tape, seed 11, day 6 -- identical boards, one different occupant:
+#:
+#:     (4,4)  ours {'kind': 'PASTURE', 'animal': 'COW'}     our SHEEP sits at (3,4)
+#:     (4,4)  tape {'kind': 'PASTURE', 'animal': 'SHEEP'}
+#:
+#: A full load is 6 WOOL at $200 against 6 MILK at $160, and his farmer takes it at hour 0 and drops
+#: it at hour 2 without a step -- which is what pays for day 6's $800 strawberry order.
+#: **TRIED AND REVERTED 2026-08-07.** Measured, days 0-6, cells ours-minus-tape per day:
+#: d2 4 -> 6, d3 7 -> 8, d4 7 -> 9, d5 7 -> 8, d6 14 -> 15; 52 -> 59 total. Worse on every day it
+#: touched and it did not even fix the day it was built for.
+#:
+#: So the narrowing argument above is sound and still insufficient: WHICH animal ends up on (4,4) is
+#: not a free choice made at that cell. It is decided days earlier by what the schedule has bought
+#: and by SHEEP `first_yield_day` 6 against COW's 8, and forcing the sheep there re-times the whole
+#: herd. Same shape of failure as the global tie-break it was distinguished from -- a same-turn
+#: ranking cannot see a season's allocation -- which is the third time that has been measured here.
+#: Whatever puts his sheep on the depot cell is upstream of `build_nodes`, in the buy/place order.
+DEPOT_PEN_BY_LOAD = False
+
 #: Whether a tour that ends on a YIELDING node reserves the walk back to the nearest depot.
 #:
 #: The tour is otherwise costed as an OPEN route -- walk plus service from where the unit stands,
@@ -362,6 +419,11 @@ def animal_ops(cell, day, have_wheat):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
         out.append(("HARVEST", None, cell["yield_units"] * price))
+    if YIELD_FIRST:
+        # Stable, so COLLECT_FERTILIZER still precedes HARVEST and FEED still precedes CARE. Built
+        # in rule order above because the CARE prize is conditional on FEED being served; only the
+        # SERVICE order changes here, never which ops the pen is offered.
+        out.sort(key=lambda o: o[0] not in YIELDING)
     return out
 
 
@@ -467,7 +529,11 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
                 # that SHEEP looks marginally better THIS turn. Reverted. The bug (one SHEEP idle three
                 # days) is real; ranking every tie by same-turn value is not the fix for it.
                 ops = []
-                for a in R.ANIMAL_NAMES:
+                order = R.ANIMAL_NAMES
+                if DEPOT_PEN_BY_LOAD and tile in SHED_SET:
+                    order = sorted(R.ANIMAL_NAMES, key=lambda a: -(
+                        BASE_PRICE[ANIMALS[a]["product"]] * ANIMALS[a]["max_held"]))
+                for a in order:
                     if ANIMALS[a]["structure"] != kind:
                         continue
                     if shed.get(a, 0) > 0 or carried.get(a, 0) > 0:
