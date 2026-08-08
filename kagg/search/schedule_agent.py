@@ -37,7 +37,186 @@ can produce. `scripts/build_schedule.py` generates it; `scripts/schedule_ladder.
 
 import collections
 
+from . import cover as DP
 from . import router as RT
+
+#: Solve the day as a COVERING problem -- cover every job the board offers -- instead of as a prize
+#: auction. See `kagg/search/cover.py` for the argument; the short version is that we know the board
+#: in advance, we know every job it will want, and Seb's tape proves a day of it is coverable, so
+#: "which job is worth most" is a question the day does not actually pose.
+#:
+#: `router.build_nodes` still decides WHICH jobs exist -- that half is derived from the reference's
+#: own mechanics and is worth keeping. What is dropped is `prize`, `MANDATORY` and `CRITICAL`: the
+#: ranking, which is the half that measured wrong (-$34,816 over 12 seasons when a local search got
+#: BETTER at it, `data/logs/planner_ab3.log`).
+#:
+#: Off restores `router.plan_routes` exactly.
+COVER_PLANNER = True
+
+
+#: Also treat a tile ONE dry day from becoming a WEED as at-risk, the way a pen one day from losing
+#: its animal already is.
+#:
+#: It is the same rule twice. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:786`)
+#: and `consecutive_unwatered >= 2` turns the tile into a WEED (line 753); in both cases missing ONE
+#: day is free and missing the second is total. Measured on seed 11 with weeds switched OFF -- so
+#: every WEED on the board is a crop we let die of thirst, not a spawn -- ours finished with 7
+#: against the tape's 0.
+#:
+#: **This is NOT the arm that measured -$2,804.** That one promoted every thirsty tile into the same
+#: mandatory pass as fourteen pens, and the note on it says exactly why it failed: "a pass holding
+#: fourteen pens AND every thirsty tile cannot triage". Here the animals keep their own pass and run
+#: first; thirsty tiles get a second one, ahead of ordinary work but behind every pen.
+#:
+#: **ON. The season-total A/B said otherwise and it was the wrong instrument -- see below.**
+#:
+#: Days 16-18 in isolation, seed 11, with WHEAT and FERTILIZER stocked so supply cannot be the
+#: constraint (`data/logs/d16_18_water_ab.log`). This asks only what DIED:
+#:
+#:     arm                     animals lost    tiles WEEDED
+#:     WATER_AT_RISK off                  0               4
+#:     WATER_AT_RISK on                   0               2
+#:     Seb, same three days               0               1
+#:
+#: Day 16 alone goes 3 weeded to 0. And the capacity was never the issue: that day had 17 tiles that
+#: HAD to be watered, we landed 26 waters, and three of the seventeen still died. We had the turns
+#: and watered the wrong tiles, which is exactly what this flag orders.
+#:
+#: The earlier season-total 2x2 below reported the opposite. It is kept because the numbers are real,
+#: but it cannot answer this question: a 30-day WEED count folds in every tile the SCHEDULE lets get
+#: thirsty in the first place, and those swamp the handful this ordering decides. A three-day window
+#: with supply held constant isolates the ordering; a season total measures the schedule.
+#:
+#: **The residual gap to the tape is upstream of here and is a cadence.** Arriving at day 16 he has
+#: EIGHT tiles that must be watered; we have seventeen. He waters on alternate days and never builds
+#: the debt, so he is never rescuing. He is not better at rescuing -- he never gets into the position.
+#:
+#: SUPERSEDED MEASUREMENT, kept so it is not re-run: six seeds, seat 0, weeds off, 2x2 against
+#: `FEED_DAYS` (`data/logs/feed_x_risk.log`) -- WEED tiles at season end:
+#:
+#:     FEED_DAYS   water at-risk    mean $    escapes    WEEDS
+#:             2            off    96,055          3       47
+#:             2             on    96,302          4       58
+#:             4            off    94,986          0       53
+#:             4             on    98,382          0       58
+#:
+#: More weeds on BOTH rows. The money edge on the last row is ~3% on six samples, inside this
+#: project's ~15% seed variance, and does not get to override a count moving the wrong way.
+#:
+#: **And the mechanism explains it.** `router.crop_ops` offers survival water ONLY at
+#: `consecutive_unwatered >= 1`, so this arm can only ever RESCUE and never PREVENT -- and a rescue
+#: competes for turns at the worst possible moment, displacing the ordinary waters that would have
+#: stopped the next tile getting thirsty at all. The tape does not rescue because it never needs to:
+#: it waters on a fixed alternate-day cadence (d0 17, d1 0, d2 17, d3 14) that holds every tile at 0
+#: or 1 and takes zero weeds through day 7.
+#:
+#: So the real REMAINING fix for watering is a CADENCE in the schedule, upstream of this file. This
+#: flag closes the half that is reachable from the day planner.
+WATER_AT_RISK = True
+
+#: Whether the final turn of a day is budgeted as workable. See the note in `_router_acts`.
+#: Off restores `TPD - hour - 1`, which silently discarded one turn per hand per day -- 13 hands over
+#: 29 days is ~377 unit-turns a season, and every tour that ended on a tile still holding produce lost
+#: its HARVEST to it.
+LAST_TURN_IS_WORKABLE = True
+
+#: Turns remaining at or below which the walk back to the shed stops being charged. See `_solve`.
+DELIVER_CUTOFF_TURNS = 2
+
+
+def _at_risk_tiles(tiles):
+    """Tiles where skipping today's work destroys something tonight. Read off the board, not priced.
+
+    `consecutive_unfed`/`consecutive_unwatered` are already 1 -- one more missed day and the animal
+    walks off or the tile weeds. A pen fed yesterday, or a tile watered yesterday, can slip a day for
+    free, which is precisely how the tape feeds 16 of 19 pens on day 19 and loses nothing.
+    """
+    out = set()
+    for y, row in enumerate(tiles):
+        for x, cell in enumerate(row):
+            if not isinstance(cell, dict):
+                continue
+            if cell.get("animal") and cell.get("consecutive_unfed", 0) >= 1:
+                out.add((x, y))
+            elif (WATER_AT_RISK and cell.get("kind") == "PLANT"
+                    and cell.get("consecutive_unwatered", 0) >= 1):
+                out.add((x, y))
+    return out
+
+
+#: Stop tending a crop that cannot produce again before the season ends.
+#:
+#: Measured across 29 independent same-board days (`data/logs/all30_same_conditions.log`): the tape
+#: lets 41 crops die of thirst on days 21-28 against our 14, and that is not incompetence -- a tile
+#: that cannot reach another production day before day 29 is worth nothing, so every turn spent
+#: watering it is stolen from a harvest that still pays. He stops; we keep watering.
+LATE_SEASON_TRIAGE = True
+
+#: Do not clear a weed on ground we are never going to replant.
+#:
+#: `DIG` costs a turn and buys nothing unless something goes into the hole. The register records the
+#: final board as ours WEED=8 empty=72 against his WEED=42 empty=37 -- he leaves them, and the 35
+#: unit-turns we spend clearing ours are pure loss once the schedule has no plantings left.
+DIG_ONLY_IF_REPLANTING = True
+
+#: Last day of the season, so a crop needs its production day at or before this to be worth a turn.
+LAST_DAY = 29
+
+
+def _pointless_tiles(tiles, day, plants_left):
+    """Tiles whose work cannot pay back before the season ends. Dropped from the job list entirely.
+
+    Two rules, both read off the crop table and the board rather than priced:
+
+      - a PLANT holding nothing that cannot reach another production day by `LAST_DAY`
+      - a WEED, when the schedule has no plantings left to put in the ground it would free
+
+    Anything already holding `yield_units` is NEVER dropped: that is standing produce and it wants a
+    HARVEST, not abandoning.
+    """
+    out = set()
+    for y, row in enumerate(tiles):
+        for x, cell in enumerate(row):
+            if not isinstance(cell, dict):
+                continue
+            kind = cell.get("kind")
+            if kind == "WEED":
+                if DIG_ONLY_IF_REPLANTING and not plants_left:
+                    out.add((x, y))
+                continue
+            if kind != "PLANT" or not LATE_SEASON_TRIAGE:
+                continue
+            if int(cell.get("yield_units", 0)) > 0:
+                continue                      # standing produce: harvest it, never abandon it
+            info = RT.CROP.get(cell.get("crop"))
+            if not info:
+                continue
+            # The crop table's keys are `first` and `max_day` -- NOT `first_yield_day` /
+            # `max_yield_day`, which is what an earlier version of this guessed at and why it
+            # abandoned every wheat tile past day 4.
+            planted = int(cell.get("planted_day", day))
+            if LAST_DAY - planted < info["first"]:
+                out.add((x, y))               # cannot reach its first yield before the season ends
+            elif not info["ongoing"] and day - planted > info["max_day"]:
+                out.add((x, y))               # one-shot past its window: from here it only decays
+    return out
+
+
+def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()):
+    """One day's assignment, by whichever planner is switched on. Same return shape either way."""
+    if not COVER_PLANNER:
+        return RT.plan_routes(units, nodes, budget, depots, carry, supply=supply)
+    jobs = [j for j in DP.from_nodes(nodes) if j.tile not in pointless]
+    if at_risk:
+        for j in jobs:
+            if j.tile in at_risk:
+                j.at_risk = True
+    # The walk home is charged only while there is time to make it. With two turns or fewer left a
+    # hand cannot both work and get back, and the overnight drop banks the produce anyway -- so
+    # reserving it there only refuses the last harvest of the day. See `cover.turns`.
+    deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS
+    out, _uncovered = DP.plan(units, jobs, budget, depots, carry, supply=supply, deliver=deliver)
+    return out
 from . import routines as R
 
 TPD = R.TURNS_PER_DAY
@@ -52,7 +231,50 @@ SHED_CAPACITY = 100
 
 #: Days of feed to hold per animal. 1 is the consumption rate and leaves no slack; the tape carries
 #: over two. Also the multiplier the sell guard protects, so raising it withholds more wheat from sale.
+#: **RAISED 2 -> 4 on 2026-08-08, and the evidence is a COUNT rather than a season total.** Six
+#: seeds, seat 0, weeds off, against Seb's tape (`data/logs/feed_days_sweep.log`):
+#:
+#:     FEED_DAYS     mean $     ESCAPES over six seasons
+#:             2     90,396           4
+#:             3     94,087           2
+#:             4     98,879           0
+#:
+#: Monotone in both columns, and escapes reaching zero is the part to trust: an escape is
+#: irreversible, it costs $400-$500 plus every remaining day of that animal's production, and unlike
+#: a bank figure it cannot be an artifact of the market. Held at 0 in the `feed_x_risk.log` 2x2 too.
+#:
+#: **This is what the tape does.** Seed 11, weeds off: his dawn shed runs 43, 51, 57, 47 wheat
+#: against our 15-20, and he buys in BURSTS -- 105 on day 8, 95 on day 19, then nothing at all the
+#: next day, which lets the shop's book refill before he draws on it again. He offers 929 wheat
+#: across the season to our 405. At `FEED_DAYS = 2` our buffer was effectively ONE day: we bought
+#: about seventeen and fed about seventeen, so any hiccup was a missed feed.
+#:
+#: `FEED_DAYS = 1` was tried in the other direction and measured -$6,236 over twelve seeds, which is
+#: presumably why this sat at 2; nothing had ever tried going UP.
 FEED_DAYS = 2
+
+#: Days of feed held once the season turns TURN-BOUND. See `feed_days()`.
+FEED_DAYS_LATE = 4
+
+#: The day the buffer widens. This is the same hinge the register records for the whole season: up to
+#: about here the farm is CASH-bound (dawn bank $28 on day 4, $15 on day 6, land parcels to fund) and
+#: after it the farm is TURN-bound, with the bank past $10k and nothing to spend it on but feed.
+FEED_DAYS_FROM_DAY = 16
+
+
+def feed_days(day):
+    """Days of wheat to hold, as a function of the day. Two early, four late.
+
+    **A flat 4 measured better on escapes and worse on everything else, and both halves were real.**
+    Six seeds, seat 0 (`data/logs/feed_days_sweep.log`): escapes 4 -> 0 going from 2 to 4, which is
+    what a nineteen-animal herd needs. But the escapes all happen after day 16, and buying four days
+    of feed for FOUR animals on day 4 spends a bank that reads $28 at dawn. `test_router.py` caught
+    exactly that -- `PLACE 0/1`, `melon seed 5 of 6` with "the livestock spent the bank first",
+    `WHEAT sold 13 against 17` -- because early feed money is land and seed money.
+
+    The herd is 4-7 animals before day 8 and 19 after day 15, so the buffer follows it.
+    """
+    return FEED_DAYS_LATE if day >= FEED_DAYS_FROM_DAY else FEED_DAYS
 
 #: **TRIED and REVERTED: cap one BUY_PRODUCT to 4 so the day's feed is metered across the hours.**
 #: The motivating measurement is real -- the leader places sixteen WHEAT buys of 1-6 across h1-h22 on
@@ -269,7 +491,7 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
         if any(future_needs.get(it, 0) > 0 for it, qty in inv.items() if qty > 0):
             gate = "own route needs it"
         elif not (inv.get("WHEAT", 0) == 0
-                  or farm_wheat - inv.get("WHEAT", 0) >= FEED_DAYS * alive):
+                  or farm_wheat - inv.get("WHEAT", 0) >= feed_days(day) * alive):
             gate = "feed reserve"
         elif sum(inv.values()) < MIN_OPPORTUNISTIC_DROP:
             gate = f"under floor ({sum(inv.values())})"
@@ -972,10 +1194,20 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
 def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked):
     """One turn of the routed plan: replan if the crew or the work changed, then walk the tours."""
     pins = _refresh_pins(state, sched, day, tiles, unlocked)
+    # Ground is only worth clearing if something is going into it. See `DIG_ONLY_IF_REPLANTING`.
+    plants_left = any((sched.get(d, {}) or {}).get("plants") for d in range(day, LAST_DAY + 1))
     carried = collections.Counter()
     for iv in invs:
         carried.update(iv)
-    budget = [max(0, TPD - hour - 1)] * len(units)
+    # **Turns left at `hour` is `TPD - hour`, not `TPD - hour - 1`.** Hours run 0..TPD-1 inclusive
+    # and the env applies unit actions on every one of them, so the old expression made the LAST turn
+    # of every day unreachable for every hand: at hour 23 the budget was 0, no tour could be planned
+    # into it, and a hand standing on a ripe tile passed. Measured on Seb's day-17 board with supply
+    # stocked (`data/logs/why_pass.log`): 26 idle turns, all in the evening, every one of them with
+    # work still on the board -- nine hands passing at hour 23 with five HARVESTs offered. The `-1`
+    # is the market/hire turn, which is spent once at dawn and was being charged again at dusk.
+    # `tests/test_the_last_turn_of_the_day_is_worked.py` pins it; it goes red with the `-1` back.
+    budget = [max(0, TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1))] * len(units)
     routes = state["routes"]
     # Only shed cells inside a quadrant we own. A hand wakes on a LOCKED one and a LOCKED tile no-ops
     # before PICKUP is ever reached, so treating all four as depots strands the hand for the whole day.
@@ -1013,9 +1245,11 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     if state["crew"] != len(live) or not routes:
         # A full replan only when the crew changes -- hands are hired through the morning, so the dawn
         # plan genuinely cannot know how many vehicles it has.
-        sub = RT.plan_routes([units[u] for u in live], nodes_for(set()),
-                             [budget[u] for u in live], depots,
-                             {k: load[u] for k, u in enumerate(live)}, supply=shed)
+        sub = _solve([units[u] for u in live], nodes_for(set()),
+                     [budget[u] for u in live], depots,
+                     {k: load[u] for k, u in enumerate(live)}, supply=shed,
+                     at_risk=_at_risk_tiles(tiles),
+                     pointless=_pointless_tiles(tiles, day, plants_left))
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
         state["crew"] = len(live)
     else:
@@ -1055,9 +1289,11 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 for it, qty in (st.get("draw") or {}).items():
                     spoken[it] += max(0, qty - load[u][it])
             free = {it: q - spoken[it] for it, q in shed.items()}
-            sub = RT.plan_routes([units[u] for u in idle], nodes_for(busy),
-                                 [budget[u] for u in idle], depots,
-                                 {k: load[u] for k, u in enumerate(idle)}, supply=free)
+            sub = _solve([units[u] for u in idle], nodes_for(busy),
+                         [budget[u] for u in idle], depots,
+                         {k: load[u] for k, u in enumerate(idle)}, supply=free,
+                         at_risk=_at_risk_tiles(tiles),
+                         pointless=_pointless_tiles(tiles, day, plants_left))
             for k, u in enumerate(idle):
                 routes[u] = sub[k]
 
@@ -1135,7 +1371,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
             home = min(depots, key=lambda c: RT.dist(pos, c))
             nxt = tuple(st["route"][0].tile) if st["route"] else home
-            slack = (TPD - hour - 1) - _route_turns(pos, st["route"], depots)
+            slack = (TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1)) - _route_turns(pos, st["route"], depots)
             detour = RT.dist(pos, home) + 1 + RT.dist(home, nxt) - RT.dist(pos, nxt)
             if detour <= slack - DELIVER_FERRY_MARGIN:
                 m = _step_towards(pos, home, unlocked)
@@ -1165,7 +1401,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
             farm_wheat = shed.get("WHEAT", 0) + carried.get("WHEAT", 0)
             wheat_ok = (inv.get("WHEAT", 0) == 0
-                        or farm_wheat - inv.get("WHEAT", 0) >= FEED_DAYS * alive)
+                        or farm_wheat - inv.get("WHEAT", 0) >= feed_days(day) * alive)
             if (not own_route_needs_it and wheat_ok and sum(inv.values()) >= MIN_OPPORTUNISTIC_DROP
                     and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
                 for item, qty in inv.items():
@@ -1638,7 +1874,7 @@ def make_agent(schedule, me=0, router=True):
                 carried_wheat = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
                 drawn = max(0, int(shed_before.get("WHEAT", 0)) - int(shed.get("WHEAT", 0)))
                 will_buy = int((row.get("buys") or {}).get("WHEAT", 0))
-                have = max(0, have - max(0, FEED_DAYS * alive - ripe_wheat - carried_wheat
+                have = max(0, have - max(0, feed_days(day) * alive - ripe_wheat - carried_wheat
                                          - drawn - will_buy))
             # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
             # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
@@ -2108,7 +2344,7 @@ def make_agent(schedule, me=0, router=True):
         # day 6's dawn shed, `sh:wheat 8/7`.
         fed_today = sum(1 for r in tiles for c in r
                         if isinstance(c, dict) and "animal" in c and c.get("fed_today"))
-        herd = FEED_DAYS * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
+        herd = feed_days(day) * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
         # **The drip has to bound the HERD path too, or it bounds nothing that matters.** This read
         # `max(herd, min(max(0, owed), BUY_DRIP))`: the row was dripped and the herd's whole remaining
         # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never
