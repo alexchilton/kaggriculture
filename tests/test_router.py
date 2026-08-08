@@ -2221,9 +2221,16 @@ def test_the_days_sell_row_reaches_the_shed_before_dusk():
 
     Priced honestly: the book moves, but slowly. Dumping 36 melon takes the price 278 -> 250 and
     fertilizer drifts 83 -> 79 over two days. Selling late costs ~10%; not selling costs 100%.
+    **Exercises `DELIVER_FERRY`, which ships OFF, so it enables the flag itself.** The ferry costs 4
+    cells against Seb's tape (115 -> 119) and fires once in 818 candidate unit-turns, so it is turned
+    off as a shipping decision -- not because the mechanism is broken. Asserting the default here
+    would quietly convert this into a test of the flag's value rather than of the delivery it
+    describes. Same treatment as `test_a_hand_full_of_the_days_sell_row_walks_it_in...`.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
+    _ferry = schedule_agent.DELIVER_FERRY
+    schedule_agent.DELIVER_FERRY = True
     agent = schedule_agent.make_agent(thin, 0, router=True)
     env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
     env.reset(2)
@@ -2238,6 +2245,7 @@ def test_the_days_sell_row_reaches_the_shed_before_dusk():
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
+    schedule_agent.DELIVER_FERRY = _ferry
     assert sold >= 20, (
         f"day 9's row asks to sell 22 units and the tape ships all 22; we offered {sold}. "
         f"The goods are in our crew's hands, not in the shed the market reads")
@@ -2499,9 +2507,17 @@ def test_a_pen_is_not_built_on_the_far_edge_while_near_ground_is_free():
     early days our layout already matches his distance exactly and siting nearer makes us LESS like
     him. Applied from day 9 it leaves d0-d8 byte-identical and takes d9 14 -> 12 and d10 19 -> 18.
     The damage and the benefit are simply on different days.
+    **Exercises the siting rule itself, so it pins the from-day at 9.** `PEN_NEAREST_DEPOT_FROM_DAY`
+    ships at 11, not 9, because starting at 9 cost the day-10 land parcel -- every flag combination
+    with it on at d9 lost the fourth quadrant and every one with it off kept it, and gating it past
+    the purchase is worth about $12k at season end. The GEOMETRY this test asserts is not in dispute
+    and was not the problem; only the day it starts was. Pinning the flag here keeps the mechanism
+    covered without asserting the shipped value.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
+    _from_day = schedule_agent.PEN_NEAREST_DEPOT_FROM_DAY
+    schedule_agent.PEN_NEAREST_DEPOT_FROM_DAY = 9
     agent = schedule_agent.make_agent(thin, 0, router=True)
     env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
     env.reset(2)
@@ -2519,6 +2535,7 @@ def test_a_pen_is_not_built_on_the_far_edge_while_near_ground_is_free():
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
     far = sorted(p for p in pens if abs(p[0] - 4) + abs(p[1] - 4) > 5)
+    schedule_agent.PEN_NEAREST_DEPOT_FROM_DAY = _from_day
     assert not far, (
         f"pens at {far} sit more than 5 steps from the depot at day 11; his furthest in the whole "
         f"game is (8,4) at 4. Distance sums: ours {sum(abs(x-4)+abs(y-4) for x, y in pens)}, his 44")
@@ -2792,3 +2809,46 @@ def test_the_days_feed_is_not_bought_in_one_block():
         f"day 9 placed a single BUY_PRODUCT WHEAT of {biggest} at hour {when}, above the "
         f"FEED_TURN_CAP of {schedule_agent.FEED_TURN_CAP}; the tape never exceeds 2 and spreads six "
         f"orders across the day, ending on double the wheat")
+
+
+@pytest.mark.slow
+def test_the_last_sheep_do_not_sit_in_the_shed_for_the_rest_of_the_season():
+    """Two sheep sit unplaced beside two empty pens from day 14 to the end.
+
+    `test_a_bought_animal_does_not_sit_in_the_shed_beside_an_empty_pen` is GREEN while this happens,
+    so it does not reach this case. Seed 11, Seb's tape, animals in the shed against pens filled:
+
+        day   OURS shed / penned / empty        TAPE shed / penned / empty
+        d13   SHEEP:1 / 17 / 2                  SHEEP:1 / 17 / 2
+        d14   SHEEP:2 / 17 / 2                  {}      / 19 / 0
+        d16   SHEEP:2 / 17 / 2                  {}      / 19 / 0
+
+    Both hold one sheep at d13. He places his and fills all nineteen pens; ours never move. It is not
+    cash -- the bank is $25,940 at d16 -- and the instruction is not stripped: the schedule carries
+    `animals_bought {SHEEP: 1}` and `places ['SHEEP', 'SHEEP']` on d14, and neither key is in
+    TAPE_ONLY.
+
+    Two animals' milk and wool for the last sixteen days, which is why it shows as a widening gap.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    for t in range(24 * 17):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+
+    o = env.state[0].observation
+    held = int(((o.get("private") or {}).get("shed") or {}).get("SHEEP", 0))
+    empty = sum(1 for row in o["farms"][0]["tiles"] for c in row
+                if isinstance(c, dict) and c.get("kind") in ("PASTURE", "COOP")
+                and not c.get("animal"))
+    assert not (held and empty), (
+        f"day 16 ends with {held} SHEEP in the shed and {empty} empty pens; the tape fills all "
+        f"nineteen and holds none back")
