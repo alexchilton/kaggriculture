@@ -225,6 +225,26 @@ def _pointless_tiles(tiles, day, plants_left):
 #: dollar figure enters the routing.
 FUND_THE_DAY_WHEN_SHORT = True
 
+#: Whether a unit whose CRITICAL draw finds the shed empty STANDS and retries next turn, instead of
+#: dropping that attempt and walking on. See the note where it is read. It saves the day-12 SHEEP at
+#: (1,6) and it is the half of that fix which costs turns; the non-destructive `node.pick` handling
+#: around it is free and stays on unconditionally.
+#:
+#: **OFF.** `scripts/matched_days.py` scores it as free -- animals lost 1 -> 0, harvest 348 and
+#: thirst 25 unchanged, PASS 984 -> 976 -- and that harness runs 29 INDEPENDENT days off Seb's board,
+#: so it cannot see compounding by construction. On the full season, seed 11, weeds off, d0-d16:
+#:
+#:                   money@d16   cows   work   idle
+#:     off              23,483    8/8   1412   1300
+#:     on               16,363    5/8   1273   1381
+#:
+#: A blocked hand is 139 work ops over seventeen days, and work ops are feeds. The animal it saves on
+#: day 12 is real; so are the three cows it costs by day 16. The defect it found is real too and the
+#: diagnosis is right -- `materialise` plans each tour independently and cannot see the shed drain
+#: from the sell block or from another unit's draw in the same replan. The fix for that is to make the
+#: draw SEE the contention at plan time, not to make the hand wait for it at execution time.
+STAND_AT_A_DRY_SHED = False
+
 
 def _days_bill(row):
     """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
@@ -1458,11 +1478,31 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     continue
                 if node.pick:
                     item = min(node.pick)       # a total order, so the tape is reproducible
-                    want = node.pick.pop(item)
-                    take = min(want, shed.get(item, 0))
+                    take = min(node.pick[item], shed.get(item, 0))
                     if take <= 0:
-                        continue                # the shed cannot supply it; the stop that needs it
-                        #                         will pop itself unworked at the tile
+                        # **A momentary shortfall is not a refusal, but only for a draw that is
+                        # CRITICAL.** The shed drains from the sell block and from every other unit's
+                        # own draw inside the same replan, which `materialise` cannot see -- it plans
+                        # each tour independently -- and it refills a few turns later off the ordinary
+                        # `BUY_PRODUCT` drip. Popping the want unconditionally (as this used to, before
+                        # checking `take`) threw a CRITICAL need away outright instead of losing only
+                        # this one attempt at it -- exactly the day-12 SHEEP at (1,6):
+                        # `Depot(pick={WHEAT: 2}, critical=True)` drew against a shed reading 0 at
+                        # that hour and was discarded rather than retried once it read 6 two hours on.
+                        #
+                        # Ordinary (non-critical) draws keep the old behaviour -- drop this attempt and
+                        # move on -- because standing and retrying EVERY momentary shortfall regressed
+                        # day 4's land purchase and day 5's sell-slot ordering (`test_a_land_buy_may_
+                        # be_funded_by_the_same_turns_sales`, `test_the_biggest_sale_takes_the_
+                        # earliest_slot`): most shortfalls are not an animal about to escape, and
+                        # blocking a hand on all of them shifts timing far beyond this one starvation.
+                        if node.critical and STAND_AT_A_DRY_SHED:
+                            break
+                        del node.pick[item]
+                        continue
+                    node.pick[item] -= take
+                    if node.pick[item] <= 0:
+                        del node.pick[item]
                     shed[item] -= take
                     act = ["PICKUP", item, take]
                     break

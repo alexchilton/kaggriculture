@@ -138,6 +138,25 @@ COMPACT = True
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
+#: Whether a hand is judged for a shed trip by what it CARRIES (True) or by what today's sell row
+#: still owes (False, shipped). See the long note in `materialise` for the defect it targets, which
+#: is real and measured: animal produce rides in a hand all day and reaches the shed only via the
+#: rollover sweep, so we sell yesterday's production every day of the season.
+#:
+#: **OFF, because the obvious fix costs more than the defect.** Measured, seed 11, weeds off, d0-d16,
+#: stacked on the day-12 stranded-feed fix:
+#:
+#:               money@d16   cows   work   idle
+#:     both off     16,363    5/8   1273   1381
+#:     this on      14,342    3/8   1198   1436
+#:
+#: The extra trips come straight out of work turns, and work turns are feeds. Delivering produce is
+#: still the right objective -- what is wrong is paying for it with a whole extra walk. The version
+#: worth trying next routes the drop into a stop the tour was ALREADY making, rather than adding one:
+#: pens sit on shed-access tiles by design, so a herd tour stands on a depot at most of its stops and
+#: the drop can be free. That is a different change to this one and needs its own measurement.
+DELIVER_SURPLUS_NOT_THE_ROW = False
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -216,7 +235,7 @@ class Depot:
     one turn per distinct ITEM and not one per unit: fourteen pens is one wheat pickup.
     """
 
-    __slots__ = ("tile", "drop", "pick")
+    __slots__ = ("tile", "drop", "pick", "critical")
 
     depot = True
     needs = ()
@@ -225,10 +244,16 @@ class Depot:
     at_risk = False
     only = None
 
-    def __init__(self, tile, drop=False, pick=None):
+    def __init__(self, tile, drop=False, pick=None, critical=False):
         self.tile = tuple(tile)
         self.drop = bool(drop)
         self.pick = collections.Counter({i: q for i, q in (pick or {}).items() if q > 0})
+        #: Whether this draw serves a job that dies TONIGHT if it is skipped (`Job.at_risk and
+        #: Job.required` -- an animal one missed feed from escaping). Set by `materialise`, which
+        #: alone knows which jobs the draw is FOR; the executor reads it to decide whether a shed
+        #: that cannot fill the want right now is worth standing at and retrying, or worth walking
+        #: away from as before. See the note where the executor reads it.
+        self.critical = bool(critical)
 
     @property
     def turns(self):
@@ -301,14 +326,40 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
     route, pos = [], tuple(start)
     for i, j in enumerate(work):
         short = collections.Counter({it: q - held[it] for it, q in after[i].items() if q > held[it]})
-        # **Deliverable is the SURPLUS, not the load**, and the difference is a whole day of feeding.
-        # Two conditions, and both are needed. Only what TODAY'S row still owes counts, so a hand
-        # ferrying fertilizer nobody is selling is left alone -- and only what this tour will not
-        # itself CONSUME counts, because the row's product and the herd's dinner can be the same
-        # thing. Seed 11 day 4 sells `WHEAT: 28` on a $28 bank, so three wheat carried to three pens
-        # read as $75 of goods the market was waiting for: `feed 7 -> 0`, `care 7 -> 0`,
-        # `drop 5 -> 13`, moves 80 -> 124, and not one animal fed all day.
-        load = sum(min(max(0, held[p] - after[i][p]), q) for p, q in wanted.items() if q > 0)
+        # **Deliverable is the SURPLUS: what the hand holds that this tour will not itself CONSUME.**
+        #
+        # The consumption half is load-bearing and was learned the hard way -- the row's product and
+        # the herd's dinner are the same thing. Seed 11 day 4 sells `WHEAT: 28` on a $28 bank, so
+        # three wheat carried to three pens read as $75 of goods the market was waiting for:
+        # `feed 7 -> 0`, `care 7 -> 0`, `drop 5 -> 13`, moves 80 -> 124, not one animal fed all day.
+        # `after[i]` is what excludes it, and it excludes it for every item, which is why the second
+        # condition below could be dropped without bringing that back.
+        #
+        # **It used to be gated on TODAY'S SELL ROW as well, and that was the bug.** `wanted` is
+        # transcribed from Seb's board, so a product his row does not name contributed nothing here
+        # and no shed trip was ever inserted for it -- however much of it the hand was carrying. It
+        # then rode around until `_drop_inventories_to_shed` swept every hand into the shed at the
+        # rollover (`kaggriculture.py:812`), after the market had closed. We sold yesterday's
+        # production every day, all season. Measured, seed 11, weeds off:
+        #
+        #     d14 h6  shed 0 hand  6      that day's row asks MILK 0
+        #         h13 shed 0 hand 15      fifteen milk carried around all day
+        #     d15 h0  shed 15 -> SELL 15  exactly what the sweep left, against a row of 24
+        #     d16 h0  shed  3 -> SELL  3  against a row of 24, which the tape fills
+        #
+        # and wool worse: the d16 row asks 19, the tape sells 19, we sold 0. Nothing blocked those
+        # sales -- 60-95 free shed slots all day and an open market. We never carried it home.
+        #
+        # So the hand is judged by what it is CARRYING, not by what today's row happens to name.
+        # `wanted` survives as a parameter because `plan` still uses it to decide what to draw BACK,
+        # and because `Job.funds` reads the row to decide what to harvest FIRST on a thin day.
+        #
+        # No price list here, deliberately: `cover` ranks nothing and prices nothing, so "surplus"
+        # is a count of items, not of dollars. `DELIVER_MIN` remains the only threshold.
+        load = (sum(max(0, q - after[i][p]) for p, q in held.items() if q > 0)
+                if DELIVER_SURPLUS_NOT_THE_ROW else
+                sum(min(max(0, held[p] - after[i][p]), q)
+                    for p, q in (wanted or {}).items() if q > 0))
         # **`DELIVER_MIN` holds on a short day too, and dropping it to 1 there was a real mistake.**
         # The intuition was that on a day whose purchases are queued behind the money, a single unit
         # in hand is worth banking. It is not, because a shed trip costs a turn even when it costs no
@@ -335,7 +386,13 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
             pos = d
         elif short:
             d = nearest(depots, pos, j.tile)
-            route.append(Depot(d, drop=False, pick=short))
+            # A draw is critical when SOME job it is FOR dies tonight if skipped -- read straight off
+            # `REQUIRED_OPS`/`at_risk`, never priced. Scoped to jobs that actually need one of the
+            # short items, so a draw serving only ordinary work is never marked critical by a
+            # coincidental critical job elsewhere later in the same tour.
+            critical = any(w.at_risk and w.required for w in work[i:]
+                          if any(w.needs.get(it, 0) > 0 for it in short))
+            route.append(Depot(d, drop=False, pick=short, critical=critical))
             held += short
             pos = d
         route.append(j)
