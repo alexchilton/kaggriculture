@@ -183,3 +183,4 @@ def test_the_milk_reaches_the_shed_while_the_market_is_open():
     assert midday_shed >= 6, (
         f"day 14 peaked at {hand_peak} MILK in hands and never got more than {midday_shed} into "
         f"the shed between h1 and h22 -- it can only be sold the next morning")
+

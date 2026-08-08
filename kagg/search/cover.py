@@ -157,6 +157,11 @@ DELIVER_MIN = 6
 #: the drop can be free. That is a different change to this one and needs its own measurement.
 DELIVER_SURPLUS_NOT_THE_ROW = False
 
+#: Whether a tour DROPS what it is carrying at a depot it is already standing on -- zero detour,
+#: one turn. See the note where it fires. This is the cheap half of the delivery defect above: it
+#: never buys a walk, so it cannot take turns away from feeding the way the detour version did.
+DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -377,6 +382,33 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # What a short day actually needs is different work FIRST, not more trips: see `Job.funds`,
         # which is `rush`'s real job. Delivery batching is a separate question and its answer does
         # not change with the bank.
+        # **The drop that costs no walking.** See `DROP_WHERE_THE_TOUR_ALREADY_STANDS`. `_refresh_pins`
+        # sites pens ON the shed-access tiles, so a herd tour is stood on a depot at most of its stops
+        # and `nearest` returns a cell that adds nothing to the walk. There the produce reaches the
+        # shed -- while the market is open -- for one turn and no travel, which is the entire
+        # difference between this and the arm that lost three cows by inserting a detour.
+        #
+        # Deliberately NOT gated on `DELIVER_MIN`: the threshold exists to stop a small load buying a
+        # WALK, and there is no walk here. It is gated on the detour being exactly zero, because at
+        # one step it is a walk again and the measurement that matters is the season, not the hand.
+        d = nearest(depots, pos, j.tile)
+        free = dist(pos, d) + dist(d, j.tile) == dist(pos, j.tile)
+        spare = sum(max(0, q - after[i][p]) for p, q in held.items() if q > 0)
+        # **A DROP takes the WHOLE hand, so it may only fire on a hand with nothing owed ahead.**
+        # `kaggriculture.py:333` -- DROP is all-or-nothing; the executor dumps the unit's entire
+        # inventory, it cannot pick out the produce and keep the feed. The first version of this
+        # planned as though it could (`held` was recomputed as `min(q, after[i][p])`) and the season
+        # lost a cow and two sheep: a tour standing on a depot mid-round binned the wheat its next
+        # four pens were about to eat, and `after[i]` said it still had it.
+        #
+        # So the condition is not "is there spare" but "is ALL of it spare". A herd tour still gets
+        # its drop -- the produce accumulates and the feed is consumed as it goes, so the hand is
+        # clean by the last pens -- it just gets it later than the greedy version wanted.
+        owed_ahead = any(after[i][p] > 0 for p, q in held.items() if q > 0)
+        if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead:
+            route.append(Depot(d, drop=True))
+            held = collections.Counter()
+            pos = d
         if load >= DELIVER_MIN:
             d = nearest(depots, pos, j.tile)
             # The drop takes the wheat with it, so the same stop draws back everything still ahead.
