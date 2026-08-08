@@ -235,6 +235,28 @@ def _pointless_tiles(tiles, day, plants_left):
 DELIVER_MIN = 6
 
 
+#: Days on which a hand CARRYING sellable goods is replanned even though it is still busy.
+#:
+#: **A HARD-CODED DAY, and it is a placeholder for a condition we have not found.** Alex's call, to
+#: unblock: the mechanism below is real and general, the trigger is not yet known, and guessing at it
+#: has already cost two wrong theories today (see `FUND_THE_DAY`, reverted, and the cash-shortfall
+#: flag in `data/logs/cash_trigger.log` which fires on four days the tape does nothing special on).
+#:
+#: THE MECHANISM, which is not a guess. `_deliver_jobs` pins a delivery to the hand holding the goods
+#: -- only that hand can carry them -- but the mid-day top-up replans only IDLE units. So the job is
+#: offered on every replan to units that cannot possibly do it, and refused on every replan, until the
+#: carrier finally runs out of tour. Measured on seed 11 day 6 (`data/logs/d6_wool.log`): planner runs
+#: at h12, h16, h17 and h18 each offering a deliver job, all of them refused, while a hand sits on ten
+#: wool from h11; it delivers four at h19 and takes six into the night. The bank is on $20 all day and
+#: the wool is worth ~$220 a unit.
+#:
+#: The cost of relaxing this generally is known and is why it is gated: replanning a BUSY unit throws
+#: away a tour it is part-way through, which is the thrash this file's `URGENT_OPS` was disabled for.
+#: Widening it to every day, or replacing the day list with a real condition, must be measured on the
+#: day-by-day cells and not on a season total.
+DELIVER_REPLAN_DAYS = (6,)
+
+
 def _deliver_jobs(units, invs, owed_sale, depots, unlocked):
     """A shed stop for every hand holding goods today's SELL row still wants. One per hand.
 
@@ -1309,6 +1331,15 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         state["crew"] = len(live)
     else:
         idle = [u for u in live if not routes.get(u, {}).get("route")]
+        # A hand holding goods today's SELL row wants is not idle, but it is the ONLY unit that can
+        # deliver them -- and the pinned job is refused on every replan it is absent from. See
+        # `DELIVER_REPLAN_DAYS`.
+        if day in DELIVER_REPLAN_DAYS:
+            carrying = [u for u in live if u not in idle
+                        and sum(min(int(q), int(owed_sale.get(it, 0)))
+                                for it, q in (invs[u] if u < len(invs) else {}).items()
+                                if int(q) > 0 and int(owed_sale.get(it, 0)) > 0) >= DELIVER_MIN]
+            idle = idle + [u for u in carrying if u not in idle]
         # **Fresh urgent work is an INSERTION, not a rebuild.** Rerunning the whole plan every time a
         # PLACE node appeared MEASURED as day 0 `place` 4/4 -> 3/4 and `build_pasture` 8/8 -> 7/8:
         # day 0 buys four animals, so it triggered four full replans and each one abandoned whatever
