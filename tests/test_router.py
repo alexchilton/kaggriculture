@@ -2684,7 +2684,6 @@ def test_a_unit_does_not_walk_to_a_stop_it_cannot_service():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="the d10 melon harvest never reaches the shed in time to pay for it")
 def test_the_fourth_parcel_is_bought_on_day_ten_like_the_tape():
     """We take the fourth quadrant a day late, and a day of 25 tiles compounds all season.
 
@@ -2720,6 +2719,12 @@ def test_the_fourth_parcel_is_bought_on_day_ten_like_the_tape():
     A fix that lifts the sell row's cap when a parcel is due was tried and measured NO CHANGE -- by
     day 10 the wool is only 8 units and the melons are not in the shed to sell at any cap.
 
+    **GREEN since PEN_NEAREST_DEPOT_FROM_DAY was gated from 9 to 11.** Pen siting near the shed was
+    what cost the parcel: every configuration with it on at d9 lost the quadrant, every one with it
+    off kept it. This test carried an xfail for the melon reason above, which was the wrong cause --
+    the melons are still stranded and the parcel is bought anyway. Left as a live test so the parcel
+    cannot silently slip again; the melon defect keeps its own xfail.
+
     Asserts the outcome the user asked for: the parcel lands on day 10, so day 11 opens on 100 tiles.
     """
     from kaggle_environments import make
@@ -2741,3 +2746,49 @@ def test_the_fourth_parcel_is_bought_on_day_ten_like_the_tape():
     assert owned == 100, (
         f"day 11 opens on {owned} tiles against the tape's 100; the fourth parcel slipped to day 11 "
         f"because day 10 never reached $4,000 while 8 unsellable wool sat in the shed")
+
+
+@pytest.mark.slow
+def test_the_days_feed_is_not_bought_in_one_block():
+    """`BUY_DRIP` meters the sell row's wheat and lets the herd's feed straight past it.
+
+        short = max(herd, min(max(0, owed), BUY_DRIP))
+
+    `min(owed, BUY_DRIP)` drips the row; `max(herd, ...)` then overrides it with the herd's whole
+    remaining need. So the one order the constant was written to spread is the one it never touches.
+
+    Day 9, seed 11, Seb's tape. We buy the day's feed in a single 8-unit order at hour 1 and empty
+    the bank to $22, where it stays until hour 16:
+
+        ours  h1 WHEAT 8   money 934 -> 22    then nothing until h16     ends the day on  7 wheat
+        tape  h1 x1, h4 x1, h7 x2, h8 x2, h10 x2, h12 x2, never below $591,  ends on 14 wheat
+
+    Both FEED exactly 10 times and neither sells any wheat, so the whole -7 is the buy. Two costs: a
+    single large BUY_PRODUCT walks up the price curve, quoting at post-buy inventory and filling one
+    unit at a time; and a bank at $22 for fourteen hours makes every other purchase in that window
+    fail silently -- the same way day 6's `BUY_SEED MELON 6` was refused eight times against $15.
+
+    Asserts the cadence, not the total: the herd must still get everything it needs.
+    """
+    from kaggle_environments import make
+    mine, his, thin = _seb_tape()
+    agent = schedule_agent.make_agent(thin, 0, router=True)
+    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    biggest, when = 0, None
+    for t in range(24 * 10):
+        o0 = env.state[0].observation
+        a0 = agent(o0)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        if t // 24 == 9:
+            for o in (a0["market"] or []):
+                if o and o[0] == "BUY_PRODUCT" and o[1] == "WHEAT" and int(o[2]) > biggest:
+                    biggest, when = int(o[2]), t % 24
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
+                   "market": his[t]["market"]}])
+    assert biggest <= schedule_agent.FEED_TURN_CAP, (
+        f"day 9 placed a single BUY_PRODUCT WHEAT of {biggest} at hour {when}, above the "
+        f"FEED_TURN_CAP of {schedule_agent.FEED_TURN_CAP}; the tape never exceeds 2 and spreads six "
+        f"orders across the day, ending on double the wheat")

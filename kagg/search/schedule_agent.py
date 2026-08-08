@@ -73,6 +73,31 @@ FEED_ORDER_CAP = None
 #: of 1 clear cheaper than one of 8. The tape buys 1 at a time, eight times, across hours 5-19.
 BUY_DRIP = 1
 
+#: Most WHEAT the HERD path may buy in one turn. Separate from `BUY_DRIP` because that one also caps
+#: the schedule row (`min(owed, BUY_DRIP)`), so reusing it varies two things at once -- a sweep on it
+#: alone could not attribute its own result, and `BUY_DRIP = 99` scored 166 against a 151 baseline
+#: rather than reproducing it, which is how the confound showed up.
+#:
+#: `herd` subtracts `state["ordered"][("feed", "WHEAT")]`, so whatever this leaves unbought is
+#: re-offered next turn. That is the difference from `FEED_ORDER_CAP`, which bounded the DAY and
+#: starved a 19-animal herd from day 15.
+#: Swept on Seb's tape, seed 11, against a 151-cell baseline. There is a cliff between 5 and 6 --
+#: below it the herd cannot get its ration in a turn when it needs one, and d6-d9 break exactly the
+#: way `FEED_ORDER_CAP` broke:
+#:
+#:     CAP   cells   d6 d7 d8 d9      d11 d12 d13 d14 d15 d16
+#:     3     183      9  5  6 17       20  18  13  18  19  22
+#:     4     174      9  5  6 17       16  16  14  17  19  20
+#:     5     173      9  5  6 17       16  15  14  16  19  22
+#:     6     144      8  4  7 12       13  12  12  14  17  16   <- taken
+#:     8     145      8  4  7 12       13  13  12  13  16  19
+#:     10    152      8  4  7 12       13  16  13  13  19  19
+#:     none  151      8  4  7 12       14  13  14  15  18  17
+#:
+#: At 6 the first eleven days are BYTE-IDENTICAL to uncapped and every day from d11 improves, so the
+#: gain is real and costs nothing earlier.
+FEED_TURN_CAP = 6
+
 #: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
 #: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
 #: one or two units at a time turns every such moment into a 1-turn DROP.
@@ -1913,7 +1938,16 @@ def make_agent(schedule, me=0, router=True):
         fed_today = sum(1 for r in tiles for c in r
                         if isinstance(c, dict) and "animal" in c and c.get("fed_today"))
         herd = FEED_DAYS * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
-        short = max(herd, min(max(0, owed), BUY_DRIP))
+        # **The drip has to bound the HERD path too, or it bounds nothing that matters.** This read
+        # `max(herd, min(max(0, owed), BUY_DRIP))`: the row was dripped and the herd's whole remaining
+        # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never
+        # touched. Day 9 bought 8 in a single order at hour 1 and sat on $22 until hour 16.
+        #
+        # This is NOT `FEED_ORDER_CAP`, which bounded the DAY and starved a 19-animal herd. `herd`
+        # subtracts `state["ordered"][("feed", "WHEAT")]`, so the remainder is re-offered every turn
+        # and the herd still gets its full ration -- just spread across the hours, which is what the
+        # constant's own docstring already claimed it did.
+        short = min(max(herd, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
         short = min(short, int(money * 0.5 // quote))
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
