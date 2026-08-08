@@ -149,7 +149,13 @@ def run(make0, opp, seed, weeds):
     if bad:
         raise RuntimeError(f"seat status {bad}")
     days.append(snap(env.state[0].observation, 0))
-    return days, ops
+    # **Day N is the state at the END of day N, not its dawn.** `days` is collected at each dawn plus
+    # one final snapshot, so `days[N + 1]` is the board after day N's actions -- which is what lines
+    # up with the op counts, which are that day's actions. Reading a dawn snapshot beside the same
+    # column's ops means reading YESTERDAY'S outcome next to TODAY'S work, and it caused a real
+    # misreading: `money` at d12 is the result of d11, so the d10 land purchase showed up a column
+    # late and a step change got attributed to the wrong day twice.
+    return days[1:], ops
 
 
 def main():
@@ -158,6 +164,8 @@ def main():
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=11)
+    ap.add_argument("--no-moves", action="store_true",
+                    help="hide the NORTH/SOUTH/EAST/WEST rows; `move` still shows their sum")
     ap.add_argument("--diff", action="store_true",
                     help="list EVERY field that differs, per day, instead of the wide tables")
     args = ap.parse_args()
@@ -183,6 +191,8 @@ def main():
           f"CUMULATIVE_SELLS={schedule_agent.CUMULATIVE_SELLS} "
           f"SELL_CARRY_DAYS={schedule_agent.SELL_CARRY_DAYS} "
           f"HIRE_FIRST={schedule_agent.HIRE_FIRST}")
+    print("  state rows (money, tiles, pens, crops, sh:*) are the board at the END of that day; "
+          "op rows are that day's actions.")
 
     if args.diff:
         # Every field that is not identical, per day. The wide tables above are for reading what
@@ -191,10 +201,11 @@ def main():
         ops_all = sorted(set(OPS) | {"OTHER", "SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL",
                                      "BUY_LAND", "HIRE"})
         budget = (("_turns", "unit-turns"), ("_work", "work"), ("_move", "move"), ("_pass", "idle"))
+        compass = {"NORTH", "SOUTH", "EAST", "WEST"}
         rows = ([("state", lab, [(ours[d][k], his[d][k]) for d in range(args.days)])
                  for k, lab in fields]
                 + [("op", o.lower(), [(our_ops[d][o], his_ops[d][o]) for d in range(args.days)])
-                   for o in ops_all]
+                   for o in ops_all if not (args.no_moves and o in compass)]
                 # Derived: `idle` IS the `pass` op, `move` is the four directions summed, `work` the
                 # work ops summed, `unit-turns` all three. Kept because they are the readable summary,
                 # flagged because counting them alongside their own parts double-counts the total.
