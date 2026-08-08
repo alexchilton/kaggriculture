@@ -118,6 +118,77 @@ replaces the planner.
 
 ---
 
+## The agreed architecture (Alex, 2026-08-08)
+
+**Offline basis, checked per day, repaired only when something deviates.**
+
+The runtime planner shrinks from "solve a Team Orienteering Problem 720 times a season under a
+one-second budget" to "confirm the board matches the plan, and repair it if a weed landed."
+
+### Why the split works: the money and the routing decouple at d16
+
+Read off the schedule's own `money_dawn`:
+
+```
+d0 1,807 → d4 28 → d6 15 → d10 2,220 → d15 1,076 → d16 10,448 → d29 108,153
+land bought d4, d8, d10   animals all bought by d14   seeds essentially done by d11
+```
+
+Cash is razor-thin from d1 to d15 -- **$15 on d6, $28 on d4** -- and then stops mattering: from d16
+the bank runs 10k to 108k with nothing left to buy but the odd single seed.
+
+| | d0-d15 | d16-d29 |
+|---|---|---|
+| binding constraint | **cash** -- a dollar is a parcel or an animal | **unit-turns** -- cash is free |
+| what to optimise | selling: timing, price, what to hold | routing: whose hands do what, when |
+| coupling to the other half | land d4/d8/d10, animals to d14, seeds to d11 | none |
+
+**Every failure measured on 2026-08-08 is in the d16+ half** -- sheep starve d16/d17/d18,
+strawberries die from d21, the shed overflows d21/d23/d24, idle peaks d19-d28. That is the half with
+a fixed crew, a deterministic board, no purchases and no cash constraint: the most obviously
+solvable-offline part of the game is where we lose the most.
+
+### Deviation is rare enough to enumerate
+
+`_spawn_weeds` fires on **empty** tiles only, once per day, at `weedSpawnChance` (default 0.005).
+About 40 empty tiles gives ~0.2 spawns/day, **~6 per season**, and only those landing on ground the
+plan intends to use matter at all -- a weed on ground we were never going to plant is furniture and
+is ignored. Realistically the repair path fires **one to three times a season**.
+
+Everything else that becomes a weed is deterministic: a tile reaching `consecutive_unwatered >= 2` is
+a consequence of our own plan, not chance. Same for an animal escaping.
+
+A repair firing three times a season can be enumerated and unit-tested. A planner firing 720 times
+cannot.
+
+### The three parts
+
+1. **Money plan** -- d0-d15. Guarantees the parcels at d4/d8/d10 and the seeds and animals.
+   Contested by the opponent, so it needs cash SLACK as a constraint, not a point estimate.
+2. **Physical plan** -- the whole season, solved offline against `jax_sim`.
+3. **Day repair** -- a weed on planned ground; a purchase refused for cash. Rare, local, enumerable.
+
+### Why offline is trustworthy, and cheap
+
+- `jax_sim` reproduces `senkin13`'s real $145k winning season **to 0.2%**, livestock included
+  (`docs/tutorial_how_this_game_is_actually_optimised.md` section 5). The residual is a
+  *deterministic* order-book bias, so candidate-vs-candidate comparisons stay self-consistent.
+- At `weed_chance=0` the sim is deterministic, so one perturbation's effect is an **exact finite
+  difference**, not a noisy estimate -- the quantity PPO spends a critic and 719 steps of credit
+  assignment approximating.
+- No legality machinery is needed: an illegal op degrades to NOOP, wastes the unit-turn, and scores
+  worse, so the optimiser rejects it unaided.
+
+Existing machinery: `scripts/optimise_script.py`, `kagg/search/{plan,scheduler,script_mutate,
+replay_plan}.py`, `scripts/build_script_submission.py`, `kagg/search/best_plan.json`.
+
+**Caveat with teeth:** the optimiser's opponents are our OWN recorded agents with weeds off. Any
+winner must be scored against the real pool and across weed seeds before it is believed. On
+2026-08-08 the uncontested number said we finished $4,586 ahead of Seb and the contested head-to-head
+said we lose both seatings on the valid seed.
+
+---
+
 ## OPEN
 
 ### OPEN-1 — DIAGNOSED, NOT FIXED. The WATER ran seven hours late, not the delivery
