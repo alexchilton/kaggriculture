@@ -1418,6 +1418,19 @@ REPAIR = True
 #: which is also why it terminates -- total cost is bounded below and strictly decreases.
 COMPACT = True
 
+#: Cache `slot` against the route it was computed for, and clear that unit's cache when its route
+#: changes. **This is a pure speed change: it cannot alter a plan**, and the flag exists so that
+#: claim stays falsifiable rather than merely asserted -- flipping it off restores the exact
+#: recomputation and `tests/test_the_plan_is_identical_when_memoised.py` compares the two.
+#:
+#: It exists because time, not play, is what disqualified submission 55352401. See the long note
+#: beside `slot_now` in `cover` for the profile and the episode.
+MEMOISE_SLOT = True
+
+#: Sentinel for "not in the cache", so a genuine `None` from `slot` -- which means "this job does
+#: not fit this unit at all", the single most common answer -- is cached instead of recomputed.
+_MISS = object()
+
 #: How much of today's still-owed SELL row a hand must be carrying before a MID-TOUR shed trip is
 #: planned for it. Below this the load rides to the end of the tour, which ends at the shed anyway.
 #:
@@ -1809,6 +1822,41 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                 best = (c, i)
         return best
 
+    # **The same `slot` is recomputed for units that have not moved, and that is the whole cost of
+    # this file.** Every loop below rescans all jobs against all units, but a single accepted move
+    # changes at most two routes -- so the other N-2 answers are the ones just computed, thrown away
+    # and computed again. Profiling days 12-16 of seed 11: 99.7% of agent time inside `_solve`, and
+    # `slot` reached 354,811 calls to `materialise`, each of which rebuilds an entire tour.
+    #
+    # That is what disqualified submission 55352401. Episode 91023699 seat 0 played 482 turns of 719
+    # and timed out with the 60s overage bank at -1.7s; all 61.7s of charge came from 22 turns at
+    # hours 1 and 2, which is the day solve and nothing else.
+    #
+    # `slot(u, j, routes[u], limit)` is a pure function of the unit's position, the job, that unit's
+    # route and the limit. The first two never change inside a `cover` call and the last is explicit
+    # in the key, so caching against the route and clearing the moment the route is touched is
+    # exactly equivalent -- not approximately. `tests/test_the_plan_is_identical_when_memoised.py`
+    # is the evidence, comparing whole plans over forty randomised boards.
+    #
+    # Per-unit dicts rather than one dict with a version in the key: invalidation is then `clear()`
+    # on one unit, which is O(1) and bounds the memory instead of letting dead entries accumulate
+    # for the length of the solve.
+    memo = [{} for _ in range(max(1, len(units)))]
+
+    def touch(u):
+        """`routes[u]` changed, so every cached answer about it is stale."""
+        memo[u].clear()
+
+    def slot_now(u, j, limit=None):
+        """`slot` against unit `u`'s CURRENT route. Only valid where the base IS `routes[u]`."""
+        if not MEMOISE_SLOT:
+            return slot(u, j, routes[u], limit)
+        key = (j, limit)                  # `Job` hashes by identity and outlives this call
+        got = memo[u].get(key, _MISS)
+        if got is _MISS:
+            got = memo[u][key] = slot(u, j, routes[u], limit)
+        return got
+
     def claim(u, j):
         """Animals this job makes unit `u` draw FROM THE SHED, after what it already carries.
 
@@ -1861,7 +1909,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # hand does it, because a hand already carrying the animal draws nothing.
                         if not affordable(claim(u, j)):
                             continue
-                        got = slot(u, j, routes[u], cap[u])
+                        got = slot_now(u, j, cap[u])
                         if got is None:
                             continue
                         key = (got[0] - used[u], u, j.tile, got[1])
@@ -1871,6 +1919,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     break                          # nothing more fits under this cap; relax it
                 _k, j, u, i, c = best
                 routes[u].insert(i, j)
+                touch(u)
                 used[u] = c
                 booked.update(claim(u, j))
                 pool.remove(j)
@@ -1901,8 +1950,9 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     without = cost(u, rest)
                     best = None
                     for v in range(len(units)):
-                        base = rest if v == u else routes[v]
-                        got = slot(v, j, base)
+                        # `rest` is not `routes[u]` -- it is `routes[u]` minus `j` -- so the memo
+                        # cannot answer for the home unit. Every other unit is untouched and can.
+                        got = slot(v, j, rest) if v == u else slot_now(v, j)
                         if got is None:
                             continue
                         gain = ((used[u] - got[0]) if v == u
@@ -1915,11 +1965,14 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     if v == u:
                         routes[u] = rest[:i] + [j] + rest[i:]
                         used[u] = c
+                        touch(u)
                     else:
                         routes[u] = rest
                         used[u] = without
                         routes[v].insert(i, j)
                         used[v] = c
+                        touch(u)
+                        touch(v)
                     moving = True
         # The turns that freed up are only worth having if something gets done with them.
         greedy([j for j in left if j.at_risk and j.required])
@@ -1956,7 +2009,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     for v in range(len(units)):
                         if v == u:
                             continue
-                        alt = slot(v, m, routes[v])
+                        alt = slot_now(v, m)
                         if alt is not None and (home is None or alt[0] - used[v] < home[0]):
                             home = (alt[0] - used[v], v, alt[1], alt[0])
                     if home is None:
@@ -1966,6 +2019,8 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     used[u] = got[0]
                     routes[v].insert(vi, m)
                     used[v] = vc
+                    touch(u)
+                    touch(v)
                     booked.update(claim(u, j))     # `m` moved unit; only `j` is newly claimed
                     left.remove(j)
                     changed = done = True

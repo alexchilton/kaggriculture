@@ -314,8 +314,20 @@ REFERENCE = {"seed": 11, "ours": 127846}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,
-#: not the worst turn -- the day-0 solve is always going to cost more than a second.
+#: not the worst turn -- the day solve is always going to cost more than a second.
 ACT_TIMEOUT, OVERAGE_BANK = 1.0, 60.0
+
+#: **The local overage is not the number that matters, and reporting it alone shipped a
+#: disqualification.** Submission 55352401 measured 2.8s of overage here and was charged 61.7s on
+#: the ladder, which is not the ~2x a "slower worker" intuition suggests. The charge is
+#: `max(0, t - 1)` per turn, so it is not linear in machine speed: a 3.8x slower box drags a whole
+#: cohort of 0.3-0.9s turns across the one-second line AND charges for each of them. Same season,
+#: same code, 22x the bill.
+#:
+#: 3.8x is measured, not assumed -- worst turn 7.39s on Kaggle against 1.96s here, on the same
+#: agent. The gate charges at 6x so there is real headroom above the observed figure rather than a
+#: margin chosen by feel, which is the mistake the first release made.
+KAGGLE_SLOWDOWN = 6.0
 
 
 def _season(policy, days=30, seed=None):
@@ -398,7 +410,8 @@ def reproduce(days=30, verbose=True):
     repo_agent = SA.make_agent(thin, 0, router=True)
     repo, repo_tape, _t, _team = _season(lambda o: repo_agent(o), days=days)
 
-    overage = sum(max(0.0, s - ACT_TIMEOUT) for s in times)
+    overage = sum(max(0.0, s * KAGGLE_SLOWDOWN - ACT_TIMEOUT) for s in times)
+    local = sum(max(0.0, s - ACT_TIMEOUT) for s in times)
     if verbose:
         print(f"tape season: bundle ${ours:,} vs {team} ${tape:,}  "
               f"(repo modules ${repo:,} vs ${repo_tape:,}; reference ${REFERENCE['ours']:,})")
@@ -411,8 +424,13 @@ def reproduce(days=30, verbose=True):
         slow = sorted(((s, i) for i, s in enumerate(times)), reverse=True)[:6]
         print("slowest turns: " + ", ".join(
             f"d{i // 24}h{i % 24} {s * 1000:.0f}ms" for s, i in slow))
-        print(f"overage bank: {overage:.1f}s used of {OVERAGE_BANK:.0f}s "
-              f"({OVERAGE_BANK / max(overage, 1e-9):.0f}x headroom on this machine)")
+        print(f"overage bank: {local:.1f}s here, {overage:.1f}s projected at {KAGGLE_SLOWDOWN:.0f}x "
+              f"(measured ladder slowdown 3.8x), against a {OVERAGE_BANK:.0f}s bank")
+        for f in (2, 3, 3.8, 5, 6, 8):
+            o = sum(max(0.0, s * f - ACT_TIMEOUT) for s in times)
+            print(f"    at {f:>3}x slower: worst {f * max(times):5.2f}s  "
+                  f"turns over 1s {sum(s * f > ACT_TIMEOUT for s in times):3d}  "
+                  f"overage {o:6.1f}s  {'ok' if o < OVERAGE_BANK else 'DISQUALIFIED'}")
     ok = (ours == repo) and (days < 30 or ours == REFERENCE["ours"])
     return ok, ours, tape, overage
 
@@ -440,10 +458,9 @@ if __name__ == "__main__":
     if not ok:
         print("BUILD FAILED: the bundle does not reproduce the measured season", file=sys.stderr)
         sys.exit(1)
-    # Half the bank, not all of it: the Kaggle worker is not this machine, and the margin has to
-    # absorb a slower box rather than merely fit on a fast one.
-    if overage > OVERAGE_BANK / 2:
-        print(f"BUILD FAILED: {overage:.1f}s of overage against a {OVERAGE_BANK:.0f}s bank",
-              file=sys.stderr)
+    if overage > OVERAGE_BANK:
+        print(f"BUILD FAILED: {overage:.1f}s of projected overage at {KAGGLE_SLOWDOWN:.0f}x "
+              f"against a {OVERAGE_BANK:.0f}s bank -- this is what a TIMEOUT looks like before "
+              f"it happens", file=sys.stderr)
         sys.exit(1)
     print("submission verified")
