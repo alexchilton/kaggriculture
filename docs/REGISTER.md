@@ -1,3 +1,5 @@
+
+
 # Register — what is open, what is closed, and what keeps reopening
 
 Last updated 2026-08-08, on `shaping-potential` at the three-branch merge.
@@ -151,6 +153,39 @@ It costs d4 and d5, which currently match, via an unexplained `sh:wheat -2` from
 The obvious explanation (the WHEAT/FERTILIZER reserve being subtracted twice) was tested and is NOT
 the cause. Left unfed until the cause is found. See the comment block at `schedule_agent.py:1630`.
 
+### OPEN-10 — The strawberries die eleven days too early
+
+Owner: nobody. Measured 2026-08-08, `scripts/thirsty_strawberries.py`,
+`data/logs/thirsty_strawberries.log`.
+
+A PLANT tile becomes a WEED at `consecutive_unwatered >= 2` (`reference/kaggriculture.py:753`).
+Counting every tile transition across the season, both seats:
+
+```
+                 died of THIRST              first death
+OURS   STRAWBERRY 41, WHEAT 2                d11
+SEB    STRAWBERRY 41, WHEAT 1                d22
+```
+
+**The totals are identical.** Forty-one strawberries die of thirst on each side, so we are not
+losing crops that Seb keeps alive.
+
+The difference is entirely *when*:
+
+```
+OURS  d11 1, d13 1, d15 2, d16 3, d21 2, d22 5, d23 6, d24 4, d26 9, d27 3, d28 5
+SEB                                        d22 3, d23 8, d24 8, d26 9, d27 3, d28 10
+```
+
+Seb loses his **entirely from d22** — the final week, when another watering cannot pay itself back.
+That is a deliberate end-of-season abandonment, not neglect.
+We start losing them at **d11**, when each tile still had ten or more days of yield left.
+
+Same deaths, ours eleven days early. That is the whole of `strawb -94` and `sh:straw -78`.
+
+This is NOT caused by the sheep-placement fix or by FEED_TURN_CAP — the first death is d11, which
+precedes both.
+
 ### OPEN-4 — Idle diverges only when the board gets busy
 
 Owner: nobody. Task #18.
@@ -171,15 +206,9 @@ seed 11.
 The general rule is believed to be "this animal was already in the shed yesterday", which needs shed
 age plumbed through `build_nodes`.
 
-### OPEN-6 — `weeds −174`: we beat the tape and nobody knows why
+### ~~OPEN-6 — `weeds −174`: we beat the tape~~  → CLOSED, see C-16
 
-Owner: nobody. Task #25.
-
-Visible only on the corrected baseline.
-We finish with **34 fewer** weed tiles than Seb, growing from −12 at d21 to −34 at d27–d28.
-This is us outperforming the reference on a field.
-Worth understanding specifically so a later arm does not trade it away by accident — weeded ground
-refuses PLANT for the rest of the season.
+We do not beat the tape here. We spend 35 unit-turns tidying up after ourselves.
 
 ### OPEN-7 — Merge to `main`
 
@@ -208,6 +237,8 @@ Do not reopen these without new evidence that contradicts the named artifact.
 | C-13 | `sh:wheat −2` at d4 | Does not exist on our tree. It was a mis-relayed figure from an agent branch. | verified d0–d7 exact |
 | C-14 | The tape idles 0 turns on day 1 | Harness artifact — the tape was replayed into seat 1 with truncated hands. Real figures 144/131. | test removed |
 | C-15 | GPU thermal throttling | Ruled on and closed. Do not re-rank it into any review. | — |
+| C-16 | `weeds −174` means we beat the tape | FALSE, and it is the opposite. Seb finishes with **42 weeds standing** and we finish with **8**, because we DIG ours (`dig +35`) and he leaves his alone. Weeded ground he was never going to replant costs him nothing; clearing it costs us 35 unit-turns. Final board: ours `WEED=8 empty=72`, his `WEED=42 empty=37`. | `data/logs/thirsty_strawberries.log` |
+| C-17 | Feeding the animals starves the crops of water | FALSE. Thirst deaths are **41 STRAWBERRY on each side**, ours 41 + 2 wheat, his 41 + 1 wheat. Feeding is not stealing waters Seb keeps. The real difference is timing, now OPEN-10. Also: the first strawberry death is d11, which precedes both the sheep-placement fix and `FEED_TURN_CAP`, so neither can be the cause. | `scripts/thirsty_strawberries.py` |
 
 ---
 
