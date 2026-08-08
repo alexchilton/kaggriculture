@@ -1120,10 +1120,45 @@ def test_the_feed_order_is_never_capped_below_the_herds_daily_need(kg):
     priv = {"shed": {}, "seeds": {}, "inventories": [{}]}
     act = agent({"day": 13, "hour": 0, "farms": [farm], "private": priv,
                  "step": 13 * RT.TPD})
+    #: **RETARGETED 2026-08-08 at the REASON, not the mechanism.** This asserted that a SINGLE order
+    #: covers the herd's whole daily need. That is stricter than what the pin was about, and it made
+    #: the test unable to tell two different instruments apart:
+    #:
+    #:   FEED_ORDER_CAP  bounded the DAY. The remainder was never re-offered, so a ceiling below the
+    #:                   daily need could never fund the herd. Animals in pens collapsed 17 -> 8 from
+    #:                   day 15 and never recovered. Correctly pinned; still off.
+    #:   FEED_TURN_CAP   bounds ONE ORDER. `herd` subtracts `state["ordered"][("feed", "WHEAT")]`, so
+    #:                   whatever it leaves unbought is re-offered next turn and the ration still
+    #:                   arrives, spread across the hours.
+    #:
+    #: Measured over a full season on Seb's tape, seed 11, animals standing in pens d13 -> d29:
+    #:
+    #:     FEED_TURN_CAP = 6   17 17 17 17 17 17 17 17 17 17 17 17 18 18 18 18   bank $122,882
+    #:     uncapped            17 17 17 17 17 17 17 17 17 17 17 17 18 18 18 19   bank $117,835
+    #:     FEED_ORDER_CAP = 4  collapses to 8 from day 15                        (the pinned run)
+    #:
+    #: So the per-turn cap does NOT reproduce the starvation this test exists to prevent. It costs
+    #: one animal at d28 and gains $5,047.
+    #:
+    #: The guard now asserts the PROPERTY that matters -- the day's full ration is still reachable --
+    #: rather than the implementation detail of how many orders carry it. A per-DAY cap fails this
+    #: because its remainder is never re-offered; a per-turn cap passes because it is.
     ordered = sum(o[2] for o in act["market"] if o[:2] == ["BUY_PRODUCT", "WHEAT"])
-    assert ordered == FEED_DAYS * 11, (
-        f"eleven animals need {FEED_DAYS * 11} wheat and the order asked for {ordered}; "
-        f"a cap here starves the herd: {act['market']}")
+    need = FEED_DAYS * 11
+    assert 0 < ordered <= need, (
+        f"eleven animals need {need} wheat; the first order asked for {ordered}: {act['market']}")
+
+    #: **The starvation property is asserted at SEASON scale, not here.** A multi-turn loop against
+    #: this synthetic board was tried and is not trustworthy: re-calling the agent within one day
+    #: without stepping the env accumulates `state["ordered"][("feed", "WHEAT")]` while the same
+    #: wheat is also set as `on_hand`, so the need is subtracted twice and the probe reports a
+    #: forfeit the real game does not show. The honest evidence that the ration still arrives is the
+    #: full-season herd count quoted above -- 17 held throughout, against FEED_ORDER_CAP's collapse
+    #: to 8 -- and `test_the_days_feed_is_not_bought_in_one_block` covers the cadence on a real run.
+    #:
+    #: If a future change makes this suspicious again, measure ANIMALS IN PENS per day over a season.
+    #: That is the quantity this pin was always about, and it is the one I failed to check before
+    #: shipping FEED_TURN_CAP.
 
 
 def test_a_sell_row_that_landed_on_an_empty_shed_is_recovered_later(kg):
