@@ -2846,6 +2846,43 @@ def test_the_days_feed_is_not_bought_in_one_block():
         f"orders across the day, ending on double the wheat")
 
 
+def test_a_far_pen_is_refused_for_budget_and_not_on_ratio():
+    """The stranded PLACE is not outbid. It is served LAST and by then the day is spent.
+
+    This is the theory the two `slow` tests below rest on, reduced to one unit so it runs in
+    milliseconds. Measured first on the real board -- Seb's tape, seed 11, every `plan_routes` call
+    on days 14 and 15, for the pens at (8,0) and (9,0):
+
+        d14 h0   cheapest append costs 16, u0 had used 23 of 23      OVER BUDGET
+        d14 h1   cheapest append costs  8, u1 had used 21 of 22      OVER BUDGET
+        d14 h2   cheapest append costs  4, u10 had used 21 of 21     OVER BUDGET
+        d14 h12  cheapest append costs 18, u0 had used  8 of 11      OVER BUDGET
+        d14 h19  cheapest append costs 10, u5 had used  0 of  4      OVER BUDGET
+
+    **Every refusal on both days is over budget. Not one is a ratio loss.** Early there is budget
+    and no free unit; late there is a free unit and no budget. That is why multiplying the PLACE
+    prize by 1000 changes the season not at all -- penned, shed and money are identical to the
+    dollar on every day of a 0/1/10x sweep, and only x0 moves anything.
+
+    So the fix cannot be a price. `plan_routes` runs the MANDATORY pool first, against an empty
+    budget, and the optional pool afterwards against whatever survives; the placement has to be in
+    the first pool to be reachable at all. See `RT.PLACE_IS_MANDATORY_FROM_DAY`.
+    """
+    depot = (4, 4)
+    # Priced exactly as the board prices it, so the gate is under test and not just the pool split.
+    pen = RT.build_nodes([[{"kind": "PASTURE"}]], day=14, shed={"SHEEP": 1}, carried={},
+                         unlocked=("NW",), pinned={}, hour=1)[0]
+    pen.tile = (8, 0)
+    # Four waters one step apart -- the high-ratio near work that fills the day -- against one pen
+    # eight steps out. The budget fits either the waters or the pen, never both.
+    near = [RT.Node((4, 4 - i), [("WATER", None, 480.0)]) for i in range(1, 5)]
+    plan = RT.plan_routes([depot], near + [pen], [12], depots=(depot,), supply={"SHEEP": 1})
+    tiles = [n.tile for n in plan[0]["route"]]
+    assert pen.tile in tiles, (
+        f"the pen at {pen.tile} was left out of a 12-turn day that had room for it: {tiles}. "
+        f"It is not outbid -- it is offered after the budget is gone.")
+
+
 @pytest.mark.slow
 def test_the_last_sheep_do_not_sit_in_the_shed_for_the_rest_of_the_season():
     """Two sheep sit unplaced beside two empty pens from day 14 to the end.

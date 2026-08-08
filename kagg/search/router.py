@@ -109,6 +109,77 @@ SEED_COST = {"WHEAT": 10, "CARROT": 20, "TOMATO": 50, "STRAWBERRY": 100, "MELON"
 #: restores the old needs exactly. See `Node.__init__` for the day-0 measurement.
 PLACE_DRAWS_FEED = True
 
+#: Whether a PLACE joins the MANDATORY pool, which `plan_routes` assigns against an empty budget,
+#: instead of the optional pool it is offered to once the day is spent. `None` restores the old
+#: behaviour exactly; an int is the first day it applies, so the early days can be held fixed.
+#:
+#: **The stranded animal is a budget failure, not a pricing one, and that is measured.** Seb's tape,
+#: seed 11, two SHEEP in the shed beside the empty pens at (8,0) and (9,0) from day 14 to season end.
+#: Every `plan_routes` call on days 14 and 15 refused them, and every refusal was OVER BUDGET:
+#:
+#:     d14 h0   cheapest append 16 turns, u0 had used 23 of 23
+#:     d14 h1   cheapest append  8 turns, u1 had used 21 of 22
+#:     d14 h2   cheapest append  4 turns, u10 had used 21 of 21
+#:     d14 h12  cheapest append 18 turns, u0 had used  8 of 11
+#:     d14 h19  cheapest append 10 turns, u5 had used  0 of  4
+#:
+#: Not one refusal was a ratio loss. Early in the day there is budget and no free unit; late there is
+#: a free unit and no budget, because `budget = TPD - hour - 1` has collapsed to single digits while
+#: the round trip to the far corner still costs ten to eighteen turns. The two windows never overlap,
+#: which is why the animal sits there for sixteen days rather than a few.
+#:
+#: MEASURED, and it is the reason this is not a price: multiplying the PLACE prize by 2, 3, 5 and 10
+#: leaves the season **identical to the dollar** -- penned, animals in the shed and money agree on
+#: every one of eighteen days. Only x0 moves anything. `days_left * BASE_PRICE["FERTILIZER"]` on the
+#: prize, tried before this, is the same non-event for the same reason.
+#:
+#: This does NOT let a placement jump the budget: mandatory nodes are still refused when
+#: `used + cdelta > cap`. It only gives the placement first claim on turns that are otherwise gone by
+#: the time it is offered. Nor does it outrank a hungry animal -- ordering inside the pool is still
+#: `prize / cost`, and a FEED's $100,900 over two turns beats a placement's $101,100 over ten.
+#:
+#: SWEPT on the gate day, seed 11, Seb's tape, `breakdown.py --days 17 --diff` differing cells:
+#:
+#:     gate        d0-d11    d12  d13  d14  d15  d16     animals in pens d13-d28
+#:     None (off)  baseline   12   12   14   17   16     17 x12 then 18 18 18 18
+#:     0           identical  --   --   --   --   --     16 from d14, and never recovers
+#:     6           identical  --   --   --   --   --     16 from d14, and never recovers
+#:     12          identical  13   12   12   18   18     17 18 18 18 18 17 ... 17
+#:     13          identical  12   14   16   17   20     18 19 18 18 ... 17
+#:     14          identical  12   12   12   17   19     17 19 19 17 17 ... 17
+#:
+#: **14, because it is the only gate that moves the target day without moving an earlier one.**
+#: d0-d11 are byte-identical under every gate. 0 and 6 drop the herd to 16 and hold it there, which
+#: is the starvation floor and disqualifying on its own. 12 pays d12 12 -> 13. 13 pays d13 12 -> 14
+#: AND makes the target day worse, 14 -> 16. Only 14 leaves every earlier day untouched.
+#:
+#: At d14 it takes the two fields this is about to EXACT: `sheep` -2 -> 0 and `place` -2 -> 0, with
+#: `feed` -2 -> -1, `care` -2 -> -1 and idling +17 -> +5. The shed holds no animal from d14 on.
+#:
+#: **What it exposed, which is a SEPARATE defect and is left open deliberately.** d16 goes 16 -> 19
+#: cells and the season bank ends $102,083 against $104,469. The cause is not the placement; it is
+#: what the two extra animals cost once they are in pens. Measured at d16, ours minus tape, off ->
+#: on: `water` +3 -> -1, `strawb` -3 -> -7, `weeds` 0 -> +2, `dig` +2 -> +5, `harvest` -2 -> -4.
+#: Two more pens is six more ops a day (FEED, CARE, COLLECT_FERTILIZER x2) and they come out of
+#: WATER, so strawberry tiles weed and then have to be dug.
+#:
+#: The herd shows it too: penned peaks at 19 on d14-d15 and falls back to 17 on d16 with the shed
+#: EMPTY, so two animals starved and escaped rather than being sold. The old run only looked
+#: healthier because those two animals were parked in the shed, where nothing can starve them and
+#: they also earn nothing -- the flat 17 was hiding a feed pipeline that cannot carry 19.
+#:
+#: The gap does NOT compound: -$1,510 at d16 and -$2,386 twelve days later, because the animals that
+#: do survive earn most of it back. So the next question is the feed/turn budget at 19 pens, not
+#: whether to place them.
+#:
+#: **The gate day is fitted to one seed and one tape and should be treated as such.** The rule it
+#: encodes -- a placement must be offered before the budget is spent -- is general; the number 14 is
+#: not, and it is where the schedule stops buying animals on THIS tape, so a stranded one stays
+#: stranded. A gate keyed on "this animal was already in the shed yesterday" would say the same thing
+#: without the magic number, and needs the shed's age plumbed through `build_nodes`. Worth doing
+#: before this is trusted on another seed.
+PLACE_IS_MANDATORY_FROM_DAY = 14
+
 CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells against 42,
                         # last PLACE pushed hour 20 -> 22. Our four pens are not one tour.
 
@@ -591,7 +662,13 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
                             {"animal": a, "placed_day": day}, day)
                         if TPD - hour - 1 < SERVICE_ROUND:
                             served -= BASE_PRICE[ANIMALS[a]["product"]]
-                        ops = [("PLACE", a, max(1.0, served))]
+                        served = max(1.0, served)
+                        # See `PLACE_IS_MANDATORY_FROM_DAY`. The refusal is a budget refusal, so the
+                        # only thing that reaches it is being offered before the budget is spent.
+                        if (PLACE_IS_MANDATORY_FROM_DAY is not None
+                                and day >= PLACE_IS_MANDATORY_FROM_DAY):
+                            served += MANDATORY
+                        ops = [("PLACE", a, served)]
                         break
             elif kind == "WEED":
                 # Worth exactly the planting it unblocks, so late in the season a weed is furniture.
