@@ -61,6 +61,63 @@ missed same-day sale belongs to OPEN-1. Do not open it as a new item.
 
 ---
 
+## The framing error underneath most of the OPEN list
+
+Alex, 2026-08-08: *"exactly which is why i never understood your urgency thing and patching etc."*
+
+**The day's assignment is a deterministic scheduling problem with release times, and we solve it with
+a greedy heuristic built for incomplete information.**
+
+Measured, `scripts/` probe on seed 11, all 29 days:
+
+```
+day   crew size at each hour it CHANGES
+d0    h0:1  h1:6  h2:7  h3:8
+d10   h0:1  h1:7  h2:13
+d28   h0:1  h1:8  h2:13
+latest hour any crew was still changing: h3
+```
+
+The crew resets to 1 each dawn and is **final by h2, h3 at worst**. The schedule names it outright --
+`hires` and `hands` per day, `d0 hires=7`, `d10 hires=12`. The board is deterministic. So from h2
+there are 13 known vehicles, 21 known turns each, and a fully known board: **273 unit-turns of
+complete information**, of which 35-46 go unspent.
+
+The comment in `_router_acts` justifying the adaptive design -- *"hands are hired through the
+morning, so the dawn plan genuinely cannot know how many vehicles it has"* -- is **stale**. It is
+true for two hours.
+
+**Every knob in `router.py` is compensation for that mismatch**, and none of them is a rule:
+
+```
+MANDATORY = 100_000              CRITICAL = 1_000_000
+STEAL_FROM_DAY = 6               STEAL_FROM_DAY_MARGIN = 4
+PLACE_IS_MANDATORY_FROM_DAY = 14 URGENT_OPS = ()
+FEED_TURN_CAP = 6                BUY_DRIP = 1
+```
+
+`CRITICAL` exists only because greedy cheapest-insertion ranks by `prize / cost` and division
+destroys ordering, so "this animal dies tonight" cannot be expressed except as a tier. In a real
+solve it is a **constraint**: a plan that starves a pen is infeasible and is rejected. Not a prize.
+`PLACE_IS_MANDATORY_FROM_DAY = 14` is a day number fitted to one seed, and generalising it cost
+$15,882 on another -- that is a curve fit, not a rule.
+
+**What survives a rewrite is the measurements, not the mechanisms.** The melon water pricing, the
+repeated unfed pen, the 101 binned units, the unspent turns beside unserved work -- those are facts
+about the domain and become constraints and objective terms in any solver. The tiers and the magic
+constants should not be inherited as design.
+
+**And the one-second turn budget that forces all of it is self-imposed.** `jax_sim` passes 300/300
+full-length episodes exactly, so the same problem can be solved OFFLINE with hours instead of a
+second, which is what the top finishers do -- they submit fixed 720-turn scripts. See
+`plan.py`, `scheduler.py`, `script_mutate.py`, `optimise_script.py`, `build_script_submission.py`,
+all already in the repo.
+
+Keep the starvation floor as scaffolding with an expiry: a dead herd is wrong today whatever
+replaces the planner.
+
+---
+
 ## OPEN
 
 ### OPEN-1 — DIAGNOSED, NOT FIXED. The WATER ran seven hours late, not the delivery
