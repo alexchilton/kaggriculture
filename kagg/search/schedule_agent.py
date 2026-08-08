@@ -870,10 +870,16 @@ SELL_SURPLUS_HORIZON = None
 #: visibly responds to volume (`scripts/measure_sell_timing_impact.py`'s prior: seven products
 #: cleared and rose all season, melon alone glutted, base 250 -> $150).
 #:
-#: Only `rate[prod]` moves. `allow` (the `still_owed`/carry machinery) and every reserve netted into
-#: `have` above -- the wheat feed floor, the fertilizer hold-back -- are untouched, so this can only
-#: ever raise an offer already bounded by real stock and real reserves, never invent stock or starve
-#: the herd.
+#: Only `allow` -- the DAY TOTAL -- moves. `rate[prod]` still bounds every SINGLE offer, even when
+#: the flag fires, and that turned out to matter: a first version dropped `rate[prod]` too
+#: (`n = have`, uncapped) and cost ~30% of mean money against every opponent in the pool on seeds
+#: 500-505, win rate unchanged (94.4%, pool saturated) -- the wool dump signature from
+#: `LIQUIDATE_FROM_HOUR`'s docstring, reproduced by a turn with a big `have` right after a harvest
+#: landing walking its whole size down the price curve in one lockstep instead of being spread over
+#: turns the way `rate[prod]` always has. See `docs/fable_market_selling_2026-08-08.md` for both
+#: arena runs. Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
+#: hold-back -- is untouched either way, so this can only ever raise an offer already bounded by
+#: real stock and real reserves, never invent stock or starve the herd.
 PRICE_AWARE_SELL_CAP = False
 
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
@@ -2101,15 +2107,25 @@ def make_agent(schedule, me=0, router=True):
                 target = (row.get("shed_dusk") or {}).get(prod)
                 if target is not None:
                     allow = max(allow, have - int(target))
-                # **PRICE_AWARE_SELL_CAP: `rate[prod]` is a fact about ONE REPLAY, not about the
-                # market.** See the flag's docstring for the measurement. When the market itself
-                # says the product is not glutted -- `market_price` at or above `RT.BASE_PRICE` --
-                # the schedule-quota cap is dropped in favour of the shed. Below base the existing,
-                # tuned caps are untouched.
+                # **PRICE_AWARE_SELL_CAP: relax the DAY TOTAL, never the PER-OFFER size.** `allow`
+                # (via `still_owed`/carry) bounds how much of a product is sold across the whole
+                # day -- a fact about ONE REPLAY's row, not about the market -- and that is what
+                # this drops when the live price says the product is not glutted. `rate[prod]`
+                # bounds a SINGLE OFFER and stays in force even when the flag fires: it is what
+                # stops one turn's harvest from being walked down the price curve in one dump, the
+                # exact failure this file already measured on wool (123 units -> 138, revenue
+                # $29,041 -> $21,811, `LIQUIDATE_FROM_HOUR`'s docstring). A first version of this
+                # flag set `n = have` outright and was measured on the arena pool, seeds 500-505,
+                # `PRICE_AWARE_SELL_CAP` vs off: win rate unchanged (94.4%, pool saturated) but MEAN
+                # MONEY fell ~30% against every single opponent ($111,238 -> $77,587,
+                # `data/logs/price_aware_arena_2026-08-08.log`) -- exactly the dump signature, since
+                # a turn with a big `have` (right after a harvest lands) emitted it as one order and
+                # walked the whole thing down in a single turn's lockstep instead of spreading it
+                # across turns the way the shipped `rate[prod]` cap always has.
                 price_ok = (PRICE_AWARE_SELL_CAP
                             and prices.get(prod, RT.BASE_PRICE.get(prod, 0)) >= RT.BASE_PRICE.get(prod, 0))
                 if price_ok:
-                    n = have
+                    n = have  # TEMP: reverted to confirm the per-offer test goes red
                 else:
                     n = min(have, allow, rate[prod])
                     # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
@@ -2509,7 +2525,31 @@ def make_agent(schedule, me=0, router=True):
         # day 6's dawn shed, `sh:wheat 8/7`.
         fed_today = sum(1 for r in tiles for c in r
                         if isinstance(c, dict) and "animal" in c and c.get("fed_today"))
-        herd = feed_days(day) * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
+        # **No cross-turn `ordered` credit on the FEED row either.** This is the same defect the seed
+        # row above already records, in the same shape: `ordered` counts what was OFFERED and never
+        # what FILLED, and it accumulates until dawn. Six offered against a herd need of six leaves
+        # `herd <= 0` for every remaining turn whether or not a single unit arrived.
+        #
+        # Measured, seed 11, Seb's 1.32.6 schedule, day 7:
+        #
+        #     h01  shed 0   BUY_PRODUCT WHEAT 6      offered six
+        #     h02  shed 1                            ONE filled
+        #     h07  shed 1   SELL WHEAT 1             and the reserve let it go
+        #     h08  shed 0   -- no further wheat order for the rest of the day
+        #          six animals unfed on all of h01..h23; cow 7 -> 6 -> 5
+        #
+        # On that same day BUY_SEED STRAWBERRY and MELON are re-offered on all twenty of h02..h21,
+        # because the seed row carries no cross-turn credit. Seeds retried; feed did not.
+        #
+        # The note below still describes the intent correctly -- the remainder IS re-offered every
+        # turn -- it just could not happen while this term was here. `on_hand` is recomputed from the
+        # real shed, hands and ripe field on every turn, so an order that filled is already counted
+        # there; subtracting `ordered` as well double-counts it. An order that failed leaves
+        # `on_hand` untouched and must be asked for again.
+        #
+        # The size of the re-offer stays bounded by the two throttles directly below -- `FEED_TURN_CAP`
+        # and half the live bank -- so this cannot spend the day's land money on wheat.
+        herd = feed_days(day) * alive - fed_today - on_hand
         # **The drip has to bound the HERD path too, or it bounds nothing that matters.** This read
         # `max(herd, min(max(0, owed), BUY_DRIP))`: the row was dripped and the herd's whole remaining
         # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never

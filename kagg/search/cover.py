@@ -178,6 +178,17 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
+#: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
+#: the tour opens with a shed trip. See `materialise` rule 0.
+#:
+#: This is deliberately NOT a lowered `DELIVER_MIN`. The note at rule 2 records what lowering that
+#: threshold on a short day actually did -- a shed trip after every stop, PICKUP 2 / DROP 12, eight
+#: animals unfed. This fires at most ONCE per tour, before any work, and so cannot produce that
+#: shape. It is the delivery half of `FUND_THE_DAY_WHEN_SHORT`: that rule reorders the day's WORK so
+#: the sellable harvest happens first, and this one gets the result to the shed while the market is
+#: still open.
+RUSH_BANK_MIN = 4
+
 #: Whether a hand is judged for a shed trip by what it CARRIES (True) or by what today's sell row
 #: still owes (False, shipped). See the long note in `materialise` for the defect it targets, which
 #: is real and measured: animal produce rides in a hand all day and reaches the shed only via the
@@ -369,6 +380,34 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         after[i] = after[i + 1] + work[i].needs
 
     route, pos = [], tuple(start)
+
+    # **Rule 0, and only on a short day: a hand that STARTS the tour holding the row's produce banks
+    # it before it works.** See `RUSH_BANK_MIN`.
+    #
+    # `rush` reaches here as `fund=short_of_cash` from `_solve`, and until now it only reordered WORK
+    # -- `Job.funds` puts the sellable harvest first. That is half a rule. The other half is that the
+    # result has to reach the SHED, because the market reads the shed and nothing else, and a unit
+    # diverted by `BANK_THE_HAND_WHEN_SHORT` arrives here already carrying the goods. Without this it
+    # is handed a fresh tour and the only drop it gets is the closing one at rule 3, after all of it.
+    #
+    # Measured, seed 11 day 4: u0 held 4 FERTILIZER and u6 held 2, from hour 8 to hour 15, while the
+    # bank finished the day on $939 against a $1,000 parcel. Four is under `DELIVER_MIN`, so rule 2
+    # never fired and the fertilizer was banked by the midnight sweep, hours after the market shut.
+    #
+    # The `owed` guard is the same one rule 2 and the free drop carry, for the same reason: `DROP` is
+    # all-or-nothing (`kaggriculture.py:333`), so a hand holding the herd's dinner beside the harvest
+    # would shed both. If ANY of what it carries is owed ahead, the tour keeps the lot and delivers
+    # the ordinary way.
+    if rush and work and not any(after[0][p] > 0 for p, q in held.items() if q > 0):
+        spare = sum(min(held[p], q) for p, q in wanted.items() if q > 0 and held[p] > 0)
+        if spare >= RUSH_BANK_MIN:
+            d = nearest(depots, pos, work[0].tile)
+            # Draws the whole remainder back on the same stop, exactly as rule 2 does, so the tour
+            # does not pay for a second depot visit one job later.
+            route.append(Depot(d, drop=True, pick=after[0]))
+            held = collections.Counter(after[0])
+            pos = d
+
     for i, j in enumerate(work):
         short = collections.Counter({it: q - held[it] for it, q in after[i].items() if q > held[it]})
         # **Deliverable is the SURPLUS: what the hand holds that this tour will not itself CONSUME.**
