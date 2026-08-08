@@ -45,9 +45,84 @@ missed same-day sale belongs to OPEN-1. Do not open it as a new item.
 
 ## OPEN
 
-### OPEN-1 — Harvest lands too late in the day to be sold  ← the big one
+### OPEN-1 — DIAGNOSED, NOT FIXED. The WATER ran seven hours late, not the delivery
 
-Owner: agent running (opus, worktree). Task #13.
+Owner: open. Commit `4df96e2`, merged. See `docs/harvest_ordering_2026-08-08.md`,
+`scripts/when_the_melon_fills.py`, `tests/test_the_filling_water_carries_the_harvest.py`.
+
+**Status is deliberately "diagnosed", not "solved".** The cause is established and the arm helps the
+day it targets, but it costs more on the days after it than it gains:
+
+```
+money      d10     d11     d12     d13     d14     d15   |  season   cells
+before   -3082    -422   -1014    -227    -172    +230   | -103724     414
+after    -1548   -1516   -3107   -1567   -1564    -732   | -106686     419
+```
+
+Target day **+$1,534**. The five days after it **−$8,700**. Season **−$2,962**, five more differing
+cells, and `sh:melon` overshoots from `+24` to `−24` — we went from holding too much melon to
+holding too little.
+
+Under the SELECTION RULE that is a good fix for d10 with a later-day problem of separate origin
+(OPEN-11), which is why it is merged rather than reverted. But the register does not get to call
+this closed, and an earlier draft of this entry did. The diagnosis below is what is genuinely
+banked; the arm is provisional.
+
+**Six labels and seven reverted arms all pointed downstream of the real cause.**
+
+```
+hour each ripe MELON tile first fills 6/6 and becomes harvestable at all
+SEB   (4,2) h6    (3,1) h9    (4,1) h9
+OURS  (2,0) h15   (1,0) h16   (0,0) h18
+```
+
+Both sides wake on d10 with the same three tiles at **5/6**.
+MELON is a one-shot and `_one_shot_is_finished` refuses HARVEST while `room > 0` — correctly, since
+HARVEST demolishes the tile.
+So **neither side could harvest before the fill**, and our harvests at h17/h19/h20 land one to three
+turns *after* our fills.
+The harvest was always prompt. The drop was always prompt behind it.
+
+The defect was the WATER. `crop_ops` priced an in-window one-shot water at the single unit it adds,
+**$250**, while an out-of-window survival water on an *immature* melon priced at `_crop_remaining` —
+the whole tile, **$1,250–$1,500**.
+The planner therefore ranked insurance on a tile that could not yield for two more days at
+**six-to-one** over the one water that unlocks same-day cash.
+
+Fix (`FILLING_WATER`): when a water fills the tile, the node also offers the HARVEST it unlocks.
+No new mechanism — `_live_ops` already emits WATER then HARVEST at the same stop next turn.
+
+Day 10, the day it targets: `money -3082 -> -1548`, `sh:melon +12 -> 0`, fills
+`h15/h16/h18 -> h10/h15/never`. **d0–d9 byte-identical.**
+
+Reverting the flag turns 2 of 3 new tests red. The third passes either way *on purpose*: it proves
+the WATER→HARVEST pair was always executable, i.e. execution was never the defect.
+
+A rejected arm is recorded at the emission site: pricing the harvest at `held` rather than
+`held + gain` is the strictly correct marginal, and it gives back the entire gain, because an
+immature melon's survival water prices at *exactly* $1,500 too and the surplus $250 is the only
+thing breaking the tie.
+
+**Lesson for the register:** every one of the six labels described a *symptom at a later leg*. The
+question that cracked it was asked about the **tile**, not about the unit, the route, or the shed.
+
+### OPEN-11 — Survival water is never discounted for how far off the yield is
+
+Owner: nobody. Split out of OPEN-1, d11 regresses `-422 -> -1516` with `weeds +3`, `strawb -3`,
+`water -3`.
+
+`_crop_remaining` prices a survival water as the whole tile regardless of how many days away that
+tile's yield is, so insurance on an immature crop is never discounted for waiting.
+
+Do **not** fix this by weakening `FILLING_WATER` — that is precisely what the rejected arm above did,
+and it gave back the whole d10 gain.
+
+This is almost certainly the same mispricing behind OPEN-10 (strawberries dying eleven days early):
+a survival water that is over-priced early is also over-priced late.
+
+### ~~OPEN-1 (original framing) — Harvest lands too late in the day to be sold~~
+
+Kept for the audit trail. Task #13.
 
 The measurement, `data/logs/melon_d10_side_by_side.log`, day 10, seed 11, weeds off:
 
@@ -67,8 +142,8 @@ The reframe that has never been tested: every prior attempt asked *why do we del
 The trace says we also **harvest late** — his first melon harvest is h6, ours is h17.
 If harvest ordering within the day is the cause, all seven prior arms were treating a symptom.
 
-Related shed rows that are probably the same defect: `sh:wheat −139` (OPEN-2),
-`sh:straw −78`, `harvest −51`.
+Related shed rows: `sh:straw −78`, `harvest −51`.
+**`sh:wheat −139` was listed here as "probably the same defect" and it is NOT — see C-18.**
 
 Dossier: `melon_reality_check_2026-08-07.md`, `fable_stranded_carrier_2026-08-07.md`,
 `fable_return_leg_2026-08-07.md`, `fable_delivery_node_2026-08-07.md`,
@@ -76,14 +151,9 @@ Dossier: `melon_reality_check_2026-08-07.md`, `fable_stranded_carrier_2026-08-07
 `service_undercount_2026-08-07.md`, and the reverted-with-numbers comments at the return leg in
 `kagg/search/schedule_agent.py`.
 
-### OPEN-2 — `sh:wheat` first diverges at day 8
+### ~~OPEN-2 — `sh:wheat` first diverges at day 8~~  → CLOSED, see C-18
 
-Owner: agent running (sonnet, worktree). Task #23.
-
-Exact d0–d7, then `−1, −5, −5, −8, −9, −11, −10, −14 …`, total **−139** across 21 days.
-Three candidate causes and they are *different bugs*: we harvest less, we harvest the same but it is
-in hands at dusk (i.e. this is OPEN-1), or we sell more.
-Which one has never been established.
+Not a defect. Two equally valid routing orders, and the day-8 −1 is fully accounted for.
 
 ### OPEN-3 — `sh:milk +464` and `buy_product −164`
 
@@ -238,6 +308,7 @@ Do not reopen these without new evidence that contradicts the named artifact.
 | C-14 | The tape idles 0 turns on day 1 | Harness artifact — the tape was replayed into seat 1 with truncated hands. Real figures 144/131. | test removed |
 | C-15 | GPU thermal throttling | Ruled on and closed. Do not re-rank it into any review. | — |
 | C-16 | `weeds −174` means we beat the tape | FALSE, and it is the opposite. Seb finishes with **42 weeds standing** and we finish with **8**, because we DIG ours (`dig +35`) and he leaves his alone. Weeded ground he was never going to replant costs him nothing; clearing it costs us 35 unit-turns. Final board: ours `WEED=8 empty=72`, his `WEED=42 empty=37`. | `data/logs/thirsty_strawberries.log` |
+| C-18 | `sh:wheat −139` from d8 is a defect | NOT a defect. On d8 the `HARVEST` op count is identical (2/2) and the net market delta is identical (+10/+10), so "we harvest less" and "we sell more" are both ruled out. The −1 lives entirely in the DROP / dusk-sweep / PICKUP mix, and it is the OPPOSITE way round from the assumption: **the tape** holds 3 units until the dusk auto-drop; we drop mid-day. Two equally valid routing orders. Verified by an exact accounting identity — `start + DROP + dusk_drop + PICKUP + PLACE + market == end` — holding on every day for both sides. No fix written, deliberately: there is no defect to write a failing test against, and forcing our order to match would be cloning the tape. | `docs/wheat_d8_2026-08-08.md`, branch `worktree-agent-ad4be40e954a71ed5` |
 | C-17 | Feeding the animals starves the crops of water | FALSE. Thirst deaths are **41 STRAWBERRY on each side**, ours 41 + 2 wheat, his 41 + 1 wheat. Feeding is not stealing waters Seb keeps. The real difference is timing, now OPEN-10. Also: the first strawberry death is d11, which precedes both the sheep-placement fix and `FEED_TURN_CAP`, so neither can be the cause. | `scripts/thirsty_strawberries.py` |
 
 ---
