@@ -185,6 +185,34 @@ CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells again
 
 SERVICE_ROUND = 10
 
+#: `FILLING_WATER` -- the water that takes a one-shot crop to `max_yield` also offers its HARVEST.
+#:
+#: **This is the day-10 melon, and it was never a delivery fault.** Measured on Seb's tape, seed 11,
+#: day 10, weeds off (`scripts/when_the_melon_fills.py`), the hour each of the three ripe MELON tiles
+#: first reads 6/6 and so becomes harvestable at all:
+#:
+#:     SEB   (4,2)=h6   (3,1)=h9   (4,1)=h9        -> SELL 12 @h13, SELL 6 @h15, 0 in shed at dawn
+#:     OURS  (2,0)=h15  (1,0)=h16  (0,0)=h18       -> harvested h17/h19/h20, 18 in shed at dawn
+#:
+#: Both sides wake with the same three tiles at **5/6**. MELON is a one-shot, and
+#: `_one_shot_is_finished` refuses HARVEST while `room > 0` -- correctly, since HARVEST demolishes
+#: the tile. So the harvest could not have happened earlier than the fill on either side, and ours
+#: lands one to three turns after it. The HARVEST is prompt; the WATER is seven hours late. Seven
+#: previous arms moved the delivery leg, which is two steps downstream of this.
+#:
+#: The water is late because of its price. An in-window one-shot water is priced at the single unit
+#: of yield it adds, $250. An out-of-window survival water on an immature melon is priced at
+#: `_crop_remaining`, the whole tile, $1,250-$1,500. So the planner ranked insurance on a tile that
+#: cannot yield for two more days five times above the one water that unlocks same-day money, and
+#: `plan_routes` -- prize-sorted, `prize / cost`-scored -- put it at dusk.
+#:
+#: That price is right for a water with room to spare and wrong for the LAST one, which is the only
+#: thing between the tile and its whole harvest. When the water fills the tile, the node offers the
+#: HARVEST too: `_live_ops` re-derives at the tile, so the unit waters, and next turn `room == 0`
+#: makes `_one_shot_is_finished` true and the same stop emits the HARVEST. No new mechanism -- the
+#: crew already does exactly this back-to-back pair, and this only makes the planner see it coming.
+FILLING_WATER = True
+
 #: Ops whose item really is drawn at the shed. `BUILD` is here because the unit may as well carry the
 #: animal on the same trip and PLACE it the turn after the pen goes up.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
@@ -424,6 +452,25 @@ def crop_ops(cell, day, have_fertilizer):
                     fertilized = True
             if not cell["watered_today"]:
                 out.append(("WATER", None, price * (2 if fertilized else 1)))
+                # **The LAST water is not worth one unit, it is worth the tile.** See
+                # `FILLING_WATER`. It takes `room` to 0, which is exactly the condition
+                # `_one_shot_is_finished` waits for, so the HARVEST becomes legal on the next turn
+                # with the unit already standing here. Offering it on the same node prices the visit
+                # at what it actually banks and lets `_live_ops` emit WATER then HARVEST back to
+                # back, which is what the crew already does -- just seven hours too late.
+                # **TRIED and MEASURED WORSE: price this at `held`, not `held + gain`.** It is the
+                # strictly correct marginal -- the WATER above already carries the unit it adds, so
+                # the full tile bills that unit twice, $1,750 for a stop that banks $1,500 -- and it
+                # is what every other HARVEST is priced at. On seed 11 day 10 it gave back the whole
+                # gain: money -1,548 -> -3,082 and `sh:melon` 0 -> +6, i.e. baseline. The $250 is
+                # what breaks a TIE: an immature melon's survival water is `_crop_remaining`, also
+                # exactly $1,500, and at $1,500 each the filling water no longer outranks it.
+                # `test_a_filling_water_outranks_survival_water_on_a_tile_that_cannot_yield_yet`
+                # goes red on precisely that. Certain money today and contingent value tomorrow are
+                # not the same $1,500, and this node is the only place the difference is expressible.
+                gain = 2 if fertilized else 1
+                if FILLING_WATER and age >= info["first"] and gain >= room:
+                    out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
         elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
             # Outside the window water buys nothing but survival, and it is only needed on the day
             # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
