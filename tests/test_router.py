@@ -2387,7 +2387,17 @@ def test_a_hand_full_of_the_days_sell_row_walks_it_in_when_there_are_turns_to_sp
     resumed, not abandoned, so the two are not being traded off at all. At hour 4 the unit has 19
     turns, needs 3 to finish its tour and 4 to walk home from the last stop, and the detour costs 5.
     """
-    acts = schedule_agent._router_acts(**_mid_tour_state(hour=4))
+    # **Enable the flag this test is ABOUT.** `DELIVER_FERRY` ships OFF -- it costs 4 cells against
+    # Seb's tape (115 -> 119) for a rule that fires once in 818 candidate unit-turns and leaves
+    # hands-at-dusk identical. That is a shipping decision, not a statement that the mechanism is
+    # broken, so the mechanism still has to be covered. Asserting the DEFAULT here would silently
+    # turn this into a test of the flag's value.
+    was = schedule_agent.DELIVER_FERRY
+    schedule_agent.DELIVER_FERRY = True
+    try:
+        acts = schedule_agent._router_acts(**_mid_tour_state(hour=4))
+    finally:
+        schedule_agent.DELIVER_FERRY = was
     assert acts[0][0] in ("EAST", "SOUTH"), (
         f"holding MELON 12 that the day's sell row still owes the shed, with 12 turns of slack and a "
         f"5-turn detour home, the unit emitted {acts[0]} -- it walked on toward (2,2) and the melons "

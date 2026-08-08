@@ -209,7 +209,9 @@ MIN_SELL_ROW_DROP = 6
 #:
 #: Kept ON because it is a strict in-order improvement with nothing regressed, and because it is the
 #: right structure for that change if the census is ever relaxed. It is NOT load-bearing today.
-DELIVER_FERRY = True
+#: **TURNED OFF 2026-08-07.** Costs 4 cells (115 -> 119) for something already documented above as
+#: near-inert: it fires once in 818 candidate unit-turns and hands-at-dusk are identical ON vs OFF.
+DELIVER_FERRY = False
 
 #: Turns of slack held back before the ferry will divert. It exists because `Node.service` is
 #: `len(ops)` fixed at plan time and the executor re-derives ops on arrival, so a tour's remaining
@@ -321,7 +323,38 @@ PEN_NEAREST_DEPOT = False
 #: result, so 9 is chosen: the latest one that still captures the whole gain, which is the least
 #: exposure on the early days of a seed we have not measured. `from d10` is strictly worse under an
 #: in-order metric -- it leaves d9 and d10 alone and only reaches d11.
-PEN_NEAREST_DEPOT_FROM_DAY = 9
+#: **TURNED OFF 2026-08-07: this costs the day-10 land parcel.** It was taken on a 130 -> 127 cell
+#: reading, and the cell metric was the wrong judge. Swept against the other two recent flags, the
+#: result is deterministic -- EVERY configuration with this ON loses the fourth quadrant, and every
+#: one with it OFF keeps it:
+#:
+#:     STEAL  PEN    FERRY    land@d10   cells
+#:     False  False  False    OK          130
+#:     False  False  True     OK          128
+#:     False  True   False    LATE        125
+#:     False  True   True     LATE        125
+#:     True   False  False    OK          115   <- taken
+#:     True   False  True     OK          119
+#:     True   True   False    LATE        118
+#:     True   True   True     LATE        118   <- was shipped
+#:
+#: Turning it off is better on BOTH counts: 118 -> 115 cells and the parcel lands on day 10. Over a
+#: full season the end gap halves, $20,588 -> $8,177, and the `tiles` row disappears entirely.
+#:
+#: The lesson is the pricing, not the rule. Three cells on a per-day counter were traded for 25 tiles
+#: idle for a day, and that compounds for twenty more days. A per-day cell count cannot see it,
+#: because the parcel shows up as ONE cell on ONE day.
+#: **Gated to 11, past the parcel.** Alex's call, and it is the third time this day-gating trick has
+#: paid: the rule is right and the DAY it starts is what decides whether it helps. From day 11 the
+#: pastures still go up near the shed, and the day-10 land purchase is left alone.
+#:
+#:     from-day  land@d10   cells   d11
+#:     None      OK         115     18
+#:     11        OK         114     17   <- taken
+#:     12        OK         115     18
+#:     13        OK         115     18
+#:     9         LATE       118     19   <- what shipped, and what cost the quadrant
+PEN_NEAREST_DEPOT_FROM_DAY = 11
 
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
