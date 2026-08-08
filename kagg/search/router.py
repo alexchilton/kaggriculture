@@ -300,6 +300,34 @@ YIELD_FIRST = False
 #: Whatever puts his sheep on the depot cell is upstream of `build_nodes`, in the buy/place order.
 DEPOT_PEN_BY_LOAD = False
 
+#: **A pen is placed with the animal it was BUILT for.**
+#:
+#: This is the "upstream of `build_nodes`, in the buy/place order" the note above ends on, and it
+#: turns out to be one line of bookkeeping rather than a new ranking. `_refresh_pins` already sites
+#: pens one at a time against the schedule's ORDERED `places` row and stamps each with an animal --
+#: `pins[spot] = ("BUILD", a, cost)`. The near ground is pinned first, so the row's order already
+#: decides who gets the short walk. Seb's day-0 row is `['SHEEP', 'SHEEP', 'COW', 'COW']` and his
+#: board reads exactly that. The assignment was being made correctly and then thrown away: the
+#: instant the pen is BUILT the tile stops being `None`, `_refresh_pins` pops the pin, and the
+#: animal is re-derived here from `R.ANIMAL_NAMES = ["GOOSE", "COW", "SHEEP"]` -- so COW wins every
+#: PASTURE. Measured, seed 11, weeds off, at day 1 dawn:
+#:
+#:     Seb   SHEEP@(4,4)d0  SHEEP@(4,3)d1  COW@(3,3)d2  COW@(2,3)d3    sheep walk 0 + 1 = 1
+#:     ours  COW@(4,4)d0    SHEEP@(3,4)d1  COW@(2,4)d2  SHEEP@(1,4)d3  sheep walk 1 + 3 = 4
+#:
+#: Both blocks sum to 22 from the depot, so no SITING rule can close this -- it is not a shape
+#: problem. `PEN_SPOTS`, `PEN_NEAREST_DEPOT` and `PEN_NEAREST_DEPOT_FROM_DAY` all move WHERE a pen
+#: goes and none of them can move WHICH animal ends up in it.
+#:
+#: It is not the value tie-break rejected in `build_nodes` either, which cost **-$5,676** on the
+#: 12-seed ladder. That one ranked animals by same-turn worth and so could not see that the season
+#: wants 8 COW against 6 SHEEP; this one ranks nothing and reads back a decision the schedule
+#: already made. The failure mode they share -- refusing an available animal while waiting for a
+#: better one -- is excluded by construction: an unfillable reservation falls straight through to
+#: the old order, pinned by
+#: `tests/test_the_pen_holds_the_animal_it_was_built_for.py::test_a_reservation_the_shed_cannot_fill_falls_back_rather_than_stalling`.
+PEN_KEEPS_ITS_ANIMAL = True
+
 #: Whether a tour that ends on a YIELDING node reserves the walk back to the nearest depot.
 #:
 #: The tour is otherwise costed as an OPEN route -- walk plus service from where the unit stands,
@@ -375,6 +403,75 @@ def dist(a, b):
 _QUAD_ORDER = ("NW",) + tuple(R.LAND_ORDER)
 
 
+#: Whether the placement order is sorted by distance to the depot ring, with the sweep as tie-break,
+#: instead of being quadrant-major.
+#:
+#: **What it is for.** `field_order` is content-BLIND -- the Nth thing placed gets the Nth tile of the
+#: sweep, whatever it is -- and different contents want wildly different numbers of visits. Measured
+#: over a whole season, seed 11, weeds off, ours against Seb's tape
+#: (`scripts/where_the_walking_goes.py`, `data/logs/geometry_measure.log`), work turns landed per tile:
+#:
+#:     pen, COW                       7 tiles    991 visits   141.6 per tile
+#:     pen, SHEEP                     8 tiles    579 visits    72.4 per tile
+#:     strawberry                    37 tiles    592 visits    16.0 per tile
+#:     melon                          8 tiles     90 visits    11.2 per tile
+#:
+#: So the depot ring is worth five to nine times more to a pen than to a crop, and the sweep hands it
+#: out on arrival order. Our own board pays for that: pens at (7,0) d6, (8,0) d7 and (9,0) d8, all
+#: sited on day 9 at the TAIL of NE, while the near band of SW sat empty. Total pen distance 52 against
+#: the tape's 45 over the same nineteen pens.
+#:
+#: Sorting by distance is the whole of the fix that is reachable from here. `schedule_agent._refresh_pins`
+#: already consumes the order pens-first WITHIN a day, so a distance-sorted order gives the near ground
+#: to the pens automatically; what it cannot do is reserve near ground on day 0 for a pen that arrives
+#: on day 9, which needs the schedule and lives upstream.
+#:
+#: The sort is STABLE, so the sweep still orders each distance band and a block stays as compact as a
+#: Manhattan ring allows. It is not contiguous any more --
+#: `test_the_placement_order_is_a_contiguous_sweep_from_the_shed` is asserted against the flag OFF for
+#: exactly that reason.
+#:
+#: `None` restores the plain quadrant-major sweep exactly. An int is the minimum number of owned
+#: QUADRANTS at which the sort applies, which is the only "how late is it" this function can see --
+#: `field_order` is handed `unlocked` and nothing else. 1 means always; 3 means from the day SW is
+#: bought, around day 8, which is where the far pens actually appear.
+#:
+#: **THE GEOMETRY LANDS AND THE SEASON DOES NOT PAY FOR IT. SHIPPED OFF.**
+#: Full write-up in `docs/geometry_placement_2026-08-08.md`; logs `data/logs/geometry_ab*.log`.
+#:
+#: At `1` it does exactly what it claims, seed 11: pen distance sum 52 -> 30 against the tape's 45,
+#: the three far pens gone, placement waste 1,644 -> 985 depot-steps, work turns 2,680 -> 2,895, idle
+#: 1,883 -> 1,423, bank $104,257 -> $117,844. And on the six NON-ARTIFACT seats of the 6-seed x 2-seat
+#: ladder it is **-$33,133, better on 2 of 6, and it costs a win** (seed 23 seat 0, WIN -> loss).
+#:
+#: At `3` the money is a null and the win rate is the only thing that moves:
+#:
+#:     seeds 11,7,23,3,42,101      sum +20,526   better  9/12   valid wins 2/6 -> 2/6
+#:     seeds 19,22,33,44,55,77     sum -11,111   better  6/12   valid wins 1/6 -> 3/6   HELD OUT
+#:     pooled, 24 seats            sum  +9,415   better 15/24   valid wins 3/12 -> 5/12
+#:
+#: +$392 a seat is inside the ~15% seed noise, and the money sign REVERSED on the fresh draw, which is
+#: the winner's curse this repo has already been bitten by. The win rate gained 2 valid seats and lost
+#: none (McNemar exact p = 0.25), and it gained them only on the held-out half. Two unconfirmed halves
+#: pointing opposite ways is a null, not a win, so nothing changes on the strength of it.
+#:
+#: **Why the always-on arm loses, which is the reusable part.** The near ground it frees was not the
+#: binding constraint: measured over the season we already walked 3,460 turns against the tape's 4,025
+#: and idled 1,426 against its 999, so the crew was never turn-starved by distance. What the sort DOES
+#: bind is the herd -- seed 11 goes 17 animals to 18 and gains $7,895, seed 23 goes 17 to 16 and loses
+#: $23,369, seed 101 goes 16 to 15 and loses $14,779, with land purchases byte-identical on every seed.
+#: The season's money rides on one or two animals, and shuffling the ground moves that in both
+#: directions for reasons that have nothing to do with walking.
+#:
+#: Note also that the pen half of this was already half-shipped: `schedule_agent.PEN_NEAREST_DEPOT_FROM_DAY`
+#: is 11, so from day 11 pens already take nearest ground. The marginal effect of `1` on PENS is
+#: therefore days 0-10 only -- where our layout already matches the tape's distance exactly, 22 vs 22
+#: on day 0 -- and most of what it actually moves is CROPS, which are the low-visit class the
+#: visit-weighting says should NOT get the near ground. That is the mechanism, and it is why `3` (which
+#: starts around day 8) is the better-behaved of the two.
+DEPOT_RING_FIRST = None
+
+
 def field_order(unlocked, board_size=R.BOARD_SIZE):
     """Every workable tile we own, in the order it should be taken. Deterministic, no board state.
 
@@ -408,6 +505,12 @@ def field_order(unlocked, board_size=R.BOARD_SIZE):
             for x in (cols if i % 2 == 0 else cols[::-1]):
                 if (x, y) not in SHED_SET:
                     out.append((x, y))
+    if DEPOT_RING_FIRST is not None and len(unlocked) >= DEPOT_RING_FIRST:
+        # Only the shed cells we OWN are depots -- a locked one is not reachable, and measuring
+        # against it would rank the whole of NE as near before NE is bought. Same rule as
+        # `plan_routes`, for the same reason. Stable, so the sweep breaks every tie.
+        depots = [c for c in SHED if R.quadrant_of(c[0], c[1]) in unlocked] or [R.SPAWN]
+        out.sort(key=lambda t: min(dist(t, c) for c in depots))
     return out
 
 
@@ -674,7 +777,7 @@ class Node:
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
 
 
-def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
+def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -713,10 +816,19 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
                 # that SHEEP looks marginally better THIS turn. Reverted. The bug (one SHEEP idle three
                 # days) is real; ranking every tie by same-turn value is not the fix for it.
                 ops = []
-                order = R.ANIMAL_NAMES
+                order = list(R.ANIMAL_NAMES)
                 if DEPOT_PEN_BY_LOAD and tile in SHED_SET:
-                    order = sorted(R.ANIMAL_NAMES, key=lambda a: -(
+                    order = sorted(order, key=lambda a: -(
                         BASE_PRICE[ANIMALS[a]["product"]] * ANIMALS[a]["max_held"]))
+                # **The pen remembers what it was built for.** See `PEN_KEEPS_ITS_ANIMAL`. This is
+                # not the value rank rejected above: it ranks nothing, it reads back the assignment
+                # `_refresh_pins` already made from the schedule's own ordered `places` row. A pen
+                # with no reservation, or one the shed cannot fill, falls through to `order`
+                # untouched -- a preference, never a lock, because a lock is what left a SHEEP idle
+                # in the shed for three days.
+                want = (pen_for or {}).get(tile) if PEN_KEEPS_ITS_ANIMAL else None
+                if want in order and ANIMALS[want]["structure"] == kind:
+                    order = [want] + [a for a in order if a != want]
                 for a in order:
                     if ANIMALS[a]["structure"] != kind:
                         continue

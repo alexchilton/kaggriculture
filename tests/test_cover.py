@@ -5,7 +5,8 @@ way it can be wrong is an invariant rather than a number:
 
     a tour the executor cannot walk     turns over budget
     work that evaporates                a job covered by nobody, or by two units at once
-    a wasted shed trip                  `draw` not matching the route it belongs to
+    a wasted shed trip                  a depot stop the route does not need
+    a plan that is not the tour         the cost the search optimises differing from the walk
     two units sent for one cow          the shed's animal stock overdrawn
     a plan that differs run to run      non-determinism, which would make every day-by-day
                                         comparison in this project unreadable
@@ -20,6 +21,21 @@ import pytest
 from kagg.search import cover as DP
 
 DEPOTS = ((4, 4),)
+
+
+def cost(start, work, carry=None, depots=DEPOTS, wanted=None, deliver=True):
+    """Turns to walk the tour `work` MATERIALISES into. What the search is actually scored on.
+
+    Shed trips used to be charged inside `turns()` without being in the route, so the number and the
+    tour disagreed; now `materialise` derives the stops and `turns` walks them. Every cost assertion
+    below goes through here, so it is checking the plan and not a parallel accounting of it.
+    """
+    return DP.turns(start, DP.materialise(start, work, carry, depots, wanted, deliver))
+
+
+def work_stops(route):
+    """The route without its shed trips. `plan` returns the tour; the jobs are what was covered."""
+    return [j for j in route if not getattr(j, "depot", False)]
 
 
 def _jobs(rng, n, feeds=0):
@@ -59,29 +75,38 @@ def test_one_shed_trip_is_one_turn_per_ITEM_not_per_unit_of_it():
     """
     pens = [DP.Job((1, y), [("FEED", "WHEAT")]) for y in range(6)]
     # walk to depot (0) + one draw (1) + (4,4)->(1,0) is 7, down the column 5, six ops
-    assert DP.turns((4, 4), pens, {}, DEPOTS) == 0 + 1 + 7 + 5 + 6
+    assert cost((4, 4), pens) == 0 + 1 + 7 + 5 + 6
     # six pens against one: five more steps and five more ops, and NO second draw
-    assert (DP.turns((4, 4), pens, {}, DEPOTS)
-            - DP.turns((4, 4), pens[:1], {}, DEPOTS)) == 5 + 5
+    assert cost((4, 4), pens) - cost((4, 4), pens[:1]) == 5 + 5
     # a second ITEM does cost a second draw. (1,6) is one step past the last pen.
     both = pens + [DP.Job((1, 6), [("FERTILIZE", "FERTILIZER")])]
-    assert (DP.turns((4, 4), both, {}, DEPOTS)
-            - DP.turns((4, 4), pens, {}, DEPOTS)) == 1 + 1 + 1
+    assert cost((4, 4), both) - cost((4, 4), pens) == 1 + 1 + 1
+    # and it is ONE stop, not two: both items come off the same visit.
+    route = DP.materialise((4, 4), both, {}, DEPOTS)
+    assert len([d for d in route if getattr(d, "depot", False)]) == 1, route
 
 
 def test_a_load_already_in_the_hand_removes_the_shed_trip():
     """A unit carrying the feed must not be sent to fetch it. This starved a herd once already."""
     pens = [DP.Job((1, y), [("FEED", "WHEAT")]) for y in range(3)]
-    cold = DP.turns((4, 4), pens, {}, DEPOTS)
-    assert DP.turns((4, 4), pens, {"WHEAT": 3}, DEPOTS) == cold - 1
+    cold = cost((4, 4), pens)
+    assert cost((4, 4), pens, {"WHEAT": 3}) == cold - 1
+    assert not [d for d in DP.materialise((4, 4), pens, {"WHEAT": 3}, DEPOTS)
+                if getattr(d, "depot", False)], "sent to fetch feed it was already holding"
 
 
 def test_a_tour_that_ends_holding_product_pays_the_walk_home():
     """The market only reads the SHED, so a harvest still in a hand at dusk is unsold."""
     harvest = [DP.Job((0, 0), [("HARVEST", None)])]
     water = [DP.Job((0, 0), [("WATER", None)])]
-    assert (DP.turns((4, 4), harvest, {}, DEPOTS)
-            - DP.turns((4, 4), water, {}, DEPOTS)) == DP.dist((0, 0), (4, 4))
+    # The walk home plus the DROP itself, which the old cost function charged as travel alone.
+    assert cost((4, 4), harvest) - cost((4, 4), water) == DP.dist((0, 0), (4, 4)) + 1
+    # And it is a STOP, at a depot, after the harvest -- not a number bolted onto the total.
+    route = DP.materialise((4, 4), harvest, {}, DEPOTS)
+    assert getattr(route[-1], "depot", False) and route[-1].drop, route
+    assert tuple(route[-1].tile) in set(DEPOTS)
+    # `deliver=False` is the dusk case: the overnight sweep banks it, so no leg is reserved.
+    assert cost((4, 4), harvest, deliver=False) == cost((4, 4), water, deliver=False)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -101,21 +126,46 @@ def test_no_route_ever_exceeds_its_budget():
 def test_no_job_is_covered_twice_and_none_is_invented():
     for units, jobs, budget in _instances():
         out, left = DP.plan(units, jobs, budget, DEPOTS)
-        done = [j for st in out.values() for j in st["route"]]
+        done = [j for st in out.values() for j in work_stops(st["route"])]
         ids = [id(j) for j in done]
         assert len(ids) == len(set(ids)), "a job was given to two units at once"
         assert set(ids) | {id(j) for j in left} == {id(j) for j in jobs}
         assert not (set(ids) & {id(j) for j in left}), "a job is both covered and uncovered"
 
 
-def test_the_draw_list_matches_the_route_it_belongs_to():
-    """The executor emits its one PICKUP from `draw`, so a stale draw is a wasted shed trip."""
+def test_every_job_can_be_started_when_the_tour_reaches_it():
+    """The point of putting the shed trips IN the route: a hand never arrives empty-handed.
+
+    This is the invariant the old `draw` side-channel could only approximate. Walk each tour in
+    order, carrying what the stops pick up and spending what the jobs consume, and no job may ever
+    need an item the hand is not holding.
+    """
+    import collections
+    for units, jobs, budget in _instances():
+        out, _left = DP.plan(units, jobs, budget, DEPOTS, supply=None)
+        for u, st in out.items():
+            held = collections.Counter()
+            for stop in st["route"]:
+                if getattr(stop, "depot", False):
+                    if stop.drop:
+                        held = collections.Counter()
+                    held += stop.pick
+                    continue
+                for item, qty in stop.needs.items():
+                    assert held[item] >= qty, (
+                        f"unit {u} reaches {stop.tile} needing {qty} {item} holding {held[item]}: "
+                        f"{st['route']}")
+                held -= stop.needs
+                held += stop.gives
+
+
+def test_the_cost_is_the_tour_and_the_draw_list_is_what_the_tour_picks_up():
+    """A cost that is not the walk is a search optimising something nobody executes."""
     for units, jobs, budget in _instances():
         out, _left = DP.plan(units, jobs, budget, DEPOTS)
         for u, st in out.items():
-            want = DP.draws(st["route"], {})
-            assert dict(st["draw"]) == dict(want)
-            assert (st["depot"] is not None) == bool(want)
+            assert st["cost"] == DP.turns(units[u], st["route"])
+            assert dict(st["draw"]) == dict(DP.draws(st["route"]))
 
 
 def test_the_plan_is_the_same_every_time():
@@ -125,6 +175,7 @@ def test_the_plan_is_the_same_every_time():
         b, _ = DP.plan(units, jobs, budget, DEPOTS)
         assert ({u: [j.tile for j in st["route"]] for u, st in a.items()}
                 == {u: [j.tile for j in st["route"]] for u, st in b.items()})
+        assert ({u: st["cost"] for u, st in a.items()} == {u: st["cost"] for u, st in b.items()})
 
 
 def test_a_crew_with_room_covers_everything():
@@ -151,7 +202,7 @@ def test_the_field_is_shared_out_instead_of_two_units_carrying_it():
     field = RT.field_order({"NW"})[:21]
     jobs = [DP.Job(t, [("WATER", None)]) for t in field]
     out, left = DP.plan(units, jobs, [21] * 5, ((4, 4),))
-    sizes = sorted(len(st["route"]) for st in out.values())
+    sizes = sorted(len(work_stops(st["route"])) for st in out.values())
     assert not left, f"{len(left)} jobs uncovered with five hands and 105 turns"
     assert sum(sizes) == 21, sizes
     assert sizes[0] >= 2, f"a hand was left idle beside pending work: {sizes}"
@@ -167,7 +218,7 @@ def test_one_cow_in_the_shed_is_placed_once():
     units = [(4, 4)] * 3
     pens = [DP.Job((1, y), [("PLACE", "COW")]) for y in range(3)]
     out, _left = DP.plan(units, pens, [23] * 3, DEPOTS, supply={"COW": 1})
-    placed = sum(1 for st in out.values() for j in st["route"]
+    placed = sum(1 for st in out.values() for j in work_stops(st["route"])
                  for o, i in j.ops if o == "PLACE" and i == "COW")
     assert placed == 1, f"{placed} units sent for the same single COW"
 
@@ -179,22 +230,28 @@ def test_one_cow_in_the_shed_is_placed_once():
 def _stranded():
     """A far harvest only u0 can reach, after the greedy has spent u0 on cheap work by the shed.
 
-    Budgets are 8. The harvest at (4,1) yields, so it also pays the walk back to the shed; it costs
-    8 turns from u0 with ONE other stop on the route and more than 8 with two, and from u1 it is
-    unreachable at any price. Covering it means u0 gives up (3,4), and (3,4) has to land on u1 rather
-    than in a bin -- which is the whole difference between this and a plain eviction.
+    Budgets are 7: room on u0 for the far harvest and ONE other stop, not two, and at that budget u1
+    cannot reach (4,1) at all. Covering it means u0 gives up a stop, and that stop has to land on u1
+    rather than in a bin -- which is the whole difference between this and a plain eviction.
 
-    Two earlier versions of this board were wrong in different ways, and both are worth recording.
+    FOUR earlier versions of this board were wrong, and all four are worth recording, because every
+    one of them made this test silently stop measuring the repair.
     The first put u1 in the far corner, where it could not absorb the displaced stop either, so the
     instance was genuinely infeasible and the repair was failing for the board's reasons. The second
     used a FEED as the stranded job -- which `REQUIRED_OPS` now covers in the first pass, so the
     greedy seated it unaided and the test measured nothing. The stranded job has to be ORDINARY work.
+    The third was budget 8, exactly right while the walk home was charged as travel alone: once the
+    shed trip became a STOP it cost its DROP turn too and 8 was infeasible again. The fourth was
+    budget 9, right for the one commit in which the closing trip was charged during packing; it stops
+    discriminating the moment that trip becomes opportunistic, because then u1 can reach the harvest
+    unaided. The two tests below are what caught each of these, in both directions, which is why both
+    are kept and why neither may be deleted to make the other pass.
     """
     units = [(4, 4), (7, 4)]
     near = [DP.Job((4, 3), [("WATER", None)]), DP.Job((3, 4), [("WATER", None)])]
     far = [DP.Job((7, 3), [("WATER", None)])]
     ripe = DP.Job((4, 1), [("HARVEST", None)])
-    return units, near + far + [ripe], [8, 8]
+    return units, near + far + [ripe], [7, 7]
 
 
 def test_repair_covers_a_job_the_greedy_strands():
@@ -236,7 +293,7 @@ def test_a_feed_is_a_constraint_and_beats_ordinary_work_to_the_crew():
     pen = DP.Job((4, 1), [("FEED", "WHEAT")])
     assert pen.required and not any(w.required for w in waters)
     out, left = DP.plan(units, waters + [pen], [7], DEPOTS)
-    done = {j.tile for st in out.values() for j in st["route"]}
+    done = {j.tile for st in out.values() for j in work_stops(st["route"])}
     assert (4, 1) in done, (
         f"the pen lost its feed to the waters next door: covered {done}, left {[j.tile for j in left]}")
 

@@ -202,96 +202,86 @@ def _pointless_tiles(tiles, day, plants_left):
     return out
 
 
-#: Minimum units of the day's still-owed SELL row a hand must hold before a DELIVER stop is planned.
+#: Whether a day whose shopping list the bank cannot cover pulls its selling forward.
 #:
-#: **The planner had no delivery job at all, and that is what the day-6 cash hole is.** Seed 11, day
-#: 6, schedule row `WOOL: 12` (`data/logs/d6_wool.log`). The tape harvests at h0, drops and sells 6
-#: at h2, harvests again at h2, drops and sells the last 6 at h5 -- twelve wool banked by hour five,
-#: which funds two cows at h2. We harvest at h4 and h10, and then the crew CARRIES ten wool through
-#: h11, 12, 13, 14, 15, 16, 17 and 18, drops four at h19 and takes six into the night. The bank sits
-#: at $20 all day, the second cow is deferred, and `buy_product` is suppressed for days after.
+#: **Alex's rule, and it is the general condition the hard-coded `DELIVER_REPLAN_DAYS = (6,)` was
+#: standing in for:** if the schedule says buy things we do not have the cash for, harvest early and
+#: get the produce to the shed, because the purchases are queued behind that money.
 #:
-#: `DELIVER_FERRY` was supposed to cover this and cannot: it only fires when a hand is ALREADY
-#: walking and has slack (`act[0] in STEP`), so a hand working through its tour never diverts however
-#: much it is carrying. Delivery was opportunistic; it has to be scheduled. Lowering
-#: `MIN_SELL_ROW_DROP` does not help and measured worse -- that constant gates the ferry, which is
-#: the wrong mechanism, not a mis-tuned one.
+#: Seed 11 day 6 is the case it was found on and it is not a special one. The row reads
+#: `money_dawn: 15.0`, `BUY_ANIMAL COW 2` ($800), fourteen seeds and eight hires -- roughly $2,000 of
+#: intent against fifteen dollars -- and `sells: {WOOL: 12}`, which is where the $2,000 is meant to
+#: come from. The tape harvests at h0, drops and sells six at h2, harvests again at h2 and sells the
+#: last six at h5; both cows are funded by hour five. We harvested at h4 and h10 and carried ten wool
+#: to h19 with the bank on $20 all day, because a covering planner that counts every job as 1 has no
+#: reason to take a HARVEST early, and the cheapest tour visits the far pens last.
 #:
-#: **SET AT 6 BY MEASUREMENT, NOT BY TASTE.** A delivery stop costs turns, and at 2 or 4 it takes
-#: them out of day 6's planting: `test_day_six_plants_every_tile_the_row_asks_for` and
-#: `test_the_biggest_sale_takes_the_earliest_slot` both go red. At 6 the suite is back to its two
-#: pre-existing failures and day 6 still orders BOTH cows the schedule asks for, against one before.
-#: So this catches the big loads and leaves the small ones to the opportunistic ferry.
+#: So on a short day the wool is not one job among forty -- it is the day's first constraint, and it
+#: gets the treatment `at_risk` feeds get: covered first, and delivered as soon as it is in hand
+#: rather than batched to `DELIVER_MIN`.
 #:
-#:     DELIVER_MIN   router failures   d6 cows ordered
-#:     none                        2                 1
-#:     2 and 4                     5                 2
-#:     6 and 8                     2                 2
-#:
-#: What it does NOT fix: we harvest the sheep at h7 and h10 where the tape harvests at h0 and h2, so
-#: the first delivery still lands at h15 against his h2. Delivery cannot precede harvest, and the
-#: covering planner has no reason to take a HARVEST early just because the SELL row wants it today.
-#: That is the next defect and it is a scheduling question, not a delivery one.
-DELIVER_MIN = 6
+#: **This is a rule read off the schedule, not a price.** It asks one question with a yes/no answer --
+#: does today's shopping list exceed the bank -- from numbers that are all on the board at dawn. No
+#: dollar figure enters the routing.
+FUND_THE_DAY_WHEN_SHORT = True
 
 
-#: Days on which a hand CARRYING sellable goods is replanned even though it is still busy.
-#:
-#: **A HARD-CODED DAY, and it is a placeholder for a condition we have not found.** Alex's call, to
-#: unblock: the mechanism below is real and general, the trigger is not yet known, and guessing at it
-#: has already cost two wrong theories today (see `FUND_THE_DAY`, reverted, and the cash-shortfall
-#: flag in `data/logs/cash_trigger.log` which fires on four days the tape does nothing special on).
-#:
-#: THE MECHANISM, which is not a guess. `_deliver_jobs` pins a delivery to the hand holding the goods
-#: -- only that hand can carry them -- but the mid-day top-up replans only IDLE units. So the job is
-#: offered on every replan to units that cannot possibly do it, and refused on every replan, until the
-#: carrier finally runs out of tour. Measured on seed 11 day 6 (`data/logs/d6_wool.log`): planner runs
-#: at h12, h16, h17 and h18 each offering a deliver job, all of them refused, while a hand sits on ten
-#: wool from h11; it delivers four at h19 and takes six into the night. The bank is on $20 all day and
-#: the wool is worth ~$220 a unit.
-#:
-#: The cost of relaxing this generally is known and is why it is gated: replanning a BUSY unit throws
-#: away a tour it is part-way through, which is the thrash this file's `URGENT_OPS` was disabled for.
-#: Widening it to every day, or replacing the day list with a real condition, must be measured on the
-#: day-by-day cells and not on a season total.
-DELIVER_REPLAN_DAYS = (6,)
+def _days_bill(row):
+    """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
 
+    Deliberately coarse: the hire ladder is `mult * fib(n)` (`kaggriculture.py:666`) and
+    `BUY_PRODUCT` quotes off a live demand curve, so an exact figure is not available at dawn and is
+    not needed. The question has a yes/no answer -- is the day asking for materially more than it
+    holds -- and animals and land dominate it by an order of magnitude over seeds and hires.
 
-def _deliver_jobs(units, invs, owed_sale, depots, unlocked):
-    """A shed stop for every hand holding goods today's SELL row still wants. One per hand.
-
-    Pinned to that hand with `Job.only` -- the wool is in ITS pocket, so no other unit can take it --
-    and placed on the depot nearest to where it currently stands. `DROP` is all-or-nothing per item
-    and empties the hand, so one stop clears whatever it is carrying.
+    **The bank it is compared against is OURS, live, not the schedule's.** Every row carries the tape
+    author's `money_dawn` (day 6 reads $15.00) and using that would be the wrong number twice over:
+    it is a different farm's balance, and by day 6 ours has already diverged from it. The live figure
+    is exact, is ours, and needs no field added to the schedule.
     """
-    out = []
-    for u in range(len(units)):
-        inv = invs[u] if u < len(invs) else {}
-        carrying = sum(min(int(q), int(owed_sale.get(it, 0)))
-                       for it, q in (inv or {}).items()
-                       if int(q) > 0 and int(owed_sale.get(it, 0)) > 0)
-        if carrying < DELIVER_MIN:
-            continue
-        home = min(depots, key=lambda c: (RT.dist(c, units[u]), c))
-        out.append(DP.Job(home, [("DROP", None)], needs={}, only=u))
-    return out
+    bill = 0.0
+    for animal, qty in (row.get("animals_bought") or {}).items():
+        bill += R.ANIMALS.get(animal, {}).get("cost", 0) * int(qty)
+    for crop, qty in (row.get("seeds") or {}).items():
+        bill += R.CROP_TABLE.get(crop, {}).get("seed", 0) * int(qty)
+    for product, qty in (row.get("buys") or {}).items():
+        bill += RT.BASE_PRICE.get(product, 0) * int(qty)
+    a, b = 1, 1
+    for _ in range(int(row.get("hires") or 0)):            # `mult * fib(n)`, mult 1 by default
+        bill += a
+        a, b = b, a + b
+    bill += sum(R.LAND_PRICES[:int(row.get("land") or 0)])
+    return bill
 
 
-def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=(), deliver_jobs=()):
-    """One day's assignment, by whichever planner is switched on. Same return shape either way."""
+def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=(), tiles=None,
+           wanted=None, fund=False):
+    """One day's assignment, by whichever planner is switched on. Same return shape either way.
+
+    `tiles` feeds the yield prediction and `wanted` today's still-owed SELL row. Together they are
+    what lets the shed trip be PLANNED -- the board says which pens are ripe and how much they hold,
+    the row says what the market is waiting for, and both are readable at dawn. See
+    `cover.materialise`.
+    """
     if not COVER_PLANNER:
         return RT.plan_routes(units, nodes, budget, depots, carry, supply=supply)
-    jobs = [j for j in DP.from_nodes(nodes) if j.tile not in pointless]
-    jobs.extend(deliver_jobs)
-    if at_risk:
-        for j in jobs:
-            if j.tile in at_risk:
-                j.at_risk = True
-    # The walk home is charged only while there is time to make it. With two turns or fewer left a
-    # hand cannot both work and get back, and the overnight drop banks the produce anyway -- so
-    # reserving it there only refuses the last harvest of the day. See `cover.turns`.
+    jobs = [j for j in DP.from_nodes(nodes, tiles) if j.tile not in pointless]
+    at_risk = set(at_risk)
+    owed = collections.Counter({p: q for p, q in (wanted or {}).items() if q > 0})
+    for j in jobs:
+        if j.tile in at_risk:
+            j.at_risk = True
+        # See `FUND_THE_DAY_WHEN_SHORT`. A harvest only counts as funding the day if the market is
+        # actually waiting for what it yields -- a ripe melon on a day whose row sells no melon pays
+        # for nothing today and must not jump the queue.
+        if fund and any(owed[p] > 0 for p in j.gives):
+            j.funds = True
+    # The closing shed trip is planned only while there is time to make it. With two turns or fewer
+    # left a hand cannot both work and get back, and the overnight sweep banks the produce anyway --
+    # so reserving it there only refuses the last harvest of the day. See `cover.materialise`.
     deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS
-    out, _uncovered = DP.plan(units, jobs, budget, depots, carry, supply=supply, deliver=deliver)
+    out, _uncovered = DP.plan(units, jobs, budget, depots, carry, supply=supply, deliver=deliver,
+                              wanted=owed, rush=fund)
     return out
 from . import routines as R
 
@@ -1164,7 +1154,11 @@ def _eta_along(start, route):
     out, t, pos = {}, 0, tuple(start)
     for n in route:
         t += abs(n.tile[0] - pos[0]) + abs(n.tile[1] - pos[1]) + n.service
-        out.setdefault(n.tile, t)
+        # A shed trip is a stop but it is not a CLAIM. Pens sit on shed-access tiles by design
+        # (`_refresh_pins`), so recording the depot here would let one unit's pickup close a pen to
+        # every idle hand for the rest of the day.
+        if not getattr(n, "depot", False):
+            out.setdefault(n.tile, t)
         pos = n.tile
     return out
 
@@ -1224,6 +1218,21 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
             pins.pop(t)
     taken = set(pins)
 
+    # A reservation lives from the moment the ground is chosen until an animal stands on it, which
+    # is strictly longer than the pin. It dies with the tile, not with the pin.
+    # `setdefault`, not `[]`: this function is called directly by tests that build `state` by hand,
+    # and a new key in `make_agent`'s dict is not a new key in theirs.
+    pen_for = state.setdefault("pen_for", {})
+    for t in list(pen_for):
+        x, y = t
+        cell = tiles[y][x]
+        if not _owned(t, unlocked) or (isinstance(cell, dict) and "animal" in cell):
+            pen_for.pop(t)
+        elif cell is not None and not isinstance(cell, dict):
+            pen_for.pop(t)                       # a weed or a plant took the ground
+        elif isinstance(cell, dict) and cell.get("kind") not in ("PASTURE", "COOP"):
+            pen_for.pop(t)
+
     structures = sum(1 for r in tiles for c in r
                      if isinstance(c, dict) and (c.get("kind") in ("PASTURE", "COOP")
                                                  or "animal" in c))
@@ -1247,6 +1256,12 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
         if spot is None:
             break
         pins[spot] = ("BUILD", a, R.ANIMALS[a]["cost"])
+        # **Outlive the pin.** The pin pops the moment the pen is built -- that is what it is for --
+        # and with it went the only record of WHICH animal this ground was chosen for. Since the
+        # near tiles are sited first, that record is the schedule's ordered `places` row expressed
+        # as geometry. See `router.PEN_KEEPS_ITS_ANIMAL`. Cleared in the sweep above once the tile
+        # holds an animal, or is lost.
+        pen_for[spot] = a
         taken.add(spot)
         have += 1
 
@@ -1267,7 +1282,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
     return pins
 
 
-def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked):
+def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0):
     """One turn of the routed plan: replan if the crew or the work changed, then walk the tours."""
     pins = _refresh_pins(state, sched, day, tiles, unlocked)
     # Ground is only worth clearing if something is going into it. See `DIG_ONLY_IF_REPLANTING`.
@@ -1296,9 +1311,31 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     for p, q in shed.items():
         if q > 0:
             owed_sale[p] -= q
+    # **The herd's dinner is not stock, however much the row wants it.** `consecutive_unfed >= 2`
+    # removes the animal outright (`kaggriculture.py:786`), so wheat the farm still owes its own pens
+    # today is spoken for before the market ever sees it. Without this the two claims on WHEAT are
+    # indistinguishable and the day eats itself: seed 11 day 4 sells `WHEAT: 28`, the crew grows from
+    # one hand to eight through the morning, and every full replan hands the feeds to a different
+    # unit -- leaving the one that already drew the wheat holding a "surplus" the row wants. Traced:
+    # h0 `PICKUP WHEAT 2`, h1 `DROP`, h4 another four drawn, h5 dropped. Over the day PICKUP 2,
+    # DROP 12, FEED 0, CARE 0, and eight animals unfed.
+    #
+    # The reserve is the same `feed_days(day) * hungry` figure the market block protects, so the sell
+    # guard and the day planner cannot disagree about how much wheat is not for sale.
+    hungry = sum(1 for r in tiles for c in r
+                 if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
+    if hungry and owed_sale.get("WHEAT", 0) > 0:
+        owed_sale["WHEAT"] = max(0, owed_sale["WHEAT"] - feed_days(day) * hungry)
+    # **Does today's shopping list cost more than the bank holds?** See `FUND_THE_DAY_WHEN_SHORT`.
+    # If it does, the produce the row means to sell is what unblocks it, so it is harvested first and
+    # delivered on sight rather than batched. Recomputed every turn: the moment the sales land the
+    # day stops being short and the plan goes back to plain covering.
+    short_of_cash = (FUND_THE_DAY_WHEN_SHORT and any(q > 0 for q in owed_sale.values())
+                     and _days_bill(sched.get(day, {})) > money)
 
     def nodes_for(skip):
-        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
+        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
+                                          pen_for=state.get("pen_for") or {})
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
@@ -1312,7 +1349,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # Key on (tile, op), never on the tile alone. A pen is BUILT and then PLACEd on the SAME square, so
     # the tile is already sitting in the builder's route when the PLACE node appears -- subtracting
     # routed *tiles* silently swallowed every new placement and the trigger never fired once.
-    urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
+    urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
+                                                 pen_for=state.get("pen_for") or {})
               for o, _i in n.ops if o in URGENT_OPS} if URGENT_OPS else set()
     routed = {(n.tile, o) for st in routes.values() for n in st["route"] for o, _i in n.ops}
     fresh = urgent - state["seen_urgent"] - routed
@@ -1326,20 +1364,11 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                      {k: load[u] for k, u in enumerate(live)}, supply=shed,
                      at_risk=_at_risk_tiles(tiles),
                      pointless=_pointless_tiles(tiles, day, plants_left),
-                     deliver_jobs=_deliver_jobs(units, invs, owed_sale, depots, unlocked))
+                     tiles=tiles, wanted=owed_sale, fund=short_of_cash)
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
         state["crew"] = len(live)
     else:
         idle = [u for u in live if not routes.get(u, {}).get("route")]
-        # A hand holding goods today's SELL row wants is not idle, but it is the ONLY unit that can
-        # deliver them -- and the pinned job is refused on every replan it is absent from. See
-        # `DELIVER_REPLAN_DAYS`.
-        if day in DELIVER_REPLAN_DAYS:
-            carrying = [u for u in live if u not in idle
-                        and sum(min(int(q), int(owed_sale.get(it, 0)))
-                                for it, q in (invs[u] if u < len(invs) else {}).items()
-                                if int(q) > 0 and int(owed_sale.get(it, 0)) > 0) >= DELIVER_MIN]
-            idle = idle + [u for u in carrying if u not in idle]
         # **Fresh urgent work is an INSERTION, not a rebuild.** Rerunning the whole plan every time a
         # PLACE node appeared MEASURED as day 0 `place` 4/4 -> 3/4 and `build_pasture` 8/8 -> 7/8:
         # day 0 buys four animals, so it triggered four full replans and each one abandoned whatever
@@ -1380,7 +1409,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                          {k: load[u] for k, u in enumerate(idle)}, supply=free,
                          at_risk=_at_risk_tiles(tiles),
                          pointless=_pointless_tiles(tiles, day, plants_left),
-                         deliver_jobs=_deliver_jobs(units, invs, owed_sale, depots, unlocked))
+                         tiles=tiles, wanted=owed_sale, fund=short_of_cash)
             for k, u in enumerate(idle):
                 routes[u] = sub[k]
 
@@ -1392,47 +1421,52 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             acts.append(["PASS"])
             continue
 
-        # ------------------------------------------------------------------ one shed trip, in bulk
-        # `PICKUP` is unbounded -- `n = min(n, available)` then `_inv_add(inv, item, n)` -- so a unit
-        # servicing six pens draws six wheat in ONE turn. Drawing one at a time, as the greedy did, made
-        # every pen a shed round trip and is most of why FEED landed on 81% of animal-days.
-        draw = None
-        for item, qty in st["draw"].items():
-            short = qty - inv.get(item, 0)
-            if short > 0 and shed.get(item, 0) > 0:
-                draw = (item, min(short, shed[item]))
-                break
-        if draw is None:
-            st["draw"].clear()
-        elif pos in depots:
-            shed[draw[0]] -= draw[1]
-            acts.append(["PICKUP", draw[0], draw[1]])
-            continue
-        else:
-            home = min(depots, key=lambda c: abs(c[0] - pos[0]) + abs(c[1] - pos[1]))
-            m = _step_towards(pos, home, unlocked)
-            if m:
-                acts.append([m])
-                continue
-            st["draw"].clear()
-
         # ------------------------------------------------------------------ walk the committed tour
+        # **The shed trips are stops in this tour, not a side channel.** They used to be neither: a
+        # `draw` dict outside the route drove the pickups, and the deliveries were left to whatever
+        # depot cell a unit happened to wander onto. See `cover.materialise` for what that cost on
+        # day 6. A depot stop carries its own `drop` and `pick`, both consumed a turn at a time and
+        # both surviving across turns because the stop object is the state.
         act = ["PASS"]
+        at_shed = tuple(pos) in set(depots)
         while st["route"]:
             node = st["route"][0]
-            # **A DELIVER stop, which `_live_ops` cannot re-derive.** Every other stop's work is read
-            # off the CELL, but a delivery is a fact about the unit's pocket, not about the tile, so
-            # the depot cell reports nothing and the stop would be popped unworked. See
-            # `_deliver_jobs`: this is the scheduled shed trip the tape makes at h2 and h5 and we
-            # were only ever stumbling into at h19.
-            if pos == node.tile and any(o == "DROP" for o, _i in node.ops):
-                st["route"].pop(0)
-                if tuple(pos) in set(depots) and any(v > 0 for v in inv.values()):
-                    for item, qty in inv.items():
-                        if qty > 0:
-                            shed[item] = shed.get(item, 0) + qty
-                    act = ["DROP"]
+            if getattr(node, "depot", False):
+                # Any shed-access tile serves. The plan named one so it could cost the detour, but
+                # `_is_shed_adjacent` (`kaggriculture.py:325`) does not care which, and standing on
+                # a different one is only ever cheaper than walking to the named one.
+                if not at_shed:
+                    m = _step_towards(pos, node.tile, unlocked)
+                    if m is None:               # unreachable: drop the stop rather than idle on it
+                        st["route"].pop(0)
+                        continue
+                    act = [m]
                     break
+                if node.drop:
+                    node.drop = False           # consumed whether or not there was anything to shed
+                    # DROP does not clamp -- it `del`s every item after taking whatever fits
+                    # (`kaggriculture.py:333`) -- so a full shed DESTROYS the load rather than
+                    # refusing it. Carrying it to the overnight sweep is strictly better.
+                    if (any(v > 0 for v in inv.values())
+                            and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
+                        for item, qty in inv.items():
+                            if qty > 0:
+                                shed[item] = shed.get(item, 0) + qty
+                                owed_sale[item] -= qty
+                        act = ["DROP"]
+                        break
+                    continue
+                if node.pick:
+                    item = min(node.pick)       # a total order, so the tape is reproducible
+                    want = node.pick.pop(item)
+                    take = min(want, shed.get(item, 0))
+                    if take <= 0:
+                        continue                # the shed cannot supply it; the stop that needs it
+                        #                         will pop itself unworked at the tile
+                    shed[item] -= take
+                    act = ["PICKUP", item, take]
+                    break
+                st["route"].pop(0)
                 continue
             if pos != node.tile:
                 m = _step_towards(pos, node.tile, unlocked)
@@ -1457,122 +1491,30 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 pins.pop(node.tile, None)
             break
 
-        # ------------------------------------------------------------------ the deliver ferry
-        # See `DELIVER_FERRY`. Placed AFTER the tour walk has chosen `act`, so a real op at the tile the
-        # unit is standing on always wins, and before the opportunistic drop, which it cannot reach
-        # anyway -- that one requires a depot cell and this one only fires off them.
+        # ----------------------------------------------------- the four mechanisms that used to be here
+        # DELETED, and this is the point of the rebuild rather than a side effect of it. There were
+        # four ways produce reached the shed, and not one of them was a plan:
         #
-        # `deliverable` is the census `DELIVER_THE_SELL_ROW` uses below, computed here so both share
-        # one definition: only what TODAY'S row still owes counts, so a unit ferrying wheat to its own
-        # FEED stops is never diverted.
-        deliverable = sum(min(q, owed_sale.get(it, 0)) for it, q in inv.items()
-                          if q > 0 and owed_sale.get(it, 0) > 0)
-        if (DELIVER_FERRY and act[0] in STEP and pos not in depots
-                and deliverable >= MIN_SELL_ROW_DROP
-                and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
-            home = min(depots, key=lambda c: RT.dist(pos, c))
-            nxt = tuple(st["route"][0].tile) if st["route"] else home
-            slack = (TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1)) - _route_turns(pos, st["route"], depots)
-            detour = RT.dist(pos, home) + 1 + RT.dist(home, nxt) - RT.dist(pos, nxt)
-            if detour <= slack - DELIVER_FERRY_MARGIN:
-                m = _step_towards(pos, home, unlocked)
-                if m:
-                    act = [m]
-
-        # ------------------------------------------------------------------ opportunistic mid-tour drop
-        # Pens sit ON shed-access tiles by design (`_refresh_pins`), so a unit servicing them already
-        # stands at a depot repeatedly through the day. Firing only when the tour-walk already chose a
-        # MOVE means this never outranks a real op at the current tile.
+        #   the deliver ferry        divert a WALKING unit home if it had slack
+        #   the opportunistic drop   dump the load on any incidental depot visit
+        #   DELIVER_THE_SELL_ROW     dump it if the row still wanted any of it
+        #   the return leg           walk home once the tour had run out
         #
-        # BOTH gates are required, and each one is a test that went red without it. `future_needs`,
-        # recomputed fresh every turn, answers "does MY OWN remaining tour want this good" and stops
-        # the PICKUP/DROP thrash -- a unit ferrying wheat to its own FEED stops is left alone.
-        # `FEED_DAYS * alive`, the farm-wide reserve the SELL guard also protects, stops the theft of
-        # the self-healing material: when a unit's nodes fail it goes idle and the `if idle:` top-up
-        # re-plans it from `load[u]`, that unit's OWN inventory, which only works while the wheat is
-        # still in hand.
-        if DROP_TRACE is not None and pos in depots and any(v > 0 for v in inv.values()):
-            _trace_drop(DROP_TRACE, act, st, inv, shed, carried, tiles)
-        if (OPPORTUNISTIC_DROP and act[0] in STEP and pos in depots
-                and any(v > 0 for v in inv.values())):
-            future_needs = collections.Counter()
-            for n in st["route"]:
-                future_needs.update(n.needs)
-            own_route_needs_it = any(future_needs.get(it, 0) > 0 for it, qty in inv.items() if qty > 0)
-            alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
-            farm_wheat = shed.get("WHEAT", 0) + carried.get("WHEAT", 0)
-            wheat_ok = (inv.get("WHEAT", 0) == 0
-                        or farm_wheat - inv.get("WHEAT", 0) >= feed_days(day) * alive)
-            if (not own_route_needs_it and wheat_ok and sum(inv.values()) >= MIN_OPPORTUNISTIC_DROP
-                    and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
-                for item, qty in inv.items():
-                    if qty > 0:
-                        shed[item] = shed.get(item, 0) + qty
-                act = ["DROP"]
-
-        # ------------------------------------------------------------------ deliver the day's sell row
-        # **The market reads the SHED.** Produce in a hand is worth nothing until it is dropped, and
-        # the reference resolves unit actions BEFORE the market phase inside a turn -- so a DROP and
-        # the SELL of what that drop just delivered settle together. The tape does exactly this: seed
-        # 11 day 9 hour 7 it holds WOOL 8 and orders `SELL WOOL 8` on the same turn.
+        # Every one fired off whatever tile a unit happened to be standing on, none could act before
+        # the goods existed, and between them they carried day 6's wool from h10 to h19 while the
+        # bank sat on $20. `cover.materialise` now schedules the shed trip as a STOP -- before the
+        # jobs that need a draw, after the harvest that fills the hand, and at the end of the tour --
+        # so the executor above simply walks it.
         #
-        # Day 9 is where the season broke. At its dawn we were $76 AHEAD; by day 10's we were $1,552
-        # behind, with plant 9/9, water 31/31, harvest 4/4 and hire 11/11 -- only the selling differed,
-        # 10 units against the row's 22. Not for want of goods: at h12 the crew held WOOL 8, MILK 6,
-        # FERTILIZER 10, WHEAT 6 and the shed read EMPTY, still empty at h23.
+        # `DELIVER_THE_SELL_ROW` is also the exact defect that cost day 4 every one of its feeds. It
+        # tested only "does the row still want this", never "does my own route still need it", and
+        # its comment gave a reason -- DROP is all-or-nothing, so a mixed load cannot shed its wool
+        # without its wheat -- that is correct right up until WHEAT is itself the thing being sold.
+        # Day 4 sells `WHEAT: 28`, so eight wheat drawn for eight pens read as $200 of goods the
+        # market was waiting for: PICKUP 2, DROP 12, FEED 0, CARE 0, and eight animals unfed. The
+        # surplus rule that replaces it lives in `cover.materialise`, where the route is known.
         #
-        # This is deliberately NARROWER than the arm that was tried and cost $15,272 over twelve seeds
-        # ("drop the surplus whenever standing on the shed"). That one dumped ANY load at ANY shed
-        # visit, including the feed a unit was carrying for its own stops. This fires only when the
-        # load contains a product TODAY'S SELL ROW STILL OWES, so a wheat-only ferry is never touched.
-        #
-        # `own_route_needs_it` and the `MIN_OPPORTUNISTIC_DROP` floor are both skipped here on purpose.
-        # DROP is all-or-nothing (`kaggriculture.py:333`), so a mixed load cannot shed its wool without
-        # its wheat -- but the wheat lands in the shed on the tile the unit is standing on, and the
-        # `PICKUP` branch above draws it straight back next turn. One turn, against a product that
-        # would otherwise sit unsold until the overnight sweep.
-        if (DELIVER_THE_SELL_ROW and (act[0] in STEP or act == ["PASS"]) and pos in depots
-                and deliverable >= MIN_SELL_ROW_DROP
-                and sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY):
-            for item, qty in inv.items():
-                if qty > 0:
-                    shed[item] = shed.get(item, 0) + qty
-                    owed_sale[item] -= qty
-            act = ["DROP"]
-
-        # ------------------------------------------------------------------ the return leg
-        # A one-way sweep cannot sell what it picks up. Measured against the tape on days 1-3 of seed
-        # 11: `EAST 0/10, 0/17, 0/15` and `SOUTH 0/13, 0/14, 0/14` -- our crew never turned back towards
-        # the shed on three consecutive days while the tape emitted DROP one to two times daily, so our
-        # harvest could not reach the market until `_drop_inventories_to_shed` ran overnight.
-        #
-        # The turns cost nothing: this only fires once the tour is done and the unit would PASS. DROP
-        # moves the WHOLE inventory and DELETES anything the shed has no room for
-        # (`kaggriculture.py:333`), so it is refused when the shed is near full.
-        # **TRIED and REVERTED: drop the surplus whenever standing on the shed, not only at tour end.**
-        # The symptom is real and traced (`scripts/where_the_cow_goes.py`, seed 11 day 4 of Seb's plan):
-        # the crew harvests from h5 and the first DROP lands at h19, so `SELL WHEAT` cannot be offered
-        # until h19 and the bank sits at $316 all day. Everything bank-gated queues behind it -- the COW
-        # settles at h19, by which point the free pens are three steps away with four turns left
-        # (PICKUP + 3 moves + PLACE = 5), so it is never placed, and day 5's seed order half-fills.
-        #
-        # Dropping anything held beyond `Node.needs` for the rest of the tour MEASURED as a loss over
-        # twelve seeds at weedSpawnChance 0.005: our schedule $119,281 -> $104,009, Seb's $96,064 ->
-        # $84,913. It also broke `test_wheat_already_in_a_hand_feeds_the_herd_with_an_EMPTY_shed`: a
-        # unit holding feed on a shed cell dumped it back, because `needs` is what the ROUTE will draw
-        # at the depot and not what the unit is already carrying for the jobs ahead of it. Getting the
-        # harvest home earlier is still the right goal; this accounting is not the way to it.
-        if act == ["PASS"] and not st["route"] and any(v > 0 for v in inv.values()):
-            if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
-                if pos in depots:
-                    for item, qty in inv.items():
-                        if qty > 0:
-                            shed[item] = shed.get(item, 0) + qty
-                    act = ["DROP"]
-                else:
-                    m = _step_towards(pos, min(depots, key=lambda c: abs(c[0] - pos[0])
-                                               + abs(c[1] - pos[1])), unlocked)
-                    act = [m] if m else act
+        # `tests/test_the_whole_day_is_planned_including_the_drop.py` pins both halves.
         acts.append(act)
     return acts
 
@@ -1587,7 +1529,7 @@ def make_agent(schedule, me=0, router=True):
     sched = {int(k): v for k, v in schedule.items()}
     state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter(),
                  pins={}, routes={}, crew=-1, seen_urgent=set(),
-                 planted=collections.Counter(),
+                 planted=collections.Counter(), pen_for={},
                  ordered=collections.Counter(), shed_max=collections.Counter(),
                  uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
 
@@ -1637,7 +1579,7 @@ def make_agent(schedule, me=0, router=True):
             # bought four animals at turn 0 and four more at turn 1 until the bank was empty, which is why
             # it reached day 1 on $61 and could then never afford a hand again.
             state.update(day=day, assigned={}, hired=0, ordered=collections.Counter(), tour={},
-                         routes={}, crew=-1, seen_urgent=set())   # `pins` and `planted` survive by design
+                         routes={}, crew=-1, seen_urgent=set())   # `pins`, `planted` and `pen_for` survive by design
             # `planted` is cumulative for the season, so a day's own progress is the difference from
             # this mark. Only the non-router seed path needs it: under `router` the demand is read off
             # the live PLANT pins, which pop as they are planted and so reconcile themselves.
@@ -1652,7 +1594,7 @@ def make_agent(schedule, me=0, router=True):
 
         if router:
             acts = _router_acts(state, sched, day, hour, tiles, units, invs, shed,
-                                seeds, unlocked)
+                                seeds, unlocked, money)
         else:
             # ------------------------------------------------------------------ what the BOARD needs now
             # Carried stock, computed once: a task whose input is neither in the shed nor in a hand must not be

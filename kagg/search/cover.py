@@ -1,10 +1,8 @@
 """One day as what it actually is: a scheduling problem with constraints. Cover the job list.
 
-    resources     k hands, each with `budget` turns (`TURNS_PER_DAY - hour - 1`)
-    jobs          one per tile that wants work today; its length is how many ops it wants
+    resources     k hands, each with `budget` turns (`TURNS_PER_DAY - hour`)
+    stops         a tile and the work done standing on it -- SHED TRIPS INCLUDED
     travel        Manhattan distance on the grid, paid between consecutive stops
-    a depot stop  needed once per unit if its jobs need anything drawn from the shed
-    a return leg  needed if the unit ends the day holding something sellable
     objective     COVER EVERY JOB. Ties broken on fewer turns.
 
 **There is no price table in here, and that is the point.** The board is known in advance -- what is
@@ -20,11 +18,41 @@ priced as lexicographically infinite while a $400 animal yielding ~$160/day plai
 displaces four real jobs to serve one. The prizes and the tiers exist to let a per-turn router decide
 in a millisecond. Neither is needed to answer a covering question.
 
-Two moves, and no more:
 
-    GREEDY    insert the job with the cheapest feasible insertion anywhere, and repeat
-    REPAIR    for a job that fits nowhere, take one job OFF a unit, put the new one on, and
-              re-home the displaced one on another unit -- accepted only if coverage rises
+## A SHED TRIP IS A STOP
+
+The first version of this file got that wrong, and it is worth stating why, because the mistake is
+easy to make twice: it modelled a tour as a list of TILES TO WORK, and charged the shed trips inside
+the cost function -- one notional draw at the front if anything needed drawing, one notional walk
+home at the back if anything was harvested. Both numbers were right. Neither was a stop.
+
+So nothing in a route ever said "be at the shed at this point", and the executor had nothing to walk
+to. Getting produce to market was left to four separate opportunistic mechanisms -- a ferry, a drop
+on any incidental depot visit, a sell-row drop, an end-of-tour return leg -- each firing off whatever
+tile a unit happened to be standing on, and a fifth `draw` side-channel outside the route entirely
+for the pickups.
+
+Seed 11 day 6 is the bill. The row reads `WOOL: 12` and buys two COWs out of the proceeds. The tape
+harvests at h0, drops and sells six at h2, harvests again at h2, drops and sells the last six at h5;
+both cows are funded by hour five. We harvested at h4 and h10, then CARRIED ten wool through h11,
+h12, h13, h14, h15, h16, h17, h18, dropped four at h19 and took six into the night. The bank sat on
+$20 all day and the second cow slipped, which the whole rest of the season inherits.
+
+Every input needed to plan that at dawn was on the board at dawn: which pens hold sheep, how much
+each carries, and what the row wants. `harvest -> shed` is a plan, not a discovery.
+
+Hence `materialise`: the search decides the WORK SEQUENCE, and the shed trips are derived from it
+deterministically and inserted as real stops, costed where they actually happen. A route is now
+exactly what walking it costs, which is also what makes the search honest -- it was previously
+optimising a number that no tour matched.
+
+
+Three moves, and no more:
+
+    GREEDY       insert the job with the cheapest feasible insertion anywhere, and repeat
+    COMPACT      relocate covered jobs to pool the leftover turns, accepted only on a strict fall
+    REPAIR       for a job that fits nowhere, take one job OFF a unit, put the new one on, and
+                 re-home the displaced one on another unit -- accepted only if coverage rises
 
 Deterministic by construction: every tie is broken on a total order, there is no randomness and no
 wall-clock cutoff, so the same board always yields the same tours.
@@ -40,8 +68,7 @@ SHED = tuple(R.shed_access_tiles())
 #: Ops whose item is drawn at the shed before the job can be done.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
 
-#: Ops that put a sellable item into the unit's hand. The market only ever reads the SHED, so a tour
-#: that ends holding one has not banked it -- it arrives overnight, a turn too late to sell.
+#: Ops that put something into the unit's hand.
 YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
 #: Ops that are CONSTRAINTS rather than candidates: skip one and something is destroyed outright.
@@ -97,6 +124,20 @@ REPAIR = True
 #: which is also why it terminates -- total cost is bounded below and strictly decreases.
 COMPACT = True
 
+#: How much of today's still-owed SELL row a hand must be carrying before a MID-TOUR shed trip is
+#: planned for it. Below this the load rides to the end of the tour, which ends at the shed anyway.
+#:
+#: A trip is not free: `DROP` is all-or-nothing (`kaggriculture.py:333`), so it dumps the feed wheat
+#: with the wool and the same stop has to draw the wheat back for the pens still ahead. That is one
+#: turn plus one per distinct item, on top of the detour. Batching until the load justifies it is the
+#: whole content of this constant.
+#:
+#: SET AT 6 BY MEASUREMENT, not by taste, and carried over from the mechanism this replaces: at 2 and
+#: at 4 the trip takes its turns out of day 6's planting and `test_day_six_plants_every_tile_the_row_
+#: asks_for` and `test_the_biggest_sale_takes_the_earliest_slot` both go red; at 6 and 8 they do not,
+#: and day 6 orders both cows.
+DELIVER_MIN = 6
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -105,9 +146,14 @@ def dist(a, b):
 class Job:
     """One tile and every op it wants today. `turns` is how long standing there costs."""
 
-    __slots__ = ("tile", "ops", "turns", "needs", "required", "at_risk", "only")
+    __slots__ = ("tile", "ops", "turns", "needs", "gives", "required", "at_risk", "funds", "only")
 
-    def __init__(self, tile, ops, needs=None, at_risk=False, only=None):
+    #: Never a shed trip. `materialise` inserts those and everything downstream keys off this to tell
+    #: the two apart -- a depot stop is not work, does not get claimed against an idle unit, and is
+    #: not re-derived from its cell by the executor.
+    depot = False
+
+    def __init__(self, tile, ops, needs=None, gives=None, at_risk=False, only=None):
         self.tile = tuple(tile)
         self.ops = [tuple(o) for o in ops]
         # **A PLANT is two turns, not one, and the second one is not optional.** A tile is created at
@@ -121,14 +167,27 @@ class Job:
                                       and not any(o == "WATER" for o, _i in self.ops) else 0)
         self.needs = collections.Counter(needs) if needs is not None else collections.Counter(
             i for o, i in self.ops if i and o in DRAWN)
+        #: What this job puts INTO the hand, by product. Predicted from the tile's `yield_units`
+        #: before the day starts, which is the whole reason the delivery can be planned rather than
+        #: discovered. An empty `gives` on a yielding job is a safe under-estimate: it only means the
+        #: load is never judged big enough for a mid-tour trip, so it rides to the end of the tour.
+        self.gives = collections.Counter(gives or {})
         self.required = any(o in REQUIRED_OPS for o, _i in self.ops)
         #: Skipping this one TODAY destroys something outright. A pen fed yesterday may slip a day;
         #: one that missed yesterday may not, and nor may a tile one dry day from weeding. Set from
         #: the BOARD (`consecutive_unfed`/`consecutive_unwatered`), never from a price.
         self.at_risk = bool(at_risk)
-        #: Restrict this job to ONE hand, by index. Almost every job can be done by whoever is
-        #: nearest, but a DELIVER cannot: only the hand actually holding the wool can carry it to
-        #: the shed. `None` means anyone.
+        #: This job's produce is what pays for today's shopping list. Set only on a day whose bill
+        #: exceeds the bank (`schedule_agent.FUND_THE_DAY_WHEN_SHORT`), and it buys two things: the
+        #: job is covered before the general pool, and its load goes to the shed as soon as it is in
+        #: hand instead of batching to `DELIVER_MIN`. The purchases are queued behind that money, so
+        #: on a short day this harvest is not one job among forty -- it is the day's first
+        #: constraint, in the same sense a feed that dies tonight is.
+        self.funds = False
+        #: Restrict this job to ONE hand, by index. `None` means anyone, which is now the only value
+        #: anything passes -- the pinned DELIVER job this existed for is gone, because a delivery is
+        #: no longer a job at all. Kept because a future PLACE-the-animal-you-are-carrying job wants
+        #: exactly this and the alternative is reinventing it.
         self.only = only
 
     @property
@@ -147,57 +206,182 @@ class Job:
         return f"Job{self.tile}{[o for o, _i in self.ops]}/{self.turns}t"
 
 
-def draws(route, carry=None):
-    """What this route must pick up at the depot, after what the unit already carries.
+class Depot:
+    """A shed trip, as a stop in the tour like any other. Emitted by `materialise`, never searched.
 
-    The TURN cost of the depot stop is the number of distinct ITEMS, not their total: `PICKUP` is
-    unbounded (`kaggriculture.py:340`), so one turn draws the whole day's wheat and a unit servicing
-    fourteen pens needs one shed trip, not fourteen.
+    `drop` empties the hand into the shed; `pick` draws items back out. Both on one stop, in that
+    order, because `DROP` is all-or-nothing (`kaggriculture.py:333`) -- a hand carrying wool for the
+    market and wheat for three more pens cannot shed one without the other, so it sheds both and
+    takes the wheat straight back. `PICKUP` is unbounded (`kaggriculture.py:340`), so the draw costs
+    one turn per distinct ITEM and not one per unit: fourteen pens is one wheat pickup.
     """
-    held = collections.Counter(carry or {})
-    need = collections.Counter()
-    for j in route:
-        for item, qty in j.needs.items():
-            if qty > held[item]:
-                need[item] += qty - held[item]
-            held[item] = max(0, held[item] - qty)
-    return need
+
+    __slots__ = ("tile", "drop", "pick")
+
+    depot = True
+    needs = ()
+    gives = ()
+    required = False
+    at_risk = False
+    only = None
+
+    def __init__(self, tile, drop=False, pick=None):
+        self.tile = tuple(tile)
+        self.drop = bool(drop)
+        self.pick = collections.Counter({i: q for i, q in (pick or {}).items() if q > 0})
+
+    @property
+    def turns(self):
+        return (1 if self.drop else 0) + len(self.pick)
+
+    @property
+    def service(self):
+        return self.turns
+
+    @property
+    def ops(self):
+        out = [("DROP", None)] if self.drop else []
+        return out + [("PICKUP", i) for i in sorted(self.pick)]
+
+    def places(self):
+        return collections.Counter()
+
+    def yields(self):
+        return False
+
+    def __repr__(self):
+        bits = (["DROP"] if self.drop else []) + [f"{i}x{q}" for i, q in sorted(self.pick.items())]
+        return f"Shed{self.tile}[{'+'.join(bits) or '-'}]"
 
 
-def turns(start, route, carry=None, depots=SHED, deliver=True):
-    """Exact turns one unit spends walking `route` in this order. The only cost model in the file.
+def nearest(depots, frm, to=None):
+    """The depot cheapest to visit between `frm` and `to`. Ties broken on coordinates, so it is total."""
+    if to is None:
+        return min(depots, key=lambda c: (dist(c, frm), c))
+    return min(depots, key=lambda c: (dist(frm, c) + dist(c, to), c))
 
-    `deliver` is whether the walk back to the shed is charged. It normally must be: the market reads
+
+def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True, rush=False):
+    """Turn a WORK SEQUENCE into the tour that actually gets walked, shed trips included.
+
+    This is the whole of the day-planning model. The search above chooses which tiles a hand works
+    and in what order; every shed trip is derived from that choice here, deterministically, and
+    inserted as a real stop. Nothing is charged that is not in the returned route, and nothing in the
+    returned route is uncharged.
+
+    Three rules, in this order at each step of the sequence:
+
+    1. **The hand cannot do the next job.** It needs an item it is not holding, so a stop is inserted
+       before that job. The draw covers the whole REMAINDER of the sequence, not just the next job:
+       `PICKUP` is unbounded, so one stop of one turn per item serves fourteen pens.
+    2. **The hand is carrying enough of today's row to justify a trip.** See `DELIVER_MIN`. The stop
+       drops everything and immediately re-draws whatever the rest of the sequence still needs.
+    3. **The tour ends holding something.** A closing drop, if `deliver`.
+
+    `deliver` is whether the closing trip is charged AT ALL. It normally must be: the market reads
     the SHED and nothing else, so produce still in a hand is unsold. But at the very end of the day
     that reserve buys nothing -- `_drop_inventories_to_shed` (`kaggriculture.py:812`) empties every
     hand into the shed at the rollover, so a last-turn HARVEST banks itself overnight for free, while
-    reserving a walk home for it just refuses the harvest outright.
-
-    Measured on Seb's day-17 board: a full melon UNDER THE FARMER'S FEET at hour 23 costs 1 turn to
-    take and was priced at 2 -- one for the op, one for a walk home there was no time to make -- so
-    it was left standing. Nine of thirteen hands passed that hour with five ripe harvests offered.
+    reserving a walk home for it just refuses the harvest outright. Measured on Seb's day-17 board: a
+    full melon UNDER THE FARMER'S FEET at hour 23 cost 1 turn to take and was priced at 2, so it was
+    left standing while nine of thirteen hands passed that hour.
     """
-    if not route:
-        return 0
-    need = draws(route, carry)
-    pos, total = start, 0
-    if need:
-        home = min(depots, key=lambda c: (dist(c, start), c))
-        total += dist(start, home) + len(need)
-        pos = home
-    for j in route:
-        total += dist(pos, j.tile) + j.turns
+    depots = tuple(depots) or SHED
+    wanted = collections.Counter(wanted or {})
+    held = collections.Counter(carry or {})
+    work = list(work)
+
+    # Suffix sums of what the remaining sequence draws, so rule 1 can ask "what does the rest of the
+    # day need" in O(1) instead of rescanning. Computed once: `materialise` sits inside the innermost
+    # loop of the greedy and is called O(jobs x units x positions) times per pass.
+    after = [collections.Counter() for _ in range(len(work) + 1)]
+    for i in range(len(work) - 1, -1, -1):
+        after[i] = after[i + 1] + work[i].needs
+
+    route, pos = [], tuple(start)
+    for i, j in enumerate(work):
+        short = collections.Counter({it: q - held[it] for it, q in after[i].items() if q > held[it]})
+        # **Deliverable is the SURPLUS, not the load**, and the difference is a whole day of feeding.
+        # Two conditions, and both are needed. Only what TODAY'S row still owes counts, so a hand
+        # ferrying fertilizer nobody is selling is left alone -- and only what this tour will not
+        # itself CONSUME counts, because the row's product and the herd's dinner can be the same
+        # thing. Seed 11 day 4 sells `WHEAT: 28` on a $28 bank, so three wheat carried to three pens
+        # read as $75 of goods the market was waiting for: `feed 7 -> 0`, `care 7 -> 0`,
+        # `drop 5 -> 13`, moves 80 -> 124, and not one animal fed all day.
+        load = sum(min(max(0, held[p] - after[i][p]), q) for p, q in wanted.items() if q > 0)
+        # **`DELIVER_MIN` holds on a short day too, and dropping it to 1 there was a real mistake.**
+        # The intuition was that on a day whose purchases are queued behind the money, a single unit
+        # in hand is worth banking. It is not, because a shed trip costs a turn even when it costs no
+        # travel -- and pens sit ON shed-access tiles by design (`_refresh_pins`), so a tour round
+        # the herd stands on a depot at almost every stop. At a threshold of one, seed 11 day 4
+        # planned this for its first hand:
+        #
+        #     Shed[WHEATx2] (3,4)[FEED CARE COLLECT] Shed[DROP+WHEATx1] (4,4)[FEED CARE COLLECT]
+        #     Shed[DROP] (4,3)[WATER HARVEST] Shed[DROP] (3,3)[WATER HARVEST] Shed[DROP]
+        #
+        # -- a shed trip after every stop, each one dumping the feed wheat it then has to draw back.
+        # Over the day: PICKUP 2, DROP 12, FEED 0, CARE 0, eight animals unfed. The tape drops five
+        # times on that day and feeds seven.
+        #
+        # What a short day actually needs is different work FIRST, not more trips: see `Job.funds`,
+        # which is `rush`'s real job. Delivery batching is a separate question and its answer does
+        # not change with the bank.
+        if load >= DELIVER_MIN:
+            d = nearest(depots, pos, j.tile)
+            # The drop takes the wheat with it, so the same stop draws back everything still ahead.
+            back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
+            route.append(Depot(d, drop=True, pick=back))
+            held = collections.Counter(back)
+            pos = d
+        elif short:
+            d = nearest(depots, pos, j.tile)
+            route.append(Depot(d, drop=False, pick=short))
+            held += short
+            pos = d
+        route.append(j)
+        held -= j.needs
+        held += j.gives
         pos = j.tile
-    if deliver and any(j.yields() for j in route):
-        total += min(dist(pos, d) for d in depots)
+
+    # **`yields()`, not just a non-empty hand.** `gives` is a prediction and is empty whenever the
+    # board cannot supply one -- a tile whose `yield_units` is still 0 at dawn because the WATER that
+    # fills it happens in this same visit, or any job built without `tiles`. Closing on the hand
+    # alone would silently drop the walk home for exactly those, which is the whole return leg for a
+    # one-shot crop. The op is the fact; the quantity is the estimate.
+    if deliver and (any(q > 0 for q in held.values()) or any(j.yields() for j in work)):
+        route.append(Depot(nearest(depots, pos), drop=True))
+    return route
+
+
+def turns(start, route):
+    """Exact turns spent walking a MATERIALISED route. The only cost model in the file.
+
+    No hidden legs at either end: a route costs what walking it costs, which is the property
+    `test_the_cost_of_a_route_is_the_route_and_nothing_else` pins.
+    """
+    total, pos = 0, tuple(start)
+    for stop in route:
+        total += dist(pos, stop.tile) + stop.turns
+        pos = tuple(stop.tile)
     return total
 
 
-def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True):
-    """Cover as many jobs as the crew can reach. Returns `(routes, uncovered)`.
+def draws(route):
+    """Everything a materialised route picks up, summed. Reporting only -- the stops are the truth."""
+    out = collections.Counter()
+    for stop in route:
+        if getattr(stop, "depot", False):
+            out += stop.pick
+    return out
 
-    `routes` is `{unit_index: [Job, ...]}` in visiting order; `uncovered` is the jobs no unit could
-    take. `supply` caps how many animals may be drawn from the shed across the whole plan.
+
+def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
+          rush=False):
+    """Cover as many jobs as the crew can reach. Returns `(work, uncovered)`.
+
+    `work` is `{unit_index: [Job, ...]}` -- the WORK SEQUENCE, without shed trips; run it through
+    `materialise` to get the tour. `uncovered` is the jobs no unit could take. `supply` caps how many
+    animals may be drawn from the shed across the whole plan.
     """
     depots = tuple(depots) or SHED
     carry = carry or {}
@@ -209,15 +393,31 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     def load(u):
         return carry.get(u) or {}
 
-    def cost(u, route):
-        return turns(units[u], route, load(u), depots, deliver)
+    def cost(u, work):
+        # **The closing shed trip is NOT charged while the work is being packed, and that is
+        # measured.** It used to be, and it cost a turn per yielding tour that could not be bought
+        # back: over 29 matched days against the tape, HARVEST fell 325 -> 301 and PASS rose
+        # 834 -> 956 (`data/logs/matched29_rebuild.log` against `data/logs/matched29.log`) purely on
+        # reserving it. Roughly 170 tours a season end holding produce, so charging the DROP op
+        # inside the budget refuses one job on each of them.
+        #
+        # And it buys nothing to reserve it, because `_drop_inventories_to_shed`
+        # (`kaggriculture.py:812`) empties every hand into the shed at the rollover. Getting home is
+        # worth turns only for produce the market is waiting for TODAY -- which is the MID-TOUR drop,
+        # and that one is still costed here, inside `materialise`, where it happens.
+        #
+        # So the closing trip is opportunistic: `plan` appends it afterwards out of whatever turns
+        # the tour did not spend. Same rule the old executor's return leg followed by accident -- it
+        # only ever fired on a turn the unit would have passed -- now stated in the plan instead of
+        # discovered at dusk.
+        return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush))
 
     used = {u: 0 for u in range(len(units))}
 
     def slot(u, j, base, limit=None):
-        """Cheapest position for `j` on unit `u`'s `base` route within `limit` turns, `(cost, index)`."""
+        """Cheapest position for `j` in unit `u`'s `base` sequence within `limit` turns, `(cost, i)`."""
         if j.only is not None and j.only != u:
-            return None                 # this hand is not carrying it, so it cannot deliver it
+            return None
         cap = budget[u] if limit is None else limit
         best = None
         for i in range(len(base) + 1):
@@ -293,13 +493,14 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                 pool.remove(j)
                 left.remove(j)
 
-    # Three passes, and the FIRST one is the whole point. See `REQUIRED_OPS`: an animal that missed
+    # Four passes, and the FIRST one is the whole point. See `REQUIRED_OPS`: an animal that missed
     # yesterday dies tonight if it misses again, while one fed yesterday can slip a day for free --
     # which is exactly how the tape feeds 16 of 19 pens on day 19 and loses nothing. A flat
     # `required` cannot express that and drops the same animal twice.
-    greedy([j for j in left if j.at_risk and j.required])       # an animal that dies tonight
-    greedy([j for j in left if j.required and not j.at_risk])    # the rest of the herd
-    greedy([j for j in left if j.at_risk and not j.required])    # a tile that weeds tonight
+    greedy([j for j in left if j.at_risk and j.required])        # an animal that dies tonight
+    greedy([j for j in left if j.funds])                          # the day's shopping list, unpaid
+    greedy([j for j in left if j.required and not j.at_risk])     # the rest of the herd
+    greedy([j for j in left if j.at_risk and not j.required])     # a tile that weeds tonight
     greedy([j for j in left if not j.required and not j.at_risk])
 
     # ----------------------------------------------------------------------------------- compact
@@ -339,6 +540,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     moving = True
         # The turns that freed up are only worth having if something gets done with them.
         greedy([j for j in left if j.at_risk and j.required])
+        greedy([j for j in left if j.funds])
         greedy([j for j in left if j.required])
         greedy([j for j in left if j.at_risk])
         greedy(list(left))
@@ -351,8 +553,8 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     changed = REPAIR
     while changed and left:
         changed = False
-        for j in sorted(left, key=lambda j: (not (j.at_risk and j.required), not j.required,
-                                             not j.at_risk, j.tile)):
+        for j in sorted(left, key=lambda j: (not (j.at_risk and j.required), not j.funds,
+                                             not j.required, not j.at_risk, j.tile)):
             done = False
             for u in range(len(units)):
                 for m in list(routes[u]):
@@ -391,7 +593,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     return routes, left
 
 
-def from_nodes(nodes):
+def from_nodes(nodes, tiles=None):
     """`router.Node` -> `Job`, keeping the node's own `needs` rather than re-deriving them.
 
     `build_nodes` decides WHICH jobs exist -- a thirsty tile offers water, a fed animal does not
@@ -403,19 +605,71 @@ def from_nodes(nodes):
     `at_risk` comes from `Node.critical`, which `animal_ops` sets from `consecutive_unfed >= 1`.
     That is a reading of the BOARD, not of the price table -- even though on the router's side it is
     expressed as a number so it can compete in a ratio.
+
+    `tiles` is optional and only feeds `gives`, the predicted yield that lets a delivery be planned
+    at dawn rather than discovered at dusk. Without it every job reports an empty hand, which is safe
+    -- no mid-tour shed trip is ever judged worthwhile, so loads ride to the end of the tour as they
+    did before there was a `gives` at all.
     """
-    return [Job(n.tile, n.ops, n.needs, at_risk=getattr(n, "critical", False)) for n in nodes]
+    return [Job(n.tile, n.ops, n.needs, gives=predict_yield(n, tiles),
+                at_risk=getattr(n, "critical", False)) for n in nodes]
 
 
-def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True):
-    """`cover`, in the shape `schedule_agent` already consumes from `router.plan_routes`."""
+def predict_yield(node, tiles):
+    """What this node puts in the hand, read off the board. `{}` when it cannot be known.
+
+    HARVEST moves `tile["yield_units"]` of the crop (or the animal's product) into the inventory and
+    zeroes the tile (`kaggriculture.py:388`); COLLECT_FERTILIZER adds exactly one
+    (`kaggriculture.py:490`). Both are on the board at dawn.
+
+    A one-shot crop watered inside its window gains yield BEFORE the harvest in the same visit, so
+    this under-reads those by one or two. That is deliberate: `gives` only ever gates whether a load
+    is worth a mid-tour trip, and under-reading defers a trip while over-reading books one for
+    produce that does not exist.
+    """
+    if tiles is None:
+        return {}
+    x, y = node.tile
+    try:
+        cell = tiles[y][x]
+    except (IndexError, TypeError):
+        return {}
+    if not isinstance(cell, dict):
+        return {}
+    out = collections.Counter()
+    for op, _item in node.ops:
+        if op == "COLLECT_FERTILIZER":
+            out["FERTILIZER"] += 1
+        elif op == "HARVEST":
+            units = int(cell.get("yield_units", 0) or 0)
+            if units <= 0:
+                continue
+            if "animal" in cell:
+                product = R.ANIMALS[cell["animal"]]["product"]
+            else:
+                product = cell.get("crop")
+            if product:
+                out[product] += units
+    return out
+
+
+def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
+         rush=False):
+    """`cover`, materialised, in the shape `schedule_agent` already consumes."""
     depots = tuple(depots) or SHED
-    routes, left = cover(units, jobs, budget, depots, carry, supply, deliver)
+    work, left = cover(units, jobs, budget, depots, carry, supply, deliver, wanted, rush)
     out = {}
-    for u, route in routes.items():
-        load = (carry or {}).get(u) or {}
-        need = draws(route, load)
-        out[u] = dict(route=route, draw=need,
-                      depot=(min(depots, key=lambda c: (dist(c, units[u]), c)) if need else None),
-                      cost=turns(units[u], route, load, depots, deliver))
+    for u, seq in work.items():
+        held = (carry or {}).get(u) or {}
+        route = materialise(units[u], seq, held, depots, wanted, False, rush)
+        cost = turns(units[u], route)
+        # The closing trip, out of the turns the tour did not spend. See the note in `cover.cost`:
+        # it is worth having and it is never worth a job, so it goes on last and only if it fits.
+        if deliver:
+            home = materialise(units[u], seq, held, depots, wanted, True, rush)
+            if turns(units[u], home) <= budget[u]:
+                route, cost = home, turns(units[u], home)
+        out[u] = dict(route=route, draw=draws(route),
+                      depot=(next((s.tile for s in route if getattr(s, "depot", False)), None)),
+                      cost=cost)
     return out, left
