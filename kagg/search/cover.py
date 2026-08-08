@@ -105,9 +105,9 @@ def dist(a, b):
 class Job:
     """One tile and every op it wants today. `turns` is how long standing there costs."""
 
-    __slots__ = ("tile", "ops", "turns", "needs", "required", "at_risk")
+    __slots__ = ("tile", "ops", "turns", "needs", "required", "at_risk", "only")
 
-    def __init__(self, tile, ops, needs=None, at_risk=False):
+    def __init__(self, tile, ops, needs=None, at_risk=False, only=None):
         self.tile = tuple(tile)
         self.ops = [tuple(o) for o in ops]
         # **A PLANT is two turns, not one, and the second one is not optional.** A tile is created at
@@ -126,6 +126,10 @@ class Job:
         #: one that missed yesterday may not, and nor may a tile one dry day from weeding. Set from
         #: the BOARD (`consecutive_unfed`/`consecutive_unwatered`), never from a price.
         self.at_risk = bool(at_risk)
+        #: Restrict this job to ONE hand, by index. Almost every job can be done by whoever is
+        #: nearest, but a DELIVER cannot: only the hand actually holding the wool can carry it to
+        #: the shed. `None` means anyone.
+        self.only = only
 
     @property
     def service(self):
@@ -212,6 +216,8 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
 
     def slot(u, j, base, limit=None):
         """Cheapest position for `j` on unit `u`'s `base` route within `limit` turns, `(cost, index)`."""
+        if j.only is not None and j.only != u:
+            return None                 # this hand is not carrying it, so it cannot deliver it
         cap = budget[u] if limit is None else limit
         best = None
         for i in range(len(base) + 1):
@@ -219,6 +225,19 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
             if c <= cap and (best is None or c < best[0]):
                 best = (c, i)
         return best
+
+    def claim(u, j):
+        """Animals this job makes unit `u` draw FROM THE SHED, after what it already carries.
+
+        **A hand carrying the cow claims nothing.** `Job.places()` is static and cannot know that,
+        and netting it off is not optional: the moment a unit draws the animal the shed reads zero,
+        so an un-netted claim makes the PLACE permanently unassignable and the hand carries the
+        beast to dusk beside an empty pen. Measured on seed 11 day 1 -- cow in the shed at h1, drawn
+        at h4, four empty pens standing free, no PLACE all day, dropped back overnight and finally
+        placed on day 2 h9. One animal-day lost, and it repeats, which is the whole of `cow 7/8`.
+        """
+        held = collections.Counter(load(u))
+        return collections.Counter({i: q - held[i] for i, q in j.places().items() if q > held[i]})
 
     def affordable(new_places):
         """Does this many animal draws still fit what the shed holds?"""
@@ -252,12 +271,13 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
             while pool:
                 best = None
                 for j in pool:
-                    extra = j.places()
-                    if extra and not affordable(extra):
-                        continue
                     for u in range(len(units)):
                         if cap[u] - used[u] < j.turns:
                             continue               # cannot fit even standing still: skip the scan
+                        # Per UNIT, not per job: whether a placement is affordable depends on which
+                        # hand does it, because a hand already carrying the animal draws nothing.
+                        if not affordable(claim(u, j)):
+                            continue
                         got = slot(u, j, routes[u], cap[u])
                         if got is None:
                             continue
@@ -269,7 +289,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                 _k, j, u, i, c = best
                 routes[u].insert(i, j)
                 used[u] = c
-                booked.update(j.places())
+                booked.update(claim(u, j))
                 pool.remove(j)
                 left.remove(j)
 
@@ -343,7 +363,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     # `m` is DISPLACED, not dropped -- it is about to be re-homed on another unit, so
                     # it keeps its claim on the shed. Netting it out here let two units be sent for
                     # the same single COW.
-                    if not affordable(j.places()):
+                    if not affordable(claim(u, j)):
                         continue
                     # Re-home the displaced job, cheapest elsewhere. If nowhere takes it, this move
                     # is coverage-neutral at best and is refused.
@@ -361,7 +381,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     used[u] = got[0]
                     routes[v].insert(vi, m)
                     used[v] = vc
-                    booked.update(j.places())      # `m` moved unit; only `j` is newly claimed
+                    booked.update(claim(u, j))     # `m` moved unit; only `j` is newly claimed
                     left.remove(j)
                     changed = done = True
                     break

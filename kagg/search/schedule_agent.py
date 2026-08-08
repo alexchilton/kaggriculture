@@ -202,11 +202,65 @@ def _pointless_tiles(tiles, day, plants_left):
     return out
 
 
-def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()):
+#: Minimum units of the day's still-owed SELL row a hand must hold before a DELIVER stop is planned.
+#:
+#: **The planner had no delivery job at all, and that is what the day-6 cash hole is.** Seed 11, day
+#: 6, schedule row `WOOL: 12` (`data/logs/d6_wool.log`). The tape harvests at h0, drops and sells 6
+#: at h2, harvests again at h2, drops and sells the last 6 at h5 -- twelve wool banked by hour five,
+#: which funds two cows at h2. We harvest at h4 and h10, and then the crew CARRIES ten wool through
+#: h11, 12, 13, 14, 15, 16, 17 and 18, drops four at h19 and takes six into the night. The bank sits
+#: at $20 all day, the second cow is deferred, and `buy_product` is suppressed for days after.
+#:
+#: `DELIVER_FERRY` was supposed to cover this and cannot: it only fires when a hand is ALREADY
+#: walking and has slack (`act[0] in STEP`), so a hand working through its tour never diverts however
+#: much it is carrying. Delivery was opportunistic; it has to be scheduled. Lowering
+#: `MIN_SELL_ROW_DROP` does not help and measured worse -- that constant gates the ferry, which is
+#: the wrong mechanism, not a mis-tuned one.
+#:
+#: **SET AT 6 BY MEASUREMENT, NOT BY TASTE.** A delivery stop costs turns, and at 2 or 4 it takes
+#: them out of day 6's planting: `test_day_six_plants_every_tile_the_row_asks_for` and
+#: `test_the_biggest_sale_takes_the_earliest_slot` both go red. At 6 the suite is back to its two
+#: pre-existing failures and day 6 still orders BOTH cows the schedule asks for, against one before.
+#: So this catches the big loads and leaves the small ones to the opportunistic ferry.
+#:
+#:     DELIVER_MIN   router failures   d6 cows ordered
+#:     none                        2                 1
+#:     2 and 4                     5                 2
+#:     6 and 8                     2                 2
+#:
+#: What it does NOT fix: we harvest the sheep at h7 and h10 where the tape harvests at h0 and h2, so
+#: the first delivery still lands at h15 against his h2. Delivery cannot precede harvest, and the
+#: covering planner has no reason to take a HARVEST early just because the SELL row wants it today.
+#: That is the next defect and it is a scheduling question, not a delivery one.
+DELIVER_MIN = 6
+
+
+def _deliver_jobs(units, invs, owed_sale, depots, unlocked):
+    """A shed stop for every hand holding goods today's SELL row still wants. One per hand.
+
+    Pinned to that hand with `Job.only` -- the wool is in ITS pocket, so no other unit can take it --
+    and placed on the depot nearest to where it currently stands. `DROP` is all-or-nothing per item
+    and empties the hand, so one stop clears whatever it is carrying.
+    """
+    out = []
+    for u in range(len(units)):
+        inv = invs[u] if u < len(invs) else {}
+        carrying = sum(min(int(q), int(owed_sale.get(it, 0)))
+                       for it, q in (inv or {}).items()
+                       if int(q) > 0 and int(owed_sale.get(it, 0)) > 0)
+        if carrying < DELIVER_MIN:
+            continue
+        home = min(depots, key=lambda c: (RT.dist(c, units[u]), c))
+        out.append(DP.Job(home, [("DROP", None)], needs={}, only=u))
+    return out
+
+
+def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=(), deliver_jobs=()):
     """One day's assignment, by whichever planner is switched on. Same return shape either way."""
     if not COVER_PLANNER:
         return RT.plan_routes(units, nodes, budget, depots, carry, supply=supply)
     jobs = [j for j in DP.from_nodes(nodes) if j.tile not in pointless]
+    jobs.extend(deliver_jobs)
     if at_risk:
         for j in jobs:
             if j.tile in at_risk:
@@ -1249,7 +1303,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                      [budget[u] for u in live], depots,
                      {k: load[u] for k, u in enumerate(live)}, supply=shed,
                      at_risk=_at_risk_tiles(tiles),
-                     pointless=_pointless_tiles(tiles, day, plants_left))
+                     pointless=_pointless_tiles(tiles, day, plants_left),
+                     deliver_jobs=_deliver_jobs(units, invs, owed_sale, depots, unlocked))
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
         state["crew"] = len(live)
     else:
@@ -1293,7 +1348,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                          [budget[u] for u in idle], depots,
                          {k: load[u] for k, u in enumerate(idle)}, supply=free,
                          at_risk=_at_risk_tiles(tiles),
-                         pointless=_pointless_tiles(tiles, day, plants_left))
+                         pointless=_pointless_tiles(tiles, day, plants_left),
+                         deliver_jobs=_deliver_jobs(units, invs, owed_sale, depots, unlocked))
             for k, u in enumerate(idle):
                 routes[u] = sub[k]
 
@@ -1333,6 +1389,20 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         act = ["PASS"]
         while st["route"]:
             node = st["route"][0]
+            # **A DELIVER stop, which `_live_ops` cannot re-derive.** Every other stop's work is read
+            # off the CELL, but a delivery is a fact about the unit's pocket, not about the tile, so
+            # the depot cell reports nothing and the stop would be popped unworked. See
+            # `_deliver_jobs`: this is the scheduled shed trip the tape makes at h2 and h5 and we
+            # were only ever stumbling into at h19.
+            if pos == node.tile and any(o == "DROP" for o, _i in node.ops):
+                st["route"].pop(0)
+                if tuple(pos) in set(depots) and any(v > 0 for v in inv.values()):
+                    for item, qty in inv.items():
+                        if qty > 0:
+                            shed[item] = shed.get(item, 0) + qty
+                    act = ["DROP"]
+                    break
+                continue
             if pos != node.tile:
                 m = _step_towards(pos, node.tile, unlocked)
                 if m is None:                       # unreachable: drop the stop rather than idle on it
