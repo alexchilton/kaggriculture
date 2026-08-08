@@ -238,6 +238,16 @@ def main():
                     help="hide the NORTH/SOUTH/EAST/WEST rows; `move` still shows their sum")
     ap.add_argument("--diff", action="store_true",
                     help="list EVERY field that differs, per day, instead of the wide tables")
+    # **Hand the first N days to the tape, then take over.** The tape's actions replayed from turn 0
+    # reproduce its board field for field -- the starting board is deterministic and, with weeds off,
+    # the only unmatched RNG is the shop unlock order. `--handover 11` therefore means HE plays days
+    # 0 to 10 INCLUSIVE, including the day-10 parcel, and our agent opens day 11 on his board.
+    #
+    # This is what separates "our opening is behind" from "our selling is behind". Without it every
+    # late-season deficit can be blamed upstream, and usually was. See `scripts/handover.py`, which
+    # reports the same run as eight scalars plus the shed-discard count.
+    ap.add_argument("--handover", type=int, default=None, metavar="DAY",
+                    help="tape plays days 0..DAY-1, our agent plays DAY onwards")
     args = ap.parse_args()
 
     replay, schedule, team = TAPES[args.tape]
@@ -246,8 +256,21 @@ def main():
     opp = lambda: tape_policy(replay, team, 1)
 
     his, his_ops, his_cov = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds)
-    a = schedule_agent.make_agent(thin, 0, router=True)
-    ours, our_ops, our_cov = run(lambda: (lambda o, t: a(o)), opp, args.seed, args.weeds)
+
+    def mine():
+        a = schedule_agent.make_agent(thin, 0, router=True, start_day=args.handover)
+        if args.handover is None:
+            return lambda o, t: a(o)
+        tape = tape_policy(replay, team, 0)
+
+        def f(o, t):
+            if t // 24 < args.handover:
+                a(o)                  # drive our agent anyway so its per-day state is warm
+                return tape(o, t)
+            return a(o)
+        return f
+
+    ours, our_ops, our_cov = run(mine, opp, args.seed, args.weeds)
 
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]

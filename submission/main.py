@@ -1427,6 +1427,33 @@ COMPACT = True
 #: beside `slot_now` in `cover` for the profile and the episode.
 MEMOISE_SLOT = True
 
+#: Whether the shed limits EVERY item a job draws, or only the animals. See `claim` for the day-4
+#: failure this fixes: six FEEDs planned against a shed holding no wheat, two performed.
+#: `tests/test_day_four_feeds_the_whole_herd.py` is the reproduction.
+#: **SHIPS OFF. Measured three times, worse every time.** The diagnosis behind it is correct and
+#: worth keeping: day 4's dawn solve has one unit, which lifts all six wheat out of the shed, and
+#: the hour-1 replan then covers six FEEDs against a shed holding zero -- five of them on hands
+#: that can never obtain wheat. Two feeds happen, four animals go hungry with seventy idle turns.
+#:
+#: But refusing the job is the wrong answer to it. Seed 11, weeds off, against Seb's 1.32.6 tape,
+#: `days 0-16 totals` and the d16 board:
+#:
+#:     setting                        work  idle   d16 money   d16 cow/sheep
+#:     off (shipped)                  1144  1289       7,293        5 / 7
+#:     on, needs | places             1025  1441       3,280        6 / 7   and the 4th parcel never bought
+#:     on, FEED/FERTILIZE only         930  1372           0        3 / 0
+#:
+#: Each tightening moves work DOWN and idle UP, because a refused FEED is a hand with nothing to do
+#: and an animal that starves anyway. The shed being empty is a funding problem -- Seb answers it
+#: with 14-22 BUY_PRODUCT a day from d11 while we buy none -- and a planner constraint cannot buy
+#: wheat. Turn this on only together with a rule that raises the shortfall as a purchase.
+SUPPLY_LIMITS_EVERY_DRAW = False
+
+#: The ops whose drawn item is genuinely SPENT at the tile, so the shed has to hold it before the
+#: job can be planned. PLACE and BUILD are deliberately absent: their `needs` carry feed wheat that
+#: the op does not consume, and constraining on it refused animal placements outright.
+SUPPLY_CHECKED_OPS = ("FEED", "FERTILIZE")
+
 #: Sentinel for "not in the cache", so a genuine `None` from `slot` -- which means "this job does
 #: not fit this unit at all", the single most common answer -- is cached instead of recomputed.
 _MISS = object()
@@ -1444,6 +1471,17 @@ _MISS = object()
 #: asks_for` and `test_the_biggest_sale_takes_the_earliest_slot` both go red; at 6 and 8 they do not,
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
+
+#: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
+#: the tour opens with a shed trip. See `materialise` rule 0.
+#:
+#: This is deliberately NOT a lowered `DELIVER_MIN`. The note at rule 2 records what lowering that
+#: threshold on a short day actually did -- a shed trip after every stop, PICKUP 2 / DROP 12, eight
+#: animals unfed. This fires at most ONCE per tour, before any work, and so cannot produce that
+#: shape. It is the delivery half of `FUND_THE_DAY_WHEN_SHORT`: that rule reorders the day's WORK so
+#: the sellable harvest happens first, and this one gets the result to the shed while the market is
+#: still open.
+RUSH_BANK_MIN = 4
 
 #: Whether a hand is judged for a shed trip by what it CARRIES (True) or by what today's sell row
 #: still owes (False, shipped). See the long note in `materialise` for the defect it targets, which
@@ -1636,6 +1674,34 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         after[i] = after[i + 1] + work[i].needs
 
     route, pos = [], tuple(start)
+
+    # **Rule 0, and only on a short day: a hand that STARTS the tour holding the row's produce banks
+    # it before it works.** See `RUSH_BANK_MIN`.
+    #
+    # `rush` reaches here as `fund=short_of_cash` from `_solve`, and until now it only reordered WORK
+    # -- `Job.funds` puts the sellable harvest first. That is half a rule. The other half is that the
+    # result has to reach the SHED, because the market reads the shed and nothing else, and a unit
+    # diverted by `BANK_THE_HAND_WHEN_SHORT` arrives here already carrying the goods. Without this it
+    # is handed a fresh tour and the only drop it gets is the closing one at rule 3, after all of it.
+    #
+    # Measured, seed 11 day 4: u0 held 4 FERTILIZER and u6 held 2, from hour 8 to hour 15, while the
+    # bank finished the day on $939 against a $1,000 parcel. Four is under `DELIVER_MIN`, so rule 2
+    # never fired and the fertilizer was banked by the midnight sweep, hours after the market shut.
+    #
+    # The `owed` guard is the same one rule 2 and the free drop carry, for the same reason: `DROP` is
+    # all-or-nothing (`kaggriculture.py:333`), so a hand holding the herd's dinner beside the harvest
+    # would shed both. If ANY of what it carries is owed ahead, the tour keeps the lot and delivers
+    # the ordinary way.
+    if rush and work and not any(after[0][p] > 0 for p, q in held.items() if q > 0):
+        spare = sum(min(held[p], q) for p, q in wanted.items() if q > 0 and held[p] > 0)
+        if spare >= RUSH_BANK_MIN:
+            d = nearest(depots, pos, work[0].tile)
+            # Draws the whole remainder back on the same stop, exactly as rule 2 does, so the tour
+            # does not pay for a second depot visit one job later.
+            route.append(Depot(d, drop=True, pick=after[0]))
+            held = collections.Counter(after[0])
+            pos = d
+
     for i, j in enumerate(work):
         short = collections.Counter({it: q - held[it] for it, q in after[i].items() if q > held[it]})
         # **Deliverable is the SURPLUS: what the hand holds that this tour will not itself CONSUME.**
@@ -1858,7 +1924,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         return got
 
     def claim(u, j):
-        """Animals this job makes unit `u` draw FROM THE SHED, after what it already carries.
+        """What this job makes unit `u` draw FROM THE SHED, after what it already carries.
 
         **A hand carrying the cow claims nothing.** `Job.places()` is static and cannot know that,
         and netting it off is not optional: the moment a unit draws the animal the shed reads zero,
@@ -1868,7 +1934,27 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         placed on day 2 h9. One animal-day lost, and it repeats, which is the whole of `cow 7/8`.
         """
         held = collections.Counter(load(u))
-        return collections.Counter({i: q - held[i] for i, q in j.places().items() if q > held[i]})
+        # **The wheat a FEED eats is as finite as the cow a PLACE takes, and it was never checked.**
+        # This read `j.places()` -- PLACE ops only -- so `affordable` constrained animals and nothing
+        # else. Day 4, seed 11, against Seb's 1.32.6 tape: the dawn solve has ONE unit, which picks up
+        # all six wheat in the shed. The crew lands at hour 1, the shed reads zero, and the six-unit
+        # replan covers all six FEEDs anyway -- five of them assigned to hands that can never obtain
+        # wheat. Two feeds happen. Four animals go hungry with seventy unit-turns idle, and
+        # `consecutive_unfed >= 2` takes two cows on day 7 (5 -> 3 while the tape holds at 5). By d16
+        # that is 5 cows against 13 and $7,293 against $15,026.
+        #
+        # `needs` already carries the animal for a PLACE (`PLACE_DRAWS_FEED` puts the wheat there
+        # too), so union rather than sum: `Counter |` takes the max per item and cannot double-count
+        # a beast that appears in both.
+        # **Only what the op CONSUMES at the tile, never what it carries along.** Using `j.needs`
+        # wholesale blocked PLACE: `PLACE_DRAWS_FEED` puts a day's wheat into `needs`, so an empty
+        # shed refused the animal itself. Day 4 measured `place 0/1` and `cow 4/5` against `1/1` and
+        # `5/5` before -- one cow placed a day late, for want of wheat the PLACE does not spend.
+        want = j.places()
+        if SUPPLY_LIMITS_EVERY_DRAW:
+            want = want | collections.Counter(
+                i for o, i in j.ops if i and o in SUPPLY_CHECKED_OPS)
+        return collections.Counter({i: q - held[i] for i, q in want.items() if q > held[i]})
 
     def affordable(new_places):
         """Does this many animal draws still fit what the shed holds?"""
@@ -3536,6 +3622,16 @@ def _pointless_tiles(tiles, day, plants_left):
 #: dollar figure enters the routing.
 FUND_THE_DAY_WHEN_SHORT = True
 
+#: The second half of `FUND_THE_DAY_WHEN_SHORT`: on a short day, divert a hand that is ALREADY
+#: holding produce the row wants. The first half marks a job and expires when the harvesting ends;
+#: this one looks at the load. See the long note at its use site in `_router_acts` for the day-4
+#: measurement -- $939 against a $1,000 parcel with $576 of fertilizer riding in two empty hands.
+BANK_THE_HAND_WHEN_SHORT = True
+
+#: How much sellable surplus a hand must hold before its tour is worth interrupting. Interrupting
+#: a committed tour is the thrash this file warns about twice, so the trigger is not one unit.
+BANK_THE_HAND_MIN = 4
+
 #: Whether a unit whose CRITICAL draw finds the shed empty STANDS and retries next turn, instead of
 #: dropping that attempt and walking on. See the note where it is read. It saves the day-12 SHEEP at
 #: (1,6) and it is the half of that fix which costs turns; the non-destructive `node.pick` handling
@@ -3557,7 +3653,7 @@ FUND_THE_DAY_WHEN_SHORT = True
 STAND_AT_A_DRY_SHED = False
 
 
-def _days_bill(row):
+def _days_bill(row, owned=0):
     """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
 
     Deliberately coarse: the hire ladder is `mult * fib(n)` (`kaggriculture.py:666`) and
@@ -3581,7 +3677,16 @@ def _days_bill(row):
     for _ in range(int(row.get("hires") or 0)):            # `mult * fib(n)`, mult 1 by default
         bill += a
         a, b = b, a + b
-    bill += sum(R.LAND_PRICES[:int(row.get("land") or 0)])
+    # **Land is priced by what we ALREADY OWN, not by how many we buy today.** `_do_buy_land`
+    # unlocks `LAND_ORDER[n_already_bought]` and charges `LAND_PRICES[n_already_bought]`, so a row
+    # asking for one parcel costs $1,000, $2,000 or $4,000 depending entirely on `owned`. Slicing
+    # from zero billed the FIRST parcel's price on every land day of the season -- right on day 4 by
+    # coincidence, $1,000 short on day 6 and $3,000 short on day 10. The error grows exactly as the
+    # parcels get expensive, so `FUND_THE_DAY_WHEN_SHORT` was least likely to arm on the day the
+    # farm is most stretched. `owned` defaults to 0 so a caller that does not know keeps the old
+    # reading rather than silently guessing a bigger one.
+    n_land = int(row.get("land") or 0)
+    bill += sum(R.LAND_PRICES[owned:owned + n_land])
     return bill
 
 
@@ -4152,6 +4257,119 @@ LIQUIDATE_FROM_HOUR = 16
 #: their own terms and not on the dollar.
 SELL_SURPLUS_HORIZON = None
 
+#: **ON. See `docs/fable_market_selling_2026-08-08.md` and `docs/the_shed_destroys_the_harvest_2026-08-08.md`.**
+#:
+#: It shipped OFF for a day because the only evidence was the arena pool, which reads it as neutral
+#: ($103,932 -> $102,095, win rate 94.4% both ways). **The pool cannot see it.** 94.4% with `mirror`
+#: at 50% means every non-mirror opponent already loses 100% of the time, so no change to how we sell
+#: can move the win rate and mean money is the only channel left. A flag measured neutral there has
+#: not been measured against an opponent that can beat us.
+#:
+#: Measured instead on the handover fixture -- Seb's own actions replayed for days 0-10, which
+#: reproduces his board exactly (all three parcels on days 4, 6, 10; `owned`, `plant`, `pen` and
+#: `animal` matching him day for day), then our agent takes over at day 11 holding $3,950 against his
+#: $3,864. That removes the early-game deficit from the comparison, so what is left is the selling:
+#:
+#:                          final     units destroyed at midnight    turns at shed cap
+#:     OFF                $71,976              331                          12
+#:     ON                 $75,866               82                           2
+#:
+#: `data/logs/waste.log`. Both arms WIN, so this is money on top of a win rather than instead of one.
+#: The destruction is the mechanism: `_drop_inventories_to_shed` bins whatever will not fit at the
+#: rollover, and with the day-total cap in force the shed never came off 100 from day 17.
+#:
+#: Whether `rate[prod]` -- "the largest single day the schedule ever asked for" -- is dropped in
+#: favour of the shed itself whenever `market.prices[prod]` is at or above `RT.BASE_PRICE[prod]`.
+#: `rate` is a fact about ONE REPLAY's production, transcribed off a 1.32.2 tape, and 1.32.6 halved
+#: the town centre's draw; it is not a fact about what the market can absorb, and `market_price` is
+#: public and exact, so "is this a glut" does not have to be guessed.
+#:
+#: Measured on five of OUR OWN live 1.32.6 ladder games (`data/seed_scripts/ours_1326/`, three wins
+#: two losses, opponents reacting, not a tape): WHEAT realised $46.8/unit at 1,105 units sold in one
+#: game (`91041929`, a loss) against $47.8/unit at 125 units in another (`91041864`, also a loss) --
+#: essentially the same price at nearly 9x the volume, because WHEAT's own-tile production is small
+#: next to the town-plus-shop drain. That is the brief's "71 vs 305-649" gap: a schedule-quota cap
+#: throttling a product the market was never close to flooding. MELON is the counter-example and the
+#: reason this is a per-product PRICE test and not a blanket removal -- in the same game it realised
+#: $75.6/unit at 120 units against the opponent's $112.4/unit at 144, moving in the direction the
+#: glut branch already protects against, because it has no shop at all and is the one product that
+#: visibly responds to volume (`scripts/measure_sell_timing_impact.py`'s prior: seven products
+#: cleared and rose all season, melon alone glutted, base 250 -> $150).
+#:
+#: Only `allow` -- the DAY TOTAL -- moves. `rate[prod]` still bounds every SINGLE offer, even when
+#: the flag fires, and that turned out to matter: a first version dropped `rate[prod]` too
+#: (`n = have`, uncapped) and cost ~30% of mean money against every opponent in the pool on seeds
+#: 500-505, win rate unchanged (94.4%, pool saturated) -- the wool dump signature from
+#: `LIQUIDATE_FROM_HOUR`'s docstring, reproduced by a turn with a big `have` right after a harvest
+#: landing walking its whole size down the price curve in one lockstep instead of being spread over
+#: turns the way `rate[prod]` always has. See `docs/fable_market_selling_2026-08-08.md` for both
+#: arena runs. Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
+#: hold-back -- is untouched either way, so this can only ever raise an offer already bounded by
+#: real stock and real reserves, never invent stock or starve the herd.
+PRICE_AWARE_SELL_CAP = True
+
+#: **RESERVATION_SELL_CAP -- the per-product depth rule that replaces the binary `price >= base` test.**
+#: OFF by default: derived, tested, not yet measured wide enough to ship. See
+#: `docs/fable_market_technique_2026-08-08.md` for the derivation.
+#:
+#: `PRICE_AWARE_SELL_CAP` above asks one bit -- "is this product at or above base price" -- and the
+#: bit is the wrong summary, because the products differ in DEPTH and not in level. From a balanced
+#: book, the units sellable before the price falls 10% are WHEAT 20, MELON 51, FERTILIZER 53, WOOL 19,
+#: MILK 8, STRAWBERRY 7 (`market_price`, `reference/kaggriculture.py:177`). One threshold cannot
+#: express a market where 400 wheat clears at a mean $20.78 against base $25 while 200 melon crashes
+#: the book to the $1 floor.
+#:
+#: The exact statement the env supports, and the whole basis of this flag:
+#:
+#:     Units sellable at a price of at least L, by BOTH players, over the rest of the season
+#:         N(L) = max(0, I_L - I_now) + D_rem
+#:
+#: because `_commit_unit` (`kaggriculture.py:626-635`) raises inventory by exactly one per unit sold,
+#: `_town_consume` (`:696-717`) lowers it by a deterministic `D_rem` that depends only on
+#: `town.unlocked_shops` and the step, and `market_price` is monotone decreasing in inventory. Both
+#: terms are in the observation: `market.inventory` and `town.unlocked_shops` are `shared: True`
+#: (`reference/kaggriculture.json`). Nothing here is estimated.
+#:
+#: Inverting N at our own remaining supply `Q_rem` gives the reservation price with no free parameter:
+#:
+#:     lambda_p = market_price(p, I_now + Q_rem - CONTEST * D_rem)
+#:
+#: and the offer is every unit whose marginal price clears it. `CONTEST` is the one dial: the share of
+#: the town's remaining absorption we assume the OPPONENT does not take. The drain is a common pool --
+#: every unit the town removes is one re-sale at a good price, and whoever sells first has it -- so
+#: 1.0 is the single-player optimum and 0.5 is the two-player split. Lower values sell sooner.
+#:
+#: **It can only ever RAISE an offer, never lower one.** The reservation is `max`-ed against the
+#: existing `min(have, allow, rate[prod])`, so every reserve netted into `have` above -- the wheat feed
+#: floor, the fertilizer hold-back -- still binds, and a product the baseline was already throttling
+#: correctly (MELON, whose `D_rem` is ~1/day because it is in no shop at all) is untouched.
+#: **ON, 2026-08-08.** It shipped off because the handover fixture alone put it at +$2,822 mean over
+#: five seeds -- 4 up, 1 down -- which is inside this project's ~15% seed variance and therefore not
+#: a result. A second and harder fixture now agrees: the MIRROR, which is what Kaggle validation
+#: runs, and the case that was already losing land parcels because both sides dump the same products
+#: into the same book on the same turns.
+#:
+#: Ten mirror seasons per arm, seeds 11-15 at weeds 0.0 and 0.005 (`data/logs/mirror_reservation.log`):
+#:
+#:                   mean bank    units destroyed    land parcels
+#:     OFF             62,868        86 - 165        [4, 6, 15/16]
+#:     ON              64,667        39 - 107        [4, 6, 16]
+#:
+#: +2.9% on the bank and a THIRD off the units binned at the rollover. Land is marginally worse and
+#: that is not dismissed -- parcel 3 is a day later on most seeds. It is accepted because both
+#: fixtures move the same way on money while waste falls on every seed, and because the arena pool is
+#: saturated at 94.4% and cannot discriminate any sell rule at all. The ladder is the only remaining
+#: test that can, which is the explicit reason for enabling it rather than a hope.
+RESERVATION_SELL_CAP = True
+
+#: Share of the town's remaining absorption assumed to be ours rather than the opponent's.
+RESERVATION_CONTEST = 0.5
+
+#: How far one offer may walk the price down, as a fraction of the price it opened at. This is the
+#: derived replacement for `rate[prod]`: the size at which an offer stops being price-neutral is a
+#: property of `market_price` and differs seven-fold across the products.
+RESERVATION_SLIP = 0.10
+
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
 #: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
@@ -4274,6 +4492,150 @@ SELL_CARRY_DAYS = 3
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
+
+
+# ---------------------------------------------------------------------------- the market, exactly
+# **Imported, never copied.** `kagg/economics/market.py` already states the rule: the price function
+# and the shop table are ground truth in the env module, so a local transcription is a drift bug
+# waiting for the next rebalance -- and 1.32.6 was that rebalance. The submission already imports
+# `kg` at its top, so this costs nothing there. The fallback exists only so the module still imports
+# in a bare unit-test process with no environment installed.
+try:                                                                        # pragma: no cover
+    from kaggle_environments.envs.kaggriculture import kaggriculture as _KG
+except Exception:                                                           # pragma: no cover
+    _KG = None
+
+
+def market_price(prod, inventory):
+    """`kaggriculture.market_price`, or `BASE_PRICE` flat if the env is not importable."""
+    if _KG is None:                                                         # pragma: no cover
+        return float(RT.BASE_PRICE.get(prod, 0))
+    return _KG.market_price(prod, int(inventory))
+
+
+def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
+                         shop_interval=4, center_interval=None):
+    """Units of `prod` the town will remove from the market from `step` up to `end_step`.
+
+    Mirrors `_town_consume` (`reference/kaggriculture.py:696-717`) exactly: a shop tick on every
+    step divisible by `shop_interval` pulls 1 for each of its products (2 if it sells only one),
+    and the town centre pulls `center_mult` for every product except FERTILIZER on every step
+    divisible by `center_interval`.
+
+    **Future unlocks are NOT counted, deliberately.** Which shop unlocks on which day is drawn from
+    an RNG that `_spawn_weeds` has already consumed from, so it is not predictable
+    (`kagg/economics/market.py:9-11`). Ignoring them under-states `D_rem`, which lowers the
+    reservation price and makes the rule sell SOONER -- the safe direction, since the measured
+    failure is under-selling (331 units binned, `docs/the_shed_destroys_the_harvest_2026-08-08.md`).
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0
+    if center_interval is None:
+        center_interval = int(getattr(_KG, "TOWN_CENTER_SELL_INTERVAL", 0) or 0) or _CENTER_INTERVAL
+    shops = _KG.SHOPS
+    per_shop_tick = 0
+    for name in (unlocked_shops or []):
+        products = shops.get(name)
+        if not products:
+            continue
+        if prod in products:
+            per_shop_tick += 2 if len(products) == 1 else 1
+    # Ticks strictly inside [step, end_step): the drain at `step` itself lands AFTER this turn's
+    # market phase (`_step` runs `_process_market` then `_town_consume`, `kaggriculture.py:909-910`),
+    # so it is still available to a later offer and must be counted.
+    n_shop = len(range(-(-step // shop_interval), -(-end_step // shop_interval)))
+    total = per_shop_tick * n_shop
+    if prod in _KG.TOWN_CENTER_PRODUCTS:
+        schedule = getattr(_KG, "TOWN_CENTER_DEMAND_SCHEDULE", [(0, 1)])
+        for s in range(-(-step // center_interval) * center_interval, end_step, center_interval):
+            total += next(m for th, m in schedule if (s // 24) >= th)
+    return int(total)
+
+
+#: `townCenterSellInterval`: 12 through 1.32.5, 24 from the 1.32.6 town rebalance.
+#:
+#: **Read from the live CONFIGURATION, never from the env's spec file on disk.** The first version
+#: opened `kaggriculture.json` from the installed env's own directory, the right instinct -- do not
+#: hard-code
+#: a number the env has already changed once -- but it cannot ship: `build_planner_submission.py`
+#: refuses to bundle a module that touches the filesystem, because on Kaggle there is no repo and no
+#: env directory to read. The `try/except` around it did not help; the bundler rejects the reference
+#: statically, and correctly, since a silent fallback would have shipped a guess.
+#:
+#: The configuration is handed to `agent(obs, config)` every turn and carries the real value, so
+#: `_note_config` below adopts it on the first call. 24 is the 1.32.6 default and only stands in for
+#: the turns before a configuration has been seen.
+_CENTER_INTERVAL = 24
+
+
+def _note_config(config):
+    """Adopt the live `townCenterSellInterval` if the host provided one. Idempotent and cheap."""
+    global _CENTER_INTERVAL
+    if not config:
+        return
+    try:                                                                    # pragma: no cover
+        got = config.get("townCenterSellInterval") if hasattr(config, "get") else None
+        if got:
+            _CENTER_INTERVAL = int(got)
+    except Exception:                                                       # pragma: no cover
+        pass
+
+
+def reservation_units(prod, inventory, step, unlocked_shops, supply,
+                      contest=None, slip=None, end_step=720):
+    """How many units of `prod` this ONE offer may carry, read off the live book.
+
+    This is the derived replacement for `rate[prod]` -- "the largest single day the schedule ever
+    asked for", a number transcribed off one 1.32.2 replay. `rate` was standing in for a real
+    market fact (a big offer walks its whole size down the curve in one lockstep: wool 123 units ->
+    138 took revenue $29,041 -> $21,811) and that fact is computable, per product, every turn.
+
+    Two bounds, and the offer is whichever is larger:
+
+    `slip` -- **the depth cap.** Every unit is quoted at the inventory the previous unit left
+    (`_process_market`, `reference/kaggriculture.py:566-596`) and `_commit_unit` raises inventory by
+    exactly one per unit sold (`:626-635`), so the size at which an offer stops being price-neutral
+    is a property of `market_price` and nothing else. From a balanced book the units sellable before
+    the price falls 10% are WHEAT 20, FERTILIZER 53, MELON 51, WOOL 19, MILK 8, STRAWBERRY 7 -- a
+    seven-fold spread that a single transcribed `rate` cannot express in either direction.
+
+    `contest` -- **the reservation floor.** `market_price` is monotone decreasing above `I0` and
+    `_town_consume` (`:696-717`) lowers inventory by a deterministic `D_rem`, so the units that can
+    ever clear at a price of at least `L`, across BOTH players, over the rest of the season are
+
+        N(L) = max(0, I_L - I_now) + D_rem
+
+    -- the gap between here and the level where the price is `L`, plus every unit the town removes,
+    since each removal is one re-sale at that level. Inverting at our own remaining `supply` gives
+    the price the marginal unit can actually expect, with no fitted constant:
+
+        lambda = market_price(prod, I_now + supply - contest * D_rem)
+
+    When `supply` exceeds the town's remaining absorption, `lambda` is BELOW the current price and
+    the offer widens: there is no future in which that stock clears at today's price, so waiting
+    only moves it closer to the deadline. When supply is thin, `lambda` sits at the current price
+    and the offer narrows to the units that share it -- a trickle rather than a freeze, which is
+    deliberate: on a book at a deficit the price is an integer plateau tens of units wide.
+
+    `supply` is everything we still expect to sell -- shed plus hands plus standing yield.
+    Both `market.inventory` and `town.unlocked_shops` are `shared: True` in the observation spec, so
+    every input here is free.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0
+    contest = RESERVATION_CONTEST if contest is None else contest
+    slip = RESERVATION_SLIP if slip is None else slip
+    supply = int(supply)
+    inventory = int(inventory)
+    if supply <= 0:
+        return 0
+    d_rem = town_drain_remaining(prod, step, unlocked_shops, end_step)
+    target = max(inventory, inventory + supply - int(contest * d_rem))
+    floor_price = max(market_price(prod, target), (1.0 - slip) * market_price(prod, inventory))
+    n = 0
+    while n < supply and market_price(prod, inventory + n) >= floor_price:
+        n += 1
+    return n
 
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
@@ -4662,7 +5024,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # delivered on sight rather than batched. Recomputed every turn: the moment the sales land the
     # day stops being short and the plan goes back to plain covering.
     short_of_cash = (FUND_THE_DAY_WHEN_SHORT and any(q > 0 for q in owed_sale.values())
-                     and _days_bill(sched.get(day, {})) > money)
+                     and _days_bill(sched.get(day, {}),
+                                    owned=max(0, len(unlocked) - 1)) > money)
 
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
@@ -4700,6 +5063,43 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         state["crew"] = len(live)
     else:
         idle = [u for u in live if not routes.get(u, {}).get("route")]
+        # **A hand already holding the day's takings is the funding, and `funds` cannot see it.**
+        # `FUND_THE_DAY_WHEN_SHORT` marks a JOB -- harvest this first, deliver its load on sight --
+        # so it expires the moment the harvesting is done. Day 4, seed 11, Seb's 1.32.6 tape:
+        # `_days_bill` reads $1,458 against a $294 dawn bank, so the rule arms correctly and marks
+        # 20 jobs at h0 and h1. By h16 there are no harvest jobs left (`givesWHEAT = 0`) and the
+        # crew is carrying the whole day's produce with nowhere to put it. Measured hour by hour:
+        #
+        #     h09  shed 0  hands 20 wheat   a hand reaches the shed, SELL WHEAT x8 fills
+        #     h14  shed 0  hands 20         again, SELL WHEAT x16 fills
+        #     h17  shed 0  hands 16         and from here, nothing
+        #     h23  shed 0  hands 28         swept in at midnight, after the market shut
+        #
+        # The market reads the shed and nothing else, so the day ended on $939 against a $1,000
+        # parcel -- SIXTY-ONE DOLLARS short -- while six fertilizer worth about $576 sat in two
+        # hands that held nothing else from h8 to h15. The tape sells its harvest at h19, h22 and
+        # h23, exactly the window in which our funding rule has expired.
+        #
+        # So: on a short day, a unit carrying produce the row still wants, which its own remaining
+        # tour owes nothing of, is treated as idle and replanned. `materialise` then routes it to a
+        # depot, because `carry` holds the goods and `wanted` names them.
+        #
+        # **`owed` is the whole guard.** `DROP` is all-or-nothing (`kaggriculture.py:333`), so a
+        # hand carrying the herd's dinner beside the harvest sheds both. Netting the rest of the
+        # tour's `needs` off first is what keeps feed out of it -- the same rule `cover.materialise`
+        # applies to the free drop, and the failure it prevents cost eight cows this morning.
+        if BANK_THE_HAND_WHEN_SHORT and short_of_cash:
+            for u in live:
+                if u in idle:
+                    continue
+                owed = collections.Counter()
+                for stop in (routes.get(u) or {}).get("route") or []:
+                    owed.update(getattr(stop, "needs", None) or {})
+                spare = sum(min(load[u][p] - owed[p], q)
+                            for p, q in owed_sale.items()
+                            if q > 0 and load[u][p] - owed[p] > 0)
+                if spare >= BANK_THE_HAND_MIN:
+                    idle.append(u)
         # **Fresh urgent work is an INSERTION, not a rebuild.** Rerunning the whole plan every time a
         # PLACE node appeared MEASURED as day 0 `place` 4/4 -> 3/4 and `build_pasture` 8/8 -> 7/8:
         # day 0 buys four animals, so it triggered four full replans and each one abandoned whatever
@@ -4870,8 +5270,49 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     return acts
 
 
-def make_agent(schedule, me=0, router=True):
+def make_agent(schedule, me=0, router=True, start_day=None):
     """`agent(obs, config) -> action`.
+
+    `start_day` declares that somebody else played every day before it and **met their rows**, so the
+    missed-row catch-up below must not run for them. It exists for the handover fixture
+    (`scripts/handover.py`, `scripts/breakdown.py --handover`), where a tape drives days 0..N-1 and we
+    take over on N.
+
+    Without it the agent arrives believing a season it did not play. `uncovered` is built as
+    `row_sells - max(shed_max, ordered["sold"])`, and `ordered["sold"]` counts offers WE emitted --
+    which the fixture discards. So every day the tape sold something we book a phantom shortfall, and
+    the trap the code already documents makes it worst on the product Seb sells most: fertilizer
+    clears the turn it lands, so `shed_max` reads 1 against a row of 5. Over his days 1-10 that is a
+    fertilizer row of 4,5,5,6,5,9,5,6,9,11 read as almost entirely unsold.
+
+    Constructing the agent fresh at the handover instead does not help -- `state["day"]` is -1, so the
+    catch-up walks every earlier day against an empty tally and invents a still larger carry, bounded
+    only by `SELL_CARRY_DAYS`.
+
+    **Measured, and the phantom debt was WORTH MONEY. Read this before "fixing" it again.**
+    Handover fixture, five seeds, `PRICE_AWARE_SELL_CAP` on -- ledger cleared at the handover against
+    the ledger left warm (`data/logs/sweep_startday2.log` vs `data/logs/sweep_on.log`):
+
+        seed          11        12        13         14        15     W/L
+        warm      75,866    67,876    55,230    103,230    55,056    4W/1L
+        cleared   64,361    67,876    55,215    103,214    54,851    4W/1L
+
+    Seed 11 costs **$11,505** and seed 15 discards 117 -> 133. Win/loss is identical on all five.
+
+    The phantom carry was accidentally doing the right thing: it raised the day's sell allowance, and
+    this agent's caps are too TIGHT -- the same conclusion `PRICE_AWARE_SELL_CAP` reaches from the
+    other direction. Do not read this as "the corrupted ledger is good". Read it as a second,
+    independent measurement that the sell ceiling is the binding constraint, and one that arrived by
+    accident rather than by design. The deliberate version is the per-item marginal-revenue rule:
+    `market_price` is a pure function of inventory, so the value of the nth unit is computable rather
+    than inheritable from a replay's book-keeping error.
+
+    The harnesses pass `start_day` anyway. A fixture whose whole purpose is to isolate our selling
+    must not hand the agent a false belief about what it sold, even a profitable one.
+
+    Note what does NOT need passing: `fed_today`, `consecutive_unfed`, `watered`, `yield_units`, the
+    shed and the bank are all fields of the live observation, re-read every turn. The board is always
+    correct at a handover. Only the agent's own private ledger of what IT did can be wrong.
 
     `router=True` solves the day as a Team Orienteering Problem (`kagg/search/router.py`): tiles are
     pinned, tours are committed, and each stop's ops are re-derived from the live board. `router=False`
@@ -4885,6 +5326,7 @@ def make_agent(schedule, me=0, router=True):
                  uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
 
     def agent(obs, config=None):
+        _note_config(config)          # the town's sell interval, from the host rather than from disk
         day = int(obs.get("day", 0) or 0)
         hour = int(obs.get("hour", 0) or 0)
         farms = obs.get("farms") or []
@@ -4910,6 +5352,19 @@ def make_agent(schedule, me=0, router=True):
             # `owed` never reached zero and the offer pinned at the season's largest row every turn from
             # about day 19 -- 63 strawberries at a time. On the old leader tape that turned a trace that
             # was better on every field through day 18 into money -19,407 -> -30,262.
+            # **A day somebody else played is a day whose row was met.** See `start_day`. Skipping
+            # straight to `day` leaves the catch-up loop empty, while the reset below still runs, so
+            # our first day is a normal first day rather than one carrying ten days of phantom debt.
+            # Keyed on CROSSING `start_day`, not on a fresh agent. The fixture drives our agent
+            # through the tape's days anyway so its clock stays warm, which means `state["day"]` is
+            # `start_day - 1` here and never the -1 a first-call test would look for. That first
+            # version was inert -- byte-identical on all five seeds -- and inert is the failure mode
+            # worth naming, because it reads exactly like "the ledger did not matter".
+            if start_day is not None and state["day"] < start_day <= day:
+                state["day"] = day
+                state["uncovered"].clear()
+                state["ordered"] = collections.Counter()
+                state["shed_max"] = collections.Counter()
             for d in range(max(0, state["day"]), day):
                 left = collections.Counter()
                 for p, q in ((sched.get(d, {}) or {}).get("sells") or {}).items():
@@ -5165,6 +5620,32 @@ def make_agent(schedule, me=0, router=True):
                          if isinstance(c, dict) and c.get("kind") == "PLANT"
                          and c.get("crop") == "WHEAT")
         prices = (obs.get("market") or {}).get("prices") or {}
+        # **The book itself, and the town that drains it -- both `shared: True`, both free, neither
+        # read by this block until now.** `prices` is one scalar per product and throws away the
+        # DEPTH: it cannot tell 400 wheat clearing at a mean $20.78 from 200 melon crashing the book
+        # to the $1 floor. `market.inventory` is the position on the curve, so `market_price` gives
+        # the exact revenue of any offer size, and `town.unlocked_shops` gives the exact remaining
+        # absorption. See `RESERVATION_SELL_CAP`.
+        market_inv = (obs.get("market") or {}).get("inventory") or {}
+        unlocked_shops = list((obs.get("town") or {}).get("unlocked_shops") or [])
+        # Everything still to sell, not just what is in store: standing `yield_units` and whatever
+        # the crew is carrying are both stock the season has to clear, and understating supply
+        # understates the glut, which is the direction that already cost 331 destroyed units.
+        standing = collections.Counter()
+        for r in tiles:
+            for c in r:
+                if not isinstance(c, dict):
+                    continue
+                y = int(c.get("yield_units", 0) or 0)
+                if y <= 0:
+                    continue
+                if c.get("kind") == "PLANT":
+                    standing[c.get("crop")] += y
+                elif c.get("animal"):
+                    standing[R.ANIMALS.get(c.get("animal"), {}).get("product", "")] += y
+        for iv in invs:
+            for k, v in (iv or {}).items():
+                standing[k] += int(v)
         last_day = max(sched) if sched else day
         pending = 0          # cash this turn's sells will have banked by the time BUY_LAND settles
         rate = collections.Counter()
@@ -5268,7 +5749,26 @@ def make_agent(schedule, me=0, router=True):
                 carried_wheat = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
                 drawn = max(0, int(shed_before.get("WHEAT", 0)) - int(shed.get("WHEAT", 0)))
                 will_buy = int((row.get("buys") or {}).get("WHEAT", 0))
-                have = max(0, have - max(0, feed_days(day) * alive - ripe_wheat - carried_wheat
+                # **`ripe_wheat` is NOT feed and must not cancel the reserve.** It is wheat standing
+                # in the FIELD. Subtracting it treated an unharvested crop as though it were already
+                # in a hand, so a full field released the shed's real stock to the market and the
+                # herd was sold its own dinner. Traced on day 11, seed 11:
+                #
+                #     h0   14 animals, 14 UNFED, shed wheat 14   ->  SELL WHEAT 7
+                #     h2   shed wheat 0, and it stays 0 for the remaining 22 hours
+                #     h0-h23  FEED fires TWICE, because feeding needs wheat in a hand and a hand
+                #             draws from a shed we had emptied
+                #     d12 dawn  16 animals -> 14, evicted at `consecutive_unfed >= 2`
+                #
+                # The note that defended it -- "fourteen ripe tiles feed the herd perfectly well" --
+                # is true only if those tiles are harvested, carried and dropped BEFORE the animals
+                # go hungry. On the days this fires the crew is planting instead, and standing wheat
+                # feeds nothing. Across the season it cost us 7 cows against the tape's 13.
+                #
+                # The other three terms stay: `carried_wheat` is in a hand right now, `drawn` already
+                # left the shed this turn, and `will_buy` is a commitment the same turn loop honours.
+                # All three are wheat that exists or is being bought; standing crop is neither.
+                have = max(0, have - max(0, feed_days(day) * alive - carried_wheat
                                          - drawn - will_buy))
             # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
             # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
@@ -5340,13 +5840,58 @@ def make_agent(schedule, me=0, router=True):
                 target = (row.get("shed_dusk") or {}).get(prod)
                 if target is not None:
                     allow = max(allow, have - int(target))
-                n = min(have, allow, rate[prod])
-                # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
-                # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
-                # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
-                # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
-                # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
-                n = min(n, allow - state["ordered"][("sold", prod)])
+                # **PRICE_AWARE_SELL_CAP: relax the DAY TOTAL, never the PER-OFFER size.** `allow`
+                # (via `still_owed`/carry) bounds how much of a product is sold across the whole
+                # day -- a fact about ONE REPLAY's row, not about the market -- and that is what
+                # this drops when the live price says the product is not glutted. `rate[prod]`
+                # bounds a SINGLE OFFER and stays in force even when the flag fires: it is what
+                # stops one turn's harvest from being walked down the price curve in one dump, the
+                # exact failure this file already measured on wool (123 units -> 138, revenue
+                # $29,041 -> $21,811, `LIQUIDATE_FROM_HOUR`'s docstring). A first version of this
+                # flag set `n = have` outright and was measured on the arena pool, seeds 500-505,
+                # `PRICE_AWARE_SELL_CAP` vs off: win rate unchanged (94.4%, pool saturated) but MEAN
+                # MONEY fell ~30% against every single opponent ($111,238 -> $77,587,
+                # `data/logs/price_aware_arena_2026-08-08.log`) -- exactly the dump signature, since
+                # a turn with a big `have` (right after a harvest lands) emitted it as one order and
+                # walked the whole thing down in a single turn's lockstep instead of spreading it
+                # across turns the way the shipped `rate[prod]` cap always has.
+                price_ok = (PRICE_AWARE_SELL_CAP
+                            and prices.get(prod, RT.BASE_PRICE.get(prod, 0)) >= RT.BASE_PRICE.get(prod, 0))
+                if price_ok:
+                    n = min(have, rate[prod])
+                    # **RESERVATION_SELL_CAP: the per-offer size, read off the live book.**
+                    # `rate[prod]` above is the largest single day ONE 1.32.2 replay ever asked for.
+                    # `reservation_units` computes the same quantity from `market.inventory` and
+                    # `town.unlocked_shops`, both `shared: True` in the observation, so it is a fact
+                    # about the market rather than about his production.
+                    #
+                    # **It REPLACES `rate[prod]`, in both directions, and that is the point.** A
+                    # first wiring took `max(n, reservation)` on the argument that a rule which can
+                    # only widen an offer cannot regress -- and it was a no-op: five seeds of
+                    # `scripts/handover.py` came back byte-identical, ours $140,455/$138,003/
+                    # $151,325/$151,075/$149,039 with the flag on and off
+                    # (`data/logs/reservation_off.log`, `..._on.log`). `rate[prod]` was already the
+                    # larger number on every turn it mattered, so "only ever raises" bought nothing
+                    # except a flag that looked live and was not. The whole content of the rule is
+                    # in the direction that shrinks an offer -- MELON's book absorbs ~140 units a
+                    # season on 1.32.2 and ~30 on 1.32.6 because no shop carries it at all, and on
+                    # this fixture we push 96 of the 125 units that crash it to $144.
+                    #
+                    # Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
+                    # hold-back -- still binds, and `LIQUIDATE_LAST_DAY` below still overrides on the
+                    # final day, so the deadline case is not this rule's to get wrong.
+                    if RESERVATION_SELL_CAP:
+                        n = min(have, reservation_units(
+                            prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
+                            day * TPD + hour, unlocked_shops, have + standing[prod]))
+                else:
+                    n = min(have, allow, rate[prod])
+                    # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
+                    # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
+                    # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
+                    # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
+                    # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
+                    n = min(n, allow - state["ordered"][("sold", prod)])
                 # **Then top up to keep room for the drop.** Applied AFTER the caps rather than
                 # through `allow`, because `allow` is bounded by `rate[prod]` two lines up and the
                 # whole point is that the row cannot know about a full shed. It can only ever
@@ -5738,7 +6283,31 @@ def make_agent(schedule, me=0, router=True):
         # day 6's dawn shed, `sh:wheat 8/7`.
         fed_today = sum(1 for r in tiles for c in r
                         if isinstance(c, dict) and "animal" in c and c.get("fed_today"))
-        herd = feed_days(day) * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
+        # **No cross-turn `ordered` credit on the FEED row either.** This is the same defect the seed
+        # row above already records, in the same shape: `ordered` counts what was OFFERED and never
+        # what FILLED, and it accumulates until dawn. Six offered against a herd need of six leaves
+        # `herd <= 0` for every remaining turn whether or not a single unit arrived.
+        #
+        # Measured, seed 11, Seb's 1.32.6 schedule, day 7:
+        #
+        #     h01  shed 0   BUY_PRODUCT WHEAT 6      offered six
+        #     h02  shed 1                            ONE filled
+        #     h07  shed 1   SELL WHEAT 1             and the reserve let it go
+        #     h08  shed 0   -- no further wheat order for the rest of the day
+        #          six animals unfed on all of h01..h23; cow 7 -> 6 -> 5
+        #
+        # On that same day BUY_SEED STRAWBERRY and MELON are re-offered on all twenty of h02..h21,
+        # because the seed row carries no cross-turn credit. Seeds retried; feed did not.
+        #
+        # The note below still describes the intent correctly -- the remainder IS re-offered every
+        # turn -- it just could not happen while this term was here. `on_hand` is recomputed from the
+        # real shed, hands and ripe field on every turn, so an order that filled is already counted
+        # there; subtracting `ordered` as well double-counts it. An order that failed leaves
+        # `on_hand` untouched and must be asked for again.
+        #
+        # The size of the re-offer stays bounded by the two throttles directly below -- `FEED_TURN_CAP`
+        # and half the live bank -- so this cannot spend the day's land money on wheat.
+        herd = feed_days(day) * alive - fed_today - on_hand
         # **The drip has to bound the HERD path too, or it bounds nothing that matters.** This read
         # `max(herd, min(max(0, owed), BUY_DRIP))`: the row was dripped and the herd's whole remaining
         # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never
@@ -5823,7 +6392,7 @@ _PLAN_JSON = r'''{
 "sells": {}
 },
 "1": {
-"money_dawn": 133.0,
+"money_dawn": 128.0,
 "hands": 7,
 "hires": 7,
 "land": 0,
@@ -5844,7 +6413,7 @@ _PLAN_JSON = r'''{
 }
 },
 "2": {
-"money_dawn": 323.0,
+"money_dawn": 319.0,
 "hands": 7,
 "hires": 7,
 "land": 0,
@@ -5861,7 +6430,7 @@ _PLAN_JSON = r'''{
 }
 },
 "3": {
-"money_dawn": 225.0,
+"money_dawn": 223.0,
 "hands": 7,
 "hires": 7,
 "land": 0,
@@ -5882,9 +6451,9 @@ _PLAN_JSON = r'''{
 }
 },
 "4": {
-"money_dawn": 28.0,
-"hands": 8,
-"hires": 8,
+"money_dawn": 49.0,
+"hands": 7,
+"hires": 7,
 "land": 1,
 "builds": 0,
 "places": [
@@ -5895,150 +6464,20 @@ _PLAN_JSON = r'''{
 "COW": 1
 },
 "seeds": {},
-"buys": {},
+"buys": {
+"WHEAT": 1
+},
 "sells": {
-"WHEAT": 28,
-"FERTILIZER": 4
+"WHEAT": 49,
+"FERTILIZER": 6
 }
 },
 "5": {
-"money_dawn": 965.0,
-"hands": 8,
-"hires": 8,
-"land": 0,
-"builds": 1,
-"places": [],
-"plants": [
-"MELON",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"WHEAT",
-"MELON",
-"STRAWBERRY"
-],
-"animals_bought": {},
-"seeds": {
-"STRAWBERRY": 3,
-"MELON": 4,
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 4
-},
-"sells": {
-"WHEAT": 17,
-"FERTILIZER": 9
-}
-},
-"6": {
-"money_dawn": 15.0,
-"hands": 8,
-"hires": 8,
+"money_dawn": 34.0,
+"hands": 7,
+"hires": 7,
 "land": 0,
 "builds": 0,
-"places": [
-"COW"
-],
-"plants": [
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"MELON",
-"MELON",
-"STRAWBERRY",
-"MELON",
-"MELON",
-"STRAWBERRY",
-"MELON"
-],
-"animals_bought": {
-"COW": 2
-},
-"seeds": {
-"STRAWBERRY": 8,
-"MELON": 6
-},
-"buys": {
-"WHEAT": 9
-},
-"sells": {
-"WOOL": 12,
-"FERTILIZER": 7
-}
-},
-"7": {
-"money_dawn": 600.0,
-"hands": 8,
-"hires": 8,
-"land": 0,
-"builds": 0,
-"places": [
-"COW"
-],
-"plants": [
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"STRAWBERRY",
-"MELON",
-"STRAWBERRY"
-],
-"animals_bought": {},
-"seeds": {
-"STRAWBERRY": 8,
-"MELON": 3
-},
-"buys": {
-"WHEAT": 10
-},
-"sells": {
-"FERTILIZER": 8
-}
-},
-"8": {
-"money_dawn": 716.0,
-"hands": 9,
-"hires": 9,
-"land": 1,
-"builds": 1,
-"places": [
-"COW"
-],
-"plants": [
-"MELON",
-"MELON"
-],
-"animals_bought": {
-"COW": 1
-},
-"seeds": {
-"MELON": 2
-},
-"buys": {
-"WHEAT": 10
-},
-"sells": {
-"FERTILIZER": 9,
-"MILK": 12
-}
-},
-"9": {
-"money_dawn": 790.0,
-"hands": 11,
-"hires": 11,
-"land": 0,
-"builds": 5,
 "places": [],
 "plants": [
 "STRAWBERRY",
@@ -6046,169 +6485,296 @@ _PLAN_JSON = r'''{
 "STRAWBERRY",
 "STRAWBERRY",
 "STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY"
-],
-"animals_bought": {
-"SHEEP": 1
-},
-"seeds": {
-"STRAWBERRY": 9
-},
-"buys": {
-"WHEAT": 10
-},
-"sells": {
-"WOOL": 8,
-"FERTILIZER": 8,
-"MILK": 6
-}
-},
-"10": {
-"money_dawn": 2220.0,
-"hands": 12,
-"hires": 12,
-"land": 1,
-"builds": 0,
-"places": [
-"SHEEP",
-"SHEEP",
-"SHEEP"
-],
-"plants": [
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY"
-],
-"animals_bought": {
-"SHEEP": 2
-},
-"seeds": {
-"STRAWBERRY": 5
-},
-"buys": {
-"WHEAT": 13
-},
-"sells": {
-"FERTILIZER": 10,
-"WHEAT": 1,
-"MELON": 18,
-"MILK": 6
-}
-},
-"11": {
-"money_dawn": 2396.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 4,
-"places": [
-"SHEEP",
-"SHEEP"
-],
-"plants": [
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"MELON",
-"STRAWBERRY",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY",
 "WHEAT",
 "STRAWBERRY",
 "STRAWBERRY",
 "STRAWBERRY",
 "STRAWBERRY",
+"WHEAT",
+"WHEAT",
 "STRAWBERRY",
-"WHEAT"
+"WHEAT",
+"MELON"
 ],
-"animals_bought": {
-"SHEEP": 2
-},
+"animals_bought": {},
 "seeds": {
-"STRAWBERRY": 8,
-"MELON": 3,
-"WHEAT": 2
+"STRAWBERRY": 11,
+"WHEAT": 4,
+"MELON": 4
 },
 "buys": {
-"WHEAT": 12
-},
-"sells": {
-"FERTILIZER": 10,
-"MILK": 3
-}
-},
-"12": {
-"money_dawn": 1585.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [
-"SHEEP"
-],
-"plants": [],
-"animals_bought": {
-"SHEEP": 1
-},
-"seeds": {},
-"buys": {
-"WHEAT": 16
-},
-"sells": {
-"MILK": 6,
-"FERTILIZER": 17,
-"WOOL": 8
-}
-},
-"13": {
-"money_dawn": 2931.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [
-"SHEEP"
-],
-"plants": [],
-"animals_bought": {
-"SHEEP": 2
-},
-"seeds": {},
-"buys": {
-"WHEAT": 15
+"WHEAT": 3
 },
 "sells": {
 "FERTILIZER": 5
 }
 },
-"14": {
-"money_dawn": 1992.0,
+"6": {
+"money_dawn": 129.0,
+"hands": 8,
+"hires": 8,
+"land": 1,
+"builds": 2,
+"places": [],
+"plants": [
+"MELON",
+"MELON",
+"STRAWBERRY",
+"MELON"
+],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 7
+},
+"sells": {
+"FERTILIZER": 9,
+"WOOL": 12
+}
+},
+"7": {
+"money_dawn": 14.0,
+"hands": 8,
+"hires": 8,
+"land": 0,
+"builds": 6,
+"places": [],
+"plants": [
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"MELON",
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {},
+"seeds": {
+"STRAWBERRY": 10,
+"MELON": 1,
+"WHEAT": 1
+},
+"buys": {
+"WHEAT": 3
+},
+"sells": {
+"FERTILIZER": 5
+}
+},
+"8": {
+"money_dawn": 334.0,
+"hands": 9,
+"hires": 9,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [
+"MELON",
+"STRAWBERRY",
+"MELON",
+"MELON",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {},
+"seeds": {
+"STRAWBERRY": 2,
+"MELON": 3,
+"WHEAT": 1
+},
+"buys": {
+"WHEAT": 7
+},
+"sells": {
+"FERTILIZER": 6,
+"MILK": 6
+}
+},
+"9": {
+"money_dawn": 2879.0,
+"hands": 11,
+"hires": 11,
+"land": 0,
+"builds": 0,
+"places": [
+"COW",
+"COW",
+"SHEEP"
+],
+"plants": [
+"STRAWBERRY",
+"MELON",
+"MELON",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {
+"COW": 2,
+"SHEEP": 1
+},
+"seeds": {
+"STRAWBERRY": 6,
+"MELON": 2
+},
+"buys": {
+"WHEAT": 7
+},
+"sells": {
+"MILK": 12,
+"FERTILIZER": 9,
+"WOOL": 4,
+"WHEAT": 8
+}
+},
+"10": {
+"money_dawn": 3850.0,
+"hands": 12,
+"hires": 12,
+"land": 1,
+"builds": 1,
+"places": [
+"COW",
+"COW",
+"SHEEP",
+"SHEEP"
+],
+"plants": [
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {
+"COW": 2,
+"SHEEP": 2
+},
+"seeds": {
+"STRAWBERRY": 2
+},
+"buys": {
+"WHEAT": 11
+},
+"sells": {
+"WOOL": 3,
+"FERTILIZER": 11,
+"MELON": 18,
+"MILK": 6
+}
+},
+"11": {
+"money_dawn": 3864.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 4,
+"places": [
+"COW",
+"COW",
+"SHEEP",
+"SHEEP"
+],
+"plants": [
+"STRAWBERRY",
+"MELON",
+"MELON",
+"STRAWBERRY",
+"MELON",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {
+"COW": 2,
+"SHEEP": 2
+},
+"seeds": {
+"STRAWBERRY": 7,
+"MELON": 3,
+"WHEAT": 2
+},
+"buys": {
+"WHEAT": 16
+},
+"sells": {}
+},
+"12": {
+"money_dawn": 3139.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY"
+],
+"animals_bought": {},
+"seeds": {
+"STRAWBERRY": 2
+},
+"buys": {
+"WHEAT": 15
+},
+"sells": {
+"MILK": 19,
+"FERTILIZER": 27
+}
+},
+"13": {
+"money_dawn": 5760.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
 "builds": 0,
 "places": [
-"SHEEP",
-"SHEEP"
+"COW",
+"COW"
 ],
 "plants": [],
 "animals_bought": {
+"COW": 2,
 "SHEEP": 1
 },
 "seeds": {},
 "buys": {
-"WHEAT": 21
+"WHEAT": 20
 },
 "sells": {
-"FERTILIZER": 22
+"FERTILIZER": 6,
+"WHEAT": 1
+}
+},
+"14": {
+"money_dawn": 4839.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [
+"SHEEP"
+],
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 22
+},
+"sells": {
+"FERTILIZER": 17,
+"MILK": 10
 }
 },
 "15": {
-"money_dawn": 1076.0,
+"money_dawn": 7178.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
@@ -6218,16 +6784,17 @@ _PLAN_JSON = r'''{
 "animals_bought": {},
 "seeds": {},
 "buys": {
-"WHEAT": 13
+"WHEAT": 20
 },
 "sells": {
-"FERTILIZER": 7,
-"WOOL": 4,
-"MILK": 24
+"WOOL": 21,
+"FERTILIZER": 11,
+"MILK": 6,
+"STRAWBERRY": 8
 }
 },
 "16": {
-"money_dawn": 10448.0,
+"money_dawn": 15104.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
@@ -6237,61 +6804,63 @@ _PLAN_JSON = r'''{
 "animals_bought": {},
 "seeds": {},
 "buys": {
-"WHEAT": 17
+"WHEAT": 18
 },
 "sells": {
-"MELON": 30,
-"WOOL": 19,
-"STRAWBERRY": 12,
-"FERTILIZER": 16,
-"MILK": 24
+"STRAWBERRY": 10,
+"MELON": 18,
+"FERTILIZER": 13
 }
 },
 "17": {
-"money_dawn": 21007.0,
+"money_dawn": 19174.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
 "builds": 0,
 "places": [],
 "plants": [
-"MELON"
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 18
+},
+"sells": {
+"MILK": 20,
+"FERTILIZER": 11,
+"STRAWBERRY": 10,
+"MELON": 6,
+"WOOL": 21
+}
+},
+"18": {
+"money_dawn": 33814.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [
+"STRAWBERRY"
 ],
 "animals_bought": {},
 "seeds": {
-"MELON": 1
+"STRAWBERRY": 1
 },
 "buys": {
 "WHEAT": 18
 },
 "sells": {
-"MELON": 48,
-"STRAWBERRY": 12,
-"FERTILIZER": 3,
-"WOOL": 5
-}
-},
-"18": {
-"money_dawn": 32574.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 17
-},
-"sells": {
-"STRAWBERRY": 27,
-"WOOL": 18,
-"FERTILIZER": 17
+"STRAWBERRY": 33,
+"MILK": 12,
+"MELON": 18,
+"FERTILIZER": 15
 }
 },
 "19": {
-"money_dawn": 38424.0,
+"money_dawn": 41053.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
@@ -6302,70 +6871,22 @@ _PLAN_JSON = r'''{
 ],
 "animals_bought": {},
 "seeds": {
-"STRAWBERRY": 1,
-"MELON": 1
+"MELON": 1,
+"WHEAT": 1
 },
 "buys": {
-"WHEAT": 16
+"WHEAT": 20
 },
 "sells": {
-"STRAWBERRY": 19,
-"FERTILIZER": 6,
-"MELON": 12,
-"WOOL": 17,
-"MILK": 13
+"MILK": 28,
+"STRAWBERRY": 16,
+"FERTILIZER": 8,
+"MELON": 18,
+"WOOL": 13
 }
 },
 "20": {
-"money_dawn": 51069.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 17
-},
-"sells": {
-"STRAWBERRY": 22,
-"FERTILIZER": 6,
-"WOOL": 6
-}
-},
-"21": {
-"money_dawn": 57381.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 16
-},
-"sells": {
-"STRAWBERRY": 63,
-"WOOL": 19,
-"FERTILIZER": 9,
-"MILK": 5,
-"MELON": 12
-}
-},
-"22": {
-"money_dawn": 70649.0,
+"money_dawn": 57127.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
@@ -6375,17 +6896,79 @@ _PLAN_JSON = r'''{
 "animals_bought": {},
 "seeds": {},
 "buys": {
-"WHEAT": 17
+"WHEAT": 20
 },
 "sells": {
-"STRAWBERRY": 26,
-"FERTILIZER": 8,
-"WOOL": 11,
-"MILK": 4
+"STRAWBERRY": 30,
+"MILK": 8,
+"FERTILIZER": 12
+}
+},
+"21": {
+"money_dawn": 62577.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 18
+},
+"sells": {
+"MILK": 41,
+"STRAWBERRY": 40,
+"FERTILIZER": 5,
+"WOOL": 12
+}
+},
+"22": {
+"money_dawn": 79190.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 20
+},
+"sells": {
+"STRAWBERRY": 36,
+"MILK": 12,
+"FERTILIZER": 18,
+"MELON": 4
 }
 },
 "23": {
-"money_dawn": 77782.0,
+"money_dawn": 84815.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 20
+},
+"sells": {
+"MILK": 26,
+"STRAWBERRY": 44,
+"FERTILIZER": 16,
+"MELON": 14,
+"WOOL": 1
+}
+},
+"24": {
+"money_dawn": 97047.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
@@ -6398,67 +6981,75 @@ _PLAN_JSON = r'''{
 "seeds": {
 "WHEAT": 1
 },
+"buys": {
+"WHEAT": 20
+},
+"sells": {
+"MILK": 18,
+"STRAWBERRY": 14,
+"FERTILIZER": 18
+}
+},
+"25": {
+"money_dawn": 102032.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 20
+},
+"sells": {
+"STRAWBERRY": 30,
+"FERTILIZER": 18,
+"MILK": 20
+}
+},
+"26": {
+"money_dawn": 110846.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [],
+"animals_bought": {},
+"seeds": {},
 "buys": {
 "WHEAT": 19
 },
 "sells": {
-"STRAWBERRY": 33,
-"WOOL": 20,
-"FERTILIZER": 15,
-"MILK": 15,
-"MELON": 6
-}
-},
-"24": {
-"money_dawn": 86949.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 16
-},
-"sells": {
-"STRAWBERRY": 27,
-"FERTILIZER": 10,
-"WOOL": 8
-}
-},
-"25": {
-"money_dawn": 88977.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 18
-},
-"sells": {
-"WOOL": 20,
-"STRAWBERRY": 33,
+"MILK": 16,
 "FERTILIZER": 20,
-"MILK": 22,
+"STRAWBERRY": 8,
 "WHEAT": 4
 }
 },
-"26": {
-"money_dawn": 94225.0,
+"27": {
+"money_dawn": 114684.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 20
+},
+"sells": {
+"MILK": 17,
+"FERTILIZER": 18,
+"STRAWBERRY": 12
+}
+},
+"28": {
+"money_dawn": 122191.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
@@ -6471,53 +7062,13 @@ _PLAN_JSON = r'''{
 "WHEAT": 18
 },
 "sells": {
-"FERTILIZER": 18,
-"STRAWBERRY": 14,
-"WOOL": 15
-}
-},
-"27": {
-"money_dawn": 96941.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 14
-},
-"sells": {
-"MILK": 17,
-"FERTILIZER": 19,
-"WOOL": 12,
-"STRAWBERRY": 20
-}
-},
-"28": {
-"money_dawn": 101907.0,
-"hands": 12,
-"hires": 12,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 17
-},
-"sells": {
-"MELON": 6,
-"MILK": 6,
-"WOOL": 16,
-"FERTILIZER": 19
+"MILK": 20,
+"STRAWBERRY": 6,
+"FERTILIZER": 22
 }
 },
 "29": {
-"money_dawn": 108153.0,
+"money_dawn": 126852.0,
 "hands": 0,
 "hires": 0,
 "land": 0,
@@ -6528,10 +7079,10 @@ _PLAN_JSON = r'''{
 "seeds": {},
 "buys": {},
 "sells": {
-"MILK": 16,
-"WHEAT": 21,
-"FERTILIZER": 3,
-"WOOL": 12
+"WHEAT": 22,
+"WOOL": 17,
+"FERTILIZER": 2,
+"MILK": 6
 }
 }
 }'''

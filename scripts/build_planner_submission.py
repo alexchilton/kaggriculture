@@ -62,7 +62,25 @@ PACKAGES = ("kagg", "kagg.economics", "kagg.search")
 
 #: The schedule the planner runs. Thinned of the tape-only keys the agent never reads, so the
 #: submission cannot accidentally depend on a replay it will not have.
-PLAN = pathlib.Path("data/seed_scripts/top_guys/90494364/schedule.json")
+#:
+#: **2026-08-08: 90494364 -> 90976060. The shipped plan was calibrated for an economy that no longer
+#: exists.** 90494364 was played on `townCenterSellInterval = 12`; the ladder runs 24 since the
+#: 1.32.6 rebalance. Every `sells` row in it therefore assumes a town centre that drains the book
+#: TWICE as fast as the real one, which is a mechanical explanation for the measurement in
+#: `docs/the_shed_destroys_the_harvest_2026-08-08.md`: STRAWBERRY, MELON and WOOL driven to the $1
+#: floor, wool below base on 558 of 719 turns, melon on 462. We were selling at a cadence the current
+#: book cannot absorb.
+#:
+#: 90976060 is the same author on the CURRENT economy and is also his better game -- $128,518 against
+#: 90494364's $110,820.
+#:
+#: **It also ends a measurement inconsistency worth naming.** Every fixture in the repo --
+#: `scripts/handover.py`, `scripts/mirror`-style arms, `tests/test_the_shed_does_not_destroy_the_
+#: harvest.py`, the reservation and price-aware measurements -- loads `TAPES["seb1326"]`, i.e.
+#: 90976060, while this line shipped 90494364. So the local fixtures and the submission were
+#: different agents, and their disagreement (mirror +2.9%, tape season -19%) was never about the sell
+#: rule at all. One plan now, everywhere.
+PLAN = pathlib.Path("data/seed_scripts/top_guys/90976060/schedule.json")
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 
 TARGET = pathlib.Path("submission/main.py")
@@ -310,7 +328,37 @@ def standalone():
 #: side is bit-identical -- so the two harnesses differ in how they drive the REPLAY, not in how
 #: they drive us. Gating on a number produced by a different harness would fail this build for a
 #: property it is not testing. The bundle-versus-repo check below is the real equality test.
-REFERENCE = {"seed": 11, "ours": 127846}
+#: **Rebaselined 2026-08-08: 127,846 -> 71,894.** That figure was measured on env **1.32.2**, which
+#: the ladder no longer runs. 1.32.6 halved the town centre's draw (`townCenterSellInterval` 12 -> 24)
+#: and deleted the late-season demand ramp, so every bank in this project moved -- the same schedule
+#: that banked $127,846 banks $63.5k on the new economy. Holding the old number gated every build
+#: against an economy that does not exist.
+#:
+#: This is a tripwire, NOT the correctness check, and it is worth being explicit about that because
+#: raising a reference to make a build pass is exactly how a regression gets shipped. The real test
+#: is `ours == repo` on the line below: the bundle must reproduce the repo modules to the dollar.
+#: That passed at $71,894 on both sides before this constant was touched, which is what makes the
+#: rebaseline a record of a changed environment rather than a loosened gate.
+#:
+#: Also live in this build, and the reason the number is not simply "the old code on the new env":
+#: `PRICE_AWARE_SELL_CAP = True` (see its docstring for the five-seed evidence).
+#: **71,894 -> 58,104 on 2026-08-08** when `RESERVATION_SELL_CAP` was enabled. Recorded rather than
+#: waved through: this fixture is DOWN 19% while the two that motivated the flag are up (mirror
+#: 62,868 -> 64,667, handover +$2,822). Three fixtures, two up small, one down large -- the flag went
+#: to the ladder on that mixed evidence deliberately, because the arena pool is saturated at 94.4%
+#: and cannot discriminate a sell rule at all. If the ladder rating falls, this line is the first
+#: thing to look at and the flag is the first thing to turn off.
+#: **58,104 -> 57,595 on 2026-08-08** when the WHEAT feed reserve stopped counting `ripe_wheat`
+#: (standing crop) as though it were feed. Flat on this fixture; the gain is elsewhere -- the herd now
+#: matches the tape exactly (13 cows to 13, was 7), land parcel 3 moves d16 -> d12, and the mirror
+#: goes 64,667 -> 69,228.
+#: **57,595 -> 77,885 on 2026-08-08, +35%**, when `PLAN` moved off the 1.32.2-economy schedule
+#: (90494364, `townCenterSellInterval = 12`) onto the same author's 1.32.6 game (90976060, interval
+#: 24). The old plan's sell rows assumed a town centre draining the book twice as fast as the real
+#: one; the new plan halves WOOL (230 -> 104) and cuts MELON (132 -> 96) -- the two steep `sq` price
+#: curves we were driving to the $1 floor -- and puts the volume into MILK (179 -> 303), the one
+#: product measured never to trade below base all season.
+REFERENCE = {"seed": 11, "ours": 77885}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,
@@ -403,9 +451,10 @@ def reproduce(days=30, verbose=True):
     # The repo, driven the way every doc in this project drove it.
     from kagg.search import schedule_agent as SA
 
-    from scripts.breakdown import TAPES
-    _replay, schedule, _team = TAPES["seb"]
-    sched = {int(k): v for k, v in _json.loads(_pathlib.Path(schedule).read_text()).items()}
+    # **`PLAN`, not a tape name.** This must be the SAME schedule the bundle embeds or the equality
+    # check below compares two different agents and can never pass -- which is exactly what a
+    # hard-coded `TAPES["seb"]` did the moment `PLAN` moved to 90976060.
+    sched = {int(k): v for k, v in _json.loads(PLAN.read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     repo_agent = SA.make_agent(thin, 0, router=True)
     repo, repo_tape, _t, _team = _season(lambda o: repo_agent(o), days=days)

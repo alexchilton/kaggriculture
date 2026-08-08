@@ -41,14 +41,27 @@ def episodes():
         env = make("kaggriculture", configuration={"seed": seed}, debug=False)
         env.run(["pass", "pass"])
 
-        unlocks = {}
+        # **Detect an unlock by the list GROWING, never by the shop being new to it.** 1.32.6 draws
+        # shops WITH replacement (`MAX_SHOP_INSTANCES = 8`) and each instance consumes independently,
+        # so `setdefault(shop, day)` -- which this fixture used, and which `observe_unlocks` used --
+        # silently dropped every repeat draw. Seed 42 opens SMOOTHIE_SHOP twice, PET_CAFE twice and
+        # FARMERS_MARKET twice, so the fixture was short three of eight shops and the model it fed was
+        # short their whole drain.
+        #
+        # The fixture carried the SAME bug as the code it was checking, which is why the parity test
+        # below could not localise it -- it went red (the live inventories are real) but pointed at
+        # arithmetic rather than at a missing shop.
+        unlocks, seen = {}, 0
         for step in env.steps:
             obs = step[0]["observation"]
-            for shop in obs.get("town", {}).get("unlocked_shops", []):
-                unlocks.setdefault(shop, obs.get("day", 0))
+            shops = list(obs.get("town", {}).get("unlocked_shops", []) or [])
+            if len(shops) > seen:
+                for shop in shops[seen:]:
+                    unlocks[int(obs.get("day", 0) or 0)] = shop
+                seen = len(shops)
 
         inventories = [s[0]["observation"]["market"]["inventory"] for s in env.steps]
-        out[seed] = ({day: shop for shop, day in unlocks.items()}, inventories)
+        out[seed] = (unlocks, inventories)
     return out
 
 
@@ -74,11 +87,20 @@ def test_observe_unlocks_matches_the_schedule_read_from_a_live_episode(episodes)
     assert observe_unlocks(SEEDS[0]) == unlocks
 
 
-def test_unlocks_land_every_third_day_until_all_eight_shops_are_open(episodes):
+def test_unlocks_land_every_third_day_until_eight_shop_INSTANCES_are_open(episodes):
+    """Eight INSTANCES, not eight distinct shops. The distinction is a 1.32.6 rule change.
+
+    This asserted `set(unlocks.values()) == set(kg.SHOPS)` -- every shop open exactly once -- which
+    was true when shops were drawn without replacement. 1.32.6 draws WITH replacement and caps the
+    count at `MAX_SHOP_INSTANCES = 8`, so a season can and does open the same shop twice: seed 42
+    gives YARN_STORE, PET_CAFE, PIZZA_SHOP, SMOOTHIE_SHOP, SMOOTHIE_SHOP, FARMERS_MARKET, PET_CAFE,
+    FARMERS_MARKET. Duplicates are the normal case, not an anomaly, and each instance drains.
+    """
     unlocks, _ = episodes[SEEDS[0]]
 
     assert sorted(unlocks) == [3, 6, 9, 12, 15, 18, 21, 24]
-    assert set(unlocks.values()) == set(kg.SHOPS)
+    assert len(unlocks) == kg.MAX_SHOP_INSTANCES
+    assert set(unlocks.values()) <= set(kg.SHOPS)
 
 
 def test_unlock_order_is_not_a_pure_function_of_the_seed():

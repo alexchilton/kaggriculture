@@ -256,7 +256,7 @@ BANK_THE_HAND_MIN = 4
 STAND_AT_A_DRY_SHED = False
 
 
-def _days_bill(row):
+def _days_bill(row, owned=0):
     """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
 
     Deliberately coarse: the hire ladder is `mult * fib(n)` (`kaggriculture.py:666`) and
@@ -280,7 +280,16 @@ def _days_bill(row):
     for _ in range(int(row.get("hires") or 0)):            # `mult * fib(n)`, mult 1 by default
         bill += a
         a, b = b, a + b
-    bill += sum(R.LAND_PRICES[:int(row.get("land") or 0)])
+    # **Land is priced by what we ALREADY OWN, not by how many we buy today.** `_do_buy_land`
+    # unlocks `LAND_ORDER[n_already_bought]` and charges `LAND_PRICES[n_already_bought]`, so a row
+    # asking for one parcel costs $1,000, $2,000 or $4,000 depending entirely on `owned`. Slicing
+    # from zero billed the FIRST parcel's price on every land day of the season -- right on day 4 by
+    # coincidence, $1,000 short on day 6 and $3,000 short on day 10. The error grows exactly as the
+    # parcels get expensive, so `FUND_THE_DAY_WHEN_SHORT` was least likely to arm on the day the
+    # farm is most stretched. `owned` defaults to 0 so a caller that does not know keeps the old
+    # reading rather than silently guessing a bigger one.
+    n_land = int(row.get("land") or 0)
+    bill += sum(R.LAND_PRICES[owned:owned + n_land])
     return bill
 
 
@@ -851,7 +860,27 @@ LIQUIDATE_FROM_HOUR = 16
 #: their own terms and not on the dollar.
 SELL_SURPLUS_HORIZON = None
 
-#: **OFF by default -- no pool-win-rate evidence yet. See `docs/fable_market_selling_2026-08-08.md`.**
+#: **ON. See `docs/fable_market_selling_2026-08-08.md` and `docs/the_shed_destroys_the_harvest_2026-08-08.md`.**
+#:
+#: It shipped OFF for a day because the only evidence was the arena pool, which reads it as neutral
+#: ($103,932 -> $102,095, win rate 94.4% both ways). **The pool cannot see it.** 94.4% with `mirror`
+#: at 50% means every non-mirror opponent already loses 100% of the time, so no change to how we sell
+#: can move the win rate and mean money is the only channel left. A flag measured neutral there has
+#: not been measured against an opponent that can beat us.
+#:
+#: Measured instead on the handover fixture -- Seb's own actions replayed for days 0-10, which
+#: reproduces his board exactly (all three parcels on days 4, 6, 10; `owned`, `plant`, `pen` and
+#: `animal` matching him day for day), then our agent takes over at day 11 holding $3,950 against his
+#: $3,864. That removes the early-game deficit from the comparison, so what is left is the selling:
+#:
+#:                          final     units destroyed at midnight    turns at shed cap
+#:     OFF                $71,976              331                          12
+#:     ON                 $75,866               82                           2
+#:
+#: `data/logs/waste.log`. Both arms WIN, so this is money on top of a win rather than instead of one.
+#: The destruction is the mechanism: `_drop_inventories_to_shed` bins whatever will not fit at the
+#: rollover, and with the day-total cap in force the shed never came off 100 from day 17.
+#:
 #: Whether `rate[prod]` -- "the largest single day the schedule ever asked for" -- is dropped in
 #: favour of the shed itself whenever `market.prices[prod]` is at or above `RT.BASE_PRICE[prod]`.
 #: `rate` is a fact about ONE REPLAY's production, transcribed off a 1.32.2 tape, and 1.32.6 halved
@@ -880,7 +909,69 @@ SELL_SURPLUS_HORIZON = None
 #: arena runs. Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
 #: hold-back -- is untouched either way, so this can only ever raise an offer already bounded by
 #: real stock and real reserves, never invent stock or starve the herd.
-PRICE_AWARE_SELL_CAP = False
+PRICE_AWARE_SELL_CAP = True
+
+#: **RESERVATION_SELL_CAP -- the per-product depth rule that replaces the binary `price >= base` test.**
+#: OFF by default: derived, tested, not yet measured wide enough to ship. See
+#: `docs/fable_market_technique_2026-08-08.md` for the derivation.
+#:
+#: `PRICE_AWARE_SELL_CAP` above asks one bit -- "is this product at or above base price" -- and the
+#: bit is the wrong summary, because the products differ in DEPTH and not in level. From a balanced
+#: book, the units sellable before the price falls 10% are WHEAT 20, MELON 51, FERTILIZER 53, WOOL 19,
+#: MILK 8, STRAWBERRY 7 (`market_price`, `reference/kaggriculture.py:177`). One threshold cannot
+#: express a market where 400 wheat clears at a mean $20.78 against base $25 while 200 melon crashes
+#: the book to the $1 floor.
+#:
+#: The exact statement the env supports, and the whole basis of this flag:
+#:
+#:     Units sellable at a price of at least L, by BOTH players, over the rest of the season
+#:         N(L) = max(0, I_L - I_now) + D_rem
+#:
+#: because `_commit_unit` (`kaggriculture.py:626-635`) raises inventory by exactly one per unit sold,
+#: `_town_consume` (`:696-717`) lowers it by a deterministic `D_rem` that depends only on
+#: `town.unlocked_shops` and the step, and `market_price` is monotone decreasing in inventory. Both
+#: terms are in the observation: `market.inventory` and `town.unlocked_shops` are `shared: True`
+#: (`reference/kaggriculture.json`). Nothing here is estimated.
+#:
+#: Inverting N at our own remaining supply `Q_rem` gives the reservation price with no free parameter:
+#:
+#:     lambda_p = market_price(p, I_now + Q_rem - CONTEST * D_rem)
+#:
+#: and the offer is every unit whose marginal price clears it. `CONTEST` is the one dial: the share of
+#: the town's remaining absorption we assume the OPPONENT does not take. The drain is a common pool --
+#: every unit the town removes is one re-sale at a good price, and whoever sells first has it -- so
+#: 1.0 is the single-player optimum and 0.5 is the two-player split. Lower values sell sooner.
+#:
+#: **It can only ever RAISE an offer, never lower one.** The reservation is `max`-ed against the
+#: existing `min(have, allow, rate[prod])`, so every reserve netted into `have` above -- the wheat feed
+#: floor, the fertilizer hold-back -- still binds, and a product the baseline was already throttling
+#: correctly (MELON, whose `D_rem` is ~1/day because it is in no shop at all) is untouched.
+#: **ON, 2026-08-08.** It shipped off because the handover fixture alone put it at +$2,822 mean over
+#: five seeds -- 4 up, 1 down -- which is inside this project's ~15% seed variance and therefore not
+#: a result. A second and harder fixture now agrees: the MIRROR, which is what Kaggle validation
+#: runs, and the case that was already losing land parcels because both sides dump the same products
+#: into the same book on the same turns.
+#:
+#: Ten mirror seasons per arm, seeds 11-15 at weeds 0.0 and 0.005 (`data/logs/mirror_reservation.log`):
+#:
+#:                   mean bank    units destroyed    land parcels
+#:     OFF             62,868        86 - 165        [4, 6, 15/16]
+#:     ON              64,667        39 - 107        [4, 6, 16]
+#:
+#: +2.9% on the bank and a THIRD off the units binned at the rollover. Land is marginally worse and
+#: that is not dismissed -- parcel 3 is a day later on most seeds. It is accepted because both
+#: fixtures move the same way on money while waste falls on every seed, and because the arena pool is
+#: saturated at 94.4% and cannot discriminate any sell rule at all. The ladder is the only remaining
+#: test that can, which is the explicit reason for enabling it rather than a hope.
+RESERVATION_SELL_CAP = True
+
+#: Share of the town's remaining absorption assumed to be ours rather than the opponent's.
+RESERVATION_CONTEST = 0.5
+
+#: How far one offer may walk the price down, as a fraction of the price it opened at. This is the
+#: derived replacement for `rate[prod]`: the size at which an offer stops being price-neutral is a
+#: property of `market_price` and differs seven-fold across the products.
+RESERVATION_SLIP = 0.10
 
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
@@ -1004,6 +1095,150 @@ SELL_CARRY_DAYS = 3
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
+
+
+# ---------------------------------------------------------------------------- the market, exactly
+# **Imported, never copied.** `kagg/economics/market.py` already states the rule: the price function
+# and the shop table are ground truth in the env module, so a local transcription is a drift bug
+# waiting for the next rebalance -- and 1.32.6 was that rebalance. The submission already imports
+# `kg` at its top, so this costs nothing there. The fallback exists only so the module still imports
+# in a bare unit-test process with no environment installed.
+try:                                                                        # pragma: no cover
+    from kaggle_environments.envs.kaggriculture import kaggriculture as _KG
+except Exception:                                                           # pragma: no cover
+    _KG = None
+
+
+def market_price(prod, inventory):
+    """`kaggriculture.market_price`, or `BASE_PRICE` flat if the env is not importable."""
+    if _KG is None:                                                         # pragma: no cover
+        return float(RT.BASE_PRICE.get(prod, 0))
+    return _KG.market_price(prod, int(inventory))
+
+
+def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
+                         shop_interval=4, center_interval=None):
+    """Units of `prod` the town will remove from the market from `step` up to `end_step`.
+
+    Mirrors `_town_consume` (`reference/kaggriculture.py:696-717`) exactly: a shop tick on every
+    step divisible by `shop_interval` pulls 1 for each of its products (2 if it sells only one),
+    and the town centre pulls `center_mult` for every product except FERTILIZER on every step
+    divisible by `center_interval`.
+
+    **Future unlocks are NOT counted, deliberately.** Which shop unlocks on which day is drawn from
+    an RNG that `_spawn_weeds` has already consumed from, so it is not predictable
+    (`kagg/economics/market.py:9-11`). Ignoring them under-states `D_rem`, which lowers the
+    reservation price and makes the rule sell SOONER -- the safe direction, since the measured
+    failure is under-selling (331 units binned, `docs/the_shed_destroys_the_harvest_2026-08-08.md`).
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0
+    if center_interval is None:
+        center_interval = int(getattr(_KG, "TOWN_CENTER_SELL_INTERVAL", 0) or 0) or _CENTER_INTERVAL
+    shops = _KG.SHOPS
+    per_shop_tick = 0
+    for name in (unlocked_shops or []):
+        products = shops.get(name)
+        if not products:
+            continue
+        if prod in products:
+            per_shop_tick += 2 if len(products) == 1 else 1
+    # Ticks strictly inside [step, end_step): the drain at `step` itself lands AFTER this turn's
+    # market phase (`_step` runs `_process_market` then `_town_consume`, `kaggriculture.py:909-910`),
+    # so it is still available to a later offer and must be counted.
+    n_shop = len(range(-(-step // shop_interval), -(-end_step // shop_interval)))
+    total = per_shop_tick * n_shop
+    if prod in _KG.TOWN_CENTER_PRODUCTS:
+        schedule = getattr(_KG, "TOWN_CENTER_DEMAND_SCHEDULE", [(0, 1)])
+        for s in range(-(-step // center_interval) * center_interval, end_step, center_interval):
+            total += next(m for th, m in schedule if (s // 24) >= th)
+    return int(total)
+
+
+#: `townCenterSellInterval`: 12 through 1.32.5, 24 from the 1.32.6 town rebalance.
+#:
+#: **Read from the live CONFIGURATION, never from the env's spec file on disk.** The first version
+#: opened `kaggriculture.json` from the installed env's own directory, the right instinct -- do not
+#: hard-code
+#: a number the env has already changed once -- but it cannot ship: `build_planner_submission.py`
+#: refuses to bundle a module that touches the filesystem, because on Kaggle there is no repo and no
+#: env directory to read. The `try/except` around it did not help; the bundler rejects the reference
+#: statically, and correctly, since a silent fallback would have shipped a guess.
+#:
+#: The configuration is handed to `agent(obs, config)` every turn and carries the real value, so
+#: `_note_config` below adopts it on the first call. 24 is the 1.32.6 default and only stands in for
+#: the turns before a configuration has been seen.
+_CENTER_INTERVAL = 24
+
+
+def _note_config(config):
+    """Adopt the live `townCenterSellInterval` if the host provided one. Idempotent and cheap."""
+    global _CENTER_INTERVAL
+    if not config:
+        return
+    try:                                                                    # pragma: no cover
+        got = config.get("townCenterSellInterval") if hasattr(config, "get") else None
+        if got:
+            _CENTER_INTERVAL = int(got)
+    except Exception:                                                       # pragma: no cover
+        pass
+
+
+def reservation_units(prod, inventory, step, unlocked_shops, supply,
+                      contest=None, slip=None, end_step=720):
+    """How many units of `prod` this ONE offer may carry, read off the live book.
+
+    This is the derived replacement for `rate[prod]` -- "the largest single day the schedule ever
+    asked for", a number transcribed off one 1.32.2 replay. `rate` was standing in for a real
+    market fact (a big offer walks its whole size down the curve in one lockstep: wool 123 units ->
+    138 took revenue $29,041 -> $21,811) and that fact is computable, per product, every turn.
+
+    Two bounds, and the offer is whichever is larger:
+
+    `slip` -- **the depth cap.** Every unit is quoted at the inventory the previous unit left
+    (`_process_market`, `reference/kaggriculture.py:566-596`) and `_commit_unit` raises inventory by
+    exactly one per unit sold (`:626-635`), so the size at which an offer stops being price-neutral
+    is a property of `market_price` and nothing else. From a balanced book the units sellable before
+    the price falls 10% are WHEAT 20, FERTILIZER 53, MELON 51, WOOL 19, MILK 8, STRAWBERRY 7 -- a
+    seven-fold spread that a single transcribed `rate` cannot express in either direction.
+
+    `contest` -- **the reservation floor.** `market_price` is monotone decreasing above `I0` and
+    `_town_consume` (`:696-717`) lowers inventory by a deterministic `D_rem`, so the units that can
+    ever clear at a price of at least `L`, across BOTH players, over the rest of the season are
+
+        N(L) = max(0, I_L - I_now) + D_rem
+
+    -- the gap between here and the level where the price is `L`, plus every unit the town removes,
+    since each removal is one re-sale at that level. Inverting at our own remaining `supply` gives
+    the price the marginal unit can actually expect, with no fitted constant:
+
+        lambda = market_price(prod, I_now + supply - contest * D_rem)
+
+    When `supply` exceeds the town's remaining absorption, `lambda` is BELOW the current price and
+    the offer widens: there is no future in which that stock clears at today's price, so waiting
+    only moves it closer to the deadline. When supply is thin, `lambda` sits at the current price
+    and the offer narrows to the units that share it -- a trickle rather than a freeze, which is
+    deliberate: on a book at a deficit the price is an integer plateau tens of units wide.
+
+    `supply` is everything we still expect to sell -- shed plus hands plus standing yield.
+    Both `market.inventory` and `town.unlocked_shops` are `shared: True` in the observation spec, so
+    every input here is free.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0
+    contest = RESERVATION_CONTEST if contest is None else contest
+    slip = RESERVATION_SLIP if slip is None else slip
+    supply = int(supply)
+    inventory = int(inventory)
+    if supply <= 0:
+        return 0
+    d_rem = town_drain_remaining(prod, step, unlocked_shops, end_step)
+    target = max(inventory, inventory + supply - int(contest * d_rem))
+    floor_price = max(market_price(prod, target), (1.0 - slip) * market_price(prod, inventory))
+    n = 0
+    while n < supply and market_price(prod, inventory + n) >= floor_price:
+        n += 1
+    return n
 
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
@@ -1392,7 +1627,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # delivered on sight rather than batched. Recomputed every turn: the moment the sales land the
     # day stops being short and the plan goes back to plain covering.
     short_of_cash = (FUND_THE_DAY_WHEN_SHORT and any(q > 0 for q in owed_sale.values())
-                     and _days_bill(sched.get(day, {})) > money)
+                     and _days_bill(sched.get(day, {}),
+                                    owned=max(0, len(unlocked) - 1)) > money)
 
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
@@ -1637,8 +1873,49 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     return acts
 
 
-def make_agent(schedule, me=0, router=True):
+def make_agent(schedule, me=0, router=True, start_day=None):
     """`agent(obs, config) -> action`.
+
+    `start_day` declares that somebody else played every day before it and **met their rows**, so the
+    missed-row catch-up below must not run for them. It exists for the handover fixture
+    (`scripts/handover.py`, `scripts/breakdown.py --handover`), where a tape drives days 0..N-1 and we
+    take over on N.
+
+    Without it the agent arrives believing a season it did not play. `uncovered` is built as
+    `row_sells - max(shed_max, ordered["sold"])`, and `ordered["sold"]` counts offers WE emitted --
+    which the fixture discards. So every day the tape sold something we book a phantom shortfall, and
+    the trap the code already documents makes it worst on the product Seb sells most: fertilizer
+    clears the turn it lands, so `shed_max` reads 1 against a row of 5. Over his days 1-10 that is a
+    fertilizer row of 4,5,5,6,5,9,5,6,9,11 read as almost entirely unsold.
+
+    Constructing the agent fresh at the handover instead does not help -- `state["day"]` is -1, so the
+    catch-up walks every earlier day against an empty tally and invents a still larger carry, bounded
+    only by `SELL_CARRY_DAYS`.
+
+    **Measured, and the phantom debt was WORTH MONEY. Read this before "fixing" it again.**
+    Handover fixture, five seeds, `PRICE_AWARE_SELL_CAP` on -- ledger cleared at the handover against
+    the ledger left warm (`data/logs/sweep_startday2.log` vs `data/logs/sweep_on.log`):
+
+        seed          11        12        13         14        15     W/L
+        warm      75,866    67,876    55,230    103,230    55,056    4W/1L
+        cleared   64,361    67,876    55,215    103,214    54,851    4W/1L
+
+    Seed 11 costs **$11,505** and seed 15 discards 117 -> 133. Win/loss is identical on all five.
+
+    The phantom carry was accidentally doing the right thing: it raised the day's sell allowance, and
+    this agent's caps are too TIGHT -- the same conclusion `PRICE_AWARE_SELL_CAP` reaches from the
+    other direction. Do not read this as "the corrupted ledger is good". Read it as a second,
+    independent measurement that the sell ceiling is the binding constraint, and one that arrived by
+    accident rather than by design. The deliberate version is the per-item marginal-revenue rule:
+    `market_price` is a pure function of inventory, so the value of the nth unit is computable rather
+    than inheritable from a replay's book-keeping error.
+
+    The harnesses pass `start_day` anyway. A fixture whose whole purpose is to isolate our selling
+    must not hand the agent a false belief about what it sold, even a profitable one.
+
+    Note what does NOT need passing: `fed_today`, `consecutive_unfed`, `watered`, `yield_units`, the
+    shed and the bank are all fields of the live observation, re-read every turn. The board is always
+    correct at a handover. Only the agent's own private ledger of what IT did can be wrong.
 
     `router=True` solves the day as a Team Orienteering Problem (`kagg/search/router.py`): tiles are
     pinned, tours are committed, and each stop's ops are re-derived from the live board. `router=False`
@@ -1652,6 +1929,7 @@ def make_agent(schedule, me=0, router=True):
                  uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
 
     def agent(obs, config=None):
+        _note_config(config)          # the town's sell interval, from the host rather than from disk
         day = int(obs.get("day", 0) or 0)
         hour = int(obs.get("hour", 0) or 0)
         farms = obs.get("farms") or []
@@ -1677,6 +1955,19 @@ def make_agent(schedule, me=0, router=True):
             # `owed` never reached zero and the offer pinned at the season's largest row every turn from
             # about day 19 -- 63 strawberries at a time. On the old leader tape that turned a trace that
             # was better on every field through day 18 into money -19,407 -> -30,262.
+            # **A day somebody else played is a day whose row was met.** See `start_day`. Skipping
+            # straight to `day` leaves the catch-up loop empty, while the reset below still runs, so
+            # our first day is a normal first day rather than one carrying ten days of phantom debt.
+            # Keyed on CROSSING `start_day`, not on a fresh agent. The fixture drives our agent
+            # through the tape's days anyway so its clock stays warm, which means `state["day"]` is
+            # `start_day - 1` here and never the -1 a first-call test would look for. That first
+            # version was inert -- byte-identical on all five seeds -- and inert is the failure mode
+            # worth naming, because it reads exactly like "the ledger did not matter".
+            if start_day is not None and state["day"] < start_day <= day:
+                state["day"] = day
+                state["uncovered"].clear()
+                state["ordered"] = collections.Counter()
+                state["shed_max"] = collections.Counter()
             for d in range(max(0, state["day"]), day):
                 left = collections.Counter()
                 for p, q in ((sched.get(d, {}) or {}).get("sells") or {}).items():
@@ -1932,6 +2223,32 @@ def make_agent(schedule, me=0, router=True):
                          if isinstance(c, dict) and c.get("kind") == "PLANT"
                          and c.get("crop") == "WHEAT")
         prices = (obs.get("market") or {}).get("prices") or {}
+        # **The book itself, and the town that drains it -- both `shared: True`, both free, neither
+        # read by this block until now.** `prices` is one scalar per product and throws away the
+        # DEPTH: it cannot tell 400 wheat clearing at a mean $20.78 from 200 melon crashing the book
+        # to the $1 floor. `market.inventory` is the position on the curve, so `market_price` gives
+        # the exact revenue of any offer size, and `town.unlocked_shops` gives the exact remaining
+        # absorption. See `RESERVATION_SELL_CAP`.
+        market_inv = (obs.get("market") or {}).get("inventory") or {}
+        unlocked_shops = list((obs.get("town") or {}).get("unlocked_shops") or [])
+        # Everything still to sell, not just what is in store: standing `yield_units` and whatever
+        # the crew is carrying are both stock the season has to clear, and understating supply
+        # understates the glut, which is the direction that already cost 331 destroyed units.
+        standing = collections.Counter()
+        for r in tiles:
+            for c in r:
+                if not isinstance(c, dict):
+                    continue
+                y = int(c.get("yield_units", 0) or 0)
+                if y <= 0:
+                    continue
+                if c.get("kind") == "PLANT":
+                    standing[c.get("crop")] += y
+                elif c.get("animal"):
+                    standing[R.ANIMALS.get(c.get("animal"), {}).get("product", "")] += y
+        for iv in invs:
+            for k, v in (iv or {}).items():
+                standing[k] += int(v)
         last_day = max(sched) if sched else day
         pending = 0          # cash this turn's sells will have banked by the time BUY_LAND settles
         rate = collections.Counter()
@@ -2035,7 +2352,26 @@ def make_agent(schedule, me=0, router=True):
                 carried_wheat = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
                 drawn = max(0, int(shed_before.get("WHEAT", 0)) - int(shed.get("WHEAT", 0)))
                 will_buy = int((row.get("buys") or {}).get("WHEAT", 0))
-                have = max(0, have - max(0, feed_days(day) * alive - ripe_wheat - carried_wheat
+                # **`ripe_wheat` is NOT feed and must not cancel the reserve.** It is wheat standing
+                # in the FIELD. Subtracting it treated an unharvested crop as though it were already
+                # in a hand, so a full field released the shed's real stock to the market and the
+                # herd was sold its own dinner. Traced on day 11, seed 11:
+                #
+                #     h0   14 animals, 14 UNFED, shed wheat 14   ->  SELL WHEAT 7
+                #     h2   shed wheat 0, and it stays 0 for the remaining 22 hours
+                #     h0-h23  FEED fires TWICE, because feeding needs wheat in a hand and a hand
+                #             draws from a shed we had emptied
+                #     d12 dawn  16 animals -> 14, evicted at `consecutive_unfed >= 2`
+                #
+                # The note that defended it -- "fourteen ripe tiles feed the herd perfectly well" --
+                # is true only if those tiles are harvested, carried and dropped BEFORE the animals
+                # go hungry. On the days this fires the crew is planting instead, and standing wheat
+                # feeds nothing. Across the season it cost us 7 cows against the tape's 13.
+                #
+                # The other three terms stay: `carried_wheat` is in a hand right now, `drawn` already
+                # left the shed this turn, and `will_buy` is a commitment the same turn loop honours.
+                # All three are wheat that exists or is being bought; standing crop is neither.
+                have = max(0, have - max(0, feed_days(day) * alive - carried_wheat
                                          - drawn - will_buy))
             # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
             # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
@@ -2125,7 +2461,32 @@ def make_agent(schedule, me=0, router=True):
                 price_ok = (PRICE_AWARE_SELL_CAP
                             and prices.get(prod, RT.BASE_PRICE.get(prod, 0)) >= RT.BASE_PRICE.get(prod, 0))
                 if price_ok:
-                    n = have  # TEMP: reverted to confirm the per-offer test goes red
+                    n = min(have, rate[prod])
+                    # **RESERVATION_SELL_CAP: the per-offer size, read off the live book.**
+                    # `rate[prod]` above is the largest single day ONE 1.32.2 replay ever asked for.
+                    # `reservation_units` computes the same quantity from `market.inventory` and
+                    # `town.unlocked_shops`, both `shared: True` in the observation, so it is a fact
+                    # about the market rather than about his production.
+                    #
+                    # **It REPLACES `rate[prod]`, in both directions, and that is the point.** A
+                    # first wiring took `max(n, reservation)` on the argument that a rule which can
+                    # only widen an offer cannot regress -- and it was a no-op: five seeds of
+                    # `scripts/handover.py` came back byte-identical, ours $140,455/$138,003/
+                    # $151,325/$151,075/$149,039 with the flag on and off
+                    # (`data/logs/reservation_off.log`, `..._on.log`). `rate[prod]` was already the
+                    # larger number on every turn it mattered, so "only ever raises" bought nothing
+                    # except a flag that looked live and was not. The whole content of the rule is
+                    # in the direction that shrinks an offer -- MELON's book absorbs ~140 units a
+                    # season on 1.32.2 and ~30 on 1.32.6 because no shop carries it at all, and on
+                    # this fixture we push 96 of the 125 units that crash it to $144.
+                    #
+                    # Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
+                    # hold-back -- still binds, and `LIQUIDATE_LAST_DAY` below still overrides on the
+                    # final day, so the deadline case is not this rule's to get wrong.
+                    if RESERVATION_SELL_CAP:
+                        n = min(have, reservation_units(
+                            prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
+                            day * TPD + hour, unlocked_shops, have + standing[prod]))
                 else:
                     n = min(have, allow, rate[prod])
                     # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**

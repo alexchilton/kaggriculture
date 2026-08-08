@@ -169,10 +169,25 @@ def observe_unlocks(seed, agent_a="pass", agent_b="pass"):
     env = make("kaggriculture", configuration={"seed": seed}, debug=False)
     env.run([agent_a, agent_b])
 
-    unlocks = {}
+    # **Shops are drawn WITH REPLACEMENT and each instance consumes independently**
+    # (`reference/kaggriculture.py:103`, `MAX_SHOP_INSTANCES = 8`). Keying by shop NAME therefore
+    # threw away every repeat draw, and the drain it produced was short by one instance from the day
+    # the first duplicate landed. Seed 42 opens YARN_STORE, PET_CAFE, PIZZA_SHOP, SMOOTHIE_SHOP,
+    # **SMOOTHIE_SHOP**, FARMERS_MARKET, **PET_CAFE**, **FARMERS_MARKET** -- three repeats out of
+    # eight -- and `test_drain_model_reproduces_live_inventory_exactly` failed at exactly step 504
+    # and step 576, which are days 21 and 24, which are the second PET_CAFE and the second
+    # FARMERS_MARKET. Not a rounding drift: a missing shop.
+    #
+    # Growth of the list is what identifies an unlock, not membership of it. The `{day: shop}` shape
+    # is kept because `kagg/sim/town.py` and `scripts/answer_q5.py` consume it, and it stays faithful
+    # because the env appends at most one instance per `townShopUnlockInterval` (3 days), so no two
+    # unlocks ever share a day.
+    unlocks, seen = {}, 0
     for step in env.steps:
         obs = step[0]["observation"]
-        day = obs.get("day", 0)
-        for shop in obs.get("town", {}).get("unlocked_shops", []):
-            unlocks.setdefault(shop, day)
-    return {day: shop for shop, day in unlocks.items()}
+        shops = list(obs.get("town", {}).get("unlocked_shops", []) or [])
+        if len(shops) > seen:
+            for shop in shops[seen:]:
+                unlocks[int(obs.get("day", 0) or 0)] = shop
+            seen = len(shops)
+    return unlocks
