@@ -966,8 +966,12 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         if q > 0:
             owed_sale[p] -= q
 
+    # The one piece of yesterday the router is given. See `RT.PLACE_IS_MANDATORY_WHEN_HELD_OVERNIGHT`
+    # and the block that maintains it in `make_agent`.
+    held = state["held_since_dawn"]
+
     def nodes_for(skip):
-        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
+        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour, held)
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
@@ -981,7 +985,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # Key on (tile, op), never on the tile alone. A pen is BUILT and then PLACEd on the SAME square, so
     # the tile is already sitting in the builder's route when the PLACE node appears -- subtracting
     # routed *tiles* silently swallowed every new placement and the trigger never fired once.
-    urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour)
+    urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
+                                                  held)
               for o, _i in n.ops if o in URGENT_OPS} if URGENT_OPS else set()
     routed = {(n.tile, o) for st in routes.values() for n in st["route"] for o, _i in n.ops}
     fresh = urgent - state["seen_urgent"] - routed
@@ -1227,6 +1232,7 @@ def make_agent(schedule, me=0, router=True):
     sched = {int(k): v for k, v in schedule.items()}
     state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter(),
                  pins={}, routes={}, crew=-1, seen_urgent=set(),
+                 held_since_dawn=collections.Counter(),
                  planted=collections.Counter(),
                  ordered=collections.Counter(), shed_max=collections.Counter(),
                  uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
@@ -1282,8 +1288,20 @@ def make_agent(schedule, me=0, router=True):
             # this mark. Only the non-router seed path needs it: under `router` the demand is read off
             # the live PLANT pins, which pop as they are planted and so reconcile themselves.
             state["planted_dawn"] = collections.Counter(state["planted"])
+            # **The shed's memory of yesterday, and the only one the router gets.** `build_nodes`
+            # sees one turn at a time and so cannot tell an animal bought this morning from one that
+            # has sat in the shed for a fortnight; that is why the gate it used to consult was a
+            # hard-coded day number. Reset here, at dawn, and then floored every turn below.
+            state["held_since_dawn"] = collections.Counter(shed)
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
+
+        # **Floor it with today's live shed, so a REPLACEMENT is not mistaken for the original.**
+        # Counter `&` is elementwise min, so `held_since_dawn[x]` ends up as the lowest the shed has
+        # held of `x` at any point today -- exactly the number of this dawn's units still there.
+        # Without it, a shed that goes SHEEP 1 -> 0 (placed) -> 1 (bought again at noon) would report
+        # the new sheep as having waited overnight, and it would jump the queue on the day it arrived.
+        state["held_since_dawn"] &= collections.Counter(shed)
 
         # The unit phase decrements `shed` for every PICKUP it issues this turn, and `invs` was read
         # before it ran, so the drawn units are in neither by the time the market block costs the

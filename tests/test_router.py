@@ -2406,7 +2406,11 @@ def _mid_tour_state(hour, next_stop=(2, 2), pos=(3, 3), held=None):
     board = blank_board()
     sched = empty_sched()
     sched[0]["sells"] = {"MELON": 12}
+    # `held_since_dawn` empty: this synthetic state has no yesterday, so nothing in the shed has
+    # waited a night and no PLACE is mandatory. Read strictly (not `.get`) by `_router_acts`, so a
+    # future state that forgets to carry it fails loudly instead of quietly losing the rule.
     state = dict(pins={}, routes={}, crew=1, seen_urgent=set(),
+                 held_since_dawn=collections.Counter(),
                  planted=collections.Counter(), planted_dawn=collections.Counter())
     node = RT.Node(next_stop, [("WATER", None, RT.BASE_PRICE["MELON"])])
     state["routes"] = {0: dict(route=[node], depot=(4, 4), draw={}, cost=1 + RT.dist(pos, next_stop))}
@@ -2866,12 +2870,14 @@ def test_a_far_pen_is_refused_for_budget_and_not_on_ratio():
 
     So the fix cannot be a price. `plan_routes` runs the MANDATORY pool first, against an empty
     budget, and the optional pool afterwards against whatever survives; the placement has to be in
-    the first pool to be reachable at all. See `RT.PLACE_IS_MANDATORY_FROM_DAY`.
+    the first pool to be reachable at all. See `RT.PLACE_IS_MANDATORY_WHEN_HELD_OVERNIGHT`.
     """
     depot = (4, 4)
     # Priced exactly as the board prices it, so the gate is under test and not just the pool split.
+    # The sheep has stood in the shed since dawn, which is what puts the PLACE in the first pool --
+    # the day number is no longer part of it.
     pen = RT.build_nodes([[{"kind": "PASTURE"}]], day=14, shed={"SHEEP": 1}, carried={},
-                         unlocked=("NW",), pinned={}, hour=1)[0]
+                         unlocked=("NW",), pinned={}, hour=1, held_since_dawn={"SHEEP": 1})[0]
     pen.tile = (8, 0)
     # Four waters one step apart -- the high-ratio near work that fills the day -- against one pen
     # eight steps out. The budget fits either the waters or the pen, never both.
@@ -2881,6 +2887,60 @@ def test_a_far_pen_is_refused_for_budget_and_not_on_ratio():
     assert pen.tile in tiles, (
         f"the pen at {pen.tile} was left out of a 12-turn day that had room for it: {tiles}. "
         f"It is not outbid -- it is offered after the budget is gone.")
+
+
+def test_the_place_gate_does_not_read_the_calendar():
+    """Nothing about this board changes between day 13 and day 14. Only the date does.
+
+    `PLACE_IS_MANDATORY_FROM_DAY = 14` was fitted to seed 11 and Seb's tape, where 14 happens to be
+    the day two SHEEP got stuck. It is the same board on 13 and on 15, so a gate that answers
+    differently on them is answering a question about the calendar, not about the farm.
+
+    Held as an invariant rather than a value: whatever the rule decides for this board, it must
+    decide the same thing on every day of the season.
+    """
+    board = [[{"kind": "PASTURE"}]]
+
+    def mandatory(day):
+        return RT.build_nodes(board, day=day, shed={"SHEEP": 1}, carried={}, unlocked=("NW",),
+                              pinned={}, hour=1)[0].mandatory
+
+    verdicts = {d: mandatory(d) for d in range(30)}
+    flips = [d for d in range(1, 30) if verdicts[d] != verdicts[d - 1]]
+    assert not flips, (
+        f"the same board -- one empty pasture, one sheep in the shed since this turn -- is mandatory "
+        f"on some days and not on others; the verdict flips at {flips}. That is a date, not a fact "
+        f"about the farm.")
+
+
+def test_an_animal_held_since_dawn_is_mandatory_and_one_that_just_arrived_is_not():
+    """The rule that replaces the day number: it waited a whole night, so it goes in now.
+
+    `held_since_dawn` is the shed as it stood at this day's dawn, floored by the lowest it has been
+    since (see `schedule_agent`), so a positive count is an animal that has been continuously in the
+    shed all day and therefore was already there yesterday. That, and not the date, is what the
+    day-14 gate was standing in for.
+
+    Both directions matter. An animal bought this morning must NOT jump the queue -- day 0 buys four
+    and places them the same day, and a gate of 0 or 6 was measured dropping the herd to 16 and
+    holding it there. An animal that has waited MUST, on day 6 exactly as on day 26.
+    """
+    board = [[{"kind": "PASTURE"}]]
+
+    def node(day, held):
+        return RT.build_nodes(board, day=day, shed={"SHEEP": 1}, carried={}, unlocked=("NW",),
+                              pinned={}, hour=1, held_since_dawn=held)[0]
+
+    for day in (0, 6, 13, 14, 26):
+        waited, arrived = node(day, {"SHEEP": 1}), node(day, {})
+        assert waited.mandatory, (
+            f"day {day}: a sheep that has stood in the shed since dawn beside an empty pasture was "
+            f"priced at {waited.prize:.0f}, below MANDATORY -- it is offered only once the day's "
+            f"budget is already spent, which is the refusal that stranded it")
+        assert not arrived.mandatory, (
+            f"day {day}: a sheep that arrived in the shed THIS turn was made mandatory at "
+            f"{arrived.prize:.0f}. Placing on arrival was measured (gate 0 and gate 6) as a herd "
+            f"pinned at 16 for the rest of the season")
 
 
 @pytest.mark.slow

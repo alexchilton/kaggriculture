@@ -110,8 +110,19 @@ SEED_COST = {"WHEAT": 10, "CARROT": 20, "TOMATO": 50, "STRAWBERRY": 100, "MELON"
 PLACE_DRAWS_FEED = True
 
 #: Whether a PLACE joins the MANDATORY pool, which `plan_routes` assigns against an empty budget,
-#: instead of the optional pool it is offered to once the day is spent. `None` restores the old
-#: behaviour exactly; an int is the first day it applies, so the early days can be held fixed.
+#: instead of the optional pool it is offered to once the day is spent. `False` restores the old
+#: behaviour exactly.
+#:
+#: **It fires on the animal's age in the shed, never on the date.** The predicate is `held_since_dawn`:
+#: this animal has stood in the shed continuously since this day's dawn, so it was already there
+#: yesterday and has had a whole day in which a pen was open and nobody came. An animal bought this
+#: morning is NOT covered -- it still has today to be placed on merit, which is what day 0 does with
+#: four of them.
+#:
+#: This replaces `PLACE_IS_MANDATORY_FROM_DAY = 14`, which was fitted to seed 11 and Seb's tape and
+#: is recorded below exactly as it was measured. 14 is the day two SHEEP got stuck on THAT tape; it
+#: is not a property of the game. `test_the_place_gate_does_not_read_the_calendar` pins the
+#: generalisation: the same board must get the same verdict on every day of the season.
 #:
 #: **The stranded animal is a budget failure, not a pricing one, and that is measured.** Seb's tape,
 #: seed 11, two SHEEP in the shed beside the empty pens at (8,0) and (9,0) from day 14 to season end.
@@ -172,13 +183,21 @@ PLACE_DRAWS_FEED = True
 #: do survive earn most of it back. So the next question is the feed/turn budget at 19 pens, not
 #: whether to place them.
 #:
-#: **The gate day is fitted to one seed and one tape and should be treated as such.** The rule it
-#: encodes -- a placement must be offered before the budget is spent -- is general; the number 14 is
-#: not, and it is where the schedule stops buying animals on THIS tape, so a stranded one stays
-#: stranded. A gate keyed on "this animal was already in the shed yesterday" would say the same thing
-#: without the magic number, and needs the shed's age plumbed through `build_nodes`. Worth doing
-#: before this is trusted on another seed.
-PLACE_IS_MANDATORY_FROM_DAY = 14
+#: **The gate day was fitted to one seed and one tape, and is now replaced.** The rule it encodes --
+#: a placement must be offered before the budget is spent -- is general; the number 14 is not, and it
+#: is merely where the schedule stops buying animals on THIS tape, so a stranded one stays stranded.
+#:
+#: The shed-age gate below says the same thing without the magic number, and on seed 11 it lands the
+#: target day exactly: animals standing in pens are IDENTICAL to the day-14 gate on every day from
+#: d0 to d18 -- 19 at d14 and d15, which is the tape's own number -- and the shed is empty from d14
+#: on, with nothing stranded overnight anywhere in the season.
+#:
+#: It is NOT byte-identical to the day-14 gate over d0-d13, and the reason is that the day-14 gate
+#: was under-firing. This tape leaves a COW in the shed at the d6 dusk beside an empty pasture, which
+#: is the same bug one day long, so the rule fires on d7 as well: d7 goes 6 -> 10 differing cells,
+#: d8 8 -> 10 and d12 13 -> 15, against d9 13 -> 11 and d13 13 -> 11. d0-d6 are byte-identical and
+#: the placement counts do not move. See `docs/place_gate_generalised_2026-08-08.md` for the tables.
+PLACE_IS_MANDATORY_WHEN_HELD_OVERNIGHT = True
 
 CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells against 42,
                         # last PLACE pushed hour 20 -> 22. Our four pens are not one tour.
@@ -600,13 +619,24 @@ class Node:
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
 
 
-def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
+def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, held_since_dawn=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
     shed nor in a hand is never queued at all -- the deadlock that cost $45,623 was a unit holding
     the board's highest-priority job while standing on an empty shed.
+
+    `held_since_dawn` is the shed as it stood at this day's dawn, floored by the lowest it has been
+    at any point since (`schedule_agent` keeps it as a running Counter intersection, which is
+    elementwise min). A positive count is therefore an item that has been in the shed continuously
+    all day, and so was already there yesterday. It is passed as the raw fact rather than as a
+    precomputed "these animals are stranded" verdict on purpose: every other pricing rule in this
+    function reads the board directly, a caller-computed verdict would make
+    `test_an_animal_held_since_dawn_is_mandatory_and_one_that_just_arrived_is_not` a test of the
+    plumbing rather than of the rule, and the rule would then live in two files at once.
+    `None` means "no memory of yesterday", which is what day 0 and every direct unit-test call have.
     """
+    held_since_dawn = held_since_dawn or {}
     have_wheat = shed.get("WHEAT", 0) > 0 or carried.get("WHEAT", 0) > 0
     have_fert = shed.get("FERTILIZER", 0) > 0 or carried.get("FERTILIZER", 0) > 0
     nodes = []
@@ -663,10 +693,12 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0):
                         if TPD - hour - 1 < SERVICE_ROUND:
                             served -= BASE_PRICE[ANIMALS[a]["product"]]
                         served = max(1.0, served)
-                        # See `PLACE_IS_MANDATORY_FROM_DAY`. The refusal is a budget refusal, so the
-                        # only thing that reaches it is being offered before the budget is spent.
-                        if (PLACE_IS_MANDATORY_FROM_DAY is not None
-                                and day >= PLACE_IS_MANDATORY_FROM_DAY):
+                        # See `PLACE_IS_MANDATORY_WHEN_HELD_OVERNIGHT`. The refusal is a budget
+                        # refusal, so the only thing that reaches it is being offered before the
+                        # budget is spent -- and the animal that has to be is the one that already
+                        # had a whole day with this pen standing open and never got here.
+                        if (PLACE_IS_MANDATORY_WHEN_HELD_OVERNIGHT
+                                and held_since_dawn.get(a, 0) > 0):
                             served += MANDATORY
                         ops = [("PLACE", a, served)]
                         break
