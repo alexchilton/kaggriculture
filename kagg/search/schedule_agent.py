@@ -652,6 +652,29 @@ STEAL_FROM_DAY_MARGIN = 4
 #: wide enough to cover a late harvest.
 SELL_CARRY_DAYS = 3
 
+#: The products the sell block actually offers, in its long-standing order. Named so the
+#: make-room release below can rank the same set by holding size without duplicating the tuple.
+SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
+
+#: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
+SHED_CAPACITY = 100
+
+#: Whether a sale may exceed the schedule's row purely to keep room for tonight's dusk drop.
+#:
+#: `_drop_inventories_to_shed` empties every hand into the shed at the rollover and DISCARDS whatever
+#: does not fit -- `del inv[item]` runs whether or not `take` covered the stack, silently. Measured on
+#: Seb's tape, seed 11, weeds off, before this flag: **101 units destroyed across 15 days**, peaking
+#: at 22 on day 24.
+#:
+#: This is deliberately NOT the parked `shed_dusk` arm and must not be merged with it. That one sells
+#: down to a target EVERY day and costs $5,471 of final bank (+5,533 -> +62) to tidy a stock curve
+#: that was never the problem: every unit of milk is sold in the end, at $243.9 against the tape's
+#: $240.0 while moving 30% more volume. Holding stock for a better price is a strategy worth keeping.
+#: Losing it off the back of the shed is not. This releases stock ONLY when the shed physically
+#: cannot take what the hands are already holding, and only from genuine surplus -- stock no
+#: remaining row will ask for -- so the trading behaviour is untouched on every other day.
+SELL_TO_MAKE_ROOM = True
+
 LAND_PRICES = R.LAND_PRICES
 
 #: Task priority. Pen work first because it is nearly free -- the herd lives on the shed cells, so FEED,
@@ -1526,7 +1549,48 @@ def make_agent(schedule, me=0, router=True):
                     rate[p] = max(rate[p], int(q))
                 elif d <= horizon:
                     still_owed[p] += int(q)
-        for prod in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"):
+        # **Room for tonight's drop.** See `SELL_TO_MAKE_ROOM`. Everything the hands are carrying
+        # comes home at the rollover and the part that does not fit is deleted, so the shed's free
+        # space is a real constraint that no `sells` row knows anything about.
+        #
+        # Computed once per turn and spent across products below, because the limit is on the SHED,
+        # not on any one product: nine products share one hundred slots.
+        #
+        # **Released from the LARGEST holding, and NOT gated on `still_owed`.** The first version
+        # only released genuine surplus -- stock above everything the remaining rows will ask for --
+        # and it fired zero times. At day 24 the shed holds 57 MILK while the last five rows ask for
+        # about 80, so "surplus" is negative and the guard blocked the release while 22 units were
+        # binned that night. Future rows are fed by future production, not by tonight's stock, and
+        # the trade is not close: a missed row is recoverable through `SELL_CARRY_DAYS`, a discarded
+        # unit is gone. Largest-first so the pile that is actually causing the crowding is the one
+        # that moves, rather than whichever product the loop happens to reach first.
+        room_needed = 0
+        release = collections.Counter()
+        if SELL_TO_MAKE_ROOM:
+            carried_home = sum(int(v) for iv in invs for v in (iv or {}).values() if int(v) > 0)
+            room_needed = max(0, int(sum(shed.values())) + carried_home - SHED_CAPACITY)
+            # **TRIED and REJECTED: forecast the day's inflow at dawn instead of reacting to it.**
+            # Counting the standing `yield_units` on every pen and ripe crop as arriving today, and
+            # pacing the release over `TPD - hour` turns, is the better-shaped idea and it does move
+            # the right fields -- discards 101 -> 47, `sh:milk` +181 -> +80, differing cells 417 ->
+            # 412, and the land parcels stay identical to the tape on every day. It costs **$4,385
+            # of final bank** (d29 +1,097 -> -3,288), because selling earlier walks the price down by
+            # more than the saved product is worth. On an Elo ladder the bank is the result and the
+            # tidier stock curve is not, so it is not being kept.
+            #
+            # Neither version closes the floor, and no sell rule can: **the market sells from the
+            # SHED, and product sitting in a hand at dusk was never sellable that day.** When the
+            # crew carries 40 units home to a shed with room for 15, the 25 die whatever the market
+            # did. The residue is exactly that shape -- 17 units on d21, 10 on d23. Closing it needs
+            # the ROUTER to stop collecting into a shed that cannot take the load, which is the same
+            # assignment defect as OPEN-4. See `docs/REGISTER.md`.
+            for p in sorted(SELLABLE, key=lambda p: -int(shed.get(p, 0))):
+                if room_needed <= 0:
+                    break
+                take = min(int(shed.get(p, 0)), room_needed)
+                release[p] = take
+                room_needed -= take
+        for prod in SELLABLE:
             have = int(shed.get(prod, 0))
             # **Hold back fertilizer the FIELD can use -- not a constant.** Applied to a watered,
             # producing tile it doubles the yield (a strawberry tile is 4 units at $120, so doubling
@@ -1653,6 +1717,16 @@ def make_agent(schedule, me=0, router=True):
                 # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
                 # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
                 n = min(n, allow - state["ordered"][("sold", prod)])
+                # **Then top up to keep room for the drop.** Applied AFTER the caps rather than
+                # through `allow`, because `allow` is bounded by `rate[prod]` two lines up and the
+                # whole point is that the row cannot know about a full shed. It can only ever
+                # increase a sale, never block one.
+                #
+                # Only genuine surplus is released -- stock above what every remaining row will ask
+                # for -- so a product a later day still needs is never dumped to make space for
+                # tonight. That is what keeps this from becoming the `shed_dusk` arm by accident.
+                if release[prod] > 0:
+                    n += min(max(0, have - n), release[prod])
             else:
                 n = min(have, int((row.get("sells") or {}).get(prod, 0)))
             # **On the last day, hold everything the shed has: stock has no terminal value.**
