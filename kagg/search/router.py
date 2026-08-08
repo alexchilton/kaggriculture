@@ -95,6 +95,28 @@ BASE_PRICE = {"WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120, "MELON
 #: prize, finite so that two mandatory nodes still order by cost between themselves.
 MANDATORY = 100_000
 
+#: An op that prevents an IRREVERSIBLE loss today, assigned in its own pass ahead of MANDATORY.
+#:
+#: A tier and not a bigger number, deliberately. `plan_routes` ranks inside a pool by
+#: `prize / marginal cost`, and every mandatory prize sits on the 100,000 floor, so urgency separates
+#: two FEED nodes by about 1% while distance separates them by up to 8x. Measured on Seb's tape,
+#: seed 11, day 16:
+#:
+#:     at-risk pen   prize 101,500, 8 steps away  ->  score  12,687
+#:     healthy pen   prize 100,160, 1 step  away  ->  score 100,160    wins by 8x
+#:
+#: So the near healthy pen is served and the far animal starves out, with ten wheat spare in the
+#: shed. Raising the at-risk prize cannot fix that -- it would have to beat an 8x denominator swing,
+#: and then it would outrank genuinely urgent work on the next board. Ordering by tier says the
+#: actual thing: losing the animal is not a bigger prize, it is a different kind of event.
+CRITICAL = 1_000_000
+
+#: Whether a pen one missed day from losing its animal is CRITICAL rather than merely mandatory.
+#: A flag so the arm stays attributable, and because this repo records four separate occasions where
+#: an animal verdict turned out to be a measurement artifact. Any accepted version must be judged on
+#: ANIMALS STANDING IN PENS per day, never on cells or money alone.
+FEED_IS_CRITICAL_WHEN_AT_RISK = True
+
 #: The reference's seed prices (`CROPS[...]["seed"]`). Seeds are NOT held in the shed or in a unit's
 #: inventory -- `private["seeds"]` is consumed directly by PLANT -- which is why PLANT never generates
 #: a depot stop no matter that it carries an item name.
@@ -561,7 +583,11 @@ def animal_ops(cell, day, have_wheat):
         #
         # A hungry day is still worth more than a healthy one -- the animal itself is on the line -- so
         # the two stay ordered above the shared mandatory floor.
-        prize = MANDATORY + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
+        # A hungry pen is one missed day from the animal escaping outright
+        # (`reference/kaggriculture.py:786`), which is irreversible: the structure survives, the
+        # animal does not, and nothing on the board buys it back the same day. See `CRITICAL`.
+        floor = CRITICAL if (hungry and FEED_IS_CRITICAL_WHEN_AT_RISK) else MANDATORY
+        prize = floor + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
         out.append(("FEED", "WHEAT", prize))
         fed = True
     if not cell["cared_today"] and fed:
@@ -617,7 +643,7 @@ _DEPOT_TILES = frozenset(tuple(t) for t in R.shed_access_tiles())
 class Node:
     """One tile, every op worth doing there today, and what must be drawn at the depot first."""
 
-    __slots__ = ("tile", "ops", "prize", "service", "needs", "mandatory")
+    __slots__ = ("tile", "ops", "prize", "service", "needs", "mandatory", "critical")
 
     def __init__(self, tile, ops):
         self.tile = tile
@@ -642,6 +668,7 @@ class Node:
                 if o == "PLACE":
                     self.needs["WHEAT"] += 1
         self.mandatory = any(p >= MANDATORY for _o, _i, p in ops)
+        self.critical = any(p >= CRITICAL for _o, _i, p in ops)
 
     def __repr__(self):
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
@@ -980,7 +1007,12 @@ def plan_routes(units, nodes, budget, depots=SHED, carry=None, supply=None):
     order = sorted(left, key=lambda n: -n.prize)
     # Mandatory nodes are assigned in their own pass, so a hungry animal cannot be outbid on ratio by a
     # melon that happens to be nearer. Within the pass they still order by cost.
-    for pool in ([n for n in order if n.mandatory], [n for n in order if not n.mandatory]):
+    # Three tiers, not two. CRITICAL goes first because inside a single pool the ranking is
+    # `prize / marginal cost`, and a 1% prize edge cannot survive an 8x difference in distance --
+    # which is exactly how a pen one day from losing its animal lost to a healthy pen next door.
+    for pool in ([n for n in order if n.critical],
+                 [n for n in order if n.mandatory and not n.critical],
+                 [n for n in order if not n.mandatory]):
         remaining = list(pool)
         # **Parallel insertion, least-loaded unit first.** The obvious construction -- scan every
         # (node, unit, position) and commit the single best `prize / delta` -- minimises total walking,

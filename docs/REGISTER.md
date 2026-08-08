@@ -8,6 +8,24 @@ This file exists because items in this project get closed under one name and reo
 Melon has been opened and closed at least four times.
 Before opening anything, check the CLOSED section — and check whether your item is really OPEN-1 wearing a new label.
 
+> **READ THIS FIRST — the `money` season total is an AREA, not a deficit.**
+>
+> `breakdown.py --diff` sums the per-day difference between two bank curves. `-103,724` is that
+> integral. It is **not** how far behind we finish.
+>
+> ```
+> money   ... d27 -1781   d28 +1365   d29 +4586
+> final bank    OURS 121,221    TAPE 116,635    -> we finish $4,586 AHEAD
+> ```
+>
+> This was misread as a deficit for a whole day and drove several wrong conclusions, including
+> calling the `FILLING_WATER` arm a regression when it moved the FINAL BANK from +4,586 to **+5,736**
+> while moving the area from -103,724 to -106,686.
+>
+> **Judge an arm on d29, or on the day it targets. Never on the season total.**
+> Verified independently 2026-08-08 by `scripts/probe_market_fills.py` and by reading the d29 column
+> of the baseline table.
+
 Ground rules for this file:
 
 - An item is CLOSED only if there is a measurement or a test that would go red if it came back.
@@ -194,6 +212,39 @@ It appeared as a consequence of fixing C-12: placing more animals filled 19 pens
 cadence cannot carry 19 pens.
 
 Note the shape — this is the third time a fix has exposed a defect the old bug was masking.
+
+**Refined 2026-08-08** (`scripts/which_pens_go_hungry.py`, `scripts/is_the_feed_wheat_gone.py`).
+It is **three** escapes, not two: `(8,0)` d16, `(6,5)` d17, `(9,0)` d18.
+
+The difference from the tape is not how many pens go hungry — he leaves 1–3 unfed most days too. It
+is that **he never leaves the same pen unfed twice running**; his hungry set is different every day
+and ours repeats.
+
+```
+OURS  d15 (8,0)=0  ->  d16 (8,0)=1  -> ESCAPED
+      d16 (6,5)=0  ->  d17 (6,5)=1  -> ESCAPED
+      d17 (9,0)=0  ->  d18 (9,0)=1  -> ESCAPED
+SEB   d15 (1,3),(2,2)   d16 (1,2),(2,3)   d17 (1,6)   d18 (1,2),(3,2)
+```
+
+Three candidate causes were tested and **all three are dead**:
+
+- Not the price. `router.py:554` already sets `hungry = consecutive_unfed >= 1` and adds
+  `cost + _animal_remaining` on top of MANDATORY, so an at-risk pen already carries the
+  escape-prevention bonus.
+- Not the stock. At d16 h20 we hold **10 wheat** (7 shed + 3 carried) with one pen at risk.
+- Not the `have_wheat` guard. Our wheat never reaches zero on d15–d18.
+
+The decisive observation: at d16 h20 we hold ten wheat, a FEED **is** emitted, and it goes to a pen
+that is *not* the one about to lose its animal.
+
+So what remains is **reachability** — the at-risk pen was not servable by whichever unit held the
+wheat. That is a routing failure, not an economics one, which puts it with OPEN-4 rather than with
+the feed cadence.
+
+One further contrast worth keeping: Seb reaches **every** dawn holding exactly 19 wheat, one per pen
+(d15–d18 all read 19), and draws 16 into hands by h4. We reach dawn with 6–10 and top up through the
+day. Whether that dawn-stocking is what makes his distribution work is NOT established.
 
 CORRECTION on the record: this was first reported as "-2 from d10". That was a column-offset
 miscount of the diff table. It is **d16**, and the `sheep` row is `an_SHEEP`, animals standing
