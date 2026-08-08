@@ -32,7 +32,11 @@ animals ordered      29     (the plan specifies 14: COW 8, SHEEP 6)
 wheat bought as feed  15     (the leaders bought 967)
 ```
 
-Roughly 88% of unit-turns were no-ops.
+Roughly 88% of *slot*-turns were no-ops -- but that denominator is wrong and is corrected here.
+There are 24 unit slots against a crew of about 5, so most slots hold no unit at all. Measured against
+slots that actually held a unit, `jax_heuristic` acts on **57.6%**, i.e. a **42.4%** idle rate against
+the leader's 7.2%. Still a 6x gap, not 12x. This is the fourth time this project has taken a share over
+`MAX_UNITS` rather than the live crew and read the result as a fact.
 
 ## What this establishes
 

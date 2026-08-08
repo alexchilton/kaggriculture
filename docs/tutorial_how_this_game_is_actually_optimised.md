@@ -100,7 +100,11 @@ That makes standard combinatorial methods work:
    parameterisation is richer and less lossy, and that the executor's hand-coded interpretation is the
    binding ceiling. That is a real argument but it is not novelty.
 3. **Waste elimination.** Measured: `senkin13`'s farmer-unit no-op rate is **7.2%** (52 of 720) against
-   our plan executor's ~**88%** (`docs/executor_livestock_broken_2026-08-04.md`). This is the one part
+   our agents' idle rate (`docs/executor_livestock_broken_2026-08-04.md`). **Corrected 2026-08-04:** the
+   "~88% no-ops" figure quoted earlier was the padding-inflated all-slot share -- 24 unit slots against a
+   crew of 5. Measured on slots that actually held a unit, `jax_heuristic` acts on **57.6%**, so the real
+   idle rate is **42.4%**. A 6x gap to the leader, not 12x. Fourth instance in this project of a share
+   taken over `MAX_UNITS` instead of the live crew. This is the one part
    of the cost argument that strengthened under review, and it needs no strategic insight to collect.
 
 **Cost, stated honestly.** An earlier draft put a coordinate-ascent sweep at "720 x alternatives".

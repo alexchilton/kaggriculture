@@ -80,3 +80,71 @@ detour (`_route_turns`, line 602), rather than letting any nonzero shed stock tr
 > "this is a plausible read of the code and the two logs, not a certainty, and the project's own
 > history (BOTH SUPPLY_LEDGER and the late-delivery arm) shows 'obviously correct' fixes here have
 > flipped sign before."
+
+---
+
+# Second round: after Fix 2 was measured at 125 and reverted
+
+Reported back: Fix 2 gives d0-d6 byte-identical, then d7 8 -> 11 and d11 19 -> 21.
+His regression prediction was right in mechanism but landed on d7, not d0-d5 -- keeping the draw
+alive pulls units back to the depot mid-tour once stock arrives, and d7 is exactly the day the
+steal gate had just bought from 15 down to 8.
+
+## His answer to "is the slack-gated retry worth running"
+
+Second priority, not first.
+The mechanism is right -- a freshly-packed tour from `STEAL_FROM_DAY` has near-zero slack by
+construction, so `detour <= slack - margin` should correctly refuse there -- but it is a broader
+change than it looks: it still lets *any* unit with slack divert *any* time stock appears, on
+*every* day, so it has more surface area for another cross-day coupling surprise.
+
+## His recommended one shot: clear a route that is provably dead, before walking it
+
+Insert immediately before the walk-the-tour loop:
+
+```python
+if (any(v > 0 for v in inv.values()) and st["route"] and not st["draw"]
+        and all(not _live_ops(n.tile, tiles[n.tile[1]][n.tile[0]], day, inv, pins, seeds)
+                for n in st["route"])):
+    st["route"].clear()
+```
+
+Three conditions, each deliberately narrow:
+
+- **`not st["draw"]`** -- the tour's depot need has already resolved or already been abandoned.
+  This is the condition B and C were missing, and it is why they revalidated live routes and
+  cascaded.
+- **`all(...)` over the WHOLE remaining route, not just the head** -- a route with a HARVEST or
+  WATER node in it (neither gated on a drawn item) cannot satisfy this, so it fires only on the true
+  dead-end shape.
+- Reuses `_live_ops` exactly as the arrival check already does. No new liveness judgment, just asked
+  earlier.
+
+For u2 this is true from **h17**, not h21 -- once the melon node pops and the route is down to the
+single dead pasture stop with `st["draw"]` already empty.
+That is a 4-turn head start.
+(1,3) is 4 steps from the depot ring; at h17 seven turns remain, so the **already-implemented** tail
+at lines 1117-1127 gets home with 3 to spare instead of arriving one short.
+No new DROP code, no new redirect logic.
+
+Why he argues this is a different bet rather than a rerun: it never touches a head still covered by
+a pending draw, and it never interrupts otherwise-live work for supply.
+It clears only once every remaining stop is *simultaneously* proven dead.
+
+**The risk he flags and cannot rule out without measuring:** an animal node dead only because *this*
+unit lacks wheat could become servable for CARE alone if a *different* unit feeds it first
+(`fed_today` flips without this unit's involvement).
+If two routes ever service the same pasture, clearing early gives up a stop that would have revived.
+He expects this to be rare because nodes are generally claimed by one route.
+
+## His answer to "is this worth any more effort"
+
+Run this one attempt. **If it also regresses, stop -- do not chain into the slack-gated retry.**
+
+> "Five attempts is already more cycles than a $600 defect has earned, and the pattern across all
+> four -- hoist regresses d0, gated hoist is inert, retry regresses d7/d11 -- is consistent with
+> 'every general-purpose lever here costs more than the fertilizer it rescues'."
+
+He agrees the arithmetic favours the seed overbuy: ~$600 season-wide against `buy_seed` +42/d6,
++33/d9 and a -$1,466 day-10 swing that costs a whole quadrant.
+He holds the line at one more shot and calls strict-xfail-and-move-on fully legitimate.
