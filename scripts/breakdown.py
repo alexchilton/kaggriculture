@@ -44,6 +44,12 @@ TAPES = {
     # on any future download before trusting a comparison against it.
     "seb2": ("data/seed_scripts/top_guys/90751101.json",
              "data/seed_scripts/top_guys/90751101/schedule.json", "Seb (allegedly)"),
+    # Seb on the REBALANCED economy (townCenterSellInterval 24), banking $128,518 against
+    # kakuteki's $70,886. The first tape we have of a top player on the game now being played.
+    # Against `seb` below he moves the second parcel to day 6, builds 21 pens instead of 19,
+    # and re-cuts the herd from wool to milk: MILK 179 -> 303, WOOL 230 -> 104, MELON 132 -> 96.
+    "seb1326": ("data/seed_scripts/top_guys/90976060.json",
+                "data/seed_scripts/top_guys/90976060/schedule.json", "Seb (allegedly)"),
     "seb": ("data/seed_scripts/top_guys/90494364.json",
             "data/seed_scripts/top_guys/90494364/schedule.json", "Seb (allegedly)"),
     "oldleader": ("data/seed_scripts/new_leader/90016067.json",
