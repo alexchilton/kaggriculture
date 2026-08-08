@@ -9,7 +9,18 @@ This prints the raw pair `ours/tape` for:
     board       money, hands, tiles owned, pens, live crop tiles PER CROP, weeds
     herd        animals standing in a pen PER SPECIES
     shed        units held PER PRODUCT, fertilizer included
-    ops         every op either side emitted that day, counted
+    ops         every op either side emitted that day, counted -- EXCEPT sell, buy_product,
+                buy_animal and buy_seed, which are FILLS (see below), not raw counts of what
+                was emitted
+
+    An emitted order is not a landed one: our agent re-offers an order every turn until it lands,
+    because the env silently refuses one it can't afford, so counting emissions inflates any row
+    that gets re-offered. sell/buy_product/buy_animal settle straight against `private["shed"]`
+    (`_commit_unit` in `reference/kaggriculture.py`), so a turn's shed delta IS the fill -- PROVIDED
+    no DROP/PICKUP/PLACE for that item also fired that turn (they touch the same field). Turns where
+    that can't be guaranteed are dropped, not guessed, so these three rows are a LOWER BOUND, with
+    the fraction of clean turns printed as "fill coverage". buy_seed is the same idea against
+    `private["seeds"]`, which only DROP/PICKUP/PLACE never touch, so it has no coverage caveat.
 
     python -u scripts/breakdown.py --days 11
 """
@@ -92,12 +103,34 @@ def snap(obs, seat):
     return n
 
 
+#: Market ops that settle straight against `private["shed"]` inside `_commit_unit` -- confirmed by
+#: reading `reference/kaggriculture.py` rather than assumed. SELL takes from shed, BUY_PRODUCT and
+#: BUY_ANIMAL add to shed; BUY_SEED touches `private["seeds"]` instead (handled separately, below).
+SHED_MARKET_OPS = ("SELL", "BUY_PRODUCT", "BUY_ANIMAL")
+#: Unit-phase ops that ALSO move product across the shed boundary, so a shed delta on a turn where
+#: one of these fired cannot be attributed to a market order with confidence:
+#:   DROP    -- dumps the WHOLE inventory of the acting unit into the shed; which items and how much
+#:              is not visible from the action alone, so it taints every item, not just one.
+#:   PICKUP  -- moves a named item shed -> inventory; taints that one item.
+#:   PLACE   -- normally places an animal onto a matching empty structure and never touches the shed,
+#:              but falls back to a shed drop of the named item if the tile is not a valid structure
+#:              (`_apply_unit_action`, the `PLACE` branch) -- which branch fired is not visible from
+#:              the action either, so it taints that one item too.
+#: HARVEST, FEED, COLLECT_FERTILIZER and CARE never touch `private["shed"]` directly -- they read or
+#: write the acting unit's own inventory (`_farmer_inventory`) or tile state, and reach the shed only
+#: via a later DROP. So, unlike the identity `total_after = total_before + produced - consumed +
+#: bought - sold` this docstring originally assumed, production and consumption are NOT confounders
+#: for a shed-only reading -- only DROP/PICKUP/PLACE are, because those are the only other ops that
+#: touch the same field SELL/BUY_PRODUCT/BUY_ANIMAL commit against.
+
+
 def run(make0, opp, seed, weeds):
     from kaggle_environments import make
     env = make("kaggriculture", configuration={"seed": seed, "weedSpawnChance": weeds}, debug=True)
     env.reset(2)
     p0, p1 = make0(), opp()
     days, ops = [], collections.defaultdict(collections.Counter)
+    fill_clean, fill_total = collections.Counter(), collections.Counter()
     for t in range(719):
         o0, o1 = env.state[0].observation, env.state[1].observation
         if t % 24 == 0:
@@ -110,6 +143,8 @@ def run(make0, opp, seed, weeds):
         # the reference ignores the surplus for movement and work. Counting the untruncated list
         # credited the tape with turns it never took, which is the one number the routing argument
         # divides by. Same list the step below sends, or the comparison is against a fiction.
+        drop_any = False
+        taint_items = set()
         for a in [a0["farmer"]] + list(a0["hands"] or [])[:n0]:
             if a:
                 op = a[0]
@@ -120,29 +155,58 @@ def run(make0, opp, seed, weeds):
                 ops[t // 24]["_turns"] += 1
                 ops[t // 24]["_move" if op in MOVES else
                              "_pass" if op == "PASS" else "_work"] += 1
-        # **These rows count what was OFFERED, which is not what was bought or sold.** The comment
-        # above insists on counting what the env executes; this loop did the opposite, and it
-        # produced a badly misleading number. Our seed row is deliberately re-offered every turn
-        # until it lands, because a BUY_SEED the env refuses for want of funds is silent -- so on
-        # day 6, `BUY_SEED MELON 6` was emitted eight times against a bank pinned at $15, tallied
-        # as 48 units, and bought exactly zero melon. Read as a fill, that is a phantom `buy_seed
-        # +42` against the tape, which offers each order once.
+                if op == "DROP":
+                    drop_any = True
+                elif op in ("PICKUP", "PLACE") and len(a) > 1:
+                    taint_items.add(a[1])
+        # **SELL / BUY_PRODUCT / BUY_ANIMAL are counted below as FILLS, from the shed delta.** What
+        # follows is only the ops the shed delta can't explain: HIRE, BUY_LAND, and anything else
+        # not in SHED_MARKET_OPS -- those are still OFFERS (an unaffordable HIRE is silent, same as
+        # the original BUY_SEED bug, but fixing them is out of scope here).
+        shed_orders = collections.defaultdict(set)  # item -> {op types offered for it this turn}
         for o in (a0["market"] or []):
-            # BUY_SEED is counted below as a FILL instead; every other market row is still an offer.
-            if o and o[0] != "BUY_SEED":
-                ops[t // 24][o[0]] += int(o[2]) if len(o) > 2 else 1
+            if not o:
+                continue
+            op = o[0]
+            if op == "BUY_SEED" or op in SHED_MARKET_OPS:
+                if op in SHED_MARKET_OPS and len(o) > 1:
+                    shed_orders[o[1]].add(op)
+                continue
+            ops[t // 24][op] += int(o[2]) if len(o) > 2 else 1
         seeds_before = dict((o0.get("private") or {}).get("seeds") or {})
+        shed_before = dict((o0.get("private") or {}).get("shed") or {})
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
         # BUY_SEED as a FILL. Seeds move in exactly two ways -- a buy raises them, a PLANT lowers
         # them -- so a rise across the step is a purchase that actually landed. A buy and a plant
         # in the same turn nets out, so this can under-count by the plants of that turn; that is a
         # bounded error and vastly better than reporting 48 for a day that bought none.
-        seeds_after = (env.state[0].observation.get("private") or {}).get("seeds") or {}
+        priv_after = env.state[0].observation.get("private") or {}
+        seeds_after = priv_after.get("seeds") or {}
         for crop, after in seeds_after.items():
             gained = int(after) - int(seeds_before.get(crop, 0))
             if gained > 0:
                 ops[t // 24]["BUY_SEED"] += gained
+        # SELL / BUY_PRODUCT / BUY_ANIMAL as FILLS. A turn is clean for an item only if (a) no DROP
+        # fired anywhere this turn (it taints every item, not just one), (b) no PICKUP or PLACE fired
+        # for that same item, and (c) exactly one op type was offered for that item -- if two of the
+        # three were offered for the same item on the same turn we cannot split one shed delta between
+        # them. On a clean turn the delta IS the fill: SELL only ever decreases shed[item], BUY_PRODUCT
+        # / BUY_ANIMAL only ever increase it (`_commit_unit`), so there is nothing left to attribute it
+        # to. Dirty turns are dropped, not guessed -- undercounts, coverage reported alongside.
+        shed_after = dict(priv_after.get("shed") or {})
+        for item, optypes in shed_orders.items():
+            op = next(iter(optypes))
+            fill_total[op] += 1
+            if drop_any or item in taint_items or len(optypes) != 1:
+                continue
+            delta = int(shed_after.get(item, 0)) - int(shed_before.get(item, 0))
+            fill = -delta if op == "SELL" else delta
+            # A clean turn's delta should never run the wrong way (SELL can't raise shed, a buy
+            # can't lower it) -- `max(0, ...)` is a floor against a broken assumption, not expected
+            # behaviour, so a nonzero clip here would mean SHED_MARKET_OPS/taint logic above is wrong.
+            ops[t // 24][op] += max(0, fill)
+            fill_clean[op] += 1
         if env.state[0].status == "DONE":
             break
     bad = [(s, env.state[s].status) for s in (0, 1) if env.state[s].status != "DONE"]
@@ -155,7 +219,7 @@ def run(make0, opp, seed, weeds):
     # column's ops means reading YESTERDAY'S outcome next to TODAY'S work, and it caused a real
     # misreading: `money` at d12 is the result of d11, so the d10 land purchase showed up a column
     # late and a step change got attributed to the wrong day twice.
-    return days[1:], ops
+    return days[1:], ops, (fill_clean, fill_total)
 
 
 def main():
@@ -175,9 +239,9 @@ def main():
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     opp = lambda: tape_policy(replay, team, 1)
 
-    his, his_ops = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds)
+    his, his_ops, his_cov = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds)
     a = schedule_agent.make_agent(thin, 0, router=True)
-    ours, our_ops = run(lambda: (lambda o, t: a(o)), opp, args.seed, args.weeds)
+    ours, our_ops, our_cov = run(lambda: (lambda o, t: a(o)), opp, args.seed, args.weeds)
 
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]
@@ -193,6 +257,23 @@ def main():
           f"HIRE_FIRST={schedule_agent.HIRE_FIRST}")
     print("  state rows (money, tiles, pens, crops, sh:*) are the board at the END of that day; "
           "op rows are that day's actions.")
+    print("  op rows sell/buy_product/buy_animal/buy_seed are FILLS (units that actually changed "
+          "hands, read off the shed/seeds delta) -- every other op row, including hire and "
+          "buy_land, is still an OFFER (what was emitted, whether or not the env accepted it).")
+    print("  sell/buy_product/buy_animal are read only on turns clean of DROP/PICKUP/PLACE for that "
+          "item (see coverage below) -- a dirty turn contributes ZERO, so these three rows are a "
+          "LOWER BOUND on the true fill count, not an estimate of it.")
+
+    def cov(c):
+        clean, total = c
+        parts = []
+        for op in SHED_MARKET_OPS:
+            n, d = clean[op], total[op]
+            parts.append(f"{op.lower()}={n}/{d}" + (f" ({n / d:.0%})" if d else " (n/a)"))
+        return "  ".join(parts)
+
+    print(f"  fill coverage (clean turns / turns an order was offered) -- ours: {cov(our_cov)}")
+    print(f"                                                              tape: {cov(his_cov)}")
 
     if args.diff:
         # Every field that is not identical, per day. The wide tables above are for reading what
