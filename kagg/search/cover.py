@@ -133,6 +133,33 @@ COMPACT = True
 #: beside `slot_now` in `cover` for the profile and the episode.
 MEMOISE_SLOT = True
 
+#: Whether the shed limits EVERY item a job draws, or only the animals. See `claim` for the day-4
+#: failure this fixes: six FEEDs planned against a shed holding no wheat, two performed.
+#: `tests/test_day_four_feeds_the_whole_herd.py` is the reproduction.
+#: **SHIPS OFF. Measured three times, worse every time.** The diagnosis behind it is correct and
+#: worth keeping: day 4's dawn solve has one unit, which lifts all six wheat out of the shed, and
+#: the hour-1 replan then covers six FEEDs against a shed holding zero -- five of them on hands
+#: that can never obtain wheat. Two feeds happen, four animals go hungry with seventy idle turns.
+#:
+#: But refusing the job is the wrong answer to it. Seed 11, weeds off, against Seb's 1.32.6 tape,
+#: `days 0-16 totals` and the d16 board:
+#:
+#:     setting                        work  idle   d16 money   d16 cow/sheep
+#:     off (shipped)                  1144  1289       7,293        5 / 7
+#:     on, needs | places             1025  1441       3,280        6 / 7   and the 4th parcel never bought
+#:     on, FEED/FERTILIZE only         930  1372           0        3 / 0
+#:
+#: Each tightening moves work DOWN and idle UP, because a refused FEED is a hand with nothing to do
+#: and an animal that starves anyway. The shed being empty is a funding problem -- Seb answers it
+#: with 14-22 BUY_PRODUCT a day from d11 while we buy none -- and a planner constraint cannot buy
+#: wheat. Turn this on only together with a rule that raises the shortfall as a purchase.
+SUPPLY_LIMITS_EVERY_DRAW = False
+
+#: The ops whose drawn item is genuinely SPENT at the tile, so the shed has to hold it before the
+#: job can be planned. PLACE and BUILD are deliberately absent: their `needs` carry feed wheat that
+#: the op does not consume, and constraining on it refused animal placements outright.
+SUPPLY_CHECKED_OPS = ("FEED", "FERTILIZE")
+
 #: Sentinel for "not in the cache", so a genuine `None` from `slot` -- which means "this job does
 #: not fit this unit at all", the single most common answer -- is cached instead of recomputed.
 _MISS = object()
@@ -564,7 +591,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         return got
 
     def claim(u, j):
-        """Animals this job makes unit `u` draw FROM THE SHED, after what it already carries.
+        """What this job makes unit `u` draw FROM THE SHED, after what it already carries.
 
         **A hand carrying the cow claims nothing.** `Job.places()` is static and cannot know that,
         and netting it off is not optional: the moment a unit draws the animal the shed reads zero,
@@ -574,7 +601,27 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         placed on day 2 h9. One animal-day lost, and it repeats, which is the whole of `cow 7/8`.
         """
         held = collections.Counter(load(u))
-        return collections.Counter({i: q - held[i] for i, q in j.places().items() if q > held[i]})
+        # **The wheat a FEED eats is as finite as the cow a PLACE takes, and it was never checked.**
+        # This read `j.places()` -- PLACE ops only -- so `affordable` constrained animals and nothing
+        # else. Day 4, seed 11, against Seb's 1.32.6 tape: the dawn solve has ONE unit, which picks up
+        # all six wheat in the shed. The crew lands at hour 1, the shed reads zero, and the six-unit
+        # replan covers all six FEEDs anyway -- five of them assigned to hands that can never obtain
+        # wheat. Two feeds happen. Four animals go hungry with seventy unit-turns idle, and
+        # `consecutive_unfed >= 2` takes two cows on day 7 (5 -> 3 while the tape holds at 5). By d16
+        # that is 5 cows against 13 and $7,293 against $15,026.
+        #
+        # `needs` already carries the animal for a PLACE (`PLACE_DRAWS_FEED` puts the wheat there
+        # too), so union rather than sum: `Counter |` takes the max per item and cannot double-count
+        # a beast that appears in both.
+        # **Only what the op CONSUMES at the tile, never what it carries along.** Using `j.needs`
+        # wholesale blocked PLACE: `PLACE_DRAWS_FEED` puts a day's wheat into `needs`, so an empty
+        # shed refused the animal itself. Day 4 measured `place 0/1` and `cow 4/5` against `1/1` and
+        # `5/5` before -- one cow placed a day late, for want of wheat the PLACE does not spend.
+        want = j.places()
+        if SUPPLY_LIMITS_EVERY_DRAW:
+            want = want | collections.Counter(
+                i for o, i in j.ops if i and o in SUPPLY_CHECKED_OPS)
+        return collections.Counter({i: q - held[i] for i, q in want.items() if q > held[i]})
 
     def affordable(new_places):
         """Does this many animal draws still fit what the shed holds?"""
