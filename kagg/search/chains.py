@@ -60,8 +60,44 @@ from kagg.search import routines as R
 #: teens self-defeating, so this is a backstop rather than a target.
 MAX_UNITS = 20
 
-DRAIN_UNITS = {"WHEAT": 662, "CARROT": 338, "TOMATO": 374, "STRAWBERRY": 572, "MELON": 140,
-               "EGG": 338, "MILK": 500, "WOOL": 284}
+# **Re-measured 2026-08-08 against 1.32.6, the version the ladder actually runs.** The numbers
+# above are 1.32.2's and are kept because the *argument* they support still holds -- milk is the
+# biggest market, wheat is an input rather than a crop -- but every figure in them is too large.
+#
+# The machine had `kaggle-environments` 1.32.2 installed while the competition moved to 1.32.6, so
+# every fixture in this project was measured on a different game from the one it plays.
+# 1.32.6 doubles `townCenterSellInterval` 12 -> 24 and deletes `TOWN_CENTER_DEMAND_SCHEDULE`, the
+# ramp that multiplied centre demand x2 from day 10 and x4 from day 20. Against the real
+# environment the whole market is **$204,379, not $302,380** -- the planner was sizing the farm
+# against a market 40% bigger than the one that exists:
+#
+#     product     1.32.2   1.32.6   over      $ 1.32.6
+#     STRAWBERRY     572      452   1.27x       54,225
+#     MILK           500      322   1.55x       51,510
+#     WOOL           284      204   1.39x       40,875
+#     WHEAT          662      553   1.20x       13,814
+#     EGG            338      256   1.32x       12,778
+#     TOMATO         374      209   1.79x       12,566
+#     CARROT         338      317   1.06x       11,110
+#     MELON          140       30   4.67x        7,500
+#
+# **Melon is the row that matters and it is exact.** No shop carries melon, so the town centre is
+# its only buyer: 719 playable steps at one tick per 24 turns is 30 units a season, on every seed,
+# with zero variance. The old 140 was 60 ticks ramped 1/2/4 -- three separate 1.32.2 facts
+# compounding. The tape we ship sells 96 of them and we sell ~110, which is why melon quotes at the
+# price floor for most of the season: the book takes 30 and never recovers the rest.
+#
+# **Every other row is a mean over a distribution, and the spread is wide.** 1.32.6 draws shops
+# *with replacement* up to `MAX_SHOP_INSTANCES = 8`, so a product served by a repeated shop drains
+# twice as fast: over seeds 1000-1031 wool ranges 30 to 678 and carrot 30 to 894. A single number
+# cannot express that, and sizing production to the mean is a bet on the draw. Left as a mean here
+# because that is what this table's callers expect; making the planner read the *live* unlock set
+# is the honest fix and is not attempted in this change.
+#
+# Regenerate with `PYTHONPATH=. python3 -u scripts/drain_table.py --seeds 32`, which prints the
+# replacement dict. Pinned by `tests/test_the_drain_table_matches_the_environment.py`.
+DRAIN_UNITS = {"WHEAT": 553, "CARROT": 317, "TOMATO": 209, "STRAWBERRY": 452, "MELON": 30,
+               "EGG": 256, "MILK": 322, "WOOL": 204}
 
 # **Two block sizes, because how often a tile is watered decides how many a unit can hold.**
 # Watering every tile every day costs ~3 turns per tile, so a 24-turn day fits four and six raises.
