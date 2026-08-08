@@ -225,6 +225,16 @@ def _pointless_tiles(tiles, day, plants_left):
 #: dollar figure enters the routing.
 FUND_THE_DAY_WHEN_SHORT = True
 
+#: The second half of `FUND_THE_DAY_WHEN_SHORT`: on a short day, divert a hand that is ALREADY
+#: holding produce the row wants. The first half marks a job and expires when the harvesting ends;
+#: this one looks at the load. See the long note at its use site in `_router_acts` for the day-4
+#: measurement -- $939 against a $1,000 parcel with $576 of fertilizer riding in two empty hands.
+BANK_THE_HAND_WHEN_SHORT = True
+
+#: How much sellable surplus a hand must hold before its tour is worth interrupting. Interrupting
+#: a committed tour is the thrash this file warns about twice, so the trigger is not one unit.
+BANK_THE_HAND_MIN = 4
+
 #: Whether a unit whose CRITICAL draw finds the shed empty STANDS and retries next turn, instead of
 #: dropping that attempt and walking on. See the note where it is read. It saves the day-12 SHEEP at
 #: (1,6) and it is the half of that fix which costs turns; the non-destructive `node.pick` handling
@@ -841,6 +851,31 @@ LIQUIDATE_FROM_HOUR = 16
 #: their own terms and not on the dollar.
 SELL_SURPLUS_HORIZON = None
 
+#: **OFF by default -- no pool-win-rate evidence yet. See `docs/fable_market_selling_2026-08-08.md`.**
+#: Whether `rate[prod]` -- "the largest single day the schedule ever asked for" -- is dropped in
+#: favour of the shed itself whenever `market.prices[prod]` is at or above `RT.BASE_PRICE[prod]`.
+#: `rate` is a fact about ONE REPLAY's production, transcribed off a 1.32.2 tape, and 1.32.6 halved
+#: the town centre's draw; it is not a fact about what the market can absorb, and `market_price` is
+#: public and exact, so "is this a glut" does not have to be guessed.
+#:
+#: Measured on five of OUR OWN live 1.32.6 ladder games (`data/seed_scripts/ours_1326/`, three wins
+#: two losses, opponents reacting, not a tape): WHEAT realised $46.8/unit at 1,105 units sold in one
+#: game (`91041929`, a loss) against $47.8/unit at 125 units in another (`91041864`, also a loss) --
+#: essentially the same price at nearly 9x the volume, because WHEAT's own-tile production is small
+#: next to the town-plus-shop drain. That is the brief's "71 vs 305-649" gap: a schedule-quota cap
+#: throttling a product the market was never close to flooding. MELON is the counter-example and the
+#: reason this is a per-product PRICE test and not a blanket removal -- in the same game it realised
+#: $75.6/unit at 120 units against the opponent's $112.4/unit at 144, moving in the direction the
+#: glut branch already protects against, because it has no shop at all and is the one product that
+#: visibly responds to volume (`scripts/measure_sell_timing_impact.py`'s prior: seven products
+#: cleared and rose all season, melon alone glutted, base 250 -> $150).
+#:
+#: Only `rate[prod]` moves. `allow` (the `still_owed`/carry machinery) and every reserve netted into
+#: `have` above -- the wheat feed floor, the fertilizer hold-back -- are untouched, so this can only
+#: ever raise an offer already bounded by real stock and real reserves, never invent stock or starve
+#: the herd.
+PRICE_AWARE_SELL_CAP = False
+
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
 #: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
@@ -1389,6 +1424,43 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         state["crew"] = len(live)
     else:
         idle = [u for u in live if not routes.get(u, {}).get("route")]
+        # **A hand already holding the day's takings is the funding, and `funds` cannot see it.**
+        # `FUND_THE_DAY_WHEN_SHORT` marks a JOB -- harvest this first, deliver its load on sight --
+        # so it expires the moment the harvesting is done. Day 4, seed 11, Seb's 1.32.6 tape:
+        # `_days_bill` reads $1,458 against a $294 dawn bank, so the rule arms correctly and marks
+        # 20 jobs at h0 and h1. By h16 there are no harvest jobs left (`givesWHEAT = 0`) and the
+        # crew is carrying the whole day's produce with nowhere to put it. Measured hour by hour:
+        #
+        #     h09  shed 0  hands 20 wheat   a hand reaches the shed, SELL WHEAT x8 fills
+        #     h14  shed 0  hands 20         again, SELL WHEAT x16 fills
+        #     h17  shed 0  hands 16         and from here, nothing
+        #     h23  shed 0  hands 28         swept in at midnight, after the market shut
+        #
+        # The market reads the shed and nothing else, so the day ended on $939 against a $1,000
+        # parcel -- SIXTY-ONE DOLLARS short -- while six fertilizer worth about $576 sat in two
+        # hands that held nothing else from h8 to h15. The tape sells its harvest at h19, h22 and
+        # h23, exactly the window in which our funding rule has expired.
+        #
+        # So: on a short day, a unit carrying produce the row still wants, which its own remaining
+        # tour owes nothing of, is treated as idle and replanned. `materialise` then routes it to a
+        # depot, because `carry` holds the goods and `wanted` names them.
+        #
+        # **`owed` is the whole guard.** `DROP` is all-or-nothing (`kaggriculture.py:333`), so a
+        # hand carrying the herd's dinner beside the harvest sheds both. Netting the rest of the
+        # tour's `needs` off first is what keeps feed out of it -- the same rule `cover.materialise`
+        # applies to the free drop, and the failure it prevents cost eight cows this morning.
+        if BANK_THE_HAND_WHEN_SHORT and short_of_cash:
+            for u in live:
+                if u in idle:
+                    continue
+                owed = collections.Counter()
+                for stop in (routes.get(u) or {}).get("route") or []:
+                    owed.update(getattr(stop, "needs", None) or {})
+                spare = sum(min(load[u][p] - owed[p], q)
+                            for p, q in owed_sale.items()
+                            if q > 0 and load[u][p] - owed[p] > 0)
+                if spare >= BANK_THE_HAND_MIN:
+                    idle.append(u)
         # **Fresh urgent work is an INSERTION, not a rebuild.** Rerunning the whole plan every time a
         # PLACE node appeared MEASURED as day 0 `place` 4/4 -> 3/4 and `build_pasture` 8/8 -> 7/8:
         # day 0 buys four animals, so it triggered four full replans and each one abandoned whatever
@@ -2029,13 +2101,23 @@ def make_agent(schedule, me=0, router=True):
                 target = (row.get("shed_dusk") or {}).get(prod)
                 if target is not None:
                     allow = max(allow, have - int(target))
-                n = min(have, allow, rate[prod])
-                # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
-                # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
-                # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
-                # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
-                # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
-                n = min(n, allow - state["ordered"][("sold", prod)])
+                # **PRICE_AWARE_SELL_CAP: `rate[prod]` is a fact about ONE REPLAY, not about the
+                # market.** See the flag's docstring for the measurement. When the market itself
+                # says the product is not glutted -- `market_price` at or above `RT.BASE_PRICE` --
+                # the schedule-quota cap is dropped in favour of the shed. Below base the existing,
+                # tuned caps are untouched.
+                price_ok = (PRICE_AWARE_SELL_CAP
+                            and prices.get(prod, RT.BASE_PRICE.get(prod, 0)) >= RT.BASE_PRICE.get(prod, 0))
+                if price_ok:
+                    n = have
+                else:
+                    n = min(have, allow, rate[prod])
+                    # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
+                    # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
+                    # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
+                    # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
+                    # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
+                    n = min(n, allow - state["ordered"][("sold", prod)])
                 # **Then top up to keep room for the drop.** Applied AFTER the caps rather than
                 # through `allow`, because `allow` is bounded by `rate[prod]` two lines up and the
                 # whole point is that the row cannot know about a full shed. It can only ever
