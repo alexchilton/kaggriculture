@@ -503,6 +503,36 @@ LIQUIDATE_LAST_DAY = True
 #: middle of a flat region, not a peak worth defending.
 LIQUIDATE_FROM_HOUR = 16
 
+#: How far ahead the sell loop looks when deciding what stock is SURPLUS. `None` = the whole rest of
+#: the season, which is the conservative reading: only stock that no remaining row will EVER name is
+#: released early. A small integer treats stock as surplus unless the next N days ask for it, which
+#: releases far more, far sooner.
+#:
+#: **Why the conservative setting is the shipped one.** See the block above the sell loop for the
+#: measurement -- we meet every milk row exactly, on the day, all season, and still finish day 28
+#: holding 67 milk to the tape's 16, because we simply produce more than his rows name. Only the
+#: surplus is ours to release; the rest is his plan and it works.
+#:
+#: **A short horizon was measured and it is much worse.** Swept on the `seb` tape, seed 11, weeds
+#: off, 30 days, by `scripts/breakdown.py --diff`. `money` is the season SUM of the daily
+#: ours-minus-tape gap, `d29` that gap on the last day alone, `cells` the independent differing-cell
+#: count, and `sh:milk` the summed milk-stock gap:
+#:
+#:     horizon   money sum      d29   sh:milk   cells   first day it fires   d6-d11 cells
+#:     OFF        -107,267   +6,247      +521     384   never (d29 dump)     8 4 7 12 12 13
+#:     None (on)   -89,307   +5,533      +446     383   d25                  8 4 7 12 12 13
+#:     10         -189,721  -13,414       -82     439   d6                  10 11 9 16 16 20
+#:     5          -199,371  -16,928      -109     444   d6                  10 11 9 16 16 20
+#:
+#: The short horizons fail through the mechanism this file already documents twice. They first fire
+#: on day 6, on WOOL, and day 6 goes from $137 behind the tape to $1,430 behind on the day the extra
+#: wool clears -- `market_price` falls monotonically in inventory, and wool is the product where that
+#: was measured hardest (123 units -> 138 for revenue $29,041 -> $21,811). They also overshoot:
+#: `sh:milk` swings from +521 to -109, which is not tracking the tape, it is missing it from the
+#: other side. Every day from d6 on has MORE differing cells, so the in-order rule rejects them on
+#: their own terms and not on the dollar.
+SELL_SURPLUS_HORIZON = None
+
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
 #: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
@@ -1485,11 +1515,17 @@ def make_agent(schedule, me=0, router=True):
         last_day = max(sched) if sched else day
         pending = 0          # cash this turn's sells will have banked by the time BUY_LAND settles
         rate = collections.Counter()
+        # Everything the rest of the season will EVER ask for, per product. Stock above this can only
+        # leave the shed on the last day, so it is what `still_owed` below releases early. Days after
+        # today only: today's own row is `today`, and double-counting it would hide real surplus.
+        still_owed = collections.Counter()
+        horizon = day + (SELL_SURPLUS_HORIZON if SELL_SURPLUS_HORIZON is not None else len(sched))
         for d in sorted(sched):
-            if d > day:
-                break
             for p, q in (sched[d].get("sells") or {}).items():
-                rate[p] = max(rate[p], int(q))
+                if d <= day:
+                    rate[p] = max(rate[p], int(q))
+                elif d <= horizon:
+                    still_owed[p] += int(q)
         for prod in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"):
             have = int(shed.get(prod, 0))
             # **Hold back fertilizer the FIELD can use -- not a constant.** Applied to a watered,
@@ -1549,13 +1585,74 @@ def make_agent(schedule, me=0, router=True):
             if CUMULATIVE_SELLS:
                 today = int((row.get("sells") or {}).get(prod, 0))
                 carry = sum(u[prod] for u in state["uncovered"])
-                n = min(have, today + carry, rate[prod])
+                # **Stock no remaining row will ever name is dead stock, and it must be released.**
+                # The row is an ABSOLUTE count read off HIS board, so it only fits our board while
+                # the two produce the same amount. Measured on the `seb` tape, seed 11, weeds off,
+                # with `scripts/probe_sell.py --prod MILK`: we meet every single milk row exactly, on
+                # the day, all season -- 6/6 on day 10, 3/3 on day 11, 6/6 on day 12, 24/24 on day 15
+                # -- and still finish day 28 holding 67 milk to his 16, because 44 extra CARE ops
+                # produce milk the schedule has no line for. `sh:milk` is the largest state row in
+                # the table at +521 and NONE of it is a missed row, so the carry cannot touch it.
+                #
+                # `LIQUIDATE_LAST_DAY` below already concedes the principle -- "stock has no terminal
+                # value" -- and then dumps all 51 surplus units into one day's book. The same argument
+                # holds on any day for stock the REMAINING rows will never ask for, and it is worth
+                # more there because `rate` still bounds each offer, so it goes out spread over days
+                # instead of down one price curve. The release re-reads `have` every turn, so it
+                # shrinks as the shed drains and stops of its own accord at `still_owed`.
+                #
+                # **What it is worth, and what it does NOT fix.** The whole-season horizon only
+                # becomes binding on day 25, so d0-d24 are byte-identical to before and the milk
+                # divergence at d12-d24 is untouched. From d25 the daily money gap goes
+                # -8,886/-8,404/-6,798/-6,575/+6,247 to -8,384/-4,613/-1,330/+2,338/+5,533, i.e.
+                # closer to the tape on all five days, and the season sum of that gap improves
+                # -107,267 -> -89,307 with one fewer differing cell (d26, 17 -> 16). The day-29 bank
+                # is $714 lower in absolute dollars, which is the cost of not dumping into one book.
+                #
+                # d12-d24 needs a different fix and it is NOT a sell rule: the tape ends day 12
+                # holding 9 milk and we end holding 12 having both sold exactly 6, so hitting his
+                # number requires knowing his number. `sells` is the only trace of his inventory in
+                # the schedule and it does not carry it. See `SELL_SURPLUS_HORIZON` for the two
+                # shorter horizons that were tried instead, and how much they cost.
+                allow = max(today + carry, have - still_owed[prod])
+                # **If the schedule records what HE held at dusk, sell down to it.** This is the only
+                # rule that can reach d12-d24, for the reason above: his number is not derivable from
+                # `sells`, it has to be recorded. It is a FLOOR on the release and never a cap on the
+                # row -- `max`, so a row asking for more than the surplus still fires in full.
+                # Refusing to sell is the arm that cost -$16,025 and is not being reintroduced here.
+                #
+                # **NOTHING SETS THIS FIELD YET AND THAT IS DELIBERATE -- read before wiring it up.**
+                # No schedule on disk carries `shed_dusk`, so this branch never fires in the
+                # submission and the two caps above are the whole live rule. It is here because it is
+                # the only way `scripts/probe_shed_target.py` can measure the arm, and the arm is
+                # worth a lot and is not yet safe. Injecting the tape's own dusk shed (read from the
+                # replay's `private.shed` at the FOLLOWING dawn, the same instant `breakdown.snap`
+                # samples) on `seb`, seed 11, weeds off:
+                #
+                #                        money sum   d29 money   sh:milk   state cells   d4  d5
+                #     without              -89,307      +5,533      +446           168    1   0
+                #     sell down to it      -24,582         +62       +46           181    2   2
+                #
+                # It very nearly erases the milk pile-up and lands the season's final bank within $62
+                # of his, from $5,533 -- but it costs d4 and d5, which currently match, and d0-d5 is
+                # the one line that does not move. The regression is `sh:wheat`, -2 from day 4 and
+                # widening to -4 by day 8: we end those days holding LESS wheat than he does. The
+                # obvious explanation was that WHEAT and FERTILIZER net a reserve out of `have` while
+                # `shed_dusk` is a whole-shed figure, so the reserve is subtracted twice -- that was
+                # tested by targeting the raw shed instead and it is NOT the cause. It got worse on
+                # every axis (money -118,360, 194 cells, `sh:wheat` -2 at d4 unchanged, and a land
+                # purchase lost at d10 costing 25 tiles). So the cause is still open, and until it is
+                # found this stays unfed.
+                target = (row.get("shed_dusk") or {}).get(prod)
+                if target is not None:
+                    allow = max(allow, have - int(target))
+                n = min(have, allow, rate[prod])
                 # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
                 # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
                 # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
                 # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
                 # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
-                n = min(n, today + carry - state["ordered"][("sold", prod)])
+                n = min(n, allow - state["ordered"][("sold", prod)])
             else:
                 n = min(have, int((row.get("sells") or {}).get(prod, 0)))
             # **On the last day, hold everything the shed has: stock has no terminal value.**
