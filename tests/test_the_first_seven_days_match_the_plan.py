@@ -612,3 +612,66 @@ def test_a_placement_is_planned_onto_the_hand_that_builds_its_pen():
         + "\n  The placing hand arrives at a bare square, `_live_ops` returns nothing and the stop "
           "is dropped. The animal never leaves the shed and the walk is spent."
     )
+
+
+def test_no_pen_stands_empty_at_dusk_beside_a_shed_holding_its_animal():
+    """**A depot stop spent on an empty shed is spent for good.**
+
+    `interpreter` runs the unit phase before `_process_market` (`kaggriculture.py:922` then `:928`),
+    so the animals the day buys are not in the shed while hour 0 is being worked. A tour whose draw
+    is scheduled at hour 0 therefore picks up nothing, the stop is consumed anyway, and the hand
+    walks its whole route unable to do the one thing it was routed for.
+
+    Traced on day 0, seed 11, hands watched from the dawn plan:
+
+        h 0  shed={}                      u0@(4,4) -> BUILD_PASTURE
+        h 2  shed={WHEAT:1, SHEEP:2}      u0@(3,4) -> BUILD_PASTURE
+        h 3..h23                          u0@(3,4) -> PASS   x21
+
+    Two pens built by that hand, two PLACE stops still in its route, four animals in the shed, and
+    twenty-one turns of nothing. `place 2/4`, `feed 0/4` and `sheep 0/2` are all downstream of it.
+
+    Asserted on the BOARD rather than on the route, because that is the thing that must be true: if
+    a pen is empty at dusk and the shed still holds an animal that fits it, the day was mis-sequenced
+    whatever the plan said.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    R = importlib.import_module("kagg.search.routines")
+
+    env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    agent = SA.make_agent(_thin(sched), 0, router=True)
+    opp = _tape_policy(1)
+
+    stranded = {}
+    for t in range(24 * DAYS):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        a0, a1 = agent(o0), opp(o1, t)
+        if t % 24 == 23:
+            farm, priv = o0["farms"][0], o0["private"]
+            shed = collections.Counter({k: int(v) for k, v in (priv.get("shed") or {}).items()})
+            empty = collections.Counter()
+            for row in farm["tiles"]:
+                for cell in row:
+                    if isinstance(cell, dict) and cell.get("kind") in ("PASTURE", "COOP") \
+                            and "animal" not in cell:
+                        empty[cell["kind"]] += 1
+            waste = {a: shed[a] for a in R.ANIMAL_NAMES
+                     if shed[a] > 0 and empty[R.ANIMALS[a]["structure"]] > 0}
+            if waste:
+                stranded[t // 24] = (waste, dict(empty))
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
+
+    assert not stranded, (
+        "an animal sat in the shed at dusk with an empty pen of its own kind standing:\n"
+        + "\n".join(f"    d{d}  shed {w}   empty pens {e}" for d, (w, e) in sorted(stranded.items()))
+        + "\n  The pen was built and the animal was bought. Only the sequencing failed."
+    )

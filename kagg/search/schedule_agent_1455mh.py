@@ -259,6 +259,10 @@ PLAN_THE_CREW_THAT_ARRIVES = True
 #: buy. See the block at the `_solve` call for the mechanism and the day-0 measurement.
 PLAN_TODAYS_PURCHASES = True
 
+#: Whether a hand standing at an empty shed at hour 0 WAITS one turn for goods the day's row has
+#: already ordered, instead of discarding the draw. See the block in the tour walker.
+WAIT_FOR_THE_MORNING_DELIVERY = True
+
 
 def _arrivals(units, n):
     """Where the day's `n` hires will land, in the order `farm["hands"]` will hold them.
@@ -1449,6 +1453,12 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # Credited at hour 0 only, and only from the current day's row: that is the single turn where the
     # plan runs ahead of the purchase. The goods are drawable from hour 1, which is also the first
     # hour a hand hired alongside them can act, so no route needs them sooner.
+    # What today's own market phase will put in the shed at the end of this turn. Read by the tour
+    # walker, which must not throw a dawn draw away for a delivery that has simply not landed yet.
+    _bought_today = set()
+    for _row in ("buys", "animals_bought"):
+        _bought_today.update(i for i, q in (sched.get(day, {}).get(_row) or {}).items() if int(q) > 0)
+
     plan_supply = shed
     if PLAN_TODAYS_PURCHASES and hour == 0:
         plan_supply = collections.Counter(shed)
@@ -1591,6 +1601,24 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # earliest_slot`): most shortfalls are not an animal about to escape, and
                         # blocking a hand on all of them shifts timing far beyond this one starvation.
                         if node.critical and STAND_AT_A_DRY_SHED:
+                            break
+                        # **At hour 0 an empty shed is not a shortfall, it is arriving early.**
+                        # `interpreter` runs the unit phase and only then `_process_market`
+                        # (`kaggriculture.py:922` then `:928`), so nothing the day buys is in the
+                        # shed while hour 0 is being worked -- and the dawn plan is built against a
+                        # shed credited with exactly those goods (`PLAN_TODAYS_PURCHASES`). Deleting
+                        # the want here throws the draw away on the one turn it could never succeed.
+                        #
+                        # Traced on day 0, seed 11: u0 builds at (4,4) on h0 and (3,4) on h2, then
+                        # PASSes for twenty-one turns with two PLACE stops still in its route, four
+                        # animals in the shed from h1 and two empty pens under its feet. `place 2/4`,
+                        # `feed 0/4` and `sheep 0/2` all come from that one discarded pickup.
+                        #
+                        # Only for an item the row actually buys today, and only at hour 0: a hand
+                        # waits one turn for a delivery that is already ordered, and every other
+                        # shortfall keeps the old behaviour, which is what the day-4 land purchase
+                        # and the day-5 sell ordering were tuned against.
+                        if WAIT_FOR_THE_MORNING_DELIVERY and hour == 0 and item in _bought_today:
                             break
                         del node.pick[item]
                         continue
