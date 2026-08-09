@@ -98,9 +98,27 @@ def test_an_empty_shed_access_tile_behaves_identically_control():
     assert private["shed"].get("WHEAT", 0) == 5
 
 
-def test_locked_is_the_only_thing_that_actually_blocks_drop():
-    """Contrast case: a genuinely blocking tile state (LOCKED) DOES stop DROP, confirming the
-    gate exists and is a real check, not a no-op -- it just does not fire for a structure."""
+def test_not_even_locked_blocks_a_shed_operation():
+    """**REVERSED BY kaggle-environments 1.32.6.** LOCKED no longer stops DROP either.
+
+    This was the contrast case: it asserted that LOCKED DOES block DROP, to show the gate was a
+    real check rather than a no-op that merely happened not to fire for a structure. That contrast
+    no longer exists. `_apply_unit_action` now says so in its own comments:
+
+        Movement onto LOCKED tiles is allowed: a hand can spawn on a locked [tile]
+        Tile operations (PLANT, WATER, etc.) still no-op on LOCKED tiles.
+        Shed operations resolve before the LOCKED guard. They use the tile only as
+        [a position, and] the four shed-access tiles start LOCKED, so guarding them
+        first would make the [shed unreachable on day 0].
+
+    So the ordering is deliberate and the reason is the depot ring itself: those four tiles begin
+    the game LOCKED, and a shed you cannot reach until you buy the middle quadrant would be a very
+    different game.
+
+    The module's conclusion is unchanged and now holds a fortiori -- NOTHING blocks a shed
+    operation on the depot ring. Tile ops (PLANT, WATER) do still no-op on LOCKED, so the guard is
+    not gone, it simply sits after the shed branch.
+    """
     tile = (4, 4)
     farm = {"tiles": [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)],
             "farmer": list(tile), "hands": [], "money": 3000.0}
@@ -109,4 +127,23 @@ def test_locked_is_the_only_thing_that_actually_blocks_drop():
 
     kg._apply_unit_action(farm, private, 0, ["DROP"], BOARD_SIZE, 0, 24)
 
-    assert private["shed"].get("WHEAT", 0) == 0, "DROP should be blocked on a LOCKED tile"
+    assert private["shed"].get("WHEAT", 0) == 5, (
+        "a shed operation resolves before the LOCKED guard, so DROP on a locked depot tile lands")
+
+
+def test_the_locked_guard_still_fires_for_a_tile_operation():
+    """The guard is reordered, not removed -- pinned so the reversal above cannot be over-read.
+
+    Without this, `test_not_even_locked_blocks_a_shed_operation` alone would read as "LOCKED means
+    nothing now", and a future session could reasonably conclude the whole check had been deleted.
+    """
+    tile = (3, 3)
+    farm = {"tiles": [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)],
+            "farmer": list(tile), "hands": [], "money": 3000.0}
+    farm["tiles"][tile[1]][tile[0]] = "LOCKED"
+    private = {"shed": {}, "seeds": {"WHEAT": 5}, "inventories": [{}]}
+
+    kg._apply_unit_action(farm, private, 0, ["PLANT", "WHEAT"], BOARD_SIZE, 0, 24)
+
+    assert farm["tiles"][tile[1]][tile[0]] == "LOCKED", "PLANT must still no-op on a LOCKED tile"
+    assert private["seeds"]["WHEAT"] == 5, "a blocked PLANT must not consume the seed"
