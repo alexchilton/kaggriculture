@@ -84,6 +84,24 @@ PACKAGES = ("kagg", "kagg.economics", "kagg.search")
 PLAN = pathlib.Path("data/seed_scripts/top_guys/90976060/schedule.json")
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 
+#: The raw replay the plan was distilled from. `--replay-days N` embeds its author's ACTUAL per-turn
+#: actions for days 0..N-1 and hands over to the planner on day N -- the shape `scripts/handover.py`
+#: has measured all along and which, until 2026-08-09, was never available in a shipped artifact.
+#:
+#: **The schedule is a target sheet, not a tape.** `TAPE_ONLY` above strips `orders`, `plant_tiles`,
+#: `build_tiles` and `land_turns`, so with `--replay-days 0` the submission holds no turn-level
+#: action at all and re-derives every walk, plant and order itself from day 0. That is the shipped
+#: behaviour and it is NOT what the handover fixture measures, which is why the same code reports a
+#: 123-unit discard at handover-11 and 7 over a full season.
+#:
+#: The opening is board-dependent and the ladder's seed is not the one it was recorded on: a PLANT
+#: onto a weed-spawned tile fails, and a SELL that filled at his prices may not fill at ours, so his
+#: bank drifts and later purchases can fail. Weeds are rare (0.005) and the day-0 board is
+#: deterministic -- 25 open tiles, 75 LOCKED, every seed -- so the opening should mostly land. That
+#: is a measurement, not an assumption, and it is what building both artifacts is for.
+REPLAY = pathlib.Path("data/seed_scripts/top_guys/90976060.json")
+REPLAY_SEAT = 0
+
 TARGET = pathlib.Path("submission/main.py")
 
 PREAMBLE = '''\
@@ -155,8 +173,24 @@ def agent(obs, config=None):
     me = int(obs.get("player", 0) or 0)
     fresh = int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0
     if fresh or me not in _AGENTS:
-        _AGENTS[me] = _SA.make_agent(_SCHEDULE, me, router=True)
-    return _AGENTS[me](obs, config)
+        _AGENTS[me] = _SA.make_agent(_SCHEDULE, me, router=True,
+                                     start_day=_REPLAY_DAYS or None)
+    live = _AGENTS[me](obs, config)
+
+    # **The opening is replayed verbatim; the planner still SEES every turn.** It is driven above
+    # unconditionally and its answer discarded during the opening, so its per-day state (pins, pen
+    # reservations, the sold ledger) is warm at the handover. Constructing it fresh on day N
+    # instead leaves `state["day"]` at -1 and it re-runs a whole first day inside day N.
+    step = int(obs.get("step", 0) or 0)
+    if step < len(_OPENING):
+        farmer, hands, market = _OPENING[step]
+        owned = len((obs.get("farms") or [{}, {}])[me].get("hands") or [])
+        # Truncated to the units this farm actually owns. The reference ignores a surplus unit
+        # action for movement and work but still COUNTS it in the atomic-PLANT rule, so sending
+        # more hand actions than we own blocks plants no real agent could block.
+        return {"farmer": list(farmer), "hands": [list(h) for h in hands[:owned]],
+                "market": [list(o) for o in market]}
+    return live
 '''
 
 
@@ -211,7 +245,26 @@ def _literal(name, text):
     return f"_SOURCES[{name!r}] = r'''{text}'''\n"
 
 
-def build():
+def _opening(days, seat=REPLAY_SEAT):
+    """The replay author's own per-turn actions for days 0..days-1, as `(farmer, hands, market)`.
+
+    Empty when `days` is 0, which is the historical behaviour: the submission then holds no
+    turn-level action at all and the planner drives from day 0.
+    """
+    if not days:
+        return []
+    steps = json.loads(REPLAY.read_text())["steps"][1:]
+    out = []
+    for step in steps[:days * 24]:
+        s = (step[seat] or {}) if seat < len(step) else {}
+        a = s.get("action") or {}
+        out.append([a.get("farmer") or ["PASS"],
+                    list(a.get("hands") or []),
+                    list(a.get("market") or [])])
+    return out
+
+
+def build(replay_days=0, target=TARGET):
     sources = {}
     for name, path in MODULES:
         text = pathlib.Path(path).read_text()
@@ -226,14 +279,19 @@ def build():
 
     out = [PREAMBLE.format(order=[n for n, _ in MODULES], packages=list(PACKAGES))]
     out += [_literal(name, sources[name]) for name, _ in MODULES]
+    opening = _opening(replay_days)
     out.append(f"_PLAN_JSON = r'''{json.dumps(thin, indent=0)}'''\n")
+    out.append(f"_REPLAY_DAYS = {int(replay_days)}\n")
+    out.append(f"_OPENING = json.loads(r'''{json.dumps(opening)}''')\n")
     out.append(EPILOGUE)
     text = "".join(out)
 
     _assert_verbatim(text, sources, thin)
-    TARGET.parent.mkdir(exist_ok=True)
-    TARGET.write_text(text)
-    return TARGET
+    if len(opening) != replay_days * 24:
+        raise SystemExit(f"opening is {len(opening)} turns, expected {replay_days * 24}")
+    target.parent.mkdir(exist_ok=True)
+    target.write_text(text)
+    return target
 
 
 def _assert_verbatim(text, sources, thin):
@@ -315,7 +373,18 @@ def standalone():
         path = pathlib.Path(tmp) / "probe.py"
         path.write_text(probe)
         env = {"PATH": "/usr/bin:/bin", "HOME": str(pathlib.Path.home()), "PYTHONPATH": ""}
-        r = subprocess.run([sys.executable, "-I", str(path)], cwd=tmp, env=env,
+        # `-E`, NOT `-I`. `-I` implies `-s`, which drops the USER site-packages -- and on a machine
+        # where `kaggle_environments` is a user install (`~/Library/Python/3.x/...`, the default for
+        # `pip install --user`) that made the probe unable to import it. The bundle imports it at
+        # module scope, so every build failed with `ModuleNotFoundError: kaggle_environments`,
+        # identically for the shipped agent, for an environmental reason that says nothing about the
+        # artifact. Kaggle's runtime obviously HAS kaggle_environments -- it is what calls us.
+        #
+        # Blinding the probe to this REPOSITORY is the point, and that is not what `-I` was doing:
+        # it is done by the meta_path strip, the `kagg/` path filter, `cwd=tmp` and `PYTHONPATH=""`,
+        # and it is self-verifying -- the probe asserts `import kagg.arena` raises ImportError before
+        # it loads the bundle, so a hole here fails loudly rather than passing a weakened check.
+        r = subprocess.run([sys.executable, "-E", str(path)], cwd=tmp, env=env,
                            capture_output=True, text=True)
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
@@ -359,7 +428,13 @@ def standalone():
 #: one; the new plan halves WOOL (230 -> 104) and cuts MELON (132 -> 96) -- the two steep `sq` price
 #: curves we were driving to the $1 floor -- and puts the volume into MILK (179 -> 303), the one
 #: product measured never to trade below base all season.
-REFERENCE = {"seed": 11, "ours": 77885}
+#: **Rebaselined 2026-08-09: 77,885 -> 75,595.** Alex's call, made explicitly after the figure was
+#: surfaced. The drift was NOT new that day -- it had been invisible because `standalone()` launched
+#: its probe with `python -I`, which drops user site-packages and so could not import
+#: `kaggle_environments`. Every build died at the import probe and never reached this check. Fixing
+#: the probe is what exposed it, which is worth remembering: a gate that cannot run is not a gate
+#: that passes, and this one had been dark long enough for the season to move $2,290 underneath it.
+REFERENCE = {"seed": 11, "ours": 75595}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,
@@ -376,6 +451,19 @@ ACT_TIMEOUT, OVERAGE_BANK = 1.0, 60.0
 #: 3.8x is measured, not assumed -- worst turn 7.39s on Kaggle against 1.96s here, on the same
 #: agent. The gate charges at 6x so there is real headroom above the observed figure rather than a
 #: margin chosen by feel, which is the mistake the first release made.
+#: **6.0, and it was lowered to 3.8 once and that submission died. Do not lower it again.**
+#:
+#: 2026-08-09: `main_replay11.py` was built with this at 3.8 (the then-"measured" ladder slowdown)
+#: and shipped. Episode 91304798 ran 530 turns of 719 and returned SubmissionStatus.ERROR with no
+#: stderr -- a pure timeout. The evidence, from the episode's own per-turn durations:
+#:
+#:     local worst turn   1.252s        ladder worst turn   6.386s      => 5.1x, not 3.8x
+#:     turns over 1s: 28          slowest: d11h1 6.39s, d18h1 5.79s, d15h1 5.53s
+#:
+#: 3.8x had been read off a different, LIGHTER agent; the multiplier is not a constant of the box,
+#: it grows with the work a turn does, so the plain planner's 3.8x said nothing about a build whose
+#: dawn solve is 4x heavier. 6.0 covered the real 5.1 and would have refused this build. It did
+#: refuse it. That refusal was overridden and the experiment was lost.
 KAGGLE_SLOWDOWN = 6.0
 
 
@@ -430,7 +518,7 @@ def plays_a_real_game(seed=700):
     return ok, status, reward, final[1]["reward"]
 
 
-def reproduce(days=30, verbose=True):
+def reproduce(days=30, replay_days=0, verbose=True):
     """Play the BUILT FILE, and the repo modules, through one identical harness.
 
     The point is the word *built*. Every season number in `docs/` was produced by importing
@@ -457,8 +545,26 @@ def reproduce(days=30, verbose=True):
     # hard-coded `TAPES["seb"]` did the moment `PLAN` moved to 90976060.
     sched = {int(k): v for k, v in _json.loads(PLAN.read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
-    repo_agent = SA.make_agent(thin, 0, router=True)
-    repo, repo_tape, _t, _team = _season(lambda o: repo_agent(o), days=days)
+    # **The repo side must be given the SAME opening as the bundle**, or a replay build compares two
+    # deliberately different agents and the gate can never pass -- which is not a finding, it is the
+    # harness measuring the change it was told to make. This mirrors the epilogue exactly: the live
+    # planner is called on every turn so its clock and ledger stay warm, its answer is discarded for
+    # the replayed days, and `start_day` stops the missed-row catch-up inventing debt for days
+    # somebody else played (see `schedule_agent.make_agent`).
+    repo_agent = SA.make_agent(thin, 0, router=True, start_day=replay_days or None)
+    opening = _opening(replay_days) if replay_days else []
+
+    def repo_play(obs):
+        live = repo_agent(obs)
+        step = int(obs.get("step", 0) or 0)
+        if step < len(opening):
+            farmer, hands, market = opening[step]
+            owned = len((obs.get("farms") or [{}, {}])[0].get("hands") or [])
+            return {"farmer": list(farmer), "hands": [list(h) for h in hands[:owned]],
+                    "market": [list(o) for o in market]}
+        return live
+
+    repo, repo_tape, _t, _team = _season(repo_play, days=days)
 
     overage = sum(max(0.0, s * KAGGLE_SLOWDOWN - ACT_TIMEOUT) for s in times)
     local = sum(max(0.0, s - ACT_TIMEOUT) for s in times)
@@ -481,12 +587,36 @@ def reproduce(days=30, verbose=True):
             print(f"    at {f:>3}x slower: worst {f * max(times):5.2f}s  "
                   f"turns over 1s {sum(s * f > ACT_TIMEOUT for s in times):3d}  "
                   f"overage {o:6.1f}s  {'ok' if o < OVERAGE_BANK else 'DISQUALIFIED'}")
-    ok = (ours == repo) and (days < 30 or ours == REFERENCE["ours"])
+    # `ours == repo` is the real check and it applies to EVERY build: the artifact must reproduce the
+    # repo modules to the dollar. The REFERENCE comparison is the tripwire, and it is meaningful only
+    # for the plain planner, because that is the agent the constant was measured on -- a replay build
+    # is a different agent by intent and will bank a different number. Skipping it here is not
+    # loosening the gate; asserting it would be gating a replay build against a figure that describes
+    # something else. It is stated rather than silently dropped so the exemption is visible.
+    ok = (ours == repo) and (days < 30 or replay_days or ours == REFERENCE["ours"])
     return ok, ours, tape, overage
 
 
 if __name__ == "__main__":
-    path = build()
+    import argparse
+
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--replay-days", type=int, default=0,
+                     help="embed the replay author's OWN actions for days 0..N-1 and hand over to "
+                          "the planner on day N. 0 (default) is the historical behaviour: the "
+                          "planner drives from day 0 and no turn-level action is shipped at all.")
+    _ap.add_argument("--out", default=str(TARGET),
+                     help="where to write, so both artifacts can exist side by side")
+    _ap.add_argument("--days", type=int, default=30, help="days for the reproduce check")
+    _args = _ap.parse_args()
+
+    # Rebound so `standalone()`, `plays_a_real_game()` and `reproduce()` verify the file that was
+    # just built rather than whatever is at the default path. They all read TARGET at call time.
+    TARGET = pathlib.Path(_args.out)
+    path = build(replay_days=_args.replay_days, target=TARGET)
+    if _args.replay_days:
+        print(f"opening: {_args.replay_days} days ({_args.replay_days * 24} turns) replayed from "
+              f"{REPLAY.name} seat {REPLAY_SEAT}, planner from day {_args.replay_days}")
     print(f"wrote {path} ({len(path.read_text().splitlines())} lines, "
           f"{path.stat().st_size / 1024:.0f} KB)")
     ok, out = standalone()
@@ -503,8 +633,7 @@ if __name__ == "__main__":
               file=sys.stderr)
         sys.exit(1)
 
-    days = int(sys.argv[1]) if len(sys.argv) > 1 else 30
-    ok, ours, tape, overage = reproduce(days=days)
+    ok, ours, tape, overage = reproduce(days=_args.days, replay_days=_args.replay_days)
     if not ok:
         print("BUILD FAILED: the bundle does not reproduce the measured season", file=sys.stderr)
         sys.exit(1)
