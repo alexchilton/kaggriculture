@@ -1,4 +1,4 @@
-# Register — what is open, what is closed, and what keeps reopening
+is # Register — what is open, what is closed, and what keeps reopening
 
 Last updated 2026-08-08, on `shaping-potential`.
 
@@ -267,6 +267,43 @@ anything cut for space. Insufficient real funds is not guarded.
 Unblocked as of the green slow suite.
 
 ---
+
+### OPEN-CLI — carried over from the CLI task list, 2026-08-09
+
+The CLI task list was cleared on 2026-08-09 because it had grown to ~57 entries and was crowding the
+terminal. These are the ones that were still open; nothing here has been closed by being moved.
+
+- **1.32.6 test failures.** 9 left, 8 of them inside `schedule_agent.py`. Both simulators fail
+  parity on 1.32.6 — see the version caveat at the top of this file.
+- **Submission base undecided:** HEAD vs `schedule_agent_1455mh`. 1455mh is the only artifact that
+  ever scored 1455 and is what every measurement this session was taken on.
+- **Re-run every market A/B** once the sell and feed reds are green. They were all measured against
+  a planner that has since changed.
+- **Fable's fixes** must clear the d0-d16 breakdown, every field, before merge.
+- **FEED_DAYS_FLOOR=2** — confirm on a fresh seed draw; it is the only figure clearing one SE.
+- **SELL_ON_DRAIN_CADENCE** consolidates the sell shape but loses money — sweep the interval.
+- **LATE_SELL_BIAS** — the +12.5pp is dead and there is no pool that can re-measure it.
+- **Melon wide blocks** — small change, but `chains.py` is NOT in the shipped agent.
+- **Shop-adaptive herd** shipped and measured; floors still open. **Geese deferred** by Alex on
+  2026-08-09 until the cow/sheep split works.
+- **CMA-ES on the JAX sim** over a direct market policy — parity green, never run.
+- **Score the market changes on cash** via paired-margin mirror runs.
+
+### OPEN-CLI-2 — what today's planner work leaves open
+
+Measured on the `matching-the-tape` grid, seed 11, `90494364`, at `9ec3ebc`. d0 and d1 pass.
+
+- **d4 `feed 6/7` / `care 6/7`** — one animal unserved. Real, ours.
+- **d6 `place 0/1`, `plant 13/14`, `water 16/17`, `buy_product 7/9`** — real, ours.
+- **d4 `tiles 50/25` is NOT a defect.** Seb buys that parcel on d4 in his own game; the tape column
+  is degraded because he is $35 poorer at h22 when replayed against us. The money column from d4 on
+  inherits the same contamination. See the skill `.claude/skills/matching-the-tape`.
+- **The closing shed trip is uncharged**, so a hand can end the day in the far corner holding
+  produce the row wants. Four fixes were tried and every one either measured null or cost more
+  elsewhere than it bought — the working version needs a per-TOUR reserve, not a per-day one.
+- **Never built:** don't dig weeds outside the geometry plan (`DIG_ONLY_IF_REPLANTING` gates on
+  global `plants_left`, not per-tile); don't plant what cannot finish before season end
+  (`_pointless_tiles` drops existing tiles, it does not refuse new ones).
 
 ## CLOSED — with the artifact that would go red
 
