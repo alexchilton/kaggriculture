@@ -178,6 +178,11 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
+#: Whether a hand already standing at the shed, holding produce today's row wants AND items later
+#: jobs need, drops the lot and draws the latter straight back -- instead of carrying the produce to
+#: the end of the tour because the drop cannot be selective. See the block in `materialise`.
+REDRAW_RATHER_THAN_CARRY = True
+
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
 #:
@@ -535,6 +540,28 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead:
             route.append(Depot(d, drop=True))
             held = collections.Counter()
+            pos = d
+        elif (REDRAW_RATHER_THAN_CARRY and free and spare > 0 and owed_ahead
+              and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items())):
+            # **A hand standing at the shed holding the row's produce should bank it and take its
+            # wheat straight back.** The free drop above refuses whenever anything in the hand is
+            # owed to a later job, because `DROP` is all-or-nothing (`kaggriculture.py:333`) and
+            # binning the feed for four pens ahead is how a season loses a cow. Correct -- but the
+            # alternative it settles for is carrying the produce to the end of the tour, and the
+            # market reads the SHED and nothing else.
+            #
+            # Traced on day 1 of Seb's tape, seed 11: u1 collects fertilizer at h5 STANDING ON the
+            # shed tile, carrying 2 wheat for pens ahead, and holds that fertilizer through h9 and
+            # h13 before dropping at h16. The tape has its first unit in at h4 and sells 2 @ $100,
+            # 1 @ $100, 1 @ $99 across h4-h12 while we sell 1 @ $100 and then three at $99 in one
+            # turn -- the same four units, $2 worse, and we cannot spread what is not in the shed.
+            #
+            # The trip is already being made: the hand is HERE. It costs the DROP plus one turn per
+            # item drawn back, and it is only taken when the hand actually holds something the row
+            # is waiting for -- never to shed a load nobody is buying today.
+            back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
+            route.append(Depot(d, drop=True, pick=back))
+            held = collections.Counter(back)
             pos = d
         if load >= DELIVER_MIN:
             d = nearest(depots, pos, j.tile)
