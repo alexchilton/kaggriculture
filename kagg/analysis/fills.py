@@ -81,6 +81,13 @@ class Fills:
             value += sum(prices)
         return units, value
 
+    def units(self, player, op, product=None):
+        """Units of `op` that actually committed. `_commit_unit` handles SELL, BUY_PRODUCT,
+        BUY_SEED and BUY_ANIMAL, so all four are exact here -- there is no reason for any caller
+        to infer one of them from a shed delta, which is mistake (2) and (3) in this docstring.
+        """
+        return self._agg(player, op, product)[0]
+
     def sold(self, player, product=None):
         """(units, revenue) actually sold. Never an offer."""
         return self._agg(player, "SELL", product)

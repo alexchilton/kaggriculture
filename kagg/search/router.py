@@ -777,6 +777,14 @@ class Node:
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
 
 
+#: **Serve the animal on the turn it is placed, instead of discovering it a turn later.**
+#: A PLACE node also carries the FEED and CARE that animal needs today. Ships ON: the alternative
+#: is that the ops only come into existence once the animal is standing on the tile, which is a
+#: board the dawn plan never sees, and the day is fully deterministic so there is nothing to
+#: discover. See the note at the PLACE branch for the d0 measurement.
+SERVE_THE_ANIMAL_IT_PLACES = True
+
+
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None):
     """Every tile worth visiting today, as routing nodes.
 
@@ -854,7 +862,28 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         if (PLACE_IS_MANDATORY_FROM_DAY is not None
                                 and day >= PLACE_IS_MANDATORY_FROM_DAY):
                             served += MANDATORY
+                        # **A placement is a PLACE, a FEED and a CARE, in one visit.**
+                        # The day is deterministic: the schedule names the animals bought and
+                        # placed, `_refresh_pins` has already chosen the ground for each, and an
+                        # animal placed today needs feeding and caring today or it produces
+                        # nothing and starts its `consecutive_unfed` count. Emitting only the
+                        # PLACE meant the FEED and CARE could not exist until the animal was
+                        # already standing there -- i.e. until a LATER turn, on a board the dawn
+                        # plan had not seen. Nothing then went back for them: with no mid-day
+                        # replan the pen is simply never revisited, and with one it was revisited
+                        # by a unit that had dropped its delivery leg. Measured on d0 of Seb's
+                        # tape: four animals placed at hours 4-10, `feed 1/4` and `care 1/4`, and
+                        # the crew PASSing 8/8 from hour 20 with three animals unfed.
+                        #
+                        # Priced exactly as `animal_ops` prices them for a pen that already holds
+                        # the animal, so a placement does not outbid a standing pen's own feed.
+                        # `("FEED", "WHEAT", ...)` carries the item, so `materialise` plans the
+                        # depot draw for the wheat as part of the same tour.
+                        price = BASE_PRICE[ANIMALS[a]["product"]]
                         ops = [("PLACE", a, served)]
+                        if SERVE_THE_ANIMAL_IT_PLACES and TPD - hour - 1 >= SERVICE_ROUND:
+                            ops.append(("FEED", "WHEAT", MANDATORY + price))
+                            ops.append(("CARE", None, price))
                         break
             elif kind == "WEED":
                 # Worth exactly the planting it unblocks, so late in the season a weed is furniture.

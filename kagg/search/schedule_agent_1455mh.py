@@ -791,7 +791,7 @@ def _fit_slots(orders, state):
 #: to spend them. Sending the crew out at hour 0 changes where every unit routes, and the movement
 #: rows diverge by more than the extra turns are worth. Pinning ALL thirty days measures identically
 #: to pinning 0-3, so nothing later is being left on the table either.
-HIRE_PINNED_DAYS = frozenset({4})
+HIRE_PINNED_DAYS = frozenset(range(30))
 
 CUMULATIVE_SELLS = True
 
@@ -1387,52 +1387,24 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                      tiles=tiles, wanted=owed_sale, fund=short_of_cash)
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
         state["crew"] = len(live)
-    else:
-        idle = [u for u in live if not routes.get(u, {}).get("route")]
-        # **Fresh urgent work is an INSERTION, not a rebuild.** Rerunning the whole plan every time a
-        # PLACE node appeared MEASURED as day 0 `place` 4/4 -> 3/4 and `build_pasture` 8/8 -> 7/8:
-        # day 0 buys four animals, so it triggered four full replans and each one abandoned whatever
-        # the crew was part-way through. That is the same thrash the per-turn greedy had.
-        #
-        # One unit is enough to serve it, and the cheapest one to divert is the one already nearest a
-        # depot, since the animal has to be drawn from the shed before it can be placed. Everyone
-        # else keeps their tour. Measured on Seb's tape, seed 11, day 4: the cow lands in the shed at
-        # hour 2 and no unit falls idle until hour 10, by which time the budget is 13 and the far pen
-        # plus the walk home no longer fits, so it sits there to dusk.
-        # TRIED, both MEASURED WORSE on day 0, which comes first:
-        #   full replan on `fresh`            place 4/4 -> 3/4, build_pasture 8/8 -> 7/8
-        #   divert the unit nearest a depot   place 4/4 -> 3/4, feed and care 4/4 -> 2/4
-        # Diverting one unit is still diverting a unit that was part-way through a tour. The day-4 cow
-        # does not need a new trigger -- it needs to be in the shed by hour 1, when the crew-change
-        # replan runs anyway.
-        if idle:
-            # **Top up the idle units only.** Replanning everybody would break the commitment of a unit
-            # already three steps into a tour, which is the thrash the per-turn greedy had.
-            margin = STEAL_MARGIN
-            if STEAL_FROM_DAY is not None and day >= STEAL_FROM_DAY:
-                margin = STEAL_FROM_DAY_MARGIN
-            busy = _claimed_tiles(units, routes, idle, margin)
-            # **A top-up sees a shed that other units have already spoken for.** `busy` retires
-            # claimed TILES, and the oversubscription is across tiles: with one COW and three empty
-            # pens, the committed unit holds one pen and the other two are still on offer to whoever
-            # goes idle next. So the supply handed to this pass is the shed net of every draw a busy
-            # unit has booked and not yet collected.
-            spoken = collections.Counter()
-            for u, st in routes.items():
-                if u in idle:
-                    continue
-                for it, qty in (st.get("draw") or {}).items():
-                    spoken[it] += max(0, qty - load[u][it])
-            free = {it: q - spoken[it] for it, q in shed.items()}
-            sub = _solve([units[u] for u in idle], nodes_for(busy),
-                         [budget[u] for u in idle], depots,
-                         {k: load[u] for k, u in enumerate(idle)}, supply=free,
-                         at_risk=_at_risk_tiles(tiles),
-                         pointless=_pointless_tiles(tiles, day, plants_left),
-                         tiles=tiles, wanted=owed_sale, fund=short_of_cash)
-            for k, u in enumerate(idle):
-                routes[u] = sub[k]
-
+    # **NO REPLAN, NO TOP-UP. The day is deterministic and is planned once, at hour 0.**
+    # Everything a day contains is written down before it starts: `hires`, `animals_bought`,
+    # `builds`, `places`, `plants` and `sells` all come off the schedule, and the board evolves
+    # from them by rules we simulate exactly. So there is nothing for a mid-day replan to
+    # discover, and the two that existed were both destroying work rather than adding it:
+    #
+    #   URGENT_OPS   already dead (empty tuple) -- rerunning the plan when a PLACE node appeared
+    #                measured day 0 `place` 4/4 -> 3/4 and `build_pasture` 8/8 -> 7/8.
+    #   the top-up   handed a unit that finished its tour a fresh job set. `materialise` only
+    #                appends the walk home when a job `yields()` or the predicted hand is
+    #                non-empty, and PLACE/FEED/CARE is none of those -- so the rebuilt route had
+    #                no depot stop. Traced on d1, seed 11: u4 collects fertilizer at h12, is
+    #                re-tasked at h14, and ends the day PASSing at (2,3) holding 2 units with the
+    #                shed three steps away and four turns spare. Those 2 units are exactly the
+    #                d1 sell shortfall (2 sold against a row of 4).
+    #
+    # `HIRE_PINNED_DAYS` is every day for the same reason: the dawn plan cannot route hands that
+    # do not exist yet, and the schedule already says how many there will be.
     acts = []
     for u, pos in enumerate(units):
         inv = collections.Counter(invs[u] if u < len(invs) else {})
@@ -2471,6 +2443,12 @@ def make_agent(schedule, me=0, router=True):
             # ~$42 is the whole $167 gap -- on the day the bank has to start compounding if the day-4
             # parcel is ever to clear. `crop_ops` already knows which tiles fertilizing pays on, so
             # ask it rather than guessing a number.
+            #
+            # **NOT the cause of d1 selling 2 against a row of 4 -- checked, 2026-08-09.** Flooring
+            # the reserve at the row changes the d0-d6 table by nothing at all, because the reserve
+            # is not what binds: `have` reads `shed[FERTILIZER]`, and on d1 the shed holds ZERO
+            # fertilizer on all 24 turns. We collect 4, exactly as he does, and it sits in a hand.
+            # The two sales that do happen are on the turns straight after a DROP. See the router.
             if prod == "FERTILIZER":
                 want = sum(1 for r in tiles for c in r
                            if isinstance(c, dict) and c.get("kind") == "PLANT"
@@ -2636,41 +2614,57 @@ def make_agent(schedule, me=0, router=True):
                 # across turns the way the shipped `rate[prod]` cap always has.
                 price_ok = (PRICE_AWARE_SELL_CAP
                             and prices.get(prod, RT.BASE_PRICE.get(prod, 0)) >= RT.BASE_PRICE.get(prod, 0))
-                if price_ok:
-                    n = min(have, rate[prod])
-                    # **RESERVATION_SELL_CAP: the per-offer size, read off the live book.**
-                    # `rate[prod]` above is the largest single day ONE 1.32.2 replay ever asked for.
-                    # `reservation_units` computes the same quantity from `market.inventory` and
-                    # `town.unlocked_shops`, both `shared: True` in the observation, so it is a fact
-                    # about the market rather than about his production.
-                    #
-                    # **It REPLACES `rate[prod]`, in both directions, and that is the point.** A
-                    # first wiring took `max(n, reservation)` on the argument that a rule which can
-                    # only widen an offer cannot regress -- and it was a no-op: five seeds of
-                    # `scripts/handover.py` came back byte-identical, ours $140,455/$138,003/
-                    # $151,325/$151,075/$149,039 with the flag on and off
-                    # (`data/logs/reservation_off.log`, `..._on.log`). `rate[prod]` was already the
-                    # larger number on every turn it mattered, so "only ever raises" bought nothing
-                    # except a flag that looked live and was not. The whole content of the rule is
-                    # in the direction that shrinks an offer -- MELON's book absorbs ~140 units a
-                    # season on 1.32.2 and ~30 on 1.32.6 because no shop carries it at all, and on
-                    # this fixture we push 96 of the 125 units that crash it to $144.
-                    #
-                    # Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
-                    # hold-back -- still binds, and `LIQUIDATE_LAST_DAY` below still overrides on the
-                    # final day, so the deadline case is not this rule's to get wrong.
-                    if RESERVATION_SELL_CAP:
-                        n = min(have, reservation_units(
-                            prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
-                            day * TPD + hour, unlocked_shops, have + standing_supply[prod]))
-                else:
-                    n = min(have, allow, rate[prod])
-                    # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
-                    # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
-                    # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
-                    # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
-                    # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
-                    n = min(n, allow - state["ordered"][("sold", prod)])
+                # **The row governs on EVERY path.** `allow` -- the day's `sells` row plus any
+                # genuinely missed row carried forward -- and the day-total cap used to live only in
+                # the `else` branch below. So whenever `price_ok` held, which is every turn the book
+                # sits at or above base and therefore the whole opening, the plan stopped binding and
+                # the offer became whatever `rate` or the book's depth permitted.
+                #
+                # Measured on d0 of Seb's tape, whose `sells` row is EMPTY: we bought 8 WHEAT at $27
+                # and sold 7 of them straight back at $27 on hours 2 and 4-9. A wash trade the plan
+                # never asked for -- and the $189 it banked is exactly what let our d4 `BUY_LAND`
+                # clear, where his was refused for want of cash and did not land until d8. So
+                # `tiles 50/25` from d4, and the ~$1,000 money gap behind it, are this branch rather
+                # than three separate defects. Losing the day total on the same path is d4 selling
+                # 35 against a row of 28.
+                #
+                # The price and reservation rules stay, but only as what they claim to be: caps.
+                # They may shrink an offer the row allows. They may not create one it does not.
+                # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
+                # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
+                # `WHEAT 28, FERTILIZER 4` and he sells exactly that. The carry inside `allow` is what
+                # recovers a genuinely missed row; it is not a licence to outrun a met one.
+                n = min(have, allow, rate[prod])
+                n = min(n, allow - state["ordered"][("sold", prod)])
+                # **RESERVATION_SELL_CAP: the per-offer size, read off the live book.**
+                # `rate[prod]` above is the largest single day ONE 1.32.2 replay ever asked for.
+                # `reservation_units` computes the same quantity from `market.inventory` and
+                # `town.unlocked_shops`, both `shared: True` in the observation, so it is a fact
+                # about the market rather than about his production.
+                #
+                # **It replaces `rate[prod]`, in both directions, and that is the point -- but it
+                # was replacing `allow` too, and nothing here ever argued for that.** The
+                # argument below is about `rate`: the largest single day one 1.32.2 replay
+                # asked for, a guess at his production. `allow` is not a guess, it is the plan,
+                # and it lived in the other branch purely by accident of layout. A
+                # first wiring took `max(n, reservation)` on the argument that a rule which can
+                # only widen an offer cannot regress -- and it was a no-op: five seeds of
+                # `scripts/handover.py` came back byte-identical, ours $140,455/$138,003/
+                # $151,325/$151,075/$149,039 with the flag on and off
+                # (`data/logs/reservation_off.log`, `..._on.log`). `rate[prod]` was already the
+                # larger number on every turn it mattered, so "only ever raises" bought nothing
+                # except a flag that looked live and was not. The whole content of the rule is
+                # in the direction that shrinks an offer -- MELON's book absorbs ~140 units a
+                # season on 1.32.2 and ~30 on 1.32.6 because no shop carries it at all, and on
+                # this fixture we push 96 of the 125 units that crash it to $144.
+                #
+                # Every reserve netted into `have` above -- the wheat feed floor, the fertilizer
+                # hold-back -- still binds, and `LIQUIDATE_LAST_DAY` below still overrides on the
+                # final day, so the deadline case is not this rule's to get wrong.
+                if price_ok and RESERVATION_SELL_CAP:
+                    n = min(n, reservation_units(
+                        prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
+                        day * TPD + hour, unlocked_shops, have + standing_supply[prod]))
                 # **Then top up to keep room for the drop.** Applied AFTER the caps rather than
                 # through `allow`, because `allow` is bounded by `rate[prod]` two lines up and the
                 # whole point is that the row cannot know about a full shed. It can only ever

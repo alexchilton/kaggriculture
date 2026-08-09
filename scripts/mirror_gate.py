@@ -33,13 +33,15 @@ import statistics
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+#: The plan the CURRENT `schedule_agent` is calibrated for. It is not a property of the harness --
+#: see `--plan` below.
 PLAN = REPO / "data/seed_scripts/top_guys/90976060/schedule.json"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 HI = ("MILK", "WOOL", "MELON", "STRAWBERRY")
 
 
-def _thin():
-    sched = {int(k): v for k, v in json.loads(PLAN.read_text()).items()}
+def _thin(plan):
+    sched = {int(k): v for k, v in json.loads(pathlib.Path(plan).read_text()).items()}
     return {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 
 
@@ -57,7 +59,7 @@ def _coerce(text):
 
 def one(job):
     """One mirror season. Returns (candidate_bank, baseline_bank, per-product $/unit for both)."""
-    module, overrides, seed, cand_seat, base_module = job
+    module, overrides, seed, cand_seat, base_module, cand_plan, base_plan = job
     sys.path.insert(0, str(REPO))
     import importlib
 
@@ -71,7 +73,14 @@ def one(job):
     # scored 1232.8 while `schedule_agent_1455*` sit on one that scored 1455, so "is this change
     # good" and "is this the right base" have to be asked separately.
     SB = importlib.import_module("kagg.search." + base_module) if base_module else SA
-    thin = _thin()
+    # **And an agent must carry the plan it was calibrated for.** This harness fed one hardcoded plan
+    # to both seats, which void ed the first HEAD-vs-1455mh run: 1455 is `daf7c97`'s planner and the
+    # only artifact that ever scored 1455, and it scored it paired with 90494364, not 90976060. Run
+    # on HEAD's plan it lost 84.4% -- a result that says HEAD's code reads HEAD's schedule better
+    # than a stranger's code does, which is close to a tautology and is not the question. A mirror
+    # requires one shared BOARD, not one shared plan; the plans are part of what is being compared.
+    thin_c = _thin(cand_plan)
+    thin_b = _thin(base_plan) if base_plan != cand_plan else thin_c
 
     # The two agents differ ONLY by the overrides, and the flags are module-level globals, so the
     # candidate's factory is called while they are set and the baseline's while they are not.
@@ -81,10 +90,10 @@ def one(job):
     saved = {k: getattr(SA, k) for k in overrides}
     for k, v in overrides.items():
         setattr(SA, k, v)
-    cand = SA.make_agent(thin, cand_seat, router=True)
+    cand = SA.make_agent(thin_c, cand_seat, router=True)
     for k, v in saved.items():
         setattr(SA, k, v)
-    base = SB.make_agent(thin, 1 - cand_seat, router=True)
+    base = SB.make_agent(thin_b, 1 - cand_seat, router=True)
 
     env = make("kaggriculture", configuration={"seed": seed}, debug=False)
     env.reset(2)
@@ -132,6 +141,11 @@ def main():
                          "flag settings of one (e.g. schedule_agent_1455mh)")
     ap.add_argument("--set", action="append", default=[],
                     help="NAME=VALUE flag override applied to the CANDIDATE seat only")
+    ap.add_argument("--plan", default=str(PLAN),
+                    help="the CANDIDATE's schedule. An agent must be paired with the plan it was "
+                         "calibrated for: 1455 scored 1455 on 90494364, not on 90976060")
+    ap.add_argument("--base-plan", default=None,
+                    help="the BASELINE's schedule; defaults to --plan")
     ap.add_argument("--seeds", type=int, default=12)
     ap.add_argument("--seed0", type=int, default=4001)
     ap.add_argument("--workers", type=int, default=6)
@@ -146,13 +160,16 @@ def main():
     if args.selftest:
         overrides = {}
 
+    base_plan = args.base_plan or args.plan
     seeds = [args.seed0 + i for i in range(args.seeds)]
-    jobs = [(args.module, overrides, s, seat, args.base_module)
+    jobs = [(args.module, overrides, s, seat, args.base_module, args.plan, base_plan)
             for s in seeds for seat in (0, 1)]
     label = "SELFTEST (no change)" if args.selftest else (overrides or "no overrides")
     vs = args.base_module or args.module
     print(f"mirror gate: candidate {args.module} vs baseline {vs}  {len(jobs)} seasons  "
           f"candidate = {label}", flush=True)
+    print(f"  candidate plan {pathlib.Path(args.plan).parent.name}   "
+          f"baseline plan {pathlib.Path(base_plan).parent.name}", flush=True)
 
     rows = []
     with cf.ProcessPoolExecutor(max_workers=args.workers) as ex:
