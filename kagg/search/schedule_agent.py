@@ -366,6 +366,14 @@ FEED_DAYS_LATE = 4
 #: after it the farm is TURN-bound, with the bank past $10k and nothing to spend it on but feed.
 FEED_DAYS_FROM_DAY = 16
 
+#: Days of feed the EVICTION may never dip below. See `FEED_RESERVE_YIELDS_TO_OVERFLOW`.
+#:
+#: One day, not two, and the difference is the whole point: the reserve above is a buffer against a
+#: hiccup, this is the hard floor below which the herd cannot be fed at all tomorrow morning. The
+#: dawn buy refills it -- from day 16 the farm is TURN-bound with the bank past $10k and nothing to
+#: spend it on but feed, so cash is never what stops the top-up.
+FEED_DAYS_FLOOR = 1
+
 
 def feed_days(day):
     """Days of wheat to hold, as a function of the day. Two early, four late.
@@ -1317,6 +1325,45 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
 
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
+
+#: Whether the wheat feed reserve may give up shed slots on a night the shed would otherwise BIN
+#: product. Measured 2026-08-09, and it is the largest single source of discards in the game.
+#:
+#: `feed_days(day)` is one constant doing two jobs -- it sizes the BUY (`herd = feed_days(day) *
+#: alive - ...`) and the SELL guard (`have -= feed_days(day) * alive - ...`). From day 16 it returns
+#: 4, so a 19-head herd reserves 76 units against a shed of **100 slots shared by all nine
+#: products**. The shed never actually carries that much, which is worse rather than better: `have`
+#: for WHEAT is pinned at 0, we can never sell a single unit of wheat after day 16, and the pile
+#: becomes a one-way ratchet.
+#:
+#: `release_order` cannot reach it. The eviction correctly picks wheat first -- cheapest product at
+#: $25 -- and is then capped by that same `have`, so the one pile causing the crowding is the one
+#: pile the eviction is forbidden to touch. On Seb's tape, seed 11, weeds off, handover at d11:
+#:
+#:     day  shedWHEAT  shedTOT  hands  alive  lost
+#:      17     52         52      69     19     21
+#:      21     48         50     142     19     92
+#:      25     52         70      65     19     35
+#:      28     43         66      53     19     19
+#:
+#: **12 of 17 discarding nights, 320 units destroyed**, and the same shape appears in two real
+#: ladder losses (`data/ladder/losses/`): 263 units binned against the opponent's 23, concentrated
+#: in STRAWBERRY, MILK, FERTILIZER and WOOL. Wheat survives because wheat is in the SHED, and the
+#: shed is what survives the rollover -- hands are what dies.
+#:
+#: **This does not touch the BUY, and that is deliberate.** `FEED_DAYS_LATE` went 2 -> 4 on
+#: 2026-08-08 because escapes went 4 -> 0 over six seasons and an escape is irreversible. Buying
+#: less would re-open that. What changes is only that a reserve standing in a shed which is about to
+#: destroy $120 strawberries may fall to `FEED_DAYS_FLOOR`, and only by the number of slots the
+#: night actually needs.
+#:
+#: **It is reactive on purpose.** `room_needed` is computed from what the hands are carrying RIGHT
+#: NOW, so it is ~0 at dawn and only bites late in the day, after the feeding rounds have run.
+#: Forecasting the day's inflow at dawn instead was tried, moved the right fields (discards
+#: 101 -> 47) and cost **$4,385 of final bank**, because selling earlier walks the price down by
+#: more than the saved product is worth. Sizing the hold per day belongs to the planner, which is
+#: the only component that knows the day's inflow; this flag is the trigger, not the budget.
+FEED_RESERVE_YIELDS_TO_OVERFLOW = True
 
 
 def release_order(shed):
@@ -2410,6 +2457,9 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                 room_needed -= take
         for prod in SELLABLE:
             have = int(shed.get(prod, 0))
+            # What the EVICTION may reach, which is `have` for everything except wheat. See
+            # `FEED_RESERVE_YIELDS_TO_OVERFLOW`.
+            releasable = have
             # **Hold back fertilizer the FIELD can use -- not a constant.** Applied to a watered,
             # producing tile it doubles the yield (a strawberry tile is 4 units at $120, so doubling
             # beats the $100 the unit sells for), and dumping the whole shed every turn is why
@@ -2477,6 +2527,20 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                 # All three are wheat that exists or is being bought; standing crop is neither.
                 have = max(0, have - max(0, feed_days(day) * alive - carried_wheat
                                          - drawn - will_buy))
+                # **The reserve yields slots rather than let the harvest be binned.** The full
+                # `feed_days(day)` buffer stands for ordinary rows; only the eviction may dip below
+                # it, and only as far as `FEED_DAYS_FLOOR`. `max(have, ...)` so this can never
+                # RESTRICT what an ordinary sale could already reach.
+                #
+                # **The floor takes NO offsets, unlike the reserve above.** Subtracting
+                # `carried_wheat`, `drawn` and `will_buy` is right for the reserve, which asks "does
+                # this much wheat exist anywhere" -- but the floor asks a narrower question: is
+                # there a day of feed standing IN THE SHED at dusk, where FEED can draw on it
+                # tomorrow morning. Wheat in a hand may be eaten before the rollover ever returns it.
+                # With the offsets the floor collapsed to zero and the eviction emptied the shed on
+                # days 21, 22, 25 and 28 with a herd of nineteen.
+                if FEED_RESERVE_YIELDS_TO_OVERFLOW:
+                    releasable = max(have, int(shed.get("WHEAT", 0)) - FEED_DAYS_FLOOR * alive)
             # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
             # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
             # so a bigger offer clears at a worse mean price -- measured as wool 123 units -> 138 for
@@ -2608,7 +2672,7 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                 # for -- so a product a later day still needs is never dumped to make space for
                 # tonight. That is what keeps this from becoming the `shed_dusk` arm by accident.
                 if release[prod] > 0:
-                    n += min(max(0, have - n), release[prod])
+                    n += min(max(0, releasable - n), release[prod])
             else:
                 n = min(have, int((row.get("sells") or {}).get(prod, 0)))
             # **On the last day, hold everything the shed has: stock has no terminal value.**
@@ -3026,6 +3090,19 @@ def make_agent(schedule, me=0, router=True, start_day=None):
         # constant's own docstring already claimed it did.
         short = min(max(herd, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
         short = min(short, int(money * 0.5 // quote))
+        # **Do not buy feed into a shed that is about to bin the harvest.** The sell-side half of
+        # `FEED_RESERVE_YIELDS_TO_OVERFLOW` cannot work without this: freeing the slots alone left
+        # discards WORSE on six seeds of six, because `herd` re-orders every unit the eviction just
+        # sold and the freed slot refills with wheat before the crew gets home. Two rules
+        # disagreeing about one number, the same defect shape as the two cash models in `chains.py`.
+        #
+        # The floor still beats the room: an empty shed with a hungry herd buys its day of feed
+        # whatever the crowding, because an escape is irreversible and a binned melon is not.
+        if FEED_RESERVE_YIELDS_TO_OVERFLOW:
+            carried_home = sum(int(v) for iv in invs for v in (iv or {}).values() if int(v) > 0)
+            room = SHED_CAPACITY - int(sum(shed.values())) - carried_home
+            floor_short = max(0, FEED_DAYS_FLOOR * alive - int(shed.get("WHEAT", 0)))
+            short = max(floor_short, min(short, max(0, room)))
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short
