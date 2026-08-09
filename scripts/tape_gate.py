@@ -76,7 +76,8 @@ def one_match(job):
     path, rec_seat, name, our_seat, seed, flags = job
     from kaggle_environments import make
 
-    import kagg.search.schedule_agent as SA
+    import importlib
+    SA = importlib.import_module("kagg.search." + (flags.pop("_module", None) or "schedule_agent"))
     for k, v in (flags or {}).items():
         setattr(SA, k, v)
     from kagg.arena.tape import build_tape_agent
@@ -105,6 +106,8 @@ def one_match(job):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="candidate")
+    ap.add_argument("--module", default="schedule_agent",
+                    help="which agent module to play, e.g. schedule_agent_1455m")
     ap.add_argument("--limit", type=int, default=None, help="cap the number of tape seats")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--seed", type=int, default=101)
@@ -114,7 +117,7 @@ def main():
                     help="turns per day that may buy feed")
     args = ap.parse_args()
 
-    flags = {}
+    flags = {"_module": args.module}
     if args.feed_turn_cap is not None:
         flags["FEED_TURN_CAP"] = args.feed_turn_cap
     if args.feed_buy_turns is not None:

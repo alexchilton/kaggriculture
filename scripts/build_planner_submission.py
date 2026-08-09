@@ -514,8 +514,79 @@ def plays_a_real_game(seed=700):
     env.run([str(TARGET), "starter"])
     final = env.steps[-1]
     reward, status = final[0]["reward"], final[0]["status"]
-    ok = status == "DONE" and reward is not None and reward > 3000.0
+    # **`starter` is the partner here on purpose, and it is NOT the quality gate.** It banks ~$3,512
+    # and tuning against it reads roughly 2x reality, so it can only ever answer "did this file run
+    # at all". That is precisely the question this function exists to ask: a bundle that fails to
+    # import banks exactly the $3,000 start, and one that errors or times out gets `reward = None`.
+    # The strength gate is `beats_the_repo_agent()` below, against a real opponent over many seeds.
+    #
+    # The threshold is the project's own kill criterion -- an agent that cannot clear $20k against
+    # the weakest thing in the game is broken, not merely worse.
+    ok = status == "DONE" and reward is not None and reward > 20_000.0
     return ok, status, reward, final[1]["reward"]
+
+
+def beats_the_repo_agent(seeds=(4001, 4002, 4003, 4004, 4005, 4006), floor=0.40):
+    """The real quality gate: the BUILT FILE against the repo's current agent, both seats.
+
+    `starter` cannot rank anything -- it sells almost nothing, so the market is never contested and
+    every number against it is roughly 2x reality. The tape field cannot rank anything either: it
+    returned 100.0%, 100.0% and 99.4% for three materially different agents
+    (`data/logs/tape_gate_three.log`), because a tape is open-loop and cannot contest a book it did
+    not expect to be contested.
+
+    A mirror against the repo modules can. Both sides sell into one shared book on the same turns,
+    which is the condition that actually separates two versions of this agent, and it is also what
+    Kaggle validation runs. The opponent is written out as a thin wrapper that imports the repo
+    rather than a pinned copy, so the gate is always "is the bundle at least as good as what is in
+    the tree", with nothing to keep up to date.
+
+    `floor` is deliberately below 0.5: the bundle and the repo agent are meant to be the SAME agent,
+    so this is a regression tripwire for a packaging fault, not a search criterion. Use
+    `scripts/mirror_gate.py` to decide whether a CHANGE is an improvement -- it reports a paired
+    margin and a t-statistic, which is the measurement that can actually tell 78% from noise.
+    """
+    from kaggle_environments import make
+
+    opponent = TARGET.parent / "_repo_opponent.py"
+    opponent.write_text(
+        "import json, pathlib\n"
+        "from kagg.search.schedule_agent import make_agent\n"
+        f"_P = pathlib.Path({str(PLAN.resolve())!r})\n"
+        "_S = {int(k): v for k, v in json.loads(_P.read_text()).items()}\n"
+        "_DROP = ('plant_tiles', 'build_tiles', 'land_turns', 'orders')\n"
+        "_T = {d: {k: v for k, v in r.items() if k not in _DROP} for d, r in _S.items()}\n"
+        "_A = {}\n"
+        "def agent(obs, config=None):\n"
+        "    me = obs['player']\n"
+        "    if me not in _A:\n"
+        "        _A[me] = make_agent(_T, me, router=True)\n"
+        "    return _A[me](obs)\n"
+    )
+    try:
+        w = d = ln = 0
+        for seed in seeds:
+            for ours_first in (True, False):          # both seats: a seat edge is not skill
+                env = make("kaggriculture", configuration={"seed": seed}, debug=False)
+                pair = ([str(TARGET), str(opponent)] if ours_first
+                        else [str(opponent), str(TARGET)])
+                env.run(pair)
+                final = env.steps[-1]
+                mine = final[0 if ours_first else 1]["reward"]
+                theirs = final[1 if ours_first else 0]["reward"]
+                if mine is None:
+                    return False, 0.0, "the bundle returned a null reward -- error or timeout"
+                if mine > theirs:
+                    w += 1
+                elif mine == theirs:
+                    d += 1
+                else:
+                    ln += 1
+        n = max(1, w + d + ln)
+        rate = (w + 0.5 * d) / n
+        return rate >= floor, rate, f"W{w} D{d} L{ln} over {n} games"
+    finally:
+        opponent.unlink(missing_ok=True)
 
 
 def reproduce(days=30, replay_days=0, verbose=True):
@@ -630,6 +701,14 @@ if __name__ == "__main__":
           f"{'null' if opp is None else f'${opp:,.0f}'}")
     if not ok:
         print("BUILD FAILED: the runtime does not get a valid game out of this file",
+              file=sys.stderr)
+        sys.exit(1)
+
+    ok, rate, detail = beats_the_repo_agent()
+    print(f"vs the repo agent, both seats: {detail}, win rate {100 * rate:.1f}%")
+    if not ok:
+        print(f"BUILD FAILED: the bundle wins only {100 * rate:.1f}% against the repo's own agent. "
+              f"They should be the SAME agent, so this is a packaging fault, not a strategy one.",
               file=sys.stderr)
         sys.exit(1)
 
