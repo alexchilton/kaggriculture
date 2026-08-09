@@ -263,6 +263,11 @@ PLAN_TODAYS_PURCHASES = True
 #: already ordered, instead of discarding the draw. See the block in the tour walker.
 WAIT_FOR_THE_MORNING_DELIVERY = True
 
+#: Whether a hand standing beside an animal it just placed, with no wheat in hand, walks back to the
+#: shed for one and returns. See the block in the tour walker for the trace and for what the tape
+#: does. OFF drops the stop, which is what leaves a first-day animal unfed.
+FETCH_THE_FEED_AND_RETURN = True
+
 
 def _arrivals(units, n):
     """Where the day's `n` hires will land, in the order `farm["hands"]` will hold them.
@@ -1637,8 +1642,45 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     continue
                 act = [m]
                 break
-            ops = _live_ops(node.tile, tiles[node.tile[1]][node.tile[0]], day, inv, pins, seeds)
+            cell_here = tiles[node.tile[1]][node.tile[0]]
+            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds)
             if not ops:
+                # **Go back for the feed rather than abandon the animal you just placed.**
+                # `SERVE_THE_ANIMAL_IT_PLACES` hangs the FEED and CARE off the placement node, and
+                # after the PLACE lands `_live_ops` re-derives the tile as
+                # `animal_ops(cell, day, inv["WHEAT"] > 0)`. A hand holding no wheat gets an empty
+                # list, so the stop drops here and the pen is never revisited -- the animal it just
+                # put in the ground starts its `consecutive_unfed` count (`kaggriculture.py:786`)
+                # on day one.
+                #
+                # Traced on day 0, seed 11: u0 draws SHEEP 2 and WHEAT 4 and serves both its pens;
+                # u4 draws COW 2 and no wheat because u0 took the only unit that had landed, places
+                # at h4 and h7, and feeds neither -- with sixteen turns still in hand.
+                #
+                # This is what the tape does, watched on the same day. Its chain hand makes TWO shed
+                # trips (h1-h3 and h8) and swaps its load mid-day -- picks up cows at h1, DROPs them
+                # at h2, takes sheep instead at h3 -- and its feeder hand makes two more (h8, h14)
+                # before FEEDing at h9, h11, h17 and h19. Nobody carries a whole day's supply out in
+                # one go; they go back.
+                #
+                # Costed, not assumed: the round trip is the walk to the shed, the walk to the pen,
+                # the PICKUP and the FEED, and it is only taken if that many turns are actually left.
+                if (FETCH_THE_FEED_AND_RETURN and isinstance(cell_here, dict)
+                        and "animal" in cell_here and not cell_here.get("fed_today")
+                        and inv.get("WHEAT", 0) <= 0 and shed.get("WHEAT", 0) > 0):
+                    def _md(a, b):
+                        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+                    home = min(depots, key=lambda t: _md(pos, t))
+                    trip = _md(pos, home) + _md(home, node.tile) + 2
+                    if TPD - hour >= trip:
+                        # Draw for every pen still ahead on this tour, not just the one underfoot.
+                        # PICKUP is unbounded and costs one turn per ITEM (`kaggriculture.py:340`),
+                        # so asking for four is the same turn as asking for one -- and a hand that
+                        # takes one makes the whole round trip again for the next pen.
+                        want = 1 + sum(1 for nd in st["route"][1:]
+                                       for o, _i in getattr(nd, "ops", ()) if o == "FEED")
+                        st["route"].insert(0, DP.Depot(home, pick={"WHEAT": want}))
+                        continue
                 st["route"].pop(0)
                 continue
             op, item = ops[0]

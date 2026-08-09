@@ -771,7 +771,16 @@ class Node:
         # PICKUP is unbounded and the shed trip is already being made for the animal, so carrying the
         # feed on the same trip costs nothing but the draw itself. The tape does exactly this: it
         # picks up at hours 1, 3 AND 8, moving animals and wheat together.
-        if PLACE_DRAWS_FEED:
+        # **Only if the FEED is not already on this node.** `needs` is built from every DRAWN op,
+        # and `DRAWN` contains FEED whose item IS "WHEAT" -- so once `SERVE_THE_ANIMAL_IT_PLACES`
+        # put the FEED on the placement node, this added a second unit for a feed that eats one.
+        # A hand drew two wheat per pen, and PICKUP is one item per TURN against a shed the day's
+        # row fills a unit at a time, so it sat at the shed hoovering up the drip.
+        #
+        # Traced on day 0, seed 11: u0 has two placements, draws WHEAT at h2, h3, h4 and h5, feeds
+        # twice and carries two spare to dusk -- while u4, standing beside the cow it placed at
+        # (4,3), reads an empty shed at h5 and loses that feed for the day. `feed 3/4`.
+        if PLACE_DRAWS_FEED and not any(o == "FEED" for o, _i, _p in ops):
             for o, _i, _p in ops:
                 if o == "PLACE":
                     self.needs["WHEAT"] += 1

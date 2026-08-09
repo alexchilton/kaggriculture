@@ -675,3 +675,59 @@ def test_no_pen_stands_empty_at_dusk_beside_a_shed_holding_its_animal():
         + "\n".join(f"    d{d}  shed {w}   empty pens {e}" for d, (w, e) in sorted(stranded.items()))
         + "\n  The pen was built and the animal was bought. Only the sequencing failed."
     )
+
+
+def test_an_animal_placed_today_is_fed_today():
+    """**A hand that carries the cow out can walk back for the wheat.**
+
+    `SERVE_THE_ANIMAL_IT_PLACES` puts the FEED and CARE on the placement node, and after the PLACE
+    lands `_live_ops` re-derives the tile: `animal_ops(cell, day, inv["WHEAT"] > 0)`. A hand holding
+    no wheat gets an empty list back, so the stop is dropped and that pen is never visited again --
+    the placement's own feed is lost even though the hand has most of the day left.
+
+    Traced on day 0, seed 11: u0 draws SHEEP 2 and WHEAT 4 and serves both its pens; u4 draws COW 2
+    and no wheat, places at h4 and h7, and feeds neither. `feed 2/4`, `care 2/4`.
+
+    It is not a timing problem. The tape's wheat arrives LATER than ours -- hours 5, 7, 9, 11, 12,
+    14, 17, 19 against our 1 through 8 -- and it still feeds all four, because its hand goes back.
+
+    An animal placed and not fed also starts its `consecutive_unfed` count on the day it arrives
+    (`kaggriculture.py:786`), so this is a survival question and not only a production one.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+
+    env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    agent = SA.make_agent(_thin(sched), 0, router=True)
+    opp = _tape_policy(1)
+
+    unfed = {}
+    for t in range(24 * DAYS):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        a0, a1 = agent(o0), opp(o1, t)
+        if t % 24 == 23:
+            farm, priv = o0["farms"][0], o0["private"]
+            hungry = [(x, y) for y, row in enumerate(farm["tiles"])
+                      for x, cell in enumerate(row)
+                      if isinstance(cell, dict) and "animal" in cell and not cell.get("fed_today")]
+            wheat = int((priv.get("shed") or {}).get("WHEAT", 0))
+            carried = sum(int((iv or {}).get("WHEAT", 0))
+                          for iv in (priv.get("inventories") or []))
+            if hungry and (wheat or carried):
+                unfed[t // 24] = (hungry, wheat, carried)
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
+
+    assert not unfed, (
+        "an animal went unfed at dusk while wheat was on the farm:\n"
+        + "\n".join(f"    d{d}  hungry {h}   shed WHEAT {w}, carried {c}"
+                    for d, (h, w, c) in sorted(unfed.items()))
+        + "\n  The wheat existed and the hand had turns. Only the trip back was never planned."
+    )
