@@ -60,7 +60,7 @@ def test_the_cadence_matches_the_shops_drain_interval():
 def test_a_non_terminal_offer_only_fires_on_the_cadence():
     """The whole behaviour, at the level of the predicate rather than a whole season."""
     SA.SELL_ON_DRAIN_CADENCE = True
-    firing = [h for h in range(24) if SA.sell_hour_is_open(h, liquidating=False)]
+    firing = [h for h in range(24) if SA.sell_hour_permits(h, liquidating=False)]
     assert firing == [0, 4, 8, 12, 16, 20], f"fired on {firing}"
 
 
@@ -68,13 +68,13 @@ def test_liquidation_ignores_the_cadence():
     """On the last day the shed has no terminal value and there is no tomorrow for the book to
     recover into, so holding stock back to catch a better price is a pure loss."""
     SA.SELL_ON_DRAIN_CADENCE = True
-    assert all(SA.sell_hour_is_open(h, liquidating=True) for h in range(24))
+    assert all(SA.sell_hour_permits(h, liquidating=True) for h in range(24))
 
 
 def test_the_flag_off_restores_every_turn_exactly():
     """Off must be the shipped behaviour, not an approximation of it."""
     SA.SELL_ON_DRAIN_CADENCE = False
-    assert all(SA.sell_hour_is_open(h, liquidating=False) for h in range(24))
+    assert all(SA.sell_hour_permits(h, liquidating=False) for h in range(24))
 
 
 def test_the_cadence_cuts_the_offer_turns_but_not_the_quota():
@@ -85,7 +85,7 @@ def test_the_cadence_cuts_the_offer_turns_but_not_the_quota():
     reducing the quota it has become the fix that already lost $2,653.
     """
     SA.SELL_ON_DRAIN_CADENCE = True
-    open_hours = sum(SA.sell_hour_is_open(h, liquidating=False) for h in range(24))
+    open_hours = sum(SA.sell_hour_permits(h, liquidating=False) for h in range(24))
     assert open_hours == 24 // SA.SELL_EVERY_N_HOURS
     assert not hasattr(SA, "SELL_CADENCE_QUOTA_SCALE"), (
         "cadence must not scale the quota; that is the day-total cap that lost $2,653")
@@ -132,7 +132,7 @@ def _sell_hours(flag_on, days=6):
 @pytest.mark.slow
 def test_the_predicate_is_actually_wired_into_the_emission_site():
     """The hole the revert check found: every test above passes with the emission-site line backed
-    out, because they all test `sell_hour_is_open` and none tests that anything CALLS it.
+    out, because they all test `sell_hour_permits` and none tests that anything CALLS it.
 
     A green suite after a fix says the fix broke nothing, not that anything checks it -- and this
     project has now been bitten by that three times (CLAUDE.md, 'a gate only tests what it

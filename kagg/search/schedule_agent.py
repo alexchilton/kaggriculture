@@ -433,6 +433,29 @@ BUY_DRIP = 1
 #: gain is real and costs nothing earlier.
 FEED_TURN_CAP = 6
 
+#: How many TURNS of a day may carry a feed purchase. Bounds the re-ask without bounding the ration.
+#:
+#: `herd` is recomputed every turn with no cross-turn credit (see the emission site), so before this
+#: existed the buy fired on 22-23 turns of 24 from day 17, and the season bought 1,379 wheat against a
+#: schedule row of 407 -- while the entire rest of the 1.32.6 ladder buys 266-392 a game.
+#:
+#: Deliberately a TURN count and not a unit budget. Three unit budgets were tried and all dissolved,
+#: because the quantity is self-referential: capping purchases changes the herd, the herd changes
+#: `alive`, and `alive` is what the cap was computed from. A turn count does not move with the herd,
+#: and it leaves the retry intact -- an unfilled order is re-asked on the next permitted turn rather
+#: than never, which is the half of `d124359` that must survive.
+#: **SHIPS OFF (99 = every turn, i.e. the historical behaviour), and it was left ON at 4 for an hour
+#: and silently contaminated two 172-game gate runs.** The runs were labelled `shipped` and
+#: `units1`; neither was the shipped agent, because `scripts/tape_gate.py` only overrides the flags
+#: it is passed and inherits the module default for the rest. Every unmeasured flag in this file
+#: ships off for exactly this reason -- see `SELL_ON_DRAIN_CADENCE`, `LATE_SELL_BIAS`,
+#: `CAP_SELL_OFFER_SIZE`. This one broke the rule and cost a pair of measurements.
+#:
+#: Measured at 4 on 8 seeds: wheat 365-458 but the herd fell to 6-10 in five of eight seeds and mean
+#: bank dropped $10,617. Limiting TURNS also limits RETRIES, which is why it starves; the size knob
+#: (`FEED_TURN_CAP`) does not have that defect and is the one to sweep.
+FEED_BUY_TURNS_PER_DAY = 99
+
 #: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
 #: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
 #: one or two units at a time turns every such moment into a 1-turn DROP.
@@ -1049,7 +1072,7 @@ SELL_ON_DRAIN_CADENCE = False
 SELL_EVERY_N_HOURS = 4
 
 
-def sell_hour_is_open(hour, liquidating):
+def sell_hour_permits(hour, liquidating):
     """May a non-terminal SELL be offered on this turn?
 
     `liquidating` exempts the last day: the shed has no terminal value and there is no tomorrow for
@@ -2794,7 +2817,7 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             if LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating:
                 n = 0
             # Cadence, not a cap: the quota is untouched, it is simply offered on fewer turns.
-            if not sell_hour_is_open(hour, last_day_liquidating):
+            if not sell_hour_permits(hour, last_day_liquidating):
                 n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
@@ -3187,12 +3210,77 @@ def make_agent(schedule, me=0, router=True, start_day=None):
         # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never
         # touched. Day 9 bought 8 in a single order at hour 1 and sat on $22 until hour 16.
         #
-        # This is NOT `FEED_ORDER_CAP`, which bounded the DAY and starved a 19-animal herd. `herd`
-        # subtracts `state["ordered"][("feed", "WHEAT")]`, so the remainder is re-offered every turn
-        # and the herd still gets its full ration -- just spread across the hours, which is what the
-        # constant's own docstring already claimed it did.
+        # This is NOT `FEED_ORDER_CAP`, which bounded the DAY and starved a 19-animal herd.
+        #
+        # **CORRECTED 2026-08-09 -- this paragraph used to claim `herd` subtracts
+        # `state["ordered"][("feed", "WHEAT")]`. IT DOES NOT, and has not since `d124359`.** The line
+        # above is `herd = feed_days(day) * alive - fed_today - on_hand`: no `ordered` term anywhere.
+        # The block directly above this one is the one that is accurate -- it records `d124359`
+        # REMOVING that subtraction, because it counted offers rather than fills and starved the herd.
+        # This paragraph was written by `260db7a` and describes the code as it stood before that.
+        #
+        # Two comments a dozen lines apart asserting opposite things about the same expression is how
+        # this survived: each reader found the one that matched their expectation. The consequence is
+        # that `max(herd, ...)` lets an UNCREDITED term override a CREDITED one (`owed` does carry
+        # `- ordered["buys"]`), bounded only by `FEED_TURN_CAP` per TURN -- a ceiling of 6 x 24 = 144
+        # units a day, against a season row of 407. Measured on 66 of our own 1.32.6 ladder replays we
+        # buy 1,099 wheat a game where the entire rest of the field buys 266-392.
         short = min(max(herd, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
         short = min(short, int(money * 0.5 // quote))
+        # **A DAY'S FEED PURCHASES ARE CAPPED, AND THE CAP IS CREDITED ON ARRIVALS.**
+        #
+        # `short` above is `max(herd, row_drip)`: the ROW half carries cross-turn credit
+        # (`owed = wanted - ordered["buys"]`) and drips one unit a turn, while `herd` carries none and
+        # overrides it whenever it is larger -- which from day 12 is every turn. Its only bound is
+        # `FEED_TURN_CAP` PER TURN, so the ceiling is 6 x 24 = 144 units a day, and we were hitting
+        # ~130. An uncredited term was overriding a credited one.
+        #
+        # Measured across 66 of our own 1.32.6 ladder replays, wheat bought per game:
+        #
+        #     us               1,099        Seb 392   Rayk 266   Lester 266   HealthStone 293
+        #
+        # The whole field buys 266-392 and lands near its own plan; this schedule's season row is 407.
+        # We bought 1,379 on seed 11 for $72,625, which is the entire bank gap. It is the BUYING that
+        # is anomalous -- selling wheat is normal, and the two highest banks in that sample sell 305.
+        #
+        # **This is the third attempt on this line, so both previous failures are recorded here.**
+        # `260db7a` capped exactly this bypass ("the herd bypassed BUY_DRIP"). `d124359` then removed
+        # the cross-turn credit because it counted OFFERS and not FILLS, so one unfilled order left
+        # `herd <= 0` for the rest of the day: six animals unfed on h01..h23, cows 7 -> 6 -> 5. That
+        # fix was right about the starvation and handed the bypass straight back, which is why two
+        # adjacent comment blocks in this function contradict each other about whether the credit
+        # exists -- one was written by each commit.
+        #
+        # A budget of `feed_days(day) * alive` measured WORSE (1,435 -> 1,681): that is a STOCK
+        # target, four days of buffer, while the herd EATS `alive` a day. Budgeting a day's purchases
+        # at four days of stock authorises four days of buying every day.
+        #
+        # So the budget is the buffer gap measured ONCE at dawn, plus one day's consumption:
+        # enough to reach the reserve and replace what is eaten, and no more.
+        #
+        # **Credited on `acquired`, which only ever RISES.** Comparing against a dawn snapshot was
+        # tried and leaks: selling wheat lowers `on_hand`, which reopens the budget and funds the
+        # re-buy -- the churn, with a cap bolted on. Accumulating the per-turn INCREASES instead is
+        # immune to that, because a sale cannot subtract from it. And an order that does not fill
+        # leaves `on_hand` flat, so `acquired` does not move, the budget stays open and the next turn
+        # asks again. That is the retry `d124359` was protecting, kept intact.
+        # **THREE ATTEMPTS, THREE FAILURES, ALL REVERTED. Measure before trying a fourth.**
+        # Seed 11 against this schedule, baseline 1,379 wheat bought:
+        #
+        #     per-day budget of `feed_days(day) * alive`          1,681   WORSE
+        #     `SELL_TO_MAKE_ROOM = False` (the other end)           1,025  -$1,863 bank
+        #     dawn buffer-gap + one day's eating, credited on
+        #       monotonic rises in `on_hand`                       1,496   WORSE
+        #
+        # All three were arithmetically sound and none bound, because the season RE-COUPLES: buying
+        # less early changes the herd, the herd changes `alive`, and `alive` drives the term being
+        # capped. A local bound on a self-referential quantity is not a bound. Whatever fixes this
+        # has to break the feedback, not meter it.
+        #
+        # And the overbuy is currently BUYING SOMETHING. See the bisect above: `d124359` doubled the
+        # purchase (416 -> 717) and simultaneously took the bank $63,832 -> $100,241 and the herd
+        # 17 -> 21 animals. Any cap that returns the purchase to 400 must still finish with 21
+        # animals, or it has re-bought the starvation that commit was written to fix.
         # **Do not buy feed into a shed that is about to bin the harvest.** The sell-side half of
         # `FEED_RESERVE_YIELDS_TO_OVERFLOW` cannot work without this: freeing the slots alone left
         # discards WORSE on six seeds of six, because `herd` re-orders every unit the eviction just
@@ -3210,8 +3298,36 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             room = SHED_CAPACITY - int(sum(shed.values())) - carried_home
             floor_short = max(0, FEED_DAYS_FLOOR * alive - int(shed.get("WHEAT", 0)))
             short = max(floor_short, min(short, max(0, room)))
+        # **No feed on the last day, and this one is unconditional -- after the floor, not before.**
+        # Nothing bought tonight can be eaten: the season ends at this day's rollover, so a purchase
+        # here is a straight transfer of bank into stock that is never scored. The schedule agrees --
+        # day 29's `buys` row is 0 -- and we were offering 56 units across 10 turns anyway.
+        # It sits below `floor_short` because the floor exists to prevent an escape, and an escape on
+        # the final night costs nothing there is any season left to lose.
+        if day >= last_day:
+            short = 0
+        # **Bound the number of TURNS a day may buy feed on, not the number of units.**
+        #
+        # Every quantity-shaped bound tried on this line has dissolved, because the quantity is
+        # self-referential: buy less -> herd changes -> `alive` changes -> the capped term changes.
+        # Three attempts, all recorded above, all measured WORSE or costlier. A turn count is not
+        # self-referential, so it holds whatever the herd does.
+        #
+        # It also leaves `d124359`'s retry intact, which is the half that must not be lost -- an
+        # order that does not fill is still re-asked, just on the next PERMITTED turn instead of the
+        # next turn. With `FEED_TURN_CAP = 6` units an order, the day's ceiling becomes
+        # `FEED_BUY_TURNS_PER_DAY * 6`, against a 21-animal herd eating 21 a day.
+        #
+        # Measured before this existed: the buy fired on 22-23 turns of 24 from day 17, offering
+        # 106-138 units against a row of 20.
+        if state.get("feed_turns_day") != day:
+            state["feed_turns_day"] = day
+            state["feed_turns"] = 0
+        if state["feed_turns"] >= FEED_BUY_TURNS_PER_DAY:
+            short = 0
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
+            state["feed_turns"] += 1
             state["ordered"][("feed", "WHEAT")] += short
             state["ordered"][("buys", "WHEAT")] += short
             # Debit at the price we just QUOTED, not the old hardcoded $60. Charging $60 for wheat
