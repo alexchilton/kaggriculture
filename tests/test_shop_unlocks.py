@@ -3,8 +3,13 @@
 **The bug these pin.** `jax_sim.reset(unlock_schedule=None)` fills `unlock_day` with `NEVER`, and
 `_drain` is `shops + centre` where `shops = (unlock_day <= day) @ SHOP_PULL`. Every RL and eval
 entry point called `reset` without a schedule, so the shop term was zero for the whole season and
-the town bought 140 wheat against the reference's 698 -- holding end-of-season wheat at $37 instead
-of $51 and milk at $263 instead of $340.
+the town bought 30 wheat against the reference's 588 -- holding end-of-season wheat at $30 instead
+of $49 and milk at $208 instead of $315.
+
+**Figures restated for kaggle-environments 1.32.6 on 2026-08-09.** On 1.32.2 they read 140 against
+698, wheat $37 vs $51 and milk $263 vs $340. Both columns fell with the town's pull, but the frozen
+column fell harder, so the error this file exists to catch got LARGER: assuming shops never unlock
+now understates end-of-season prices by up to 65%, against 38% before.
 
 **Why the tests target the callers and not `reset`'s default.** `_run_lockstep` passes
 `unlock_schedule=None` to *both* simulators, so making `None` sample would desynchronise the parity
@@ -27,8 +32,13 @@ WHEAT = PRODUCTS.index("WHEAT")
 
 # The frozen-town and reference figures this bug was measured at, kept as guards so a change to
 # SHOP_PULL or the centre schedule cannot quietly move the baseline these assertions rest on.
-FROZEN_WHEAT_DRAIN = 140
-REFERENCE_WHEAT_DRAIN = 698
+#
+# **RESTATED FOR kaggle-environments 1.32.6, 2026-08-09.** These were 140 and 698 on 1.32.2. The
+# upgrade cut the town's pull sharply -- frozen wheat drain 140 -> 30, the same ~8x that took
+# MELON's `DRAIN_UNITS` from 140 to 30 -- so the old numbers were pinning an economy that no longer
+# exists. The guard is doing its job by failing here rather than letting the baseline drift.
+FROZEN_WHEAT_DRAIN = 30
+REFERENCE_WHEAT_DRAIN = 588
 
 
 def _season_drain(unlock_days):
@@ -64,7 +74,7 @@ def test_frozen_town_baseline_is_what_the_bug_was_measured_at():
     """Guard. If this moves, every figure quoted in the bug report is stale."""
     frozen = _season_drain(np.full(J.N_SHOPS, J.NEVER))
     assert frozen[WHEAT] == FROZEN_WHEAT_DRAIN
-    assert _price_at_season_end(np.full(J.N_SHOPS, J.NEVER), "WHEAT") == 37
+    assert _price_at_season_end(np.full(J.N_SHOPS, J.NEVER), "WHEAT") == 30
 
 
 def test_reference_schedule_baseline():
@@ -72,7 +82,7 @@ def test_reference_schedule_baseline():
     reference = np.array([J.SHOP_UNLOCK_INTERVAL * (k + 1) for k in range(J.N_SHOPS)])
     assert reference.max() == 24 < 30, "a shop must not unlock after the season ends"
     assert _season_drain(reference)[WHEAT] == REFERENCE_WHEAT_DRAIN
-    assert _price_at_season_end(reference, "WHEAT") == 51
+    assert _price_at_season_end(reference, "WHEAT") == 49
 
 
 # ---- the sampler ---------------------------------------------------------------------------
@@ -92,14 +102,19 @@ def test_sampled_drain_varies_by_order_and_dwarfs_the_frozen_town():
     """**The total is NOT order-invariant, and that is faithful, not a defect.**
 
     Per-shop total pull runs 2-4 units, so giving an early day to a heavy shop drains more over the
-    season. Measured over 400 sampled orders, wheat drain spans **500-770** (median 626) against the
-    identity order's 698 and the frozen town's 140. The reference randomises the same way, so this
-    spread is a property of the game rather than of the sampler.
+    season. On 1.32.6 the sampled wheat drain spans **390-660** against the identity order's 588 and
+    the frozen town's 30. The reference randomises the same way, so this spread is a property of the
+    game rather than of the sampler.
+
+    On 1.32.2 the same spread read 500-770 (median 626) against 698 and 140.
     """
     unlock = np.asarray(J.random_unlock_days(64, seed=7))
     wheat = np.array([_season_drain(game)[WHEAT] for game in unlock])
     assert wheat.min() > 3 * FROZEN_WHEAT_DRAIN, "sampled drain is not far above a frozen town"
-    assert 450 <= wheat.min() and wheat.max() <= 820, f"drain spread {wheat.min()}-{wheat.max()}"
+    # **1.32.6 bounds.** These were 450 and 820 on 1.32.2; the observed spread is now 390-660, so
+    # the window is restated rather than widened -- a bound loose enough to pass both economies
+    # would stop detecting the thing it exists to detect.
+    assert 360 <= wheat.min() and wheat.max() <= 700, f"drain spread {wheat.min()}-{wheat.max()}"
     assert wheat.std() > 0, "order variation produced no spread at all"
 
 
@@ -151,10 +166,27 @@ def test_reset_with_shops_is_the_fixed_entry_point():
 
 
 @pytest.mark.parametrize("product,frozen,real",
-                         [("WHEAT", 37, 51), ("STRAWBERRY", 219, 297), ("EGG", 58, 76),
-                          ("MILK", 263, 340), ("TOMATO", 77, 98)])
+                         [("WHEAT", 30, 49), ("STRAWBERRY", 166, 274), ("EGG", 52, 69),
+                          ("MILK", 208, 315), ("TOMATO", 64, 85)])
 def test_end_of_season_prices_the_frozen_town_understated(product, frozen, real):
-    """The measured 27-38% understatement, pinned per product."""
+    """The understatement, pinned per product. **1.32.6 made it WORSE, not smaller.**
+
+    On 1.32.2 these were `WHEAT 37/51, STRAWBERRY 219/297, EGG 58/76, MILK 263/340, TOMATO 77/98`
+    and the spread was 27-38%. On 1.32.6 both columns fall -- the town pulls far less -- but the
+    frozen column falls harder, so the gap widens:
+
+        product      frozen  real   understated by
+        WHEAT            30    49            63%
+        STRAWBERRY      166   274            65%
+        EGG              52    69            33%
+        MILK            208   315            51%
+        TOMATO           64    85            33%
+
+    That is the point worth carrying out of this file. Modelling the town as frozen was already
+    wrong, and the upgrade did not make it a smaller error -- assuming shops never unlock now
+    understates end-of-season prices by up to 65%, against 38% before. Anything that prices stock
+    against a frozen town is more wrong today than it was yesterday.
+    """
     reference = np.array([J.SHOP_UNLOCK_INTERVAL * (k + 1) for k in range(J.N_SHOPS)])
     assert _price_at_season_end(np.full(J.N_SHOPS, J.NEVER), product) == frozen
     assert _price_at_season_end(reference, product) == real
