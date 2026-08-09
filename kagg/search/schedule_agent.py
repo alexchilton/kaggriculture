@@ -1363,7 +1363,26 @@ SHED_CAPACITY = 100
 #: 101 -> 47) and cost **$4,385 of final bank**, because selling earlier walks the price down by
 #: more than the saved product is worth. Sizing the hold per day belongs to the planner, which is
 #: the only component that knows the day's inflow; this flag is the trigger, not the budget.
-FEED_RESERVE_YIELDS_TO_OVERFLOW = True
+#: **MEASURED AND SWITCHED OFF 2026-08-09. The diagnosis holds; this remedy does not.**
+#:
+#: Seven seed/mode combinations, day-gated code, `docs/fable_the_discard_problem_2026-08-09.md` §3:
+#: discards got WORSE in 5 of 7 and money worse in 4 of 7. Full-season seed 12 is the killer --
+#: **-$13,304 of final bank to save 39 units of discard**, which is a bad trade at any price. It is
+#: inconsistent in both direction and magnitude, so it is not a fresh-draw winner and ~15% seed
+#: variance cannot rescue it.
+#:
+#: Everything above about the DEFECT is still true and still unfixed: the shed really does hold
+#: 43-60 of its 100 slots as wheat on nights that bin product, and `release_order` really cannot
+#: reach that pile. What is wrong is the remedy -- selling the reserve down walks the wheat price
+#: against us by more than the saved product is worth, which is the same lesson the dawn-forecast
+#: arm taught at -$4,385. See `tests/test_the_feed_reserve_yields_a_shed_slot.py`, kept as an
+#: xfail record of the open defect, and tasks #45/#46 for the two remedies that have not been tried:
+#: sizing the hold in the PLANNER, and treating the hundred slots as one budget.
+#:
+#: The `day >= FEED_DAYS_FROM_DAY` gates at the two call sites are kept regardless. Without them
+#: this fired from day 0 against a four-animal herd and forced a wheat purchase on day 0; gating it
+#: took `test_router.py` from 11 failures to 8, a strict subset.
+FEED_RESERVE_YIELDS_TO_OVERFLOW = False
 
 
 def release_order(shed):
@@ -2539,7 +2558,14 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                 # tomorrow morning. Wheat in a hand may be eaten before the rollover ever returns it.
                 # With the offsets the floor collapsed to zero and the eviction emptied the shed on
                 # days 21, 22, 25 and 28 with a herd of nineteen.
-                if FEED_RESERVE_YIELDS_TO_OVERFLOW:
+                # **Gated to the phase it was built for.** Every comment on this flag describes a
+                # late-season lever -- "from day 16 the farm is TURN-bound" -- and nothing in the
+                # design says day 0 against a four-animal herd. The `if` below carried no day check
+                # and changed the dawn WHEAT/money row on 15 of 16 days before `FEED_DAYS_FROM_DAY`,
+                # `money@d15` moving 2,252 -> 1,931 on seed 11 alone (`test_the_feed_gate_is_a_late_
+                # season_lever.py`). It is early cash-flow divergence, not a discard fix: the herd is
+                # 4-9 animals here and the shed is nowhere near its 100-slot cap.
+                if FEED_RESERVE_YIELDS_TO_OVERFLOW and day >= FEED_DAYS_FROM_DAY:
                     releasable = max(have, int(shed.get("WHEAT", 0)) - FEED_DAYS_FLOOR * alive)
             # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
             # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
@@ -3098,7 +3124,11 @@ def make_agent(schedule, me=0, router=True, start_day=None):
         #
         # The floor still beats the room: an empty shed with a hungry herd buys its day of feed
         # whatever the crowding, because an escape is irreversible and a binned melon is not.
-        if FEED_RESERVE_YIELDS_TO_OVERFLOW:
+        # **Same gate as the sell side, and for the same reason.** Unconditional, this forced a
+        # BUY_PRODUCT WHEAT on day 0 against a four-animal herd -- `floor_short` alone, with nothing
+        # in the shed yet -- that the ungated flag does not describe and the docstrings above do not
+        # intend. See `test_the_feed_gate_is_a_late_season_lever.py`.
+        if FEED_RESERVE_YIELDS_TO_OVERFLOW and day >= FEED_DAYS_FROM_DAY:
             carried_home = sum(int(v) for iv in invs for v in (iv or {}).values() if int(v) > 0)
             room = SHED_CAPACITY - int(sum(shed.values())) - carried_home
             floor_short = max(0, FEED_DAYS_FLOOR * alive - int(shed.get("WHEAT", 0)))
