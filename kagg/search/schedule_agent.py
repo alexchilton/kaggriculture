@@ -389,6 +389,53 @@ def feed_days(day):
     """
     return FEED_DAYS_LATE if day >= FEED_DAYS_FROM_DAY else FEED_DAYS
 
+
+#: Whether the wheat hold is bounded by the slots the night can actually spare, at the BUY site
+#: and at the SELL site respectively. See `feed_hold()`.
+#:
+#: They are separate flags because the two directions are not the same bet. Shrinking the hold at
+#: the BUY simply stops an order being placed -- it costs nothing and saves cash. Shrinking it at
+#: the SELL releases stock to the market, which is the direction `FEED_RESERVE_YIELDS_TO_OVERFLOW`
+#: was measured on and rejected at up to -$13,304 of bank
+#: (`docs/fable_the_discard_problem_2026-08-09.md` section 3). Anything that moves the sell side has
+#: to clear that bar on its own; the buy side does not inherit its result.
+FEED_HOLD_BOUNDS_THE_BUY = True
+FEED_HOLD_BOUNDS_THE_SELL = False
+
+
+def feed_hold(day, alive, shed, invs):
+    """Units of WHEAT to hold so the herd reaches the next dawn top-up, in slots tonight can spare.
+
+    `feed_days(day) * alive` is what this replaces, and it is still the first term: FEED takes
+    exactly one WHEAT per animal per day (`reference/kaggriculture.py:495`), so a day of feed is
+    `alive` units and the multiplier is the buffer against a dawn buy that does not fill. That
+    part is unchanged and the 2 -> 4 evidence behind `FEED_DAYS_LATE` still stands.
+
+    What is added is the second term: **the hold may never ask for slots the shed does not have.**
+    `SHED_CAPACITY` is 100 shared by all nine products, and `_drop_inventories_to_shed` deletes the
+    overflow at the rollover rather than refusing it, so a 19-head herd asking for 76 units is
+    asking for three quarters of the shed on behalf of a herd that will eat nineteen. Measured on
+    Seb's tape, seed 11, handover at d11: five of the eight nights the rollover destroyed product
+    were holding 20-39 wheat against a herd of 19, 50 surplus slots against 53 units binned
+    (`tests/test_the_feed_hold_is_sized_to_the_night_it_survives.py`).
+
+    Floored at `FEED_DAYS_FLOOR * alive` whatever the crowding: one meal a head has to survive the
+    night, because an escape is an irreversible $400-$500 write-off plus every remaining day of
+    that animal's production and a binned melon is neither.
+
+    **`other` counts hands as well as the shed, and that is the point.** The crowding is not what
+    the shed holds now, it is what it will hold after the rollover drops every hand into it. A
+    reserve that looks affordable at noon is the reason the harvest dies at midnight.
+    """
+    want = feed_days(day) * alive
+    other = int(sum(shed.values())) - int(shed.get("WHEAT", 0))
+    for iv in invs or ():
+        for k, v in (iv or {}).items():
+            if k != "WHEAT" and int(v) > 0:
+                other += int(v)
+    return max(FEED_DAYS_FLOOR * alive, min(want, SHED_CAPACITY - other))
+
+
 #: **TRIED and REVERTED: cap one BUY_PRODUCT to 4 so the day's feed is metered across the hours.**
 #: The motivating measurement is real -- the leader places sixteen WHEAT buys of 1-6 across h1-h22 on
 #: day 0 against our single block, and `market_price` moves with every unit -- but a ceiling per order
@@ -2563,8 +2610,14 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                 # The other three terms stay: `carried_wheat` is in a hand right now, `drawn` already
                 # left the shed this turn, and `will_buy` is a commitment the same turn loop honours.
                 # All three are wheat that exists or is being bought; standing crop is neither.
-                have = max(0, have - max(0, feed_days(day) * alive - carried_wheat
-                                         - drawn - will_buy))
+                # **The hold is sized here, not read off a constant.** See `feed_hold()`: the
+                # first term is the same `feed_days(day) * alive` this used to be, the second is
+                # the slots tonight can spare. `FEED_HOLD_BOUNDS_THE_SELL` is off by default --
+                # shrinking the hold HERE releases wheat to the market, which is the direction
+                # `FEED_RESERVE_YIELDS_TO_OVERFLOW` was measured on and rejected.
+                hold = (feed_hold(day, alive, shed, invs) if FEED_HOLD_BOUNDS_THE_SELL
+                        else feed_days(day) * alive)
+                have = max(0, have - max(0, hold - carried_wheat - drawn - will_buy))
                 # **The reserve yields slots rather than let the harvest be binned.** The full
                 # `feed_days(day)` buffer stands for ordinary rows; only the eviction may dip below
                 # it, and only as far as `FEED_DAYS_FLOOR`. `max(have, ...)` so this can never
@@ -3132,7 +3185,15 @@ def make_agent(schedule, me=0, router=True, start_day=None):
         #
         # The size of the re-offer stays bounded by the two throttles directly below -- `FEED_TURN_CAP`
         # and half the live bank -- so this cannot spend the day's land money on wheat.
-        herd = feed_days(day) * alive - fed_today - on_hand
+        # **The buy target is the same hold the sell guard protects, bounded by tonight's room.**
+        # See `feed_hold()`. Unbounded it asks a 19-head herd's 76 units of a 100-slot shed and
+        # then re-offers the shortfall every turn, so the freed slot refills with wheat before the
+        # crew gets home -- which is what `FEED_RESERVE_YIELDS_TO_OVERFLOW`'s own buy-side note
+        # already recorded ("two rules disagreeing about one number"). Bounding the BUY is the
+        # cheap half of that: an order not placed costs nothing and walks no price.
+        hold = (feed_hold(day, alive, shed, invs) if FEED_HOLD_BOUNDS_THE_BUY
+                else feed_days(day) * alive)
+        herd = hold - fed_today - on_hand
         # **The drip has to bound the HERD path too, or it bounds nothing that matters.** This read
         # `max(herd, min(max(0, owed), BUY_DRIP))`: the row was dripped and the herd's whole remaining
         # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never

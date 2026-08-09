@@ -47,6 +47,8 @@ SLOW_MODULES = {
     "test_search_plan",
     "test_search_transfer",
     "test_selection_boards_are_shared",
+    # Two full 30-day episodes through the reference env, A/B'd against each other, ~80s.
+    "test_the_feed_hold_is_sized_to_the_night_it_survives",
     "test_tape_parity",
 }
 
