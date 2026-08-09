@@ -1,143 +1,201 @@
-# Is RL the right tool for Kaggriculture?
+# The RL track: what it measured, and why it is parked
 
-**Conclusion: yes. MaskablePPO with an entity transformer is the right inference-time artifact.**
+> **This file used to argue for RL as the primary tool and for a per-step bank-delta reward.
+> Both were overruled, and the arguments have been replaced with the measurements that overruled
+> them.**
+>
+> `CLAUDE.md` still carries a bullet saying this file "still argues for [per-step bank delta] at
+> length" and is kept so a future session does not reinstate it from here. That is no longer true
+> of this file: the reward rule below is the corrected one. The bullet's *ruling* stands.
+>
+> The path is unchanged because `CLAUDE.md` and several modules point at it.
 
-This document records *why*, because the reasoning is non-obvious and a future session with the
-Orbit Wars post-mortem in context will otherwise be tempted to relitigate it and reach the wrong answer.
+## The ruling on reward, and it applies to every policy in the project
 
-## A correction, recorded honestly
+**The reward is terminal: win 1, loss 0 (or -1/+1), gamma 1.0. Never per step.**
+Alex's call, made explicitly, 2026-08-01.
 
-The first read of this competition concluded "this is a deterministic planning problem, RL is the
-wrong primary tool, build a planner."
-**That was wrong**, and it was wrong for an instructive reason: it was a reaction to the previous
-competition rather than an analysis of this one.
+The original argument for per-step bank delta was that final bank minus starting bank is *exactly*
+the sum of per-step deltas, so it is reward **decomposition**, not shaping. That is arithmetically
+true and strategically wrong: **the ladder is an Elo rating, so margin does not count.** A $43k win
+and a $4k win are the same result, and a per-step money reward trains a margin maximiser.
 
-Two facts overturned it:
+It is also what the evidence says. Of the top finishers in the comparable competition whose
+write-ups we have, four used a terminal signal — Felix Neumann -1/+1, simjeg terminal with
+gamma 0.995, Isaiah Pressman terminal, Billy Bradley's `ender` positive-only 0/1/2 with gamma
+0.998 — and **none** used a per-step bank delta.
 
-1. **`actTimeout` is 1 second per turn, with 12 seconds of banked overage for the entire
-   720-turn episode.**
-   Online search is not merely expensive, it is structurally impossible.
-   A planner cannot run at inference *at all*.
-   A network forward pass (~1-5 ms) fits with room to spare.
-2. **The per-unit action space is ~19 discrete ops.**
-   Compare Orbit Wars, where the action was one categorical over ~480 candidate edges
-   plus fraction buckets — the parameterization that shattered exploration and caused the collapse.
+If credit assignment over 720 steps stalls, the agreed next move is a **per-game-day** signal, not
+a per-step one, and only after `explained_variance` has been checked.
 
-A planner still has a job here, but it is **offline, as a teacher**, not as the policy.
+Potential-based shaping is a separate question and is not banned by the above: Ng, Harada & Russell
+1999 leaves the optimal policy provably unchanged, and at gamma 1.0 the per-turn terms telescope so
+an episode's total shaping is exactly `PHI(end) - PHI(start)` whatever route was taken.
+`kagg/rl/money_potential.py` implements one (floored at the $3,000 stake, scaled to $100k, squared)
+with 16 tests. `coef` defaults to 0.0 and it was **never wired into `train_jax_rl.py`**.
+`kagg/rl/net_worth.py` sketches a balance-sheet potential that would stop FEED and FERTILIZE reading
+as pure loss. Neither was built out; both are recorded here rather than in a separate ideas file.
 
-## Why the Orbit Wars failure modes do not transfer
+## Why the track is parked
 
-Each row is a specific, named killer from `rl_postmortem_and_fix_plan.md`.
+The problem does not have the property RL is for. See `what_kind_of_problem_this_is.md` for the
+full argument; the short version:
+
+- **There is nothing to react to.** The top of the leaderboard submits byte-identical 720-turn
+  tapes across seats and opponents (`the_field.md`).
+- **The environment is deterministic given the tape**, so `Q(s, a) = V(s')` can be *computed* by
+  simulation rather than estimated. One perturbation's effect is an **exact finite difference** —
+  the quantity a critic, GAE and 719 steps of credit assignment exist to approximate.
+- **The reward is terminal and the objective is a ranking against a fixed field**, which is a
+  best-response computation.
+
+RL becomes right again if the field turns adaptive, or if the state space outgrows exhaustive
+evaluation. Neither is true today.
+
+## What the track measured, and it is worth keeping
+
+Every item below is a measurement that cost real time to obtain. Several are about *measurement*
+rather than about RL and generalise to anything this project does next.
+
+### The failures were temporal, not architectural
+
+`jax_sim._end_of_day` returns every unit to spawn, **dismisses every hired hand** and **empties
+every unit's inventory**. So every *maintenance* op — which needs a walk back to a tile on a later
+turn — is re-motivated from scratch each dawn: four independent draws that must all land, for a
+payoff days away, under a critic at `ev_signal < 0.3`.
+
+Over 412,992 owned-unit actions the policy placed 4,591 animals and **fed 12**; planted 13,439
+crops and **harvested 98**. Setup ops (PLANT, PLACE — one action, on the tile you already occupy)
+it did *more* than the teacher. **It did not fail to learn farming; it learned exactly the subset of
+farming that survives a one-step credit horizon.**
+
+That killed the "it can't do them" theory outright: on day-25 seeded boards, COLLECT_FERTILIZER is
+legal on 15.1% of unit-slots and CARE on 11.2%, and the policy had chosen COLLECT_FERTILIZER **zero
+times in 23,684 episodes**. Legal often, never taken.
+
+`kagg/rl/commit.py` fixes it: a `COMMIT_*` token in the same categorical as every primitive op
+freezes a target, the unit walks it and fires the arrival op on contact, and intermediate turns are
+**excluded from the PPO density** (not scored as probability 1). After **11 updates**:
+
+| op | before | with commitments |
+|---|---|---|
+| COLLFERT / FERTIL | **0.00%** | 2.01% |
+| CARE | 0.07% | 1.98% |
+| PICKUP | 0.63% | 3.58% |
+| HARVEST | 0.44% | 1.14% |
+| harv/plant | 0.18 | 0.63 (teacher 2.28) |
+
+### The decode destroys the behaviour, not the network
+
+`play_checkpoint.py` defaulted to per-head argmax. Same checkpoint, same 32 games:
+
+| | greedy | **sampled** |
+|---|---|---|
+| WATER | 0% | **5.62%** |
+| PLANT | 0% | **2.50%** |
+| raw FEED | **0** | **18** |
+| bank | $2,998, zero variance | $1,305 (min 54, max 3,534) |
+| W/D/L | 0/0/16 | 0/0/16 |
+
+**The marginals contain the behaviour; argmax over independent per-head marginals destroys it.**
+Nine independent "probably not sell" decisions compose into "never sell". `condition_on_trade` —
+drawing the op first and scoring the argument heads on the slice it selects — is the fix, and it
+shipped for the **market** heads where the marginals discriminate 12:1.
+
+`condition_on_op`, the same technique on the **unit** heads, was built and measured as **no
+detectable difference** (effect changes sign between seeds; within-architecture seed spread is as
+large as the effect). It is inert by construction there: `crop` is read by PLANT alone and was
+already `p(crop | PLANT)`, and only PICKUP and PLACE share `item`/`qty`, at 7.8:1.
+**Do not read that null on the unit heads as a verdict on the market ones.**
+
+The durable value from that work is the scaffolding: the `ratio == 1.0` gate catches a silently
+corrupted PPO update, and `migrate_params` means an architecture change no longer costs every
+checkpoint and the KL anchor.
+
+### Metrics that measured the setup, not the policy
+
+This is the most expensive recurring lesson in the whole track.
+
+- **`vs farm 0.659` was entirely an artifact of the seeded start.** From turn 0 the same checkpoint
+  went 0/0/32, banking $2,998 against the scripted farmer's $30,292, with 100% movement and zero
+  productive actions over a whole season. **Prefer a replay to an aggregate.** The reward pays 0.5
+  for a draw, so two policies that both bank $0 draw with certainty — `money == money` is exact.
+- **The per-opponent win rate measured nothing** even though it was computed on exactly the right
+  rows: the opponent was re-drawn every update while a game spans ~22.5 of them, so a game faced a
+  mean of 4.9 distinct opponents and the label recorded whoever held the seat at the end.
+  **Ask what unit an aggregate is aggregating over, and whether the label is constant across it.**
+- **The curriculum mix was specified in slots and spent in episodes.** `0:0.1` asked for 10% of
+  slots and delivered ~3% of finished episodes, because day-0 episodes are ~6x longer. Day 25
+  supplied ~83% of terminal episodes, so the aggregate `wr` was a day-25 number wearing a mix's
+  name — and it was carrying four rungs sitting at chance (day20 0.523, day15 0.491, day10 0.484,
+  day0 0.528).
+- **`ev_signal` and the animal gap are structurally uninformative under symmetric starts.** With
+  identical seats the true value is 0.5 on every board at t=0, so there is nothing to explain from
+  the state. **The >0.5 explained-variance kill criterion does not apply to a symmetric run.**
+- **`best.pkl` is selected on cumulative win rate and therefore favours early updates** — update 38
+  on one run whose settled rate came much later. Prefer `latest.pkl` unless you have checked.
+- **After any configuration change, check whether a metric still measures what it was calibrated
+  on.** Four numbers in one session were read as findings when the setup had changed what they
+  measured.
+
+### The scale gap was the real story
+
+| | bank |
+|---|---:|
+| top public agents, head to head | **$90,000 – $123,000** |
+| our policy at update 690 | $18,332 median, $34,127 best |
+| our best training opponent (`farm`) | $27,340 |
+
+**We trained against a pool whose ceiling was a quarter of the field's floor**, and no opponent in
+it used the animal economy, crops beyond melon, fertiliser or a twelve-hand crew.
+Meanwhile total experience across the whole track never approached the 1B-15B env steps the
+competitors in the comparable competition used — Billy Bradley ~1B on a single 3080, simjeg 10B,
+Isaiah Pressman 15B.
+
+**We were step-bound by roughly two orders of magnitude, not capacity-bound.** `kagg/rl/jax_policy.py`
+defaults to `d_model=128, n_layers=3, n_heads=4`; simjeg took 2nd in the comparable competition with
+4.3M parameters and Felix Neumann 3rd with 6.2M. Scaling the model was measured as the wrong lever.
+
+Throughput is in `throughput_measurements.md`. VRAM was never the constraint.
+
+### Hardware
+
+The 3080 had been running at **210 MHz of 2100** under `SwThermalSlowdown` at 90 C, drawing 41-64 W.
+Every throughput figure in the RL era was measured on a throttled card and the "1B steps is about a
+month" estimate was 3x pessimistic. Cold it does ~1,100 turns/s and decays to ~370 within two
+minutes.
+**This is closed and ruled on. Do not re-rank cooling into any review.**
+
+## The Orbit Wars killers, and which transferred
+
+Kept from the original file because the table is still the right analysis of *this* environment.
 
 | Orbit Wars killer | Applies here? | Why |
 |---|---|---|
-| No-op became a stable self-play equilibrium | **No** | PASS does not buy a safe ~0 EV draw. It buys you $3000 while the opponent banks $50k. The *environment* punishes passivity directly, with no need for an aggressive opponent to supply the gradient. This attractor cannot form. |
-| Masking was a quality judgment | **No** | Masking here is pure legality: cannot WATER an empty tile, cannot PLANT without a seed, cannot HARVEST at `yield_units == 0`. Concept 1 of the post-mortem explicitly blesses legality masks. The thing that burned us was masking *no-op* to force action, which is a different animal. |
-| Reward shaping optimised a proxy | **No** | See the reward section below. Money is not a proxy for the score, it **is** the score. |
-| Exploration shattered across ~480 options | **No** | ~19 ops per unit. An entropy bonus actually lands on the action you want to explore. |
-| Self-play instability and mutual passivity | **Largely no** | The opponent only touches you through market prices. Training against a fixed opponent is viable, which removes the entire self-play failure surface. |
-| Candidate filter capped the ceiling | **Avoidable** | There is no candidate-generation step to poison. Keep it that way — do not introduce a "sensible actions" filter. |
+| No-op became a stable self-play equilibrium | **No** | PASS buys you $3,000 while the opponent banks $50k. The environment punishes passivity directly. |
+| Masking was a quality judgment | **No** | Masking here is pure legality. The thing that burned us was masking *no-op* to force action. |
+| Reward shaping optimised a proxy | **Partly** | Money is not a proxy for bank, but bank is a proxy for the Elo score. Hence the terminal ruling above. |
+| Exploration shattered across ~480 options | **No** | 18 ops per unit. |
+| Self-play instability | **Largely no** | The opponent couples only through market prices. |
+| Candidate filter capped the ceiling | **Avoidable** | There is no candidate-generation step to poison. Keep it that way. |
 
-The single genuinely transferable warning is Concept 6, the death spiral: RL not learning →
-"help" it with heuristics → the help starves the learner → conclude RL cannot do this.
-The defence is the kill criteria in `CLAUDE.md`, committed before any code was written.
+The genuinely transferable warning is the death spiral: RL not learning → "help" it with heuristics
+→ the help starves the learner → conclude RL cannot do this. The defence is the kill criteria in
+`CLAUDE.md`, committed before any code was written.
 
-## The reward: per-step bank delta, gamma ~= 1.0
+**Scope note on the explained-variance gate.** It was written for the per-turn, 720-step,
+full-action-space policy. `kagg/rl/env.py`'s strategy env clears 0.89 easily, but that is a 30-step
+problem with 9 discrete heads and hand-built features. Clearing it there is *not* evidence the hard
+frame works.
 
-**This is not reward shaping, and it must not be "fixed" back to terminal-only.**
+## Two corrections this track made to its own record
 
-The post-mortem's ban is emphatic and correct *for the problem it was written about*:
-
-> KEEP THE REWARD -1/+1. STOP SHAPING IT.
-
-That ban is about **proxy** rewards.
-In Orbit Wars, "captured a planet" and "production advantage" were hand-written guesses at what
-winning looks like, so optimising them produced Goodhart's law in the flesh — 50% against random,
-0% against strong heuristics.
-
-Here the objective is *literally* the sum of money changes.
-Final bank minus starting bank equals the sum of per-step bank deltas, exactly, by construction.
-Using per-step delta with gamma = 1.0 is therefore **reward decomposition**, not shaping:
-it is the same objective with vastly better credit assignment across a 720-step horizon where
-crops pay out 48-240 turns after the decision to plant them.
-
-The correct mental model from the post-mortem itself: *"the critic IS the dense reward done right."*
-Here we get the exact dense decomposition for free rather than having to learn it.
-
-Practical notes:
-
-- Use gamma slightly below 1 (0.999) only if variance demands it, and log the difference.
-- Selling early at a high price versus holding for a better one is handled correctly by the
-  decomposition — a later sale simply produces its reward later.
-- Evaluate on **win rate**, train on **own money**.
-
-> **Sharpened 2026-07-31 by looking at the actual leaderboard.**
-> Leaderboard scores are **Elo ratings around 1100-1400, not dollars**. The environment hands the
-> framework money as the episode reward, but the competition converts results into a relative
-> skill rating.
-> So money and win rate are **not** near-equivalent in the situations that decide close games:
-> once safely ahead, extra money buys nothing; near the end with a narrow gap, a risk-neutral
-> money-maximiser will decline the variance-increasing bet that flips a loss into a win.
-> Money remains the right *training* signal — it is dense and exactly decomposable — but
-> **selection, evaluation and any endgame policy must be driven by win probability.**
-> This is an open design question, not a settled one.
-
-## Compute: VRAM is not the constraint
-
-The training box is an RTX 3080 Laptop with **16GB VRAM**, which is ample.
-
-> **But VRAM being ample is not the same as the box being adequate.** With the Python env the
-> CPU caps throughput at 4,221 steps/sec, which is 27 days for a 10B-step run. Whether a single
-> 3080 is competitive at all is an open question, and renting GPU time should stay on the table.
-
-| Item | Estimate |
-|---|---|
-| Entity transformer, d_model 256, 6 layers, ~120 tokens | ~10M params |
-| Weights + grads + Adam moments | ~160 MB |
-| Activations, bf16, batch 1024, no checkpointing | ~2-4 GB |
-| Vectorized sim state, 8192 parallel games | ~16 MB |
-
-Existence proofs from the Orbit Wars field, all in `orbit_wars_jax/docs/`:
-
-- **Billy Bradley ("Ender"), 8th place** — trained a 4-player agent **entirely on a 3080**,
-  total spend under $200, on a *harder* problem than this one.
-- **simjeg, 2nd place** — 4.3M parameters.
-- **Felix Neumann, 3rd place** — 6.2M parameters.
-- Only Isaiah Pressman (1st) needed 200M params and 32x B200. That is not our path.
-
-The post-mortem's own compute section states it plainly:
-*"Bottleneck is env steps/sec, not VRAM (model is <1GB)."*
-
-## The actual risks
-
-These are different from last time, and these are what to watch.
-
-1. **Env throughput.** Measured 2026-07-31 on the training box: **484 steps/sec**
-   single-threaded, **4,221 steps/sec** across 16 workers. The earlier 1163 figure was a
-   dev-Mac rate. 10B steps — what competitive runs in the comparable competition used — is
-   **27 days** at that rate, so the vectorized sim is **required, not merely desirable**, and
-   its target is ~100k steps/sec. `env.run()` also cannot batch policy inference across envs,
-   so the current harness cannot feed the GPU at all. See `docs/throughput_measurements.md`.
-   The post-mortem: *"A fast env is the biggest multiplier and is a code problem, not a hardware problem."*
-2. **Long-horizon credit assignment.** 720 steps, with planting decisions paying out 2-10 days later.
-   Mitigated by the exact reward decomposition above, but watch explained variance.
-3. **The structured joint action.** Farmer plus a *variable-length* list of hands plus an ordered
-   10-slot market queue. This is the genuinely hard modelling problem, not the per-unit ops.
-   See the design doc for the proposed factorization.
-4. **Parity drift** between the fast sim and the reference env. A divergent sim makes every
-   downstream result fiction. Hence the hard gate in `CLAUDE.md`.
-5. ~~Unmeasured CPU core count and RAM on the training box.~~ **Measured:** AMD Ryzen 9
-   5900HX (8 cores / 16 threads), 13 GB RAM in WSL2, RTX 3080 Laptop 16GB.
-   The CPU is 2.2x slower per core than the dev Mac, so it is a weaker training box than
-   assumed when this document was written.
-
-## What the friend is doing
-
-Alex's friend is independently running **MaskablePPO with a custom entity transformer policy**,
-carried over from his own Orbit Wars work.
-They compare notes on Discord but compete separately.
-
-That is the same architectural family this design lands on, arrived at independently, which is
-weak but real corroboration.
-It is *not* a reason to skip the economics model or the arena — the differentiator will be
-the quality of the training signal and the routing, not the choice of algorithm.
+- **A decision to skip a fix can expire when the problem changes.** `hand_prior_heads` declined to
+  shape the market heads for a stated and correct reason: their failure was *under*-firing from a
+  broken joint decode, and a flat prior would not fix a missing correlation. The autoregressive
+  decode landed and the failure inverted to over-firing — `buy_seed` on 29.1% of turns, bank at $0
+  by day five. Same code, same argument, opposite problem.
+- **Evaluate a technique against the problem its author built it for.** Ender's autoregressive
+  micro-steps were assessed here against the spawn deadlock — correctly answered *no*, twice, and
+  struck off. He built them for **action-space explosion**, which we independently had and had
+  measured three times. A correct *no* to the wrong question is indistinguishable from a dead end.

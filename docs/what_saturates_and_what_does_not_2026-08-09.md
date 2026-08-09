@@ -95,7 +95,13 @@ Twenty animals is ~600 units a season.
 `DRAIN_UNITS` has no entry for it, which is correct rather than an omission, and
 `sale_revenue` now uses `.get(prod, 0)` for exactly this reason.
 
-## The part that contradicts the leaders, and is therefore probably wrong
+## SUPERSEDED -- the part that contradicted the leaders, and was indeed wrong
+
+Kept as written because the reasoning that flagged it was sound and the resolution is instructive:
+the model contradicted the strongest observed evidence, the model was suspected first, and the model
+was the thing at fault (`events * max_held`). Corrected saturation is 16 cows and 16 sheep. The
+`tiles/head` column in the table at the top of this document -- MILK 2.4, WOOL 2.3, EGG 1.2 -- is
+from the same bug and is stale by the same 4-6x.
 
 The model says four cows and four sheep, and does not move much with the contest assumption:
 
@@ -122,6 +128,4 @@ Candidate explanations, none measured yet:
   its conversion margin rather than by its product's book depth, and it is the one lever where
   `what_the_others_do.py` put us at only the 49th percentile.
 
-**Do not act on the herd numbers in this document.** The saturation figures for crops are sound;
-the animal figures contradict the strongest observed evidence on the ladder and need reconciling
-first. `docs/the_top_five_clusters_2026-08-09.md` has the observed builds.
+**Resolved 2026-08-09, same day.** Use the corrected per-head table above, not this section. `docs/the_top_five_clusters_2026-08-09.md` has the observed builds.

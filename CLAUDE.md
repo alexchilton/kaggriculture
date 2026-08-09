@@ -4,11 +4,13 @@
 
 Before doing anything substantive, read in this order:
 
-1. `docs/competition_brief.md` — what the competition is, measured facts, deadlines.
-2. `docs/rl_feasibility.md` — the agreed position on RL vs planning, and why.
-3. `docs/lessons_carried_over.md` — what went wrong in Orbit Wars and which lessons transfer.
-4. `docs/economics_q5_findings.md` — the measured economics. Overrides the day-1 analysis.
-5. `docs/superpowers/specs/2026-07-31-kaggriculture-agent-design.md` — the design.
+0. `docs/README.md` — the index, and what was deleted in the 2026-08-08 consolidation.
+1. `docs/competition_brief.md` — what the competition is, measured facts, deadlines, env rules.
+2. `docs/architecture.md` — **what the agent actually is**, and the flags that ship off.
+3. `docs/REGISTER.md` — the live open/closed list. Check it before opening anything.
+4. `docs/rl_feasibility.md` — the agreed position on RL vs planning, and why. The RL track is parked.
+5. `docs/lessons_carried_over.md` — what went wrong in Orbit Wars and which lessons transfer.
+6. `docs/economics_q5_findings.md` — the measured economics. Overrides the day-1 analysis.
 
 `reference/` holds the competition docs and the full environment source (`kaggriculture.py`).
 The env source is the ground truth for every rule question.

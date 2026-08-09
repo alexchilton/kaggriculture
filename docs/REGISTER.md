@@ -1,17 +1,28 @@
-
-
 # Register — what is open, what is closed, and what keeps reopening
 
-Last updated 2026-08-08, on `shaping-potential` at the three-branch merge.
+Last updated 2026-08-08, on `shaping-potential`.
 
 This file exists because items in this project get closed under one name and reopen under another.
 Melon has been opened and closed at least four times.
-Before opening anything, check the CLOSED section — and check whether your item is really OPEN-1 wearing a new label.
+**Before opening anything, check the CLOSED section — and check whether your item is really OPEN-1
+wearing a new label.**
 
-> **READ THIS FIRST — the `money` season total is an AREA, not a deficit.**
+Ground rules:
+
+- An item is CLOSED only if there is a measurement or a test that would go red if it came back.
+  "We tried it and it seemed fine" is not closed.
+- Every claim names the file that proves it. A claim with no artifact is UNVERIFIED and must not be
+  quoted as fact.
+- The reference tape is a **diagnostic**, not the goal. Beating it is the goal, so "the tape doesn't
+  do this" is never an argument against a change.
+
+The framing, the architecture and the harness caveats live in `architecture.md`. Read the harness
+section there before quoting any number below — three separate instruments in this project have
+mis-scored an arm.
+
+> **READ FIRST — the `money` season total is an AREA, not a deficit.**
 >
-> `breakdown.py --diff` sums the per-day difference between two bank curves. `-103,724` is that
-> integral. It is **not** how far behind we finish.
+> `breakdown.py --diff` sums the per-day difference between two bank curves.
 >
 > ```
 > money   ... d27 -1781   d28 +1365   d29 +4586
@@ -23,17 +34,6 @@ Before opening anything, check the CLOSED section — and check whether your ite
 > while moving the area from -103,724 to -106,686.
 >
 > **Judge an arm on d29, or on the day it targets. Never on the season total.**
-> Verified independently 2026-08-08 by `scripts/probe_market_fills.py` and by reading the d29 column
-> of the baseline table.
-
-Ground rules for this file:
-
-- An item is CLOSED only if there is a measurement or a test that would go red if it came back.
-  "We tried it and it seemed fine" is not closed.
-- Every claim here names the file that proves it.
-  A claim with no artifact is marked UNVERIFIED and must not be quoted as fact.
-- The reference tape is a **diagnostic**, not the goal.
-  Beating it is the goal, so "the tape doesn't do this" is never an argument against a change.
 
 ---
 
@@ -48,366 +48,92 @@ tomorrow.**
 
 Each label got investigated, partially disproved on its own terms, and closed — and then the defect
 resurfaced under the next label, because what was disproved was that particular *mechanism*, never
-the *symptom*.
-That is why it reads as "opened and reopened like mad and never solved".
+the *symptom*. That is why it reads as "opened and reopened like mad and never solved".
 
-Seven separate arms have been attempted against it and all seven were reverted.
-**All seven were judged on season totals**, which is the wrong metric (see SELECTION RULE below), and
-none checked field-by-field whether the arm moved the field it targeted.
-So "seven failures" is much weaker evidence than it sounds.
+Seven separate arms were attempted and all seven reverted. **All seven were judged on season
+totals**, which is the wrong metric, and none checked field-by-field whether the arm moved the field
+it targeted. So "seven failures" is much weaker evidence than it sounds.
 
 Anything that looks like late selling, idle hands at dusk, product sitting in inventories, or a
 missed same-day sale belongs to OPEN-1. Do not open it as a new item.
 
 ---
 
-## The framing error underneath most of the OPEN list
-
-Alex, 2026-08-08: *"exactly which is why i never understood your urgency thing and patching etc."*
-
-**The day's assignment is a deterministic scheduling problem with release times, and we solve it with
-a greedy heuristic built for incomplete information.**
-
-Measured, `scripts/` probe on seed 11, all 29 days:
-
-```
-day   crew size at each hour it CHANGES
-d0    h0:1  h1:6  h2:7  h3:8
-d10   h0:1  h1:7  h2:13
-d28   h0:1  h1:8  h2:13
-latest hour any crew was still changing: h3
-```
-
-The crew resets to 1 each dawn and is **final by h2, h3 at worst**. The schedule names it outright --
-`hires` and `hands` per day, `d0 hires=7`, `d10 hires=12`. The board is deterministic. So from h2
-there are 13 known vehicles, 21 known turns each, and a fully known board: **273 unit-turns of
-complete information**, of which 35-46 go unspent.
-
-The comment in `_router_acts` justifying the adaptive design -- *"hands are hired through the
-morning, so the dawn plan genuinely cannot know how many vehicles it has"* -- is **stale**. It is
-true for two hours.
-
-**Every knob in `router.py` is compensation for that mismatch**, and none of them is a rule:
-
-```
-MANDATORY = 100_000              CRITICAL = 1_000_000
-STEAL_FROM_DAY = 6               STEAL_FROM_DAY_MARGIN = 4
-PLACE_IS_MANDATORY_FROM_DAY = 14 URGENT_OPS = ()
-FEED_TURN_CAP = 6                BUY_DRIP = 1
-```
-
-`CRITICAL` exists only because greedy cheapest-insertion ranks by `prize / cost` and division
-destroys ordering, so "this animal dies tonight" cannot be expressed except as a tier. In a real
-solve it is a **constraint**: a plan that starves a pen is infeasible and is rejected. Not a prize.
-`PLACE_IS_MANDATORY_FROM_DAY = 14` is a day number fitted to one seed, and generalising it cost
-$15,882 on another -- that is a curve fit, not a rule.
-
-**What survives a rewrite is the measurements, not the mechanisms.** The melon water pricing, the
-repeated unfed pen, the 101 binned units, the unspent turns beside unserved work -- those are facts
-about the domain and become constraints and objective terms in any solver. The tiers and the magic
-constants should not be inherited as design.
-
-**And the one-second turn budget that forces all of it is self-imposed.** `jax_sim` passes 300/300
-full-length episodes exactly, so the same problem can be solved OFFLINE with hours instead of a
-second, which is what the top finishers do -- they submit fixed 720-turn scripts. See
-`plan.py`, `scheduler.py`, `script_mutate.py`, `optimise_script.py`, `build_script_submission.py`,
-all already in the repo.
-
-Keep the starvation floor as scaffolding with an expiry: a dead herd is wrong today whatever
-replaces the planner.
-
----
-
-## The agreed architecture (Alex, 2026-08-08)
-
-**Offline basis, checked per day, repaired only when something deviates.**
-
-The runtime planner shrinks from "solve a Team Orienteering Problem 720 times a season under a
-one-second budget" to "confirm the board matches the plan, and repair it if a weed landed."
-
-### Why the split works: the money and the routing decouple at d16
-
-Read off the schedule's own `money_dawn`:
-
-```
-d0 1,807 → d4 28 → d6 15 → d10 2,220 → d15 1,076 → d16 10,448 → d29 108,153
-land bought d4, d8, d10   animals all bought by d14   seeds essentially done by d11
-```
-
-Cash is razor-thin from d1 to d15 -- **$15 on d6, $28 on d4** -- and then stops mattering: from d16
-the bank runs 10k to 108k with nothing left to buy but the odd single seed.
-
-| | d0-d15 | d16-d29 |
-|---|---|---|
-| binding constraint | **cash** -- a dollar is a parcel or an animal | **unit-turns** -- cash is free |
-| what to optimise | selling: timing, price, what to hold | routing: whose hands do what, when |
-| coupling to the other half | land d4/d8/d10, animals to d14, seeds to d11 | none |
-
-**Every failure measured on 2026-08-08 is in the d16+ half** -- sheep starve d16/d17/d18,
-strawberries die from d21, the shed overflows d21/d23/d24, idle peaks d19-d28. That is the half with
-a fixed crew, a deterministic board, no purchases and no cash constraint: the most obviously
-solvable-offline part of the game is where we lose the most.
-
-### Deviation is rare enough to enumerate
-
-`_spawn_weeds` fires on **empty** tiles only, once per day, at `weedSpawnChance` (default 0.005).
-About 40 empty tiles gives ~0.2 spawns/day, **~6 per season**, and only those landing on ground the
-plan intends to use matter at all -- a weed on ground we were never going to plant is furniture and
-is ignored. Realistically the repair path fires **one to three times a season**.
-
-Everything else that becomes a weed is deterministic: a tile reaching `consecutive_unwatered >= 2` is
-a consequence of our own plan, not chance. Same for an animal escaping.
-
-A repair firing three times a season can be enumerated and unit-tested. A planner firing 720 times
-cannot.
-
-### The three parts
-
-1. **Money plan** -- d0-d15. Guarantees the parcels at d4/d8/d10 and the seeds and animals.
-   Contested by the opponent, so it needs cash SLACK as a constraint, not a point estimate.
-2. **Physical plan** -- the whole season, solved offline against `jax_sim`.
-3. **Day repair** -- a weed on planned ground; a purchase refused for cash. Rare, local, enumerable.
-
-### Why offline is trustworthy, and cheap
-
-- `jax_sim` reproduces `senkin13`'s real $145k winning season **to 0.2%**, livestock included
-  (`docs/tutorial_how_this_game_is_actually_optimised.md` section 5). The residual is a
-  *deterministic* order-book bias, so candidate-vs-candidate comparisons stay self-consistent.
-- At `weed_chance=0` the sim is deterministic, so one perturbation's effect is an **exact finite
-  difference**, not a noisy estimate -- the quantity PPO spends a critic and 719 steps of credit
-  assignment approximating.
-- No legality machinery is needed: an illegal op degrades to NOOP, wastes the unit-turn, and scores
-  worse, so the optimiser rejects it unaided.
-
-Existing machinery: `scripts/optimise_script.py`, `kagg/search/{plan,scheduler,script_mutate,
-replay_plan}.py`, `scripts/build_script_submission.py`, `kagg/search/best_plan.json`.
-
-**Caveat with teeth:** the optimiser's opponents are our OWN recorded agents with weeds off. Any
-winner must be scored against the real pool and across weed seeds before it is believed. On
-2026-08-08 the uncontested number said we finished $4,586 ahead of Seb and the contested head-to-head
-said we lose both seatings on the valid seed.
-
----
-
 ## OPEN
 
-### OPEN-1 — DIAGNOSED, NOT FIXED. The WATER ran seven hours late, not the delivery
+### OPEN-1 — the largest open defect. Animal produce is sold a day late, all season
 
-Owner: open. Commit `4df96e2`, merged. See `docs/harvest_ordering_2026-08-08.md`,
-`scripts/when_the_melon_fills.py`, `tests/test_the_filling_water_carries_the_harvest.py`.
+Owner: nobody.
 
-**Status is deliberately "diagnosed", not "solved".** The cause is established and the arm helps the
-day it targets, but it costs more on the days after it than it gains:
+Milk and wool ride in a unit's hand for the whole day and only reach the shed via the **overnight
+rollover sweep**, so what we sell today is yesterday's production. The shed then holds roughly
+**twice the tape's milk for twelve days** and dumps **103 units on d29** into a falling price curve.
 
-```
-money      d10     d11     d12     d13     d14     d15   |  season   cells
-before   -3082    -422   -1014    -227    -172    +230   | -103724     414
-after    -1548   -1516   -3107   -1567   -1564    -732   | -106686     419
-```
+This is the same symptom as the six labels above, now measured on the product that carries the
+revenue rather than on day 10's melon. It is not a delivery-threshold problem and it is not a
+harvest-ordering problem — both of those were chased and closed (C-19, C-20). It is that the shed
+trip for a *yielding* pen is not planned as a stop with the rest of the day.
 
-Target day **+$1,534**. The five days after it **−$8,700**. Season **−$2,962**, five more differing
-cells, and `sh:melon` overshoots from `+24` to `−24` — we went from holding too much melon to
-holding too little.
+Two cures were built and both ship OFF with their numbers in the source; do not rebuild either
+without beating them. See `architecture.md`, "the flags that ship OFF":
 
-Under the SELECTION RULE that is a good fix for d10 with a later-day problem of separate origin
-(OPEN-11), which is why it is merged rather than reverted. But the register does not get to call
-this closed, and an earlier draft of this entry did. The diagnosis below is what is genuinely
-banked; the arm is provisional.
+- `cover.DELIVER_SURPLUS_NOT_THE_ROW` — the broad version measured **-$15,272 over twelve seeds**.
+- `schedule_agent.STAND_AT_A_DRY_SHED` — **money@d16 23,483 → 16,363, cows 8/8 → 5/8**.
 
-**Six labels and seven reverted arms all pointed downstream of the real cause.**
+The direction that has *not* been tried: make the draw and the delivery **see the shed contention at
+plan time**, rather than reacting to it at execution time.
 
-```
-hour each ripe MELON tile first fills 6/6 and becomes harvestable at all
-SEB   (4,2) h6    (3,1) h9    (4,1) h9
-OURS  (2,0) h15   (1,0) h16   (0,0) h18
-```
+### OPEN-2 — Survival water is never discounted for how far off the yield is
 
-Both sides wake on d10 with the same three tiles at **5/6**.
-MELON is a one-shot and `_one_shot_is_finished` refuses HARVEST while `room > 0` — correctly, since
-HARVEST demolishes the tile.
-So **neither side could harvest before the fill**, and our harvests at h17/h19/h20 land one to three
-turns *after* our fills.
-The harvest was always prompt. The drop was always prompt behind it.
-
-The defect was the WATER. `crop_ops` priced an in-window one-shot water at the single unit it adds,
-**$250**, while an out-of-window survival water on an *immature* melon priced at `_crop_remaining` —
-the whole tile, **$1,250–$1,500**.
-The planner therefore ranked insurance on a tile that could not yield for two more days at
-**six-to-one** over the one water that unlocks same-day cash.
-
-Fix (`FILLING_WATER`): when a water fills the tile, the node also offers the HARVEST it unlocks.
-No new mechanism — `_live_ops` already emits WATER then HARVEST at the same stop next turn.
-
-Day 10, the day it targets: `money -3082 -> -1548`, `sh:melon +12 -> 0`, fills
-`h15/h16/h18 -> h10/h15/never`. **d0–d9 byte-identical.**
-
-Reverting the flag turns 2 of 3 new tests red. The third passes either way *on purpose*: it proves
-the WATER→HARVEST pair was always executable, i.e. execution was never the defect.
-
-A rejected arm is recorded at the emission site: pricing the harvest at `held` rather than
-`held + gain` is the strictly correct marginal, and it gives back the entire gain, because an
-immature melon's survival water prices at *exactly* $1,500 too and the surplus $250 is the only
-thing breaking the tie.
-
-**Lesson for the register:** every one of the six labels described a *symptom at a later leg*. The
-question that cracked it was asked about the **tile**, not about the unit, the route, or the shed.
-
-### OPEN-11 — Survival water is never discounted for how far off the yield is
-
-Owner: nobody. Split out of OPEN-1, d11 regresses `-422 -> -1516` with `weeds +3`, `strawb -3`,
-`water -3`.
+Owner: nobody. Split out of the `FILLING_WATER` fix; d11 regresses `-422 → -1516` with `weeds +3`,
+`strawb -3`, `water -3`.
 
 `_crop_remaining` prices a survival water as the whole tile regardless of how many days away that
 tile's yield is, so insurance on an immature crop is never discounted for waiting.
 
-Do **not** fix this by weakening `FILLING_WATER` — that is precisely what the rejected arm above did,
-and it gave back the whole d10 gain.
+**Do not fix this by weakening `FILLING_WATER`** — that is exactly what the rejected arm did, and it
+gave back the whole d10 gain (see `experiment_log.md` §19).
 
-This is almost certainly the same mispricing behind OPEN-10 (strawberries dying eleven days early):
-a survival water that is over-priced early is also over-priced late.
+Almost certainly the same mispricing behind OPEN-4: a survival water over-priced early is also
+over-priced late.
 
-### ~~OPEN-1 (original framing) — Harvest lands too late in the day to be sold~~
+### OPEN-3 — `sh:milk +464` and `buy_product -164`: possibly one mechanism, possibly the whole play
 
-Kept for the audit trail. Task #13.
+Owner: nobody.
 
-The measurement, `data/logs/melon_d10_side_by_side.log`, day 10, seed 11, weeds off:
+The two largest unowned rows. We hold up to **+50** more milk in the shed than the tape at d22, and
+the tape **buys 164 more product units** than we do across 27 of 30 days.
 
-```
-SEB   h6 HARVEST, h9 HARVEST x2, h12, h14  ->  SELL 12 @h13, SELL 6 @h15
-      MELON in shed at d11 dawn: 0      bank 3912
-OURS  h17 HARVEST, h19, h20              ->  hands reach 18 at h21, never dropped
-      MELON in shed at d11 dawn: 18     bank 3273
-```
+Possibly one mechanism, not two: buy wheat → feed animals → produce milk. The teardown of the top
+agents found the winner drew ~83% of revenue from milk and wool by converting **bought** wheat into
+animal products (`the_field.md`). So `buy_product -164` may not be a bug at all — it may be the one
+strategic play we never make.
 
-Same eighteen melons, same board.
-He harvests in the **morning** and sells the same day; we harvest in the **evening** and bank it
-tomorrow.
-`money` at d10 on the merged baseline is **−3082**.
-
-The reframe that has never been tested: every prior attempt asked *why do we deliver late*.
-The trace says we also **harvest late** — his first melon harvest is h6, ours is h17.
-If harvest ordering within the day is the cause, all seven prior arms were treating a symptom.
-
-Related shed rows: `sh:straw −78`, `harvest −51`.
-**`sh:wheat −139` was listed here as "probably the same defect" and it is NOT — see C-18.**
-
-Dossier: `melon_reality_check_2026-08-07.md`, `fable_stranded_carrier_2026-08-07.md`,
-`fable_return_leg_2026-08-07.md`, `fable_delivery_node_2026-08-07.md`,
-`fable_sell_row_delivery_2026-08-07.md`, `idle_at_h10_2026-08-07.md`,
-`service_undercount_2026-08-07.md`, and the reverted-with-numbers comments at the return leg in
-`kagg/search/schedule_agent.py`.
-
-### ~~OPEN-2 — `sh:wheat` first diverges at day 8~~  → CLOSED, see C-18
-
-Not a defect. Two equally valid routing orders, and the day-8 −1 is fully accounted for.
-
-### OPEN-3 — `sh:milk +464` and `buy_product −164`
-
-Owner: agent running (opus, worktree). Task #21.
-
-The two largest unowned rows on the corrected baseline.
-We hold up to **+50** more milk in the shed than the tape at d22.
-The tape **buys 164 more product units** than we do across 27 of 30 days.
-
-Possibly one mechanism, not two: buy wheat → feed animals → produce milk.
-The teardown of the top two agents (`episode_teardown_2026-08-03.md`) found the winner drew ~83% of
-revenue from milk and wool by converting **bought** wheat into animal products.
-So `buy_product −164` may not be a bug at all — it may be the one strategic play we never make.
-
-Constraint on any fix: CARE correlates **+0.441** with money across 312 real leaderboard seats, so
-"do less CARE" is not a safe inference from the diff alone.
-
-### OPEN-8 — Two sheep STARVE on day 16  ← correctness floor breached
-
-Owner: nobody yet. Measured 2026-08-08, `data/logs/two_missing_sheep.log`,
-`scripts/the_two_missing_sheep.py`.
-
-```
-        d13  d14  d15  d16  d17 ... d28
-OURS      9   11   11    9    9        9    empty_pens 0,0,0,2,2..2   in_shed 0
-SEB       9   11   11   11   11       11    empty_pens 0 throughout
-```
-
-We reach eleven standing sheep on d14, **the same as the tape**, and then lose two between d15 and
-d16.
-The pens stay empty for the remaining fourteen days, nothing sits in the shed to refill them, and no
-PLACE op is emitted again all season.
-
-This is **not** a failure to buy and **not** the shed-stranding bug — it is a death.
-It is the starvation floor, and the register's own rule says correctness floors are never traded
-away.
-It appeared as a consequence of fixing C-12: placing more animals filled 19 pens, and the feed
-cadence cannot carry 19 pens.
-
-Note the shape — this is the third time a fix has exposed a defect the old bug was masking.
-
-**Refined 2026-08-08** (`scripts/which_pens_go_hungry.py`, `scripts/is_the_feed_wheat_gone.py`).
-It is **three** escapes, not two: `(8,0)` d16, `(6,5)` d17, `(9,0)` d18.
-
-The difference from the tape is not how many pens go hungry — he leaves 1–3 unfed most days too. It
-is that **he never leaves the same pen unfed twice running**; his hungry set is different every day
-and ours repeats.
-
-```
-OURS  d15 (8,0)=0  ->  d16 (8,0)=1  -> ESCAPED
-      d16 (6,5)=0  ->  d17 (6,5)=1  -> ESCAPED
-      d17 (9,0)=0  ->  d18 (9,0)=1  -> ESCAPED
-SEB   d15 (1,3),(2,2)   d16 (1,2),(2,3)   d17 (1,6)   d18 (1,2),(3,2)
-```
-
-Three candidate causes were tested and **all three are dead**:
-
-- Not the price. `router.py:554` already sets `hungry = consecutive_unfed >= 1` and adds
-  `cost + _animal_remaining` on top of MANDATORY, so an at-risk pen already carries the
-  escape-prevention bonus.
-- Not the stock. At d16 h20 we hold **10 wheat** (7 shed + 3 carried) with one pen at risk.
-- Not the `have_wheat` guard. Our wheat never reaches zero on d15–d18.
-
-The decisive observation: at d16 h20 we hold ten wheat, a FEED **is** emitted, and it goes to a pen
-that is *not* the one about to lose its animal.
-
-So what remains is **reachability** — the at-risk pen was not servable by whichever unit held the
-wheat. That is a routing failure, not an economics one, which puts it with OPEN-4 rather than with
-the feed cadence.
-
-One further contrast worth keeping: Seb reaches **every** dawn holding exactly 19 wheat, one per pen
-(d15–d18 all read 19), and draws 16 into hands by h4. We reach dawn with 6–10 and top up through the
-day. Whether that dawn-stocking is what makes his distribution work is NOT established.
-
-CORRECTION on the record: this was first reported as "-2 from d10". That was a column-offset
-miscount of the diff table. It is **d16**, and the `sheep` row is `an_SHEEP`, animals standing
-(`breakdown.py:249`), not an op count.
-
-### OPEN-9 — Milk is capped at the tape's sell rate, so the shed fills
-
-Owner: folded into OPEN-3.
-
-The mechanism, `kagg/search/schedule_agent.py:1649,1655`:
+The mechanism behind the milk half is exact and is at `schedule_agent.py:1649,1655`:
 
 ```python
 n = min(have, allow, rate[prod])
 n = min(n, allow - state["ordered"][("sold", prod)])    # allow = the schedule row for the DAY
 ```
 
-We sell **exactly the quantity the schedule row names and no more**, however much the shed holds.
-This is why "we sell every day" and "the shed has heaps in it" are both true and are not a
-contradiction: the cap is Seb's production rate, and we produce more than Seb.
-
-The row is an absolute count read off *his* trajectory. He reaches the last day holding little milk
-having sold all season; we reach it holding four times the row.
+**We sell exactly the quantity the schedule row names and no more, however much the shed holds.**
+That is why "we sell every day" and "the shed has heaps in it" are both true: the cap is Seb's
+production rate, and we produce more than Seb. The row is an absolute count read off *his*
+trajectory.
 
 A parked arm nearly fixes it — sell down to a `shed_dusk` target: `sh:milk` +446 → +46, and the
-final bank lands within **$62** of his.
-It costs d4 and d5, which currently match, via an unexplained `sh:wheat -2` from d4.
-The obvious explanation (the WHEAT/FERTILIZER reserve being subtracted twice) was tested and is NOT
-the cause. Left unfed until the cause is found. See the comment block at `schedule_agent.py:1630`.
+final bank lands within **$62** of his. It costs d4 and d5, which currently match, via an unexplained
+`sh:wheat -2` from d4. The obvious explanation (the WHEAT/FERTILIZER reserve subtracted twice) was
+tested and is **not** the cause. Left unfed until the cause is found; see the comment block at
+`schedule_agent.py:1630`.
 
-### OPEN-10 — The strawberries die eleven days too early
+Constraint on any fix: CARE correlates **+0.441** with money across 312 real leaderboard seats, so
+"do less CARE" is not a safe inference from the diff alone.
 
-Owner: nobody. Measured 2026-08-08, `scripts/thirsty_strawberries.py`,
-`data/logs/thirsty_strawberries.log`.
+### OPEN-4 — The strawberries die eleven days too early
 
-A PLANT tile becomes a WEED at `consecutive_unwatered >= 2` (`reference/kaggriculture.py:753`).
+Owner: nobody. `scripts/thirsty_strawberries.py`, `data/logs/thirsty_strawberries.log`.
+
 Counting every tile transition across the season, both seats:
 
 ```
@@ -416,79 +142,143 @@ OURS   STRAWBERRY 41, WHEAT 2                d11
 SEB    STRAWBERRY 41, WHEAT 1                d22
 ```
 
-**The totals are identical.** Forty-one strawberries die of thirst on each side, so we are not
-losing crops that Seb keeps alive.
-
-The difference is entirely *when*:
+**The totals are identical** — we are not losing crops Seb keeps alive. The difference is entirely
+*when*:
 
 ```
 OURS  d11 1, d13 1, d15 2, d16 3, d21 2, d22 5, d23 6, d24 4, d26 9, d27 3, d28 5
 SEB                                        d22 3, d23 8, d24 8, d26 9, d27 3, d28 10
 ```
 
-Seb loses his **entirely from d22** — the final week, when another watering cannot pay itself back.
-That is a deliberate end-of-season abandonment, not neglect.
-We start losing them at **d11**, when each tile still had ten or more days of yield left.
+Seb loses his entirely from d22 — the final week, when another watering cannot pay itself back. That
+is deliberate end-of-season abandonment. We start at **d11**, when each tile still had ten or more
+days of yield left. That is the whole of `strawb -94` and `sh:straw -78`.
 
-Same deaths, ours eleven days early. That is the whole of `strawb -94` and `sh:straw -78`.
+NOT caused by the sheep-placement fix or by `FEED_TURN_CAP` — the first death is d11, which precedes
+both.
 
-This is NOT caused by the sheep-placement fix or by FEED_TURN_CAP — the first death is d11, which
-precedes both.
+### OPEN-5 — The herd starves from d16, and it is a reachability failure
 
-### OPEN-4 — Idle diverges only when the board gets busy
+Owner: nobody. `scripts/which_pens_go_hungry.py`, `scripts/is_the_feed_wheat_gone.py`,
+`data/logs/two_missing_sheep.log`.
 
-Owner: nobody. Task #18.
+```
+        d13  d14  d15  d16  d17 ... d28
+OURS      9   11   11    9    9        9    empty_pens 0,0,0,2,2..2   in_shed 0
+SEB       9   11   11   11   11       11    empty_pens 0 throughout
+```
 
-`idle +427` over the season; `pass` is the same row.
-It is small early and grows with board complexity: d5 +25, d9 +24, d10 +39, d27 +54.
-d5 is the isolation point — 208 unit-turns and 9 pens, against d10's 294 and 15.
+Three escapes, not two: `(8,0)` d16, `(6,5)` d17, `(9,0)` d18. It is a **death**, not a failure to
+buy and not the shed-stranding bug, and the register's own rule says correctness floors are never
+traded away. It appeared as a consequence of fixing C-12: placing more animals filled 19 pens, and
+the feed cadence cannot carry 19 pens. **Third time a fix has exposed a defect the old bug masked.**
 
-Recurring shape, observed twice and not yet explained: *early there is budget but no free unit; late
+The difference from the tape is not how many pens go hungry — he leaves 1-3 unfed most days too. It
+is that **he never leaves the same pen unfed twice running**; his hungry set is different every day
+and ours repeats:
+
+```
+OURS  d15 (8,0)=0 -> d16 (8,0)=1 -> ESCAPED      SEB  d15 (1,3),(2,2)  d16 (1,2),(2,3)
+      d16 (6,5)=0 -> d17 (6,5)=1 -> ESCAPED           d17 (1,6)        d18 (1,2),(3,2)
+      d17 (9,0)=0 -> d18 (9,0)=1 -> ESCAPED
+```
+
+Three candidate causes tested and **all three dead**: not the price (`router.py:554` already sets
+`hungry = consecutive_unfed >= 1` and adds the escape-prevention bonus on top of MANDATORY); not the
+stock (at d16 h20 we hold 10 wheat with one pen at risk); not the `have_wheat` guard (our wheat never
+reaches zero on d15-d18).
+
+The decisive observation: at d16 h20 we hold ten wheat, a FEED **is** emitted, and it goes to a pen
+that is *not* the one about to lose its animal. So what remains is **reachability** — the at-risk pen
+was not servable by whichever unit held the wheat. That is a routing failure, not an economics one.
+
+One contrast worth keeping, not established as causal: Seb reaches **every** dawn holding exactly 19
+wheat, one per pen (d15-d18 all read 19), and draws 16 into hands by h4. We reach dawn with 6-10 and
+top up through the day.
+
+*Correction on the record:* first reported as "-2 from d10". That was a column-offset miscount. It is
+**d16**, and the `sheep` row is `an_SHEEP`, animals standing, not an op count.
+
+### OPEN-6 — Idle diverges only when the board gets busy
+
+Owner: nobody.
+
+`idle +427` over the season; `pass` is the same row. Small early, growing with board complexity:
+d5 +25, d9 +24, d10 +39, d27 +54. d5 is the isolation point — 208 unit-turns and 9 pens against
+d10's 294 and 15.
+
+Recurring shape, observed twice and not explained: *early there is budget but no free unit; late
 there is a free unit but no budget.*
 
-### OPEN-5 — The PLACE gate is fitted to one seed
+Note the day-10 finding that reframes this. It was measured under the old `plan_routes` planner and
+has **not** been re-measured under `cover.py`, but the shape is the reason chasing the idle row
+directly has failed: at h2 — the last crew-change replan — the planner produced tours totalling
+**195 turns against 273 turns of crew capacity**, so 78 turns were surplus *at plan time*, before a
+unit had moved. Measured idle on the day was 72-73. **The idle was in the plan from the morning**,
+and no executor path can recover work the node set never contained. The whole day's node inventory
+was 34 at h0 and 37 by h1 — there is not 273 turns of board work in it, and `build_nodes` has no
+other vocabulary. Re-measuring this under the covering planner is the first move on this item.
 
-Owner: agent running (opus, worktree). Task #22.
+### OPEN-7 — The PLACE gate is fitted to one seed
+
+Owner: nobody.
 
 `PLACE_IS_MANDATORY_FROM_DAY = 14` in `kagg/search/router.py` works and is a day number read off
-seed 11.
-The general rule is believed to be "this animal was already in the shed yesterday", which needs shed
-age plumbed through `build_nodes`.
+seed 11; generalising it cost $15,882 on another. The general rule is believed to be "this animal
+was already in the shed yesterday", which needs shed age plumbed through `build_nodes`.
 
-### ~~OPEN-6 — `weeds −174`: we beat the tape~~  → CLOSED, see C-16
+### OPEN-8 — A same-turn `HIRE` then `BUY_ANIMAL` can be booked as bought and silently refused
 
-We do not beat the tape here. We spend 35 unit-turns tidying up after ourselves.
+Owner: nobody. Traced 2026-08-08 in `logs/confer_diag_place2*.log`.
 
-### OPEN-7 — Merge to `main`
+`schedule_agent`'s order-construction closure tracks a local `money` to gate `BUY_LAND` and
+`BUY_ANIMAL`. `HIRE` appears nowhere in the list of places that variable is decremented, so
+day 4 emits `[SELL WHEAT 2, HIRE x8, BUY_ANIMAL COW 1]`, the local gate sees ~$404 against a $400
+cow and accepts, and the real env — which settles sequentially — has $384 + ~$20 − $54 of hires =
+~$350 and **silently refuses**. Because `state["bought"]` is incremented unconditionally at
+construction and `want_total` is cumulative, **the animal is gone for the rest of the game**, not
+delayed a day.
 
-Task #24. Unblocked as of the green slow suite; see STATE below.
+Signature in the diff: the `an_COW` row pinned at **-1 for 27 of 30 days**.
+
+This is the **second distinct trigger** for a symptom already fixed once: slot-count truncation past
+`orders[:10]` did the same thing and was fixed by `FIT_ORDER_SLOTS`/`_fit_slots` "uncounting"
+anything cut for space. Insufficient real funds is not guarded.
+
+### OPEN-9 — Merge to `main`
+
+Unblocked as of the green slow suite.
 
 ---
 
 ## CLOSED — with the artifact that would go red
 
-Do not reopen these without new evidence that contradicts the named artifact.
+Do not reopen without new evidence that contradicts the named artifact.
 
 | # | Item | Why it is closed | Artifact |
 |---|---|---|---|
-| C-1 | Melon "refuses to harvest" | `first_yield_day` is 10; a HARVEST below it is a no-op that still costs the turn. Our gate matches the env rule exactly. | `ruled_out_melon_harvest_gate_2026-08-06.md`, `router.py:243` |
-| C-2 | "We never plant day 6's six melons" | FALSE. We buy 6 and plant 6, funded at h8 by a same-turn `SELL WOOL 6`. The probe simply stopped printing once the order landed. | `melon_reality_check_2026-08-07.md` |
-| C-3 | "Day 6's melons are never harvested by d11" | Correct but not a defect — day 6 + 10 = day 16. Seb's own tape leaves its d6 batch equally unharvested. | `melon_reality_check_2026-08-07.md` |
-| C-4 | "Melon is never sold, so land can't be funded" | 18 units sold at d11; it funds the $4,000 parcel same-turn. The first two parcels predate any melon harvest. | `melon_reality_check_2026-08-07.md` |
-| C-5 | Milk is under-sold | FALSE. We meet every sell row the schedule names. We over-**produce**. The open question moved to OPEN-3. | commit `cdac079`, `tests/test_stock_the_schedule_never_names.py` |
-| C-6 | Pens on the depot ring block delivery | Clean negative, 7 tests. | `pens_on_the_depot_ring_2026-08-08.md`, `tests/test_pens_do_not_block_the_depot_ring.py` |
-| C-7 | PLACE is under-priced | Prize sweep 2×–10× changes nothing. It is a **budget** refusal, not a price. | commit `9a89ecd`; the superseded arm is in `git stash` |
+| C-1 | Melon "refuses to harvest" | `first_yield_day` is 10; a HARVEST below it is a no-op that still costs the turn. Our gate matches the env rule exactly. | `router.py:243`, `competition_brief.md` |
+| C-2 | "We never plant day 6's six melons" | FALSE. We buy 6 and plant 6, funded at h8 by a same-turn `SELL WOOL 6`. The probe stopped printing once the order landed. | verified on this tree |
+| C-3 | "Day 6's melons are never harvested by d11" | Correct but not a defect — day 6 + 10 = day 16. Seb's tape leaves its d6 batch equally unharvested. | verified on this tree |
+| C-4 | "Melon is never sold, so land can't be funded" | 18 units sold at d11, funding the $4,000 parcel same-turn. The first two parcels predate any melon harvest. | verified on this tree |
+| C-5 | Milk is under-sold | FALSE. We meet every sell row the schedule names; we over-**produce**. Moved to OPEN-3. | commit `cdac079`, `tests/test_stock_the_schedule_never_names.py` |
+| C-6 | Pens on the depot ring block delivery | Clean negative, 7 tests including a positive control that LOCKED *does* block. | `tests/test_pens_do_not_block_the_depot_ring.py` |
+| C-7 | PLACE is under-priced | Prize sweep 2x-10x changes nothing. It is a **budget** refusal, not a price. | commit `9a89ecd` |
 | C-8 | `buy_seed +42` at d6 | Logging bug. `breakdown.py` counted offers; we re-offer every turn. Season total went to 0 once fills were counted. | commit `096d581` |
-| C-9 | `sell` overstated 11× | Same root cause as C-8: 165 offers → 15 fills. Every number taken before 2026-08-08 used the wrong yardstick. | `breakdown_fills_not_offers_2026-08-08.md` |
-| C-10 | d10 `tiles −25` is a lost quadrant | FALSE. It is a one-day delay; `tiles` is a dawn snapshot at the window edge. We buy the parcel on d10, same as the tape. | verified on this tree |
-| C-11 | Feed bought in one block | `FEED_TURN_CAP = 6`; the herd bypassed the drip. Animals-in-pens went 17 → 18, not down. | commit `260db7a`, `tests/test_router.py` |
-| C-12 | The sheep never get placed | Fixed. d14 sheep −2 → 0, place −2 → 0, d0–d13 byte-identical. | commit `9a89ecd` |
-| C-13 | `sh:wheat −2` at d4 | Does not exist on our tree. It was a mis-relayed figure from an agent branch. | verified d0–d7 exact |
+| C-9 | `sell` overstated 11x | Same root cause as C-8: 165 offers → 15 fills. Every number taken before 2026-08-08 used the wrong yardstick. | `experiment_log.md` §23 |
+| C-10 | d10 `tiles -25` is a lost quadrant | FALSE. A one-day delay; `tiles` is a dawn snapshot at the window edge. | verified on this tree |
+| C-11 | Feed bought in one block | `FEED_TURN_CAP = 6`; the herd bypassed the drip. Animals-in-pens went 17 → 18, not down. | commit `260db7a` |
+| C-12 | The sheep never get placed | Fixed. d14 sheep -2 → 0, place -2 → 0, d0-d13 byte-identical. | commit `9a89ecd` |
+| C-13 | `sh:wheat -2` at d4 | Does not exist on our tree. A mis-relayed figure from an agent branch. | verified d0-d7 exact |
 | C-14 | The tape idles 0 turns on day 1 | Harness artifact — the tape was replayed into seat 1 with truncated hands. Real figures 144/131. | test removed |
 | C-15 | GPU thermal throttling | Ruled on and closed. Do not re-rank it into any review. | — |
-| C-16 | `weeds −174` means we beat the tape | FALSE, and it is the opposite. Seb finishes with **42 weeds standing** and we finish with **8**, because we DIG ours (`dig +35`) and he leaves his alone. Weeded ground he was never going to replant costs him nothing; clearing it costs us 35 unit-turns. Final board: ours `WEED=8 empty=72`, his `WEED=42 empty=37`. | `data/logs/thirsty_strawberries.log` |
-| C-18 | `sh:wheat −139` from d8 is a defect | NOT a defect. On d8 the `HARVEST` op count is identical (2/2) and the net market delta is identical (+10/+10), so "we harvest less" and "we sell more" are both ruled out. The −1 lives entirely in the DROP / dusk-sweep / PICKUP mix, and it is the OPPOSITE way round from the assumption: **the tape** holds 3 units until the dusk auto-drop; we drop mid-day. Two equally valid routing orders. Verified by an exact accounting identity — `start + DROP + dusk_drop + PICKUP + PLACE + market == end` — holding on every day for both sides. No fix written, deliberately: there is no defect to write a failing test against, and forcing our order to match would be cloning the tape. | `docs/wheat_d8_2026-08-08.md`, branch `worktree-agent-ad4be40e954a71ed5` |
-| C-17 | Feeding the animals starves the crops of water | FALSE. Thirst deaths are **41 STRAWBERRY on each side**, ours 41 + 2 wheat, his 41 + 1 wheat. Feeding is not stealing waters Seb keeps. The real difference is timing, now OPEN-10. Also: the first strawberry death is d11, which precedes both the sheep-placement fix and `FEED_TURN_CAP`, so neither can be the cause. | `scripts/thirsty_strawberries.py` |
+| C-16 | `weeds -174` means we beat the tape | FALSE, and the opposite. He finishes with 42 weeds standing, we with 8, because we DIG ours (`dig +35`). Clearing ground he was never going to replant costs us 35 unit-turns. | `data/logs/thirsty_strawberries.log` |
+| C-17 | Feeding the animals starves the crops of water | FALSE. Thirst deaths are 41 STRAWBERRY on each side. The real difference is timing, now OPEN-4. First strawberry death is d11, preceding both the sheep-placement fix and `FEED_TURN_CAP`. | `scripts/thirsty_strawberries.py` |
+| C-18 | `sh:wheat -139` from d8 is a defect | NOT a defect. HARVEST identical (2/2), net market delta identical (+10/+10). The -1 lives in the DROP / dusk-sweep / PICKUP mix and is the opposite way round from the assumption: **the tape** holds 3 units until the dusk auto-drop, we drop mid-day. Verified by an exact accounting identity holding every day for both sides. No fix, deliberately — forcing our order to match would be cloning the tape. | `experiment_log.md` §23 |
+| C-19 | The d10 melon is a delivery defect | FALSE, after seven arms. Both sides wake with three tiles at 5/6; a one-shot cannot be harvested before it fills, so **neither side could harvest earlier**. The WATER ran seven hours late. | `experiment_log.md` §19, `tests/test_the_filling_water_carries_the_harvest.py` |
+| C-20 | Dropping the harvest earlier is free money | FALSE. Four arms; the one that worked mechanically moved the first DROP h19 → h5 and still lost $8,292, because `DROP 116 → 137` bought `HARVEST 300 → 294`. A late harvest is already priced. | `experiment_log.md` §20 |
+| C-21 | Pen geometry is a lever | FALSE. His exact tiles buy 2 cells of 150, and the Manhattan sum from (4,4) is 22 for both day-0 blocks. `DEPOT_RING_FIRST` ships off; its money sign reversed on a held-out draw. | `experiment_log.md` §21 |
+| C-22 | `Node.service` under-counting is a bug to fix | It is the packing calibration that matches the tape. Correct prices, worse reproduction, every arm. Both constants ship at 0 and will not move. | `experiment_log.md` §22 |
 
 ---
 
@@ -501,9 +291,9 @@ Alex's, and it governs everything above.
 - A **later** day regresses → a different problem with its own origin. Log it, do **not** revert.
 - An **earlier** day regresses → a question, not an automatic veto. It may mean the earlier fix was
   wrong and this change exposed it.
-- Season totals and single-seed dollar swings are **weak** signals.
-  Judging by totals is the error that ran through the whole late-delivery effort.
-- Hard constraint: do not regress d0–d5. Their differing-cell floor is currently `3,3,3,5,3,3`.
+- Season totals and single-seed dollar swings are **weak** signals. Judging by totals is the error
+  that ran through the whole late-delivery effort.
+- Hard constraint: do not regress d0-d5. Their differing-cell floor is currently `3,3,3,5,3,3`.
 - Correctness floors are not metrics and are never traded away. The herd must not starve — measure
   **animals in pens per day**, because a previous change collapsed that 17 → 8 and was nearly
   shipped on cells and money alone.
@@ -516,13 +306,18 @@ defect that the change exposed. Reverting hides it again.
 ## STATE at last update
 
 ```
-branch          shaping-potential @ b81f04b   (114 ahead of main; main has nothing we lack)
-unpushed        93 on shaping-potential, 4 on main
+branch          shaping-potential
+baseline        seed 11, weeds 0.0, tape seb, days 0-29
+
+HEAD, full 30 days, ours vs the tape
+  bank          120,424 / 116,635      -> +3,789
+  work            3,092 / 2,703
+  move            2,782 / 4,025
+  tiles             100 / 100          pens 19 / 19   cows 8 / 8   sheep 11 / 11
+  animals lost in our own season: 0
+
 fast suite      805 passed,  70 skipped, 7 xfailed, 0 failed
 slow suite      240 passed,  25 skipped, 4 xfailed, 0 failed   (3m31s)
-baseline        seed 11, weeds 0.0, tape seb, days 0-29
-                0/30 days exact, 414/1020 cells differ, money total -103,724
-                d0-d5 money exact except +1/-1 at d3/d4
 ```
 
 Baseline command, and the only metric that counts:
@@ -532,6 +327,8 @@ python -u scripts/breakdown.py --tape seb --seed 11 --weeds 0.0 --days 30 --diff
 ```
 
 Market rows (`sell`, `buy_product`, `buy_animal`, `buy_seed`) are **fills**; everything else,
-including `hire` and `buy_land`, is still an **offer**.
-Fill rows are a lower bound — a turn dirtied by DROP/PICKUP/PLACE contributes zero — so confirm a
-difference is real before explaining it.
+including `hire` and `buy_land`, is still an **offer**. Fill rows are a lower bound — a turn dirtied
+by DROP/PICKUP/PLACE contributes zero — so confirm a difference is real before explaining it.
+
+**The uncontested number says we finish ahead. The contested head-to-head says we lose both seatings
+on the valid seed.** Nothing here is a ladder result until that closes.

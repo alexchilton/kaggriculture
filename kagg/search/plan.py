@@ -375,10 +375,44 @@ def leaders_genome():
     """
     g = np.zeros(N_GENES, dtype=np.int64)
 
+    # **The spatial layout is read off the replay, not guessed.** This docstring used to say "which
+    # tile holds what is not extracted yet, so pastures go nearest the shed and the crops fill
+    # outward" -- and both halves of that guess were wrong. Extracted from episode 89873723 seat 0 by
+    # sweeping every step's `tiles` grid and taking each square's dominant role over the season
+    # (`scripts/extract_winner_plan.py`):
+    #
+    #        0 1 2 3 4 5 6 7 8 9      A = animal pen, P = crop, . = never used
+    #     0  P P P P P P P P P P
+    #     1  P P P P P P P P P P
+    #     2  A P P A A P P P P P      14 pens, clustered in the CENTRE (rows 2-5, cols 2-7),
+    #     3  P P P A A A A P P P      not on the shed edge. `ops.SHED_TILES` is 44/45/54/55, so
+    #     4  P P A A A A A A P P      the cluster sits *around* the shed rather than beside it --
+    #     5  P P P P A . . . . .      every pen is a short walk from feed, in every direction.
+    #     6  P P P P P . . . . .
+    #
+    # Crop mix over the season: STRAWBERRY 40, MELON 11, WHEAT 10. The old fixture had MELON 21,
+    # STRAWBERRY 44 and **no wheat at all**, which matters more than the ratio: wheat is what the herd
+    # eats, and a plan that grows none must buy all 967 units the seat bought. `herd` was already right
+    # (COW 8, SHEEP 6 -- confirmed exactly from the animal on each pen).
+    #
+    # **This layout is correct and scores WORSE through our dispatcher**, which is worth stating rather
+    # than hiding: feed bought rose 243 -> 572 of the seat's 967, and the season fell $230 -> $0 with
+    # only 8 of the 14 pens ever built (`data/logs/executor_vs_tape_real_layout.log`). Central pens are
+    # right for a dispatcher that routes 13 hands well -- every pen is near the shed in some direction --
+    # and wrong for ours, which cannot get units into the middle of the board and back. The fixture is
+    # kept truthful because a measurement against a fictional layout tells us nothing; the number it
+    # produces is evidence about `executor.decide`, not about the plan.
+    PEN_ORDS = (20, 23, 24, 33, 34, 35, 36, 42, 43, 44, 45, 46, 47, 55)
     use = np.zeros(TILES, dtype=np.int64)
-    use[:14] = CROP_GENE_PASTURE
-    use[14:35] = 5                                    # gene 5 -> MELON  (21 tiles)
-    use[35:79] = 4                                    # gene 4 -> STRAWBERRY (44 tiles)
+    unlocked = np.arange(TILES)
+    # Crops fill the non-pen tiles in serpentine order, in the measured proportions.
+    crop_tiles = [i for i in unlocked if i not in PEN_ORDS]
+    for n, gene in ((40, 4), (11, 5), (10, 1)):        # STRAWBERRY, MELON, WHEAT
+        for i in crop_tiles[:n]:
+            use[i] = gene
+        crop_tiles = crop_tiles[n:]
+    for i in PEN_ORDS:
+        use[i] = CROP_GENE_PASTURE
     lo, hi = _OFFSETS["crop_of"]
     g[lo:hi] = use
 

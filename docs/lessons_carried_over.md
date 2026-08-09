@@ -73,13 +73,18 @@ Concretely:
 Do not cargo-cult these. They were correct answers to a different problem.
 The reasoning is in `rl_feasibility.md`.
 
-- **"Never shape the reward."** Per-step bank delta here is exact decomposition of the true
-  objective, not a proxy. Terminal-only would throw away credit assignment for nothing.
 - **"Masking backfires."** That was about masking no-op to force action. Legality masking is
-  explicitly safe and MaskablePPO is the intended trainer.
+  explicitly safe.
 - **"Self-play is essential."** The opponent coupling here is weak — market prices only.
 - **"Collapse the action space to all-in."** That fixed a 480-way categorical.
-  This action space is already ~19 ops.
+  This action space is already 18 ops.
+
+> **A correction, because this file used to argue the opposite.**
+> It said "never shape the reward" does not transfer, on the grounds that a per-step bank delta is
+> an exact decomposition of the true objective rather than a proxy. The arithmetic is right and the
+> conclusion was overruled: **the ladder is Elo, so bank is itself a proxy for the score.**
+> The reward is terminal — win 1, loss 0, gamma 1.0 — for every policy in this project.
+> The Orbit Wars ban does transfer, for a reason Orbit Wars did not have.
 
 ## The prior taxonomy — the crux, and it still applies
 

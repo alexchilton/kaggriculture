@@ -290,12 +290,40 @@ def test_the_ratio_beats_both_degenerate_orderings():
 
 
 def test_the_placement_order_is_a_contiguous_sweep_from_the_shed():
-    """Consecutive tiles must be adjacent, so covering n of them costs n-1 steps and no more."""
-    order = RT.field_order({"NW"})
+    """Consecutive tiles must be adjacent, so covering n of them costs n-1 steps and no more.
+
+    **Pinned with `DEPOT_RING_FIRST` OFF, because that flag deliberately gives contiguity up.** The
+    sweep is still what orders each distance band -- the ring sort is stable -- so this is the
+    property of the construction underneath, and it is still the thing that keeps a band compact.
+    Asserting it against the shipped order would be asserting that the flag is off.
+    """
+    was, RT.DEPOT_RING_FIRST = RT.DEPOT_RING_FIRST, None
+    try:
+        order = RT.field_order({"NW"})
+    finally:
+        RT.DEPOT_RING_FIRST = was
     assert len(order) == 24, len(order)                    # 25 tiles less the shed-access cell (4,4)
     assert order[0] in ((3, 4), (4, 3)), order[:3]         # start hard against the depot
     jumps = [(a, b) for a, b in zip(order, order[1:]) if RT.dist(a, b) != 1]
     assert not jumps, f"sweep breaks contiguity at {jumps[:3]}"
+
+
+def test_the_ring_order_is_monotone_in_depot_distance():
+    """What `DEPOT_RING_FIRST` buys in exchange for the contiguity given up above.
+
+    Every tile handed out is at least as far from the depot ring as the one before it, across ALL
+    owned quadrants -- so a pen sited on day 9 cannot fall to the tail of NE while SW's near band sits
+    empty, which is what (7,0), (8,0) and (9,0) were on our seed-11 board.
+    """
+    was, RT.DEPOT_RING_FIRST = RT.DEPOT_RING_FIRST, 1
+    try:
+        order = RT.field_order({"NW", "NE", "SW"})
+    finally:
+        RT.DEPOT_RING_FIRST = was
+    depots = [c for c in RT.SHED if RT.R.quadrant_of(*c) in {"NW", "NE", "SW"}]
+    ds = [min(RT.dist(t, c) for c in depots) for t in order]
+    assert ds == sorted(ds), f"order is not monotone in depot distance: {ds[:20]}"
+    assert ds[0] == 1 and max(ds) >= 8, ds[:5]
 
 
 def test_placement_beats_the_adjacency_greedy_on_tour_length():
@@ -303,11 +331,18 @@ def test_placement_beats_the_adjacency_greedy_on_tour_length():
 
     Both choosers are asked for the same number of tiles on the same empty board; the tour that visits
     what they picked is the thing paid ~20 times a season.
+
+    Pinned with `DEPOT_RING_FIRST` OFF for the reason given on the contiguity test above: a Manhattan
+    ring of 12 tiles tours in 14 steps, not 12, and that is the trade the flag makes on purpose.
     """
     from kagg.search import schedule_agent as SA
     n = 12
     board = blank_board()
-    swept = RT.field_order({"NW"})[:n]
+    was, RT.DEPOT_RING_FIRST = RT.DEPOT_RING_FIRST, None
+    try:
+        swept = RT.field_order({"NW"})[:n]
+    finally:
+        RT.DEPOT_RING_FIRST = was
 
     greedy, taken = [], set()
     for _ in range(n):
@@ -2924,3 +2959,138 @@ def test_the_last_sheep_do_not_sit_in_the_shed_for_the_rest_of_the_season():
     assert not (held and empty), (
         f"day 16 ends with {held} SHEEP in the shed and {empty} empty pens; the tape fills all "
         f"nineteen and holds none back")
+
+
+# ---------------------------------------------------------------------------------------------
+# geometry: which tile a placement gets, ranked by how often it will be visited
+# ---------------------------------------------------------------------------------------------
+
+def _service_days(kind, item, day):
+    """How many DAYS a placement of `item` made on `day` will want a unit to stand on it.
+
+    Derived from the reference's own gates as `router.crop_ops` / `router.animal_ops` read them, not
+    from the published tables, and checked against the season measured in
+    `data/logs/geometry_measure.log` -- which is why this function exists rather than a constant.
+
+    ANIMAL -- `animal_ops` emits FEED every day the pen is unfed and FEED is MANDATORY
+        (`kaggriculture.py:786` escapes the animal at `consecutive_unfed >= 2`), so a pen is a stop on
+        EVERY remaining day of the season. Measured: (3,4) took 102 work turns over 30 days, (2,4) 97,
+        (1,4) 104 -- about 3.4 ops a day, which is FEED + CARE + COLLECT_FERTILIZER.
+
+    ONE-SHOT CROP -- `crop_ops` waters inside `(max_day + 1) // 2 .. max_day` (every day, since each
+        water IS a unit of yield) and outside it only when `consecutive_unwatered >= 1`, which is every
+        SECOND day. So the count is `ceil(w0 / 2) + (max_day - w0 + 1)`. Measured: MELON is w0 = 6,
+        giving 3 + 7 = 10, and the four tiles that held nothing but MELON all season took 10, 10, 10
+        and 9 work turns.
+
+    ONGOING CROP -- production needs no water at all; `crop_ops` waters only on the survival gate, so
+        alternate days for the rest of the season, and harvests on production days, which for
+        STRAWBERRY (`first` 10, `interval` 2) all fall on the same parity as the waters. So the STOPS
+        are `ceil(days_left / 2)`. Measured: STRAWBERRY tiles planted on day 6 took 16 work turns each
+        = 12 waters + 4 harvests, and 12 == ceil(23 / 2).
+
+    This UNDER-weights a pen, deliberately: every pen day also needs WHEAT drawn at the shed, so its
+    distance is paid as a round trip while a crop's is paid once. The ranking only gets stronger.
+    """
+    days_left = RT.R.SEASON_DAYS - 1 - day
+    if kind == "BUILD":
+        return max(0, days_left)
+    info = RT.CROP[item]
+    if not info["ongoing"]:
+        w0 = (info["max_day"] + 1) // 2
+        return min(days_left + 1, -(-w0 // 2) + (info["max_day"] - w0 + 1))
+    return max(0, -(-days_left // 2))
+
+
+def _demand_from_seb(through_day=13):
+    """`[(day, kind, item)]` in the order `_refresh_pins` consumes ground: pens first, then plants.
+
+    Read off Seb's own schedule rather than invented, so the mix and the timing are a real season's.
+    """
+    import json
+    import pathlib as _pl
+    sched = {int(k): v for k, v in json.loads(
+        _pl.Path("data/seed_scripts/top_guys/90494364/schedule.json").read_text()).items()}
+    out = []
+    for d in sorted(sched):
+        if d > through_day:
+            break
+        row = sched[d]
+        places = list(row.get("places") or [])
+        for i in range(int(row.get("builds", 0) or 0)):
+            out.append((d, "BUILD", places[i] if i < len(places) else "COW"))
+        for crop in (row.get("plants") or []):
+            out.append((d, "PLANT", crop))
+    return out
+
+
+def _unlocked_on(day, sched_days=(4, 8, 10)):
+    """Seb's own land days: NE on 4, SW on 8, SE on 10 (`land_turns` in his schedule)."""
+    q = ["NW"]
+    for i, d in enumerate(sched_days):
+        if day >= d:
+            q.append(RT.R.LAND_ORDER[i])
+    return set(q)
+
+
+def _service_cost(demand):
+    """Total `service days x depot distance` if `field_order` hands out the ground as it stands.
+
+    Mirrors `schedule_agent._next_ground` exactly -- first free tile in the order -- because that is
+    the only consumer, and re-implementing it here keeps the test independent of a module another
+    workstream owns.
+    """
+    taken, total, sited = set(), 0, []
+    for day, kind, item in demand:
+        unlocked = _unlocked_on(day)
+        depots = [c for c in RT.R.shed_access_tiles() if RT.R.quadrant_of(*c) in unlocked]
+        spot = None
+        if kind == "BUILD":
+            spot = next((c for c in RT.R.shed_access_tiles()
+                         if RT.R.quadrant_of(*c) in unlocked and c not in taken), None)
+        spot = spot or next((t for t in RT.field_order(unlocked) if t not in taken), None)
+        if spot is None:
+            continue
+        taken.add(spot)
+        d = min(abs(spot[0] - c[0]) + abs(spot[1] - c[1]) for c in depots)
+        total += d * _service_days(kind, item, day)
+        sited.append((spot, kind, item, d))
+    return total, sited
+
+
+def test_the_depot_ring_goes_to_what_is_visited_most():
+    """A season's placements cost fewer depot-steps under a visit-weighted assignment than under the sweep.
+
+    THE THEORY. `field_order` is content-blind: the Nth thing placed gets the Nth tile of a
+    boustrophedon sweep, whatever it is. But a pen is a stop on every remaining day of the season and a
+    crop is a stop on four to twelve of them (see `_service_days`), so the ground nearest the depot ring
+    is worth two to seven times more to a pen than to a strawberry -- and the sweep hands it out on
+    arrival order instead.
+
+    Measured on the real board, seed 11, `data/logs/geometry_measure.log`: our pens took 50-354 work
+    turns each and our crop tiles 9-28. Three of our pens sit at distance 6, 7 and 8 -- (7,0), (8,0),
+    (9,0), all sited on day 9 at the tail of NE -- while the near band of SW sat empty.
+
+    WHAT THIS TEST CANNOT REACH. It scores a static assignment, not a season: no router, no turn
+    budget, no market, no replan. A layout that is cheaper to service can still bank less, and the
+    A/B in `docs/geometry_placement_2026-08-08.md` is the only thing that settles that.
+    """
+    demand = _demand_from_seb()
+    assert sum(1 for _d, k, _i in demand if k == "BUILD") >= 8, "no pens in the demand"
+
+    was = RT.DEPOT_RING_FIRST
+    try:
+        RT.DEPOT_RING_FIRST = None
+        sweep, sweep_sites = _service_cost(demand)
+        RT.DEPOT_RING_FIRST = 1
+        ring, ring_sites = _service_cost(demand)
+    finally:
+        RT.DEPOT_RING_FIRST = was
+
+    far_sweep = sorted(d for _t, k, _i, d in sweep_sites if k == "BUILD")
+    far_ring = sorted(d for _t, k, _i, d in ring_sites if k == "BUILD")
+    assert ring < sweep, (
+        f"visit-weighted assignment costs {ring} depot-steps against the sweep's {sweep}; "
+        f"pen distances sweep {far_sweep} vs ring {far_ring}")
+    assert max(far_ring) <= max(far_sweep), (
+        f"a pen still lands further out than the sweep put it: {far_ring} vs {far_sweep}")
