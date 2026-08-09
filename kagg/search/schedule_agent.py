@@ -996,6 +996,125 @@ PRICE_AWARE_SELL_CAP = True
 #: test that can, which is the explicit reason for enabling it rather than a hope.
 RESERVATION_SELL_CAP = True
 
+#: **DEPTH_RULE_BELOW_BASE -- run the depth rule in the regime it was built for.**
+#:
+#: `RESERVATION_SELL_CAP` above sits inside `if price_ok:`, and `price_ok` is
+#: `prices[prod] >= BASE_PRICE[prod]`. `market_price` is monotone decreasing in inventory and equals
+#: base exactly at `I0`, so that condition reads "the book is at or BELOW its neutral level" -- the
+#: case with room to spare. The moment the price drops under base, which is precisely when we are
+#: flooding, the `else` branch takes over and sizes the offer from `allow` and `rate[prod]`: day
+#: totals read off someone else's 1.32.2 replay, which know nothing about THIS board's shop draw.
+#:
+#: So the only rule in this file that reads `town.unlocked_shops` to decide how much to sell was
+#: live only while it was least needed and silent once the book was over-full.
+#:
+#: Measured RED by `tests/test_the_depth_rule_runs_when_the_book_is_deep.py` before this flag
+#: existed: on seed 29 the agent sold 211 MILK, 102 STRAWBERRY, 78 MELON and 8 WOOL into a book
+#: already past `I0` while `reservation_units` was consulted on ZERO of those turns. MELON fails on
+#: every seed because no shop carries it at all, so its book is always past `I0`.
+#:
+#: Consequence (`docs/the_book_is_shallow_2026-08-09.md`): MILK realises $27.90/unit on seed 29
+#: against $252.66 on seed 13 from the same agent and the same schedule. WOOL reaches the $1 floor
+#: 59 units above `I0` and MILK 76, against a season producing 150-280 units of each.
+#:
+#: Applied as `min`, never `max`: below base the depth rule may only ever SHRINK an offer. Every
+#: reserve already netted into `have` still binds, and `LIQUIDATE_LAST_DAY` still overrides on the
+#: final day, where stock genuinely has no terminal value and holding is exactly wrong.
+#:
+#: **OFF, and the reason is a measurement that went against the theory above.** The branch is NOT a
+#: defect. Making the rule reachable below base does exactly what it was designed to do and loses
+#: money doing it.
+#:
+#: 32 mirror seasons, 16 seeds x both seatings (`scripts/mirror_gate.py`,
+#: `data/logs/mirror_depth_rule.log`), candidate = this flag OFF against baseline ON:
+#:
+#:     OFF  W26 D0 L6   81.2%   mean bank $69,633
+#:     ON                       mean bank $61,833
+#:     paired margin per seed  $+15,599  SE $5,386  t = +2.90  SIGNIFICANT, 13/16 seeds
+#:
+#: The mechanism worked -- seed 29 sub-base MILK selling fell 211 units to 90 with it on. Suppressing
+#: those sales is what costs the money, and the reason is that the town's drain is a COMMON POOL.
+#: Every unit the town removes is one re-sale at a good price and whoever sold first has it, so
+#: holding stock back to protect a price in a contested book simply hands the absorption to the
+#: opponent. `RESERVATION_CONTEST = 0.5` already assumes we take half of the remaining drain; if we
+#: hold while they do not, we take less than half.
+#:
+#: That is also why this could not be seen before: `scripts/tape_gate.py` scores 100.0% against tapes
+#: (`data/logs/tape_gate_three.log`) because a tape cannot race us for the drain. Only a mirror can.
+#:
+#: Kept as a flag rather than deleted because the argument for it is sound wherever the pool is NOT
+#: contested -- MELON is the case, absorbed at exactly 30 units a season on every board because no
+#: shop carries it (`scripts/board_demand.py`), and its sub-base volume was unchanged at 78 units
+#: either way. A per-product version of this rule is a different proposition from the blanket one
+#: measured here, and is not what these numbers rule out.
+DEPTH_RULE_BELOW_BASE = False
+
+#: **SHOP_ADAPT_HERD -- float the cow/sheep split on the shop draw once the opening is banked.**
+#:
+#: The schedule's `animals_bought` rows fix the SPECIES before the board is known, and the species
+#: decides which product the herd makes. Measured RED by
+#: `tests/test_the_herd_follows_the_shop_draw.py`: seed 13 (WOOL absorption 570, YARN_STORE drawn
+#: twice) and seed 29 (WOOL absorption 30, never drawn) both produce exactly `COW 13, SHEEP 8`.
+#:
+#: WOOL is carried by ONE shop of eight, and shops are drawn with replacement to a maximum of eight
+#: instances, so P(no YARN_STORE all season) = 34%. On such a board the town removes 30 units of
+#: wool all season against the ~160 the schedule produces, and wool floors 59 units above `I0`.
+#: A sheep there is worth `8 units x ~$40 - $500` = NEGATIVE. `scripts/board_demand.py` measures the
+#: absorption directly, PASS vs PASS, so it is a property of the board with no agent involved.
+#:
+#: **The swap is free.** COW and SHEEP both build a PASTURE (`routines.ANIMALS`), so nothing in the
+#: build schedule, the pen geometry or the routing changes -- only cost (400 vs 500), first yield
+#: (8 vs 6), interval (2 vs 3) and product (MILK vs WOOL).
+#:
+#: **The opening is deliberately untouched.** Unlocks land on days 3,6,9,...,24; weighting each by
+#: its remaining drain days (27,24,21,...,6; total 132), only 20% of the season's shop demand is
+#: visible by day 3 and 39% by day 6, against 55% by day 9 and 68% by day 12. The early animals also
+#: have the longest payback, so they are the ones least worth gambling on a third of the evidence.
+#: `SHOP_ADAPT_FROM_DAY` is where the floor ends and the floating part begins.
+#:
+#: Precedent: Seb varies COW 5-13 and SHEEP 5-20 across 15 games while holding STRAWBERRY at 38-45
+#: and WHEAT at 19-36 (`scripts/board_demand.py` part B). He floats exactly this axis.
+SHOP_ADAPT_HERD = True
+
+#: Days strictly before this keep the reference schedule's species mix; from here the cow/sheep
+#: split is re-derived from the shops on every turn.
+#:
+#: **Day 3, because that is the first unlock and the herd is bought early.**
+#: A first version used day 11, on the reasoning that 55% of the season's shop-weighted demand is
+#: visible by then against 20% at day 3. That reasoning was right about the evidence and wrong about
+#: the decision, because it ignored what is left to decide: `split` is anchored on `state["bought"]`,
+#: which never decreases, so every animal already purchased is already committed. The schedule's
+#: rows all sit at day 10 or earlier, so by day 11 there was almost nothing left to steer, and the
+#: test measured it -- seed 29 (WOOL drain 19) still ended with MORE sheep than seed 13 (drain 247).
+#:
+#: One shop is weak evidence, but it is evidence about the only thing that matters here: whether
+#: YARN_STORE exists. It is one shop of eight, so seeing it at day 3 is a large update, and not
+#: seeing it is a small one -- which is the right asymmetry, since the floor bounds the downside of
+#: guessing wrong early while the upside of guessing right compounds over 27 remaining days.
+#: **Day 6, which is where the tapes actually diverge.** All ten Seb games are identical through
+#: `d4:COW`; the first differing purchase is day 6 (`90997714` d6:COW) or day 7 (`91267247` d7:SHEEP).
+#: Day 6 is also the SECOND unlock, so he treats one shop as not enough and two as enough -- which
+#: matches the arithmetic: after one draw, P(YARN_STORE still to come) is 1 - (7/8)**7 = 61%.
+SHOP_ADAPT_FROM_DAY = 6
+
+#: The floor: animals bought regardless of what the town turns out to want. Everything the schedule
+#: asks for ABOVE this floats on the shop draw from `SHOP_ADAPT_FROM_DAY`.
+#:
+#: The reference schedule asks for COW 13 / SHEEP 8, so 21 total with 17 floating at these values.
+#: The floor is deliberately the public meta's own opening -- the C-cluster family is described as a
+#: "3 cows + 1 sheep floor" in `reference/community_notebooks/kaggriculture-findings-from-zero-to-
+#: top-meta/` -- rather than a number chosen here, because the opening is the part no shop evidence
+#: can inform: barely a fifth of the season's shop-weighted demand is on the board by day 3.
+#:
+#: A floor above zero is not merely a hedge. Animals produce fertilizer daily whatever the price of
+#: their product, and MILK is carried by three shops of eight, so P(no milk shop at all) is 2.3%.
+#: **Read off the tapes, not chosen.** All ten of Seb's 1.32.6 games open with the identical five
+#: purchases -- `d0:COW d0:SHEEP d1:COW d3:COW d4:COW` -- and only diverge from day 6 onward. Four
+#: cows and one sheep is therefore his committed opening, and the minimum of each column across all
+#: ten games is exactly 5 COW and 5 SHEEP, so nothing below this is ever regretted.
+HERD_FLOOR_COW = 4
+HERD_FLOOR_SHEEP = 1
+
 #: Share of the town's remaining absorption assumed to be ours rather than the opponent's.
 #: Refuse to sell into a book that is already at, or near, the price floor.
 #:
@@ -1223,6 +1342,45 @@ def market_price(prod, inventory):
     if _KG is None:                                                         # pragma: no cover
         return float(RT.BASE_PRICE.get(prod, 0))
     return _KG.market_price(prod, int(inventory))
+
+
+def expected_future_drain(prod, day, n_unlocked, last_day=29,
+                          unlock_interval=3, shop_interval=4, max_instances=8):
+    """Units of `prod` the town will remove via shops NOT YET DRAWN, in expectation.
+
+    `town_drain_remaining` counts only unlocked shops, which is correct for a sell decision -- you
+    cannot sell into demand that does not exist yet. It is the wrong input for a PRODUCTION decision
+    taken at day 6, because the herd bought now produces for the rest of the season, by which time
+    most of the draws have happened.
+
+    Each future unlock is uniform over the eight shop types, so the expected units it contributes
+    per shop tick is `sum over shops selling prod of (2 if that shop sells only prod else 1) / 8`.
+    For WOOL that is 2/8 = 0.25 (YARN_STORE alone, double because it is single-product); for MILK
+    3/8 = 0.375. Multiplying by the ticks left after each unlock day gives the expectation.
+
+    This is the expectation, not a strict min-max: the worst case is simply "no more useful shops",
+    which the `HERD_FLOOR_*` values already bound. Taking the expectation here and the floor there
+    covers the same ground as minimising regret without pretending we know the draw.
+    """
+    kg = _KG
+    if kg is None:
+        return 0.0
+    shops = kg.SHOPS
+    per_draw = sum((2.0 if len(prods) == 1 else 1.0)
+                   for prods in shops.values() if prod in prods) / max(1, len(shops))
+    if per_draw <= 0:
+        return 0.0                       # MELON: carried by no shop, so no draw can ever help it
+    end_step = (last_day + 1) * 24
+    total = 0.0
+    drawn = n_unlocked
+    d = day + 1
+    while d <= last_day and drawn < max_instances:
+        if d % unlock_interval == 0:
+            drawn += 1
+            # Ticks this hypothetical shop would serve, from its unlock day to the season's end.
+            total += per_draw * max(0, (end_step - d * 24)) / shop_interval
+        d += 1
+    return total
 
 
 def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
@@ -2777,6 +2935,15 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                     # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
                     # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
                     n = min(n, allow - state["ordered"][("sold", prod)])
+                    # **The book is past I0 here -- this is the flooding case, not the safe one.**
+                    # `allow` and `rate[prod]` above are day totals read off a 1.32.2 replay and know
+                    # nothing about this board's shop draw. `reservation_units` does. See
+                    # `DEPTH_RULE_BELOW_BASE`'s docstring for why the rule was unreachable in exactly
+                    # the regime it was written for. `min`, never `max`: below base it may only shrink.
+                    if DEPTH_RULE_BELOW_BASE and RESERVATION_SELL_CAP:
+                        n = min(n, reservation_units(
+                            prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
+                            day * TPD + hour, unlocked_shops, have + standing[prod]))
                 # **Then top up to keep room for the drop.** Applied AFTER the caps rather than
                 # through `allow`, because `allow` is bounded by `rate[prod]` two lines up and the
                 # whole point is that the row cannot know about a full shed. It can only ever
@@ -3000,6 +3167,95 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             if dd <= day:
                 for a, qty in (sched[dd].get("animals_bought") or {}).items():
                     want_total[a] += int(qty)
+
+        # **Float the cow/sheep split on the shop draw -- see `SHOP_ADAPT_HERD`'s docstring.**
+        # The COUNT the schedule asks for is kept exactly; only the species is re-decided, and only
+        # for animals the schedule places from `SHOP_ADAPT_FROM_DAY` on. Days before that keep the
+        # reference mix, because barely a third of the season's shop demand is on the board yet.
+        #
+        # `town_drain_remaining` is the same function the sell rule uses and mirrors `_town_consume`
+        # exactly, so "how much of this product will the town still take" is a fact read off
+        # `town.unlocked_shops` and the step, not an estimate. Headroom is that drain minus what the
+        # animals we have already bought will themselves produce over the days that remain; each
+        # assignment then spends its own animal's production out of the headroom it chose, so a run
+        # of assignments cannot all claim the same units.
+        if SHOP_ADAPT_HERD and day >= SHOP_ADAPT_FROM_DAY:
+            # **The floor is a COUNT, not a set of days.** Every one of the reference schedule's 21
+            # animals sits on a row at day 10 or earlier -- the note at the top of this block records
+            # that "from day 11 the schedule's rows are empty" -- so splitting the rows by day leaves
+            # nothing to reallocate. What actually floats is the herd ABOVE the floor, and because a
+            # purchase blocked by a thin bank is retried for the rest of the season, an animal on a
+            # day-9 row is routinely still unbought at day 15, when the shops are known.
+            # **Re-decide every turn, but only ever allocate the REMAINING budget.**
+            #
+            # A split recomputed from scratch each turn buys up to BOTH ceilings as the choice flips,
+            # because the loop below buys `want_total[a] - bought[a]` and `bought` never decreases:
+            # measured at COW 20 + SHEEP 18 = 38 animals against a schedule asking for 21.
+            #
+            # Latching the decision at day 11 fixes that and throws away real information -- seed 41
+            # draws its YARN_STORE on day 12, one day after the latch, and would be locked to the
+            # 5-sheep floor on a board that ends up absorbing wool.
+            #
+            # Anchoring the split on what has ALREADY been bought gives both: the target can only
+            # grow, so the total is capped at the schedule's own count, while every animal still
+            # unbought is re-aimed at whatever the shops now say. Shops keep unlocking to day 24, so
+            # this keeps improving as the evidence arrives.
+            total = want_total["COW"] + want_total["SHEEP"]
+            split = {a: state["bought"][a] for a in ("COW", "SHEEP")}
+            # The floor is a commitment, so honour it even if the book for its product looks empty.
+            split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total))
+            split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total - split["COW"]))
+            step_now = day * TPD + hour
+            days_left = max(0, last_day - day)
+            headroom, per_animal = {}, {}
+            for a in ("COW", "SHEEP"):
+                spec = R.ANIMALS[a]
+                # Yields left for an animal bought NOW: nothing before `first_yield_day`, then one
+                # every `interval` days. This is why a late sheep is worth much less than a late cow
+                # -- 6 days then every 3, against 8 days then every 2.
+                per_animal[a] = max(0, (days_left - spec["first_yield_day"]) // spec["interval"])
+                # **Count the shops that have NOT been drawn yet.** `town_drain_remaining`
+                # deliberately counts only what is already unlocked, so reading it alone treats the
+                # draws so far as final. At day 6 that is two draws of eight, and
+                # P(YARN_STORE still appears) is 1 - (7/8)**6 = 55% -- so "no wool shop yet" is weak
+                # evidence, and committing the herd against it is the largest-regret move available.
+                # Adding the expected future drain is what stops an early gap becoming a decision.
+                headroom[a] = (town_drain_remaining(spec["product"], step_now, unlocked_shops)
+                               + expected_future_drain(spec["product"], day, len(unlocked_shops),
+                                                       last_day)
+                               - split[a] * per_animal[a])
+            # **Commit only the NEXT purchases, never the rest of the season.**
+            #
+            # The previous version allocated the whole remaining budget in one pass and, because
+            # `split` is anchored on `state["bought"]` which never falls, froze that allocation for
+            # good. Shops keep unlocking on days 9, 12, 15, 18, 21 and 24, so a herd settled at day 6
+            # ignored six later draws: seed 11 committed to cows on a board whose YARN_STORE arrived
+            # afterwards and which ended the season absorbing 534 units of wool.
+            #
+            # The day-6 choice there was CORRECT on the evidence it had. Draws are i.i.d. uniform
+            # with replacement, so nothing already seen changes the distribution of what is still to
+            # come, and buying cows with no YARN_STORE in sight is right. The error was never
+            # revisiting it once the draw did arrive.
+            #
+            # Offering the remaining budget to whichever species leads RIGHT NOW leaves every later
+            # purchase free to go the other way, and `bought` still caps the total, so this cannot
+            # overshoot the schedule's count. Ties fall to COW: cheaper ($400 vs $500), yields sooner
+            # and more often, and MILK is carried by three shops against WOOL's one.
+            # **One animal at a time, and that is provably right rather than merely careful.**
+            # Each assignment consumes the headroom that justified it, so the objective is separable
+            # and concave in the count per species -- the case where greedy one-at-a-time is optimal.
+            # It is the same shape as the shed release, which was written up as a knapsack and turned
+            # out to be a sort (`docs/REGISTER.md` #46). Handing the whole remaining budget to
+            # whichever species leads on the first unit ignores the diminishing returns: past enough
+            # cows the milk book is spoken for and the next animal should be a sheep even on a milk
+            # board. Recomputed from scratch every turn, so new unlocks move later assignments.
+            for _ in range(max(0, total - split["COW"] - split["SHEEP"])):
+                # Ties fall to COW: cheaper ($400 vs $500), yields sooner and more often, and MILK is
+                # carried by three shops against WOOL's one.
+                pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
+                split[pick] += 1
+                headroom[pick] -= per_animal[pick]
+            want_total["COW"], want_total["SHEEP"] = split["COW"], split["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue

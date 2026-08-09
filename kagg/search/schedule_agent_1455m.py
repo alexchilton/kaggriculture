@@ -1593,6 +1593,22 @@ def market_price(prod, inventory):
     return _KG.market_price(prod, int(inventory))
 
 
+#: `townCenterSellInterval`: 12 through 1.32.5, 24 from the 1.32.6 town rebalance.
+#:
+#: **Read from the live CONFIGURATION, never from the env's spec file on disk.** The first version
+#: opened `kaggriculture.json` from the installed env's own directory, the right instinct -- do not
+#: hard-code
+#: a number the env has already changed once -- but it cannot ship: `build_planner_submission.py`
+#: refuses to bundle a module that touches the filesystem, because on Kaggle there is no repo and no
+#: env directory to read. The `try/except` around it did not help; the bundler rejects the reference
+#: statically, and correctly, since a silent fallback would have shipped a guess.
+#:
+#: The configuration is handed to `agent(obs, config)` every turn and carries the real value, so
+#: `_note_config` below adopts it on the first call. 24 is the 1.32.6 default and only stands in for
+#: the turns before a configuration has been seen.
+_CENTER_INTERVAL = 24
+
+
 def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
                          shop_interval=4, center_interval=None):
     """Units of `prod` the town will remove from the market from `step` up to `end_step`.
