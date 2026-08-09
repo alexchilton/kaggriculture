@@ -35,9 +35,39 @@ out at the $1 floor, revenue is `q * $1` and rises forever, so a global search r
 units at $5". The first version of this table did exactly that and reported wheat, carrot, tomato,
 melon, egg and fertilizer all saturating at 3,000 units. That is the search limit, not economics.
 
-## Geese are the exception, and they are the only one
+## Geese are NOT the exception -- retracted the same day
 
-Priced per *head* rather than per unit, milk and wool go flat almost immediately and eggs do not:
+**This section originally claimed geese scale without limit. That was wrong, from two bugs at
+once, and the corrected answer is the opposite: geese saturate EARLIEST of the three.**
+
+The two bugs:
+
+1. `revenue_rate` computed a herd's output as `events * max_held`. `max_held` caps the
+   *unharvested buffer* -- `kaggriculture.py:813` is `yield_units = min(max_held, yield_units + 1 +
+   bonus)` -- so an animal makes one unit per event. Every herd was overstated 4-6x.
+   `kagg/economics/production.py:60` already held the measured truth: EGG 26, MILK 11, WOOL 8.
+2. `best_revenue` took the *global* maximum over sell volume. Past the crash `market_price` sits at
+   the $1 floor, so revenue is `q * $1` and rises forever; the search left the modelled region and
+   returned "dump 3,000 units at $5". It now stops at the first local peak.
+
+Corrected, per head:
+
+```
+  animal    1      2      4      8     12     16     20     24
+  COW      80    160    320    640    960   1164   1164   1164   <- flat from 16
+  SHEEP    67    133    267    533    800    897    897    897   <- flat from 16
+  GOOSE    50    100    200    246    246    246    246    246   <- flat from 8
+```
+
+Both corrections matter for the leaders question. Cow and sheep saturation moved 4 -> 16, which
+**brackets Seb's 9 cows and 11 sheep** instead of contradicting them, so the contradiction flagged
+below is resolved and the model was the thing that was wrong.
+
+Egg's book really is the shallowest in the game -- `above_func: log`, `above_target: 0.2` against
+wool's `sq` at 3.2 -- but egg's base is $50 against milk's $160 and wool's $200, so the shallow
+curve protects a much smaller prize. A goose herd caps at $246/day; a cow herd at $1,164.
+
+The superseded reading follows, kept because the shape of the error is the point:
 
 ```
   animal    1      2      4      6      8     12     16     20  head

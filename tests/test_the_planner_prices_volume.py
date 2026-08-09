@@ -27,6 +27,7 @@ is worth more money, by less and less.
 import pytest
 
 from kagg.search import chains as C
+from kagg.search import routines as R
 from kagg.search import scheduler as S
 
 
@@ -73,7 +74,13 @@ def test_more_ground_is_never_worth_less(what):
 #: Where each product stops paying for more ground, measured 2026-08-09 with `CONTEST = 1.0`.
 #: These are the numbers that make overproduction visible, so they are pinned: a silent change here
 #: silently rewrites every allocation the search produces.
-SATURATION = {("grow", "MELON"): 8, ("ranch", "COW"): 4, ("ranch", "SHEEP"): 4}
+#:
+#: **Cows and sheep read 4 until the `events * max_held` bug was fixed.** At 4 they contradicted the
+#: rank-1 ladder agent, which runs 9 cows and 11 sheep; at 16 they bracket it. Geese moved the other
+#: way -- they looked unbounded and cap at 8, the earliest of the three, because the dump-at-the-floor
+#: branch in `best_revenue` was inflating them.
+SATURATION = {("grow", "MELON"): 8, ("ranch", "COW"): 16, ("ranch", "SHEEP"): 16,
+              ("ranch", "GOOSE"): 8}
 
 
 @pytest.mark.parametrize("kind,what,tiles", [(k, w, n) for (k, w), n in SATURATION.items()])
@@ -116,3 +123,44 @@ def test_animals_are_priced_on_the_same_curve():
         f"{C.DRAIN_UNITS['MILK'] * S.OPPONENT_SHARE:.0f} units of milk and the planner cannot see "
         "past it."
     )
+
+
+def test_a_head_of_livestock_yields_what_the_live_env_measured():
+    """`events * max_held` is not the season yield -- `max_held` caps the unharvested buffer.
+
+    `kaggriculture.py:813` reads `yield_units = min(max_held, yield_units + base + bonus)` with
+    `base = 1`, so an animal produces ONE unit per event and `max_held` only says how many may sit
+    uncollected before production stalls. `kagg/economics/production.py:60` measured the season
+    totals in the live environment -- EGG 26, MILK 11, WOOL 8 -- and CLAUDE.md states the goose case
+    explicitly. Multiplying by `max_held` overstates every animal by 4-6x, and it is the reason the
+    planner priced saturation at 4 cows while the rank-1 ladder agent runs 9.
+    """
+    from kagg.economics import production as P
+
+    for animal, product in (("COW", "MILK"), ("SHEEP", "WOOL"), ("GOOSE", "EGG")):
+        one = S.revenue_rate("ranch", animal, 1)
+        days = max(R.SEASON_DAYS - R.ANIMALS[animal]["first_yield_day"], 1)
+        expect = S.best_revenue(product, P.ANIMAL_YIELD_PER_SEASON[product]) / days
+        assert one == pytest.approx(expect, rel=0.01), (
+            f"{animal}: priced at {one:.0f}/day, but one head yields "
+            f"{P.ANIMAL_YIELD_PER_SEASON[product]} {product} a season, which is worth "
+            f"{expect:.0f}/day. The estimate is using events * max_held."
+        )
+
+
+def test_we_never_value_stock_at_the_price_floor():
+    """`best_revenue` must not discover the dump-everything-at-$1 branch.
+
+    Once `market_price` bottoms out, revenue is `q * PRICE_FLOOR` and rises without limit, so a
+    global maximum over volume always returns "sell 3,000 units at $5". That is not a strategy, it
+    is the search leaving the modelled region -- and it is what made geese look unbounded.
+    """
+    for prod in ("EGG", "MILK", "WOOL", "MELON"):
+        # `best_revenue` values the best SUBSET, so it must stop growing once production passes the
+        # peak. If it keeps climbing with `produced`, it has found the floor branch.
+        at_peak = S.best_revenue(prod, 600)
+        absurd = S.best_revenue(prod, 6000)
+        assert absurd == pytest.approx(at_peak, rel=0.01), (
+            f"{prod}: 600 units are worth {at_peak:,.0f} and 6,000 units {absurd:,.0f}. Value is "
+            "still rising ten-fold past the peak, which only happens by selling at the price floor."
+        )

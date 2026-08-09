@@ -236,12 +236,19 @@ def best_revenue(prod, produced, contest=CONTEST):
     # The candidate volumes must form a grid that GROWS with `produced` -- a fixed absolute step, so
     # the set searched at 200 units contains the set searched at 100. A step of `produced // 24`
     # does not, and the maximum over a shifting grid is not monotone.
-    best = sale_revenue(prod, produced, contest)
+    # Stop at the FIRST local peak, never the global one. Once `market_price` bottoms out at
+    # `PRICE_FLOOR` the revenue of `q` units is `q * $1` and rises without limit, so a global search
+    # always returns "dump 3,000 units at $5" -- which is not a strategy, it is the estimate leaving
+    # the region it models. That branch is what made geese look unbounded on 2026-08-09, and it is
+    # the same mistake `HOLD_A_FLOORED_BOOK` exists to stop the shipped agent making for real.
+    best = 0.0
     for q in range(_VOLUME_STEP, produced + 1, _VOLUME_STEP):
         v = sale_revenue(prod, q, contest)
         if v > best:
             best = v
-    return best
+        elif v < best * 0.98:
+            return best
+    return max(best, sale_revenue(prod, produced, contest))
 
 
 def revenue_rate(kind, what, n_tiles):
@@ -284,8 +291,12 @@ def revenue_rate(kind, what, n_tiles):
     # supply term, not a share dial -- see `docs/the_planner_prices_the_wrong_market_2026-08-08.md`.
     if kind == "ranch":
         a = R.ANIMALS[what]
-        events = max(1, (R.SEASON_DAYS - a["first_yield_day"]) // max(a["interval"], 1))
-        units = events * a["max_held"] * n_tiles
+        # `ANIMAL_YIELD_PER_SEASON`, not `events * max_held`. `max_held` caps the *unharvested*
+        # buffer -- `kaggriculture.py:813` is `yield_units = min(max_held, yield_units + 1 + bonus)`
+        # -- so an animal makes one unit per event and the old formula overstated every herd by
+        # 4-6x. Corrected, milk's 160-unit peak is ~14 cows rather than 2.4, which finally brackets
+        # the 9 cows and 11 sheep the rank-1 ladder agent actually runs.
+        units = P.ANIMAL_YIELD_PER_SEASON[a["product"]] * n_tiles
         days = max(R.SEASON_DAYS - a["first_yield_day"], 1)
         return best_revenue(a["product"], units) / days
     y = max(P.TILE_YIELD_FERTILIZED[what], P.TILE_YIELD_PER_SEASON[what])
