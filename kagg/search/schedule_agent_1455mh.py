@@ -268,6 +268,10 @@ WAIT_FOR_THE_MORNING_DELIVERY = True
 #: does. OFF drops the stop, which is what leaves a first-day animal unfed.
 FETCH_THE_FEED_AND_RETURN = True
 
+#: Whether a hand crossing a tile that holds a hungry animal feeds it, out of wheat it is carrying
+#: above what the rest of its own route needs. See the block in the tour walker.
+FEED_WHAT_YOU_STAND_ON = True
+
 
 def _arrivals(units, n):
     """Where the day's `n` hires will land, in the order `farm["hands"]` will hold them.
@@ -1569,6 +1573,19 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     if m is None:               # unreachable: drop the stop rather than idle on it
                         st["route"].pop(0)
                         continue
+                    # Same rule as the travel branch below, and this is the branch that actually
+                    # matters: the hands that walked over the hungry pen at (1,4) on day 4 were on
+                    # their way to the shed to DROP, not between two work stops. Putting the check
+                    # only on the travel branch changed nothing at all.
+                    if FEED_WHAT_YOU_STAND_ON and inv.get("WHEAT", 0) > 0:
+                        here = tiles[pos[1]][pos[0]]
+                        if (isinstance(here, dict) and "animal" in here
+                                and not here.get("fed_today")):
+                            owed = sum(1 for nd in st["route"]
+                                       for o, _i in getattr(nd, "ops", ()) if o == "FEED")
+                            if inv["WHEAT"] > owed:
+                                act = ["FEED"]
+                                break
                     act = [m]
                     break
                 if node.drop:
@@ -1640,6 +1657,37 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 if m is None:                       # unreachable: drop the stop rather than idle on it
                     st["route"].pop(0)
                     continue
+                # **Feed the animal under your feet before walking off it.** The route is a visit
+                # ORDER and `_live_ops` is consulted at STOPS, so a tile a hand merely crosses is
+                # never looked at -- nothing asks whether the ground it is standing on needs
+                # something already in its hand.
+                #
+                # Traced on day 4, seed 11, at the pen (1,4) that ends the day unfed:
+                #
+                #     h13  u6@(1,4){WHEAT: 8} -> EAST
+                #     h15  u5@(1,4){WHEAT: 8} -> EAST
+                #
+                # Two hands, eight wheat each, standing ON the hungry animal and walking over it.
+                # Six of these across d3-d6, and they are `feed 6/7` on d4 and `feed 7/8` on d6.
+                #
+                # A FEED is not an optimisation. `consecutive_unfed >= 2` removes the animal outright
+                # (`kaggriculture.py:786`), so this costs a $400-500 asset plus every remaining day of
+                # its production, against one turn. `REQUIRED_OPS` already says so in the planner;
+                # the executor simply never got asked.
+                #
+                # Only out of SURPLUS: the wheat a hand carries is drawn for the pens still on its
+                # own route, and spending it here would just move the hunger to one of those. It
+                # feeds only what it is carrying above that count, so the tour it was planned for is
+                # untouched.
+                if FEED_WHAT_YOU_STAND_ON and inv.get("WHEAT", 0) > 0:
+                    here = tiles[pos[1]][pos[0]]
+                    if (isinstance(here, dict) and "animal" in here
+                            and not here.get("fed_today")):
+                        owed = sum(1 for nd in st["route"]
+                                   for o, _i in getattr(nd, "ops", ()) if o == "FEED")
+                        if inv["WHEAT"] > owed:
+                            act = ["FEED"]
+                            break
                 act = [m]
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]

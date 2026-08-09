@@ -731,3 +731,66 @@ def test_an_animal_placed_today_is_fed_today():
                     for d, (h, w, c) in sorted(unfed.items()))
         + "\n  The wheat existed and the hand had turns. Only the trip back was never planned."
     )
+
+
+def test_no_hand_walks_over_a_hungry_animal_with_the_feed_in_its_hand():
+    """**The route is a visit ORDER, so a tile merely passed through is never looked at.**
+
+    `_live_ops` is consulted at route STOPS. A hand walking from one stop to the next crosses tiles
+    it is not booked to work, and nothing asks whether the ground under it needs something it is
+    already carrying.
+
+    Traced on day 4, seed 11, at the pen (1,4) which ends the day unfed:
+
+        h13   u6@(1,4){WHEAT: 8}  -> EAST
+        h15   u5@(1,4){WHEAT: 8}  -> EAST
+
+    Two hands, eight wheat each, standing ON the hungry animal, walking over it. `feed 6/7` and
+    `care 6/7` on day 4 and `feed 7/8` on day 6 are this.
+
+    A FEED is not an optimisation: `consecutive_unfed >= 2` removes the animal outright
+    (`kaggriculture.py:786`), so the animal this costs is a $400-500 asset plus every remaining day
+    of its production. `REQUIRED_OPS = ("FEED",)` already says as much in the planner; the executor
+    just never gets the chance to act on it.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    MOVES = {"NORTH", "SOUTH", "EAST", "WEST"}
+
+    env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    agent = SA.make_agent(_thin(sched), 0, router=True)
+    opp = _tape_policy(1)
+
+    walked = []
+    for t in range(24 * DAYS):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        a0, a1 = agent(o0), opp(o1, t)
+        farm, priv = o0["farms"][0], o0["private"]
+        invs = priv.get("inventories") or []
+        pos = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
+        acts = [a0["farmer"], *a0["hands"]]
+        for u, p in enumerate(pos):
+            if u >= len(acts) or not acts[u] or acts[u][0] not in MOVES:
+                continue
+            if int((invs[u] or {}).get("WHEAT", 0) if u < len(invs) else 0) <= 0:
+                continue
+            cell = farm["tiles"][p[1]][p[0]]
+            if isinstance(cell, dict) and "animal" in cell and not cell.get("fed_today"):
+                walked.append(f"    d{t // 24} h{t % 24}  u{u}@{p} carrying "
+                              f"{int((invs[u] or {}).get('WHEAT', 0))} WHEAT -> {acts[u][0]}, "
+                              f"leaving a hungry {cell['animal']}")
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
+
+    assert not walked, (
+        "a hand walked off a tile holding a hungry animal while carrying its feed:\n"
+        + "\n".join(walked)
+        + "\n  One turn to FEED. `consecutive_unfed >= 2` removes the animal outright."
+    )
