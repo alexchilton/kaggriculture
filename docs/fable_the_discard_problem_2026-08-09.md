@@ -1,5 +1,34 @@
 # The discard problem — a seed-stable harness, a real bug found and fixed, and a mixed verdict on the rest
 
+> [!CAUTION]
+> **CORRECTION, 2026-08-09 (later the same day). Every discard quantity in this document is wrong,
+> and overstates the loss by roughly 15x on the surface that matters.**
+>
+> The metric used throughout — `held_at_dusk − shed_at_dawn` — is not the discard.
+> Hour 23's SELL and BUY_PRODUCT settle in the **same `env.step`** as the shed rollover, so a sale
+> is counted as a loss.
+>
+> Instrumenting `_drop_inventories_to_shed`, which is the only path in the game that deletes
+> product (`PLACE` into a full shed clamps and leaves the remainder in the hand):
+>
+> | seed 11 | this doc's delta method | env, exact |
+> |---|---|---|
+> | full season | 105 (§3.2) / 137 | **7** |
+> | handover 11 | 145 (§3.1) | **123** |
+>
+> Final money is identical under both methods, so these are the same runs measured two ways.
+>
+> **Consequence: on the canonical full-season surface the discard problem is ~20 units a season
+> against a $55,837 bank.** It is real and large only on the handover-11 fixture, which is not the
+> surface the agent is scored on. Any figure below that is a shed delta — including the ladder-loss
+> "263 units" and `SELL_TO_MAKE_ROOM`'s "101 units" — needs re-reading with that 15x in mind.
+>
+> What survives unaffected: §1's seed-stability finding, and §2's `FEED_RESERVE_YIELDS_TO_OVERFLOW`
+> day-gate bug, which is a logic error rather than a measurement.
+>
+> Same class of mistake as `feedback_offers_are_not_fills`: a plausible proxy standing in for a
+> quantity the environment already tracks exactly. Source: `docs/feed_hold_and_shed_knapsack_2026-08-09.md`.
+
 2026-08-09. Branch `shaping-potential`. Starting point: `kagg/search/schedule_agent.py`'s
 `FEED_RESERVE_YIELDS_TO_OVERFLOW` mechanism, committed mid-session as `35b83a7 WIP: the feed
 reserve garrisons half the shed while the harvest is binned`.
