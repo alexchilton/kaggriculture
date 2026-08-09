@@ -26,15 +26,33 @@ def _run(agent, seed=5, **config):
     return env
 
 
-def _buy_then_pickup(qty):
+def _buy_then_pickup(qty, cap=SMALL_CAP):
+    """Accumulate `qty` in a HAND, in shed-sized instalments.
+
+    **Rewritten for 1.32.6.** This used to be one BUY of `qty` and one PICKUP, because BUY_PRODUCT
+    ignored `shedCapacity`. It no longer does -- a buy fills only as far as the shed has room -- so
+    a single order for 20 against a cap of 10 delivered 10 and every test built on it failed with
+    `assert 10 == 20`, in the SETUP rather than on the rule it meant to check.
+
+    Buying and clearing `cap` at a time reaches the same carried total and exercises the same rule:
+    the hand has no capacity limit, so it keeps accumulating while the shed cannot.
+    """
+    rounds = -(-qty // cap)          # ceiling division
+
     def agent(obs, cfg):
-        if obs["step"] == 0:
-            return {"market": [["BUY_PRODUCT", "WHEAT", qty]]}
-        if obs["step"] == 1:
-            return {"farmer": ["PICKUP", "WHEAT", qty]}
-        return {}
+        s = obs["step"]
+        if s >= rounds * 2:
+            return {}
+        take = min(cap, qty - (s // 2) * cap)
+        if s % 2 == 0:
+            return {"market": [["BUY_PRODUCT", "WHEAT", take]]}
+        return {"farmer": ["PICKUP", "WHEAT", take]}
 
     return agent
+
+
+#: The step index at which `_buy_then_pickup(QTY)` has finished accumulating.
+LOADED = 2 * (-(-QTY // SMALL_CAP))
 
 
 def test_default_shed_capacity_is_one_hundred():
@@ -52,9 +70,9 @@ def test_overnight_carry_is_capped_at_shed_capacity_and_the_excess_is_destroyed(
     """
     env = _run(_buy_then_pickup(QTY), shedCapacity=SMALL_CAP)
 
-    # steps[2] is after step 1: everything picked up, shed emptied.
-    assert env.steps[2][0]["observation"]["private"]["inventories"][0]["WHEAT"] == QTY
-    assert env.steps[2][0]["observation"]["private"]["shed"]["WHEAT"] == 0
+    # `LOADED` is after the last PICKUP: everything in the hand, shed emptied.
+    assert env.steps[LOADED][0]["observation"]["private"]["inventories"][0]["WHEAT"] == QTY
+    assert env.steps[LOADED][0]["observation"]["private"]["shed"].get("WHEAT", 0) == 0
 
     # Day 0 ends after step 23, so steps[25] is the following morning.
     morning = env.steps[25][0]["observation"]["private"]
@@ -70,25 +88,40 @@ def test_carried_inventory_itself_has_no_cap_so_intraday_throughput_can_exceed_t
     actions to do it.
     """
     env = _run(_buy_then_pickup(QTY), shedCapacity=SMALL_CAP)
-    carried = env.steps[2][0]["observation"]["private"]["inventories"][0]
+    carried = env.steps[LOADED][0]["observation"]["private"]["inventories"][0]
 
     assert carried["WHEAT"] == QTY > SMALL_CAP
 
 
-def test_buying_product_bypasses_the_shed_cap_entirely():
-    """`_commit_unit` BUY_PRODUCT writes straight to the shed with no capacity check.
+def test_buying_product_is_clamped_by_the_shed_cap():
+    """**REVERSED BY kaggle-environments 1.32.6.** This loophole is closed.
 
-    A genuine asymmetry: bought wheat stockpiles past capacity, harvested product cannot.
-    Only WHEAT and FERTILIZER are buyable, so this is a wheat-and-fertilizer-only loophole.
+    Until 1.32.6 `_commit_unit` BUY_PRODUCT wrote straight to the shed with no capacity check, so
+    bought wheat stockpiled past capacity while harvested product could not. The test that pinned
+    that read `shed["WHEAT"] == QTY > SMALL_CAP` and was named
+    `test_buying_product_bypasses_the_shed_cap_entirely`.
+
+    Measured on 1.32.6, one BUY_PRODUCT of 20 on step 0:
+
+        shedCapacity  10 -> shed 10
+        shedCapacity  20 -> shed 20
+        shedCapacity  50 -> shed 20
+
+    The order fills only as far as the shed has room. This is not a smaller asymmetry, it is the
+    opposite rule, and it makes the hundred slots a hard budget on the BUY side as well as the
+    overnight side: feed cannot be bought into a shed that product is already occupying, and
+    product cannot be dropped into a shed that feed is occupying. Both directions now compete for
+    one number.
     """
     def agent(obs, cfg):
         return {"market": [["BUY_PRODUCT", "WHEAT", QTY]]} if obs["step"] == 0 else {}
 
     env = _run(agent, shedCapacity=SMALL_CAP)
 
-    assert env.steps[1][0]["observation"]["private"]["shed"]["WHEAT"] == QTY > SMALL_CAP
-    # Nightfall does not trim an already-overfull shed; it only refuses to add more.
-    assert env.steps[25][0]["observation"]["private"]["shed"]["WHEAT"] == QTY
+    assert env.steps[1][0]["observation"]["private"]["shed"]["WHEAT"] == SMALL_CAP, (
+        "BUY_PRODUCT should now fill only as far as the shed has room")
+    # Nightfall neither trims nor tops up what the cap already bounded.
+    assert env.steps[25][0]["observation"]["private"]["shed"]["WHEAT"] == SMALL_CAP
 
 
 def test_a_quadrant_of_wheat_cannot_be_stockpiled_for_a_late_dump():
