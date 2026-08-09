@@ -15,17 +15,25 @@ The game does not require it. Two mechanics, read off `kagg/sim/tiles.py`:
 So half the tiles each day is legal, and it doubles the land one unit can hold: eight tiles fit a
 24-turn day where daily watering caps at four.
 
-Measured, one unit, NW tiles, whole season:
+Measured, one unit, NW tiles, whole season. **The melon row reversed in 1.32.6** -- both economies
+shown, remeasured 2026-08-09 over 8 seeds:
 
-    STRAWBERRY   4 tiles daily   $6,182
-    STRAWBERRY   8 tiles alt     $9,395    +$3,213  (+52%)
-    MELON        4 tiles daily  $15,575
-    MELON        8 tiles alt    $11,167    -$4,408  (-28%)
+                            1.32.2      1.32.6
+    STRAWBERRY  4 daily     $6,182      $5,788
+    STRAWBERRY  8 alt       $9,395      $8,572     ratio 1.52 -> 1.48   unchanged
+    MELON       4 daily    $15,575     $14,241
+    MELON       8 alt      $11,167     $20,788     ratio 0.72 -> 1.46   REVERSED, 8/8 seeds
 
-**It must therefore be per chain, never a default.** Strawberry is an ongoing crop producing on a
-fixed interval, so it does not care which days it is visited. Melon is one-shot with a harvest window
-that closes at `max_day` 12, and an every-other-day visit can miss it -- after which `decay_plants`
-eats the yield.
+**It was therefore per chain, never a default** -- strawberry is an ongoing crop producing on a
+fixed interval, so it does not care which days it is visited, while melon was one-shot with a
+harvest window closing at `max_day` 12 that an every-other-day visit could miss, after which
+`decay_plants` ate the yield.
+
+That reason no longer costs what it did: `first_yield_day` moved in 1.32.6, and melon now *gains*
+46% from the wider block. Strawberry is unmoved, so this is specific to melon rather than a rescale
+of the economy. The default is still daily and `test_melon_daily_beats_alternate` is a strict xfail
+recording that the justification has gone -- widening melon's blocks is a strategy change to
+`chains.py`, not a test repair.
 
 Why this matters beyond +52%: strawberry is the **largest market in the game**, $68,640 against
 melon's $35,000 (drain 572 at base 120, versus 140 at 250), and filling it needs ~48 tiles. At four
@@ -156,11 +164,40 @@ def test_strawberry_earns_more_on_the_wider_block():
         f"the extra land is not paying")
 
 
-def test_melon_is_left_alone_by_default():
-    """Alternate days cost melon 28% -- its harvest window closes at max_day 12 and an every-other-day
-    visit can miss it. So the cadence is opt-in per chain, and `water_every=1` must be untouched."""
-    s = R.grow(R.Script(), "MELON", list(NW[:4]), plant_day=0, unit=0)
-    assert _bank(s) > 15_000, "the default melon chain has regressed"
+def test_melon_still_defaults_to_the_daily_cadence():
+    """Pins the current default so a change to it is deliberate rather than incidental.
+
+    Note this is now pinning a default the evidence no longer supports -- see the xfail below.
+    """
+    block = list(NW[:4])
+    s = R.grow(R.Script(), "MELON", block, plant_day=0, unit=0)
+    growing = [d for d in range(R.SEASON_DAYS) if _tiles_touched(s, 0, d)]
+    assert growing, "the melon chain works no tile at all"
+    for day in growing:
+        assert set(_tiles_touched(s, 0, day)) == {tuple(t) for t in block}, (
+            f"day {day} did not visit all four tiles -- the default is no longer the daily cadence")
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason=(
+    "REVERSED BY kaggle-environments 1.32.6, measured 2026-08-09. The module docstring's melon row "
+    "is from 1.32.2 and the sign has flipped -- alternate-day watering no longer costs melon 28%, "
+    "it GAINS 46%, on 8/8 seeds:\n"
+    "        MELON 4 daily      $14,241   (1.32.2: $15,575)\n"
+    "        MELON 8 alternate  $20,788   (1.32.2: $11,167)   ratio 1.460\n"
+    "Strawberry is unmoved (1.481 now against 1.52 before), so this is specific to melon rather "
+    "than a rescale of the whole economy. The stated reason for the exclusion -- melon's harvest "
+    "window closing at max_day 12, which an every-other-day visit can miss -- no longer costs what "
+    "it did; `first_yield_day` moved in 1.32.6 (see docs/, 'Close the melon harvest lead'). "
+    "Left as a strict xfail rather than fixed because widening melon's blocks is a STRATEGY change "
+    "to chains.py, not a test repair. Raised as its own task."))
+def test_melon_daily_beats_alternate():
+    """The justification for the exclusion. It no longer holds; the xfail records that."""
+    daily = R.grow(R.Script(), "MELON", list(NW[:4]), plant_day=0, unit=0)
+    alt = R.grow(R.Script(), "MELON", list(NW[:8]), plant_day=0, unit=0, water_every=2)
+    a, b = _bank(daily), _bank(alt)
+    assert a > b, (f"alternate-day melon banks ${b:,.0f} against daily's ${a:,.0f} -- the reason "
+                   f"melon is excluded from the wide cadence has evaporated")
 
 
 def test_the_genome_can_reach_the_wider_blocks():

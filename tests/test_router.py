@@ -29,6 +29,24 @@ from kagg.search import router as RT
 from kagg.search import schedule_agent
 from kagg.search.schedule_agent import FEED_DAYS
 
+#: The leader tape every fixture in this file replays. **One place, deliberately.** It was
+#: hard-coded at four separate sites here while `scripts/breakdown.py` had already moved its default
+#: to `seb1326`, so the tests and the submission were reading different seasons and nothing said so.
+#:
+#: This is still `seb` (90976060's predecessor 90494364, played on **1.32.2**) and NOT `seb1326`.
+#: Repointing is not a path change: these fixtures assert day by day against this tape's own plan --
+#: land on days 5/9/11 and ~19 pens -- where seb1326 lands on 4/6/10 with 21 pens, so every asserted
+#: day would have to be re-derived from the new tape.
+#:
+#: Note what that means for the numbers below: they were recorded in 1.32.2 and are now replayed
+#: inside a 1.32.6 env. Measured 2026-08-09, Seb's own actions reach dawn day 6 with **1,855** here,
+#: against the 869 these tests quote. Any absolute bank threshold in this file is suspect until the
+#: tape is repointed.
+TAPE_REPLAY = "data/seed_scripts/top_guys/90494364.json"
+TAPE_SCHEDULE = "data/seed_scripts/top_guys/90494364/schedule.json"
+TAPE_TEAM = "Seb (allegedly)"
+
+
 REF = pathlib.Path("reference/kaggriculture.py")
 
 
@@ -1352,9 +1370,7 @@ def test_seb_day_zero_places_every_animal_early_enough_to_feed_it():
     import pathlib as _pl
     from kaggle_environments import make
 
-    replay = "data/seed_scripts/top_guys/90494364.json"
-    schedule = "data/seed_scripts/top_guys/90494364/schedule.json"
-    team = "Seb (allegedly)"
+    replay, schedule, team = TAPE_REPLAY, TAPE_SCHEDULE, TAPE_TEAM
     tape_only = ("plant_tiles", "build_tiles", "land_turns", "orders")
 
     d = json.loads(_pl.Path(replay).read_text())
@@ -1501,8 +1517,8 @@ def test_day_zero_matches_seb_op_for_op():
     import pathlib as _pl
     from kaggle_environments import make
 
-    d = json.loads(_pl.Path("data/seed_scripts/top_guys/90494364.json").read_text())
-    seat = d["info"]["TeamNames"].index("Seb (allegedly)")
+    d = json.loads(_pl.Path(TAPE_REPLAY).read_text())
+    seat = d["info"]["TeamNames"].index(TAPE_TEAM)
     tape = [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
              "hands": list((s.get("action") or {}).get("hands") or []),
              "market": list((s.get("action") or {}).get("market") or [])}
@@ -1512,7 +1528,7 @@ def test_day_zero_matches_seb_op_for_op():
              "market": list((s.get("action") or {}).get("market") or [])}
             for s in (step[seat] or {} for step in d["steps"][1:])]
     sched = {int(k): v for k, v in json.loads(
-        _pl.Path("data/seed_scripts/top_guys/90494364/schedule.json").read_text()).items()}
+        _pl.Path(TAPE_SCHEDULE).read_text()).items()}
     thin = {k: {a: b for a, b in v.items()
                 if a not in ("plant_tiles", "build_tiles", "land_turns", "orders")}
             for k, v in sched.items()}
@@ -1553,8 +1569,8 @@ def _seb_tape():
     """Seb's replay, our seat's actions, his seat's actions, and the schedule stripped to shipping keys."""
     import json
     import pathlib as _pl
-    d = json.loads(_pl.Path("data/seed_scripts/top_guys/90494364.json").read_text())
-    seat = d["info"]["TeamNames"].index("Seb (allegedly)")
+    d = json.loads(_pl.Path(TAPE_REPLAY).read_text())
+    seat = d["info"]["TeamNames"].index(TAPE_TEAM)
 
     def acts(idx):
         return [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
@@ -1563,7 +1579,7 @@ def _seb_tape():
                 for s in (step[idx] or {} for step in d["steps"][1:])]
 
     sched = {int(k): v for k, v in json.loads(
-        _pl.Path("data/seed_scripts/top_guys/90494364/schedule.json").read_text()).items()}
+        _pl.Path(TAPE_SCHEDULE).read_text()).items()}
     thin = {k: {a: b for a, b in v.items()
                 if a not in ("plant_tiles", "build_tiles", "land_turns", "orders")}
             for k, v in sched.items()}
@@ -3010,7 +3026,7 @@ def _demand_from_seb(through_day=13):
     import json
     import pathlib as _pl
     sched = {int(k): v for k, v in json.loads(
-        _pl.Path("data/seed_scripts/top_guys/90494364/schedule.json").read_text()).items()}
+        _pl.Path(TAPE_SCHEDULE).read_text()).items()}
     out = []
     for d in sorted(sched):
         if d > through_day:
