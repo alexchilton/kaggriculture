@@ -72,7 +72,14 @@ def agent(obs, config=None):
     return {"farmer": farmer, "hands": hands[:n_hands], "market": market}
 
 
-def _opponent(name):
+def build_agent(genome, slots):
+    """Build the tape-replaying agent for ONE match. Module level, so an `AgentFactory` pickles."""
+    global _GENOME
+    _GENOME = (genome, slots)
+    return agent
+
+
+def build_opponent(name):
     """`kaggle_environments` resolves its own built-ins by name; ours live in `kagg.agents`."""
     import importlib
 
@@ -82,21 +89,34 @@ def _opponent(name):
         return name          # a built-in like `starter` or `pass`
 
 
+def _opponent(name):
+    """A fresh opponent per match.
+
+    `heuristic`, `rancher` and `contrarian` are pure functions of the observation and would survive
+    reuse, but that is a property of today's code, not of the interface -- and `run_arena` now
+    refuses to guess which callables are safe. See `kagg/arena/arena.py`.
+    """
+    from kagg.arena import AgentFactory
+
+    return AgentFactory(build_opponent, name)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--genome", default="data/chain_search_s8/best_beam_genome.npz")
     ap.add_argument("--slots", type=int, default=8)
     ap.add_argument("--seeds", type=int, default=20)
-    # **1, not 12, and this is not a performance choice.** `ProcessPoolExecutor` on macOS spawns
-    # rather than forks, so each worker re-imports this module with `_GENOME` unset. `_plan()` then
-    # cannot build the tape, `agent()` falls back to `{"farmer": ["PASS"]}` every turn, and the gate
-    # reports our bank as exactly $3,000 with a 0.000 win rate against every opponent -- while the same
-    # tape banks $41,041 against `starter` when played in-process.
+    # **Was 1, and not for performance.** `ProcessPoolExecutor` on macOS spawns rather than forks, so
+    # each worker re-imported this module with `_GENOME` unset. `_plan()` could not build the tape,
+    # `agent()` fell back to `{"farmer": ["PASS"]}` every turn, and the gate reported our bank as
+    # exactly $3,000 with a 0.000 win rate against every opponent -- while the same tape banked
+    # $41,041 against `starter` in-process. It also silently dropped two of six opponents, because
+    # "Can't pickle local object 'make_agent.<locals>.agent'".
     #
-    # It also silently dropped two of six opponents: `make_agent` returns a closure, and
-    # "Can't pickle local object 'make_agent.<locals>.agent'" removed `homestead` and `shepherd` from
-    # the pool entirely. Sequential play has neither problem, and a gate that measures its own plumbing
-    # is worse than no gate -- it reads as "the agent does nothing" when the agent is fine.
+    # `AgentFactory` fixes both: the genome path travels as a picklable argument and `build_agent`
+    # sets `_GENOME` inside the worker before the first observation arrives, and an opponent is named
+    # rather than shipped. Left at 1 by default anyway, because a gate that has been wrong twice
+    # about its own plumbing earns a conservative default; raise it deliberately.
     ap.add_argument("--workers", type=int, default=1)
     # `starter` is included only as a floor check, never as the verdict: CLAUDE.md records that it
     # sells almost nothing, so the market is never contested and its numbers run ~2x reality. v4
@@ -105,7 +125,7 @@ def main():
                     default="starter,heuristic,rancher,homestead,contrarian,shepherd")
     args = ap.parse_args()
 
-    from kagg.arena import run_arena
+    from kagg.arena import AgentFactory, run_arena
     from kagg.search import chains as C
 
     global _GENOME
@@ -123,7 +143,8 @@ def main():
     for name in args.opponents.split(","):
         name = name.strip()
         try:
-            rep = run_arena(agent, _opponent(name), seeds=range(args.seeds),
+            rep = run_arena(AgentFactory(build_agent, args.genome, args.slots),
+                            _opponent(name), seeds=range(args.seeds),
                             workers=args.workers)
         except Exception as exc:                  # noqa: BLE001 - report, do not abort the sweep
             print(f"{name:>12}  FAILED: {type(exc).__name__}: {exc}", flush=True)

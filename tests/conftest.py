@@ -40,6 +40,7 @@ SLOW_MODULES = {
     "test_value_head_range",
     # -- Integration: CEM search / ladder / arena / replay-archive --
     "test_arena",
+    "test_arena_state_leak",
     "test_bc_replay",
     "test_converter",
     "test_ladder",
