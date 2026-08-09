@@ -1013,6 +1013,52 @@ SELL_OFFER_CAP = 30
 LATE_SELL_BIAS = False
 LATE_SELL_FROM_HOUR = 16
 
+#: **SELL_ON_DRAIN_CADENCE -- offer on the book's recovery cadence rather than every turn. OFF.**
+#:
+#: Measured by `scripts/sell_shape.py` on FILLS (a positive bank delta; an order count would count
+#: one sale up to 24 times):
+#:
+#:     seed 11   ours 177 fills, 5.9/day, mean $575    SEB 75 fills, 2.7/day, mean $1,118
+#:     seed 12   ours 186 fills, 6.2/day, mean $792    SEB 84 fills, 3.0/day, mean $1,481
+#:
+#: Our MAX fill is *larger* than his ($7,902 vs $7,207) and our late share is the same (42% vs 47%),
+#: so we can sell big and we sell at the right time. We fragment: 2.4x the fills at half the value.
+#:
+#: The mechanism is already written down thirty lines below without being acted on. `market_price`
+#: falls monotonically in inventory and a SELL walks the book one unit at a time, while shops drain
+#: inventory every **4** steps and the town centre every 12 (`kaggriculture.py:706-716`). Offering on
+#: every turn sells into a book that has had one step to recover. Offering on the drain cadence lets
+#: each fill meet a book that has fully refilled -- fewer fills, each worth more.
+#:
+#: **This is a different lever from the two already rejected**, which is why the standing-offer
+#: defence below does not cover it:
+#:
+#:     refuse to sell below 0.5x base   -$16,025   a PRICE floor -- goods never clear
+#:     cap the quota to a day total     -$ 2,653   a VOLUME cap -- misses the book's recovery
+#:
+#: Cadence caps neither. The same quota is owed and still re-offered; it is offered on a quarter of
+#: the turns. "Re-offering is free" is true in ACTIONS and is what this doubts in PRICE.
+#:
+#: OFF until an arena can score it on win rate -- `docs/fable_market_shape_2026-08-09.md` section 4
+#: was measured on the contaminated `run_arena` and its numbers do not exist (see #54).
+SELL_ON_DRAIN_CADENCE = False
+
+#: Not a tuning choice: `kaggriculture.py`'s shop drain interval. A cadence that does not divide it
+#: meets a fully recovered book on some turns and a partial one on others, which is the
+#: fragmentation this removes.
+SELL_EVERY_N_HOURS = 4
+
+
+def sell_hour_is_open(hour, liquidating):
+    """May a non-terminal SELL be offered on this turn?
+
+    `liquidating` exempts the last day: the shed has no terminal value and there is no tomorrow for
+    the book to recover into, so holding stock back to catch a better price is a pure loss.
+    """
+    if not SELL_ON_DRAIN_CADENCE or liquidating:
+        return True
+    return hour % SELL_EVERY_N_HOURS == 0
+
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
 #: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
@@ -2746,6 +2792,9 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             if CAP_SELL_OFFER_SIZE and not last_day_liquidating:
                 n = min(n, SELL_OFFER_CAP)
             if LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating:
+                n = 0
+            # Cadence, not a cap: the quota is untouched, it is simply offered on fewer turns.
+            if not sell_hour_is_open(hour, last_day_liquidating):
                 n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
