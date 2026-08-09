@@ -33,17 +33,14 @@ from kagg.search.schedule_agent import FEED_DAYS
 #: hard-coded at four separate sites here while `scripts/breakdown.py` had already moved its default
 #: to `seb1326`, so the tests and the submission were reading different seasons and nothing said so.
 #:
-#: This is still `seb` (90976060's predecessor 90494364, played on **1.32.2**) and NOT `seb1326`.
-#: Repointing is not a path change: these fixtures assert day by day against this tape's own plan --
-#: land on days 5/9/11 and ~19 pens -- where seb1326 lands on 4/6/10 with 21 pens, so every asserted
-#: day would have to be re-derived from the new tape.
-#:
-#: Note what that means for the numbers below: they were recorded in 1.32.2 and are now replayed
-#: inside a 1.32.6 env. Measured 2026-08-09, Seb's own actions reach dawn day 6 with **1,855** here,
-#: against the 869 these tests quote. Any absolute bank threshold in this file is suspect until the
-#: tape is repointed.
-TAPE_REPLAY = "data/seed_scripts/top_guys/90494364.json"
-TAPE_SCHEDULE = "data/seed_scripts/top_guys/90494364/schedule.json"
+#: Repointed 2026-08-09 to `seb1326` (90976060), played on **1.32.6** -- the economy this repo now
+#: ships against, and the tape `scripts/breakdown.py` already defaults to. The old tape was `seb`
+#: (90494364, played on 1.32.2): it lands on days 5/9/11 with ~19 pens, where seb1326 lands on
+#: 4/6/10 with 21 pens and re-cuts the herd from wool to milk (MILK 179->303, WOOL 230->104,
+#: MELON 132->96). Every asserted day in this file was re-derived from the new tape, not merely
+#: re-run against it -- see `docs/router_tape_repoint_2026-08-09.md` for the derivation of each.
+TAPE_REPLAY = "data/seed_scripts/top_guys/90976060.json"
+TAPE_SCHEDULE = "data/seed_scripts/top_guys/90976060/schedule.json"
 TAPE_TEAM = "Seb (allegedly)"
 
 
@@ -1703,12 +1700,15 @@ def test_the_feed_top_up_counts_wheat_already_standing_ripe_in_the_field():
 
     `herd = FEED_DAYS * alive - on_hand` (`schedule_agent.py:1129`) sizes the feed order from the
     shed and the crew only. On day 4 of Seb's tape that ignores fourteen wheat tiles carrying accrued
-    `yield_units`, so we buy seven wheat at $33 and he buys none -- his day-4 row is `buys: {}` and he
-    covers the herd out of the harvest:
+    `yield_units`.
 
-        hr0   bank 484   HIRE x8 ($54) + BUY_PRODUCT WHEAT 7 ($231)  ->  199
-        hr17  the $400 COW finally becomes affordable off the day's sales
-              placed never; day 4 runs place 0/1, feed 6/7, care 6/7
+    Re-derived 2026-08-09 for `seb1326`: day 4's row is `buys: {WHEAT: 1}`, not `{}`
+    (`data/seed_scripts/top_guys/90976060/schedule.json`, key `"4"`), confirmed by replaying the
+    tape's own recorded actions (`data/logs/tape_truth_90976060.log`, "day 4: ... 'BUY_PRODUCT': 1").
+    Under the OLD tape (`seb`, 90494364) day 4's row genuinely was `buys: {}` and this test pinned
+    `bought == 0`; under seb1326 the tape itself buys one wheat that day, and our agent already
+    matches it exactly (`bought == 1`), so the theory in the docstring above still holds -- the herd
+    is covered mostly from the harvest, with one top-up wheat, not seven.
 
     **This is NOT the pinned negative directly above `on_hand`.** That one counted wheat still
     GROWING -- yield 0, no HARVEST offered, nothing to pick up -- and starved the herd for it
@@ -1734,8 +1734,8 @@ def test_the_feed_top_up_counts_wheat_already_standing_ripe_in_the_field():
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
 
-    assert bought == 0, (
-        f"day 4 asks for no wheat (`buys: {{}}`) and harvests fourteen tiles, "
+    assert bought == 1, (
+        f"day 4 asks for one top-up wheat (`buys: {{WHEAT: 1}}`) and harvests fourteen tiles, "
         f"but we bought {bought}")
 
 
@@ -1782,13 +1782,19 @@ def test_the_sells_row_is_a_day_total_not_a_per_turn_quota():
     """The tape sells its row exactly. We re-offer it every turn, so the day total is unbounded.
 
     `n = min(have, today + carry, rate[prod])` bounds a single OFFER and nothing bounds the day.
-    Measured on Seb's tape, seed 11, day 4, whose row asks `WHEAT 28, FERTILIZER 4`:
 
-        tape   28 wheat, 4 fertilizer   hr20 x13, hr21 x5+1, hr22 x6+1, hr23 x4+2
-        ours   34 wheat, 5 fertilizer   hr0 x2, hr15 x2, hr18 x7, hr19 x8, hr22 x2, hr23 x15+3
+    Re-derived 2026-08-09 for `seb1326`: day 4's row is `sells: {WHEAT: 49, FERTILIZER: 6}`
+    (`data/seed_scripts/top_guys/90976060/schedule.json`, key `"4"`), confirmed by replaying the
+    tape's own recorded actions against its real opponent (`data/logs/tape_truth_90976060.log`,
+    "day 4: {'WHEAT': 49, 'FERTILIZER': 6}"). Under the OLD tape (`seb`, 90494364) this same test
+    asserted `{WHEAT: 28, FERTILIZER: 4}` and we OVER-sold it (34/5) by re-offering a stale quota.
 
-    Six wheat over the row, and day 5 then sells 10 against his 26 because the stock is gone -- the
-    same units, one day early, down a book that a SELL walks one unit at a time.
+    Under seb1326 the direction has reversed: we now UNDER-sell the row, `{'FERTILIZER': 3,
+    'WHEAT': 19}` against the tape's 49/6. This is not the re-offer bug this test was written to
+    catch -- `test_day_four_matches_seb_on_every_op_it_works` traces it to day 4 itself harvesting
+    and watering fewer tiles (`HARVEST` 11/14, `WATER` 12/17) than the tape, so there is less than
+    half the produce to sell in the first place. Left failing; see that test for the harvest/water
+    shortfall.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
@@ -1809,7 +1815,7 @@ def test_the_sells_row_is_a_day_total_not_a_per_turn_quota():
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
 
-    assert dict(sold) == {"WHEAT": 28, "FERTILIZER": 4}, dict(sold)
+    assert dict(sold) == {"WHEAT": 49, "FERTILIZER": 6}, dict(sold)
 
 
 def test_one_animal_in_the_shed_is_promised_to_exactly_one_pen():
@@ -1882,51 +1888,38 @@ def test_the_days_animal_is_not_truncated_away_by_the_hire_block():
     assert bought == 0, f"day 4's animal was ordered at hour {bought}, not hour 0"
 
 
-def test_wheat_drawn_this_turn_is_the_herds_reserve_not_extra_to_it():
-    """The unit phase spends the shed before the market phase reads it. Both halves must see it.
-
-    `_router_acts` decrements `shed` on the turn it issues a PICKUP, and `invs` was read before it
-    ran, so wheat in transit is in neither. The sell guard then subtracts a full `FEED_DAYS * alive`
-    on top of a shed that has already paid for the draw, and the feed top-up buys against a shed
-    that is short by the same amount -- the same error, once in each direction.
-
-    Measured on Seb's tape, seed 11, day 5. Seven animals, shed 27 at dawn, four wheat drawn on the
-    turn. `have` read 23 - 14 = 9 and we offered `SELL WHEAT 9` against a row of 17; he sells all 17
-    at hour 0 and buys four back at hours 6, 7 and 9. The reserve also has to know about the wheat
-    the row says we will buy, or the cap is 13 rather than 17.
-    """
-    from kaggle_environments import make
-    mine, his, thin = _seb_tape()
-    agent = schedule_agent.make_agent(thin, 0, router=True)
-    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
-    env.reset(2)
-    sold = collections.Counter()
-    for t in range(24 * 6):
-        o0 = env.state[0].observation
-        a0 = agent(o0)
-        n0 = len(o0["farms"][0].get("hands") or [])
-        n1 = len(o0["farms"][1].get("hands") or [])
-        if t // 24 == 5:
-            for o in (a0["market"] or []):
-                if o and o[0] == "SELL":
-                    sold[o[1]] += int(o[2])
-        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
-                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
-                   "market": his[t]["market"]}])
-
-    assert dict(sold) == {"WHEAT": 17, "FERTILIZER": 9}, dict(sold)
+# test_wheat_drawn_this_turn_is_the_herds_reserve_not_extra_to_it -- REMOVED 2026-08-09, repointed to
+# `seb1326`. The theory it pinned (`_router_acts` decrements `shed` on the PICKUP turn, `invs` is
+# read before that, and the sell guard double-counts the same wheat once each direction) is
+# unaffected, but its evidence was day 5 of the OLD tape (`seb`, 90494364), which sold a 17-unit
+# WHEAT row that same day. Under `seb1326`, day 5's row is `sells: {FERTILIZER: 5}` -- no WHEAT key
+# at all (`data/seed_scripts/top_guys/90976060/schedule.json`, key `"5"`; confirmed against the
+# tape's own replayed actions, `data/logs/tape_truth_90976060.log`, "day 5: {'FERTILIZER': 5}").
+# There is no day-5 wheat-reserve race left to gate. Our agent still sells 10 unrequested wheat that
+# day ({'FERTILIZER': 7, 'WHEAT': 10}), which may be the same carry/oversupply family as
+# `test_a_carried_sell_row_never_offers_more_than_the_biggest_day_ever_asked`, but that is a
+# different, still-open question belonging to whoever owns `schedule_agent.py`'s carry logic, not a
+# re-derivation of this test.
 
 
 def test_day_four_matches_seb_on_every_op_it_works():
     """**The day-4 gate: the first land buy, and the day the whole window turns on.**
 
-    Seb's tape, seed 11, weeds off, days 0-3 already exact. Day 4 harvests the day-0 wheat, sells it,
-    and takes the $1,000 parcel at hour 22 on a bank of $718 -- funded by that same turn's sells,
-    because the atomic orders in a slot settle after every earlier slot has traded.
+    Seb's tape, seed 11, weeds off. Day 4 harvests the day-0 wheat, sells it, and takes a land
+    parcel -- funded by that same turn's sells, because the atomic orders in a slot settle after
+    every earlier slot has traded.
+
+    **"days 0-3 already exact" was true of the OLD tape (`seb`, 90494364) and is FALSE of
+    `seb1326`.** Re-measured 2026-08-09 op-for-op against the new tape
+    (`data/logs/day_by_day_diff.log`): day 0 differs on `FEED`/`CARE`/`SELL`, day 1 and day 2 on
+    `SELL`, day 3 on `FEED`/`CARE`/`SELL`. This gate is now a real gap that inherits upstream drift
+    rather than starting from an exact board, and day 4 itself adds its own: `HARVEST` 11/14,
+    `WATER` 12/17, `SELL` 22/55. Left failing -- there is no single number to re-derive here, this
+    is a structural op-for-op diff, and the diff is real work still to do, not a stale threshold.
 
     This pins the WORK, the market and the crew, and deliberately not the tour SHAPE: `n/s/e/w`,
-    `pickup`, `drop` and `pass` still differ on days 0-4 because we work the board westward and the
-    tape works it southward, and no measurement yet says which is better.
+    `pickup`, `drop` and `pass` still differ because we work the board westward and the tape works
+    it southward, and no measurement yet says which is better.
 
     **This gate does NOT discriminate `RT.CLOSED_TOUR`, and it was written believing it did.** The
     far tile at (0,1) was refused under the flat return reserve -- `water` 16/17, `harvest` 13/14,
@@ -1934,7 +1927,8 @@ def test_day_four_matches_seb_on_every_op_it_works():
     that was measured while the day's cow was still being truncated out of the hour-0 market block.
     With the cow bought at hour 0 the day is exact either way. Backed out, `CLOSED_TOUR` now shows up
     a day later (`buy_product` 5/4 -> 6/4 on day 5, and a DIG returning on day 8), so it stays; it is
-    simply not this test that holds it.
+    simply not this test that holds it. That measurement predates the `seb1326` repoint and has not
+    been re-confirmed against it.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
@@ -1981,16 +1975,16 @@ def test_the_biggest_sale_takes_the_earliest_slot():
     opponent's. So which of OUR sells goes first is worth money whenever the opponent sells the same
     product, and the big one should not queue behind the small one.
 
-    Measured on Seb's tape, seed 11, day 5 hour 0. Identical goods, identical eight hires, one
-    difference:
-
-        ours  [SELL FERTILIZER 2, SELL WHEAT 17, 8x HIRE]   316 -> 925   (+663 net of $54 of hires)
-        tape  [SELL WHEAT 17, SELL FERTILIZER 2, 8x HIRE]   320 -> 965   (+699)
-
-    $36 for putting a 2-unit sale ahead of a 17-unit one. That is the whole of the day-6 dawn gap
-    ($830 against his $869), and it is not cosmetic: day 6's $800 strawberry needs $854 with the
-    day's hires, so $830 fails and $869 clears. Six arms were measured against day 6 on the
-    assumption the bank was simply too thin; the bank was too thin because of this.
+    Under the OLD tape (`seb`, 90494364) this test also asserted a day-6 dawn bank floor, because
+    that tape's day 6 needed an $800 strawberry order the sell-slot gap alone decided ($830 against
+    his $869). Re-derived 2026-08-09: that premise is gone under `seb1326`. Day 6's seed row there
+    is `{}` (`data/seed_scripts/top_guys/90976060/schedule.json`, key `"6"`) -- nothing to fund --
+    and the tape's OWN dawn-day-6 bank, replaying its actual recorded actions against its actual
+    opponent, is **$0** (`data/logs/tape_truth_90976060.log`), because day 5 spends the tape's whole
+    bank on seed regardless of slot order. Our agent's own dawn-day-6 bank is $26 -- already ahead of
+    what the tape itself achieves -- so there is no gap left for a threshold to measure. The dawn-6
+    assertion is dropped; the slot-order invariant below is the part of this test that still means
+    something and it continues to pass.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
@@ -2008,12 +2002,10 @@ def test_the_biggest_sale_takes_the_earliest_slot():
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
-    dawn6 = int(env.state[0].observation["farms"][0]["money"])
 
     worth = [(o[1], int(o[2]) * RT.BASE_PRICE[o[1]]) for o in sells]
     assert worth == sorted(worth, key=lambda w: -w[1]), (
         f"day 5 hour 0 offered its sells smallest-first: {worth}")
-    assert dawn6 >= 860, f"day 6 dawn bank {dawn6}, tape 869 -- the sell slots cost the difference"
 
 
 @pytest.mark.slow
@@ -2133,106 +2125,24 @@ def test_an_animal_order_past_the_tenth_slot_is_not_counted_as_bought():
         f"herd at day 15 is {dict(herd)}. Every order was truncated past slot ten")
 
 
-def test_the_days_seed_is_bought_before_the_days_livestock():
-    """A seed not bought on its day is a plant not made, and day 6 is a planting day.
-
-    Emission order is SELL, HIRE, BUY_LAND, BUY_ANIMAL, BUY_SEED, BUY_PRODUCT, so livestock always
-    takes the bank first. Measured on Seb's tape, seed 11, day 6 -- the day after the board doubles
-    to 50 tiles, whose row asks `plants {STRAWBERRY: 8, MELON: 6}` and `animals_bought {COW: 2}`:
-
-        tape  h0  BUY_SEED STRAWBERRY 8 + 8 HIRE            bank 869 -> 15
-        tape  h2  BUY_ANIMAL COW 2, BUY_SEED MELON 6, SELL WOOL 6, SELL FERTILIZER 1
-        ours  h0  BUY_ANIMAL COW 1 x2 + 8 HIRE              bank 802 -> 348
-        ours  h1  BUY_PRODUCT WHEAT 5, BUY_SEED MELON 6, BUY_SEED STRAWBERRY 8
-
-    Both orders were placed. Ours delivered **four melon seeds and no strawberry at all**, because
-    $800 of cow went first and a BUY_SEED only fills what the bank covers. Those four seeds are
-    exactly the four plants we make: hours 5, 8, 11 and 14, all by one unit. From hour 15 the board
-    is seedless and the other seven units spend the rest of the day walking -- `plant` 4/14,
-    `water` 7/17, `move` 123 against his 93 on identical unit-turns.
-
-    He defers the cows himself, to hour 2, and funds them out of that turn's wool.
-    """
-    from kaggle_environments import make
-    mine, his, thin = _seb_tape()
-    agent = schedule_agent.make_agent(thin, 0, router=True)
-    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
-    env.reset(2)
-    peak, planted = collections.Counter(), 0
-    for t in range(24 * 7):
-        o0 = env.state[0].observation
-        a0 = agent(o0)
-        n0 = len(o0["farms"][0].get("hands") or [])
-        n1 = len(o0["farms"][1].get("hands") or [])
-        if t // 24 == 6:
-            for p, q in ((o0.get("private") or {}).get("seeds") or {}).items():
-                peak[p] = max(peak[p], int(q))
-            planted += sum(1 for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]
-                           if x and x[0] == "PLANT")
-        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
-                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
-                   "market": his[t]["market"]}])
-
-    # What the seed reserve fixes: the melon block now fills whole, because the two cows no longer
-    # take $800 off the top. `plant` 4/14 -> 8/14, `water` 7/17 -> 10/17.
-    assert peak["MELON"] >= 6, (
-        f"day 6 asked for 6 melon seed and the most we ever held was {dict(peak)} -- "
-        f"the livestock spent the bank first")
-    assert planted >= 8, f"day 6 planted {planted}, below the 8 the seed reserve buys"
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "held gate, not solved. Our first day-6 SELL is hour 8, his is hour 2. Two arms measured and "
-    "reverted 2026-08-07, both recorded in router.py with their numbers: YIELD_FIRST (serve a pen's "
-    "HARVEST/COLLECT before its FEED/CARE) took d2 4->8 and d3 7->8 and left day 6 at 14; "
-    "DEPOT_PEN_BY_LOAD (let the shed-access cells pick their animal by load size) took 52 cells to "
-    "59 and day 6 to 15. The occupant of (4,4) is decided upstream, in the buy/place order"))
-def test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry():
-    """Day 6's whole gap is ONE order that cannot pay, and the tape pays for it with an early sell.
-
-    Traced hour by hour on Seb's tape, seed 11, weeds off. The row asks
-    `{MELON: 6, STRAWBERRY: 8}` and both sides emit `buy_seed` 14/14 -- the orders are identical.
-    Ours delivers 6 melon and no strawberry:
-
-        ours  h0  $830 -> $296   8 HIRE ($54) + BUY_SEED MELON 6 ($480)
-        ours  h1  $296 -> $6     BUY_SEED STRAWBERRY 8 -- an $800 bill against $296
-        ours  h8                 first SELL of the day: WOOL 6 + FERTILIZER 1, ~$586
-
-        tape  h0  $869 -> $15    8 HIRE ($54) + BUY_SEED STRAWBERRY 8 ($800)
-        tape  h2                 SELL WOOL 6; SELL FERTILIZER 1; BUY_SEED MELON 6
-                                 -- one market turn, the sell settling in an earlier slot
-
-    Two separate things pay that bill and he uses both. Dearest-seed-first cannot work on its own
-    here: $830 less $54 of hires is $776, still short of the $800. The early sell is what actually
-    closes it -- the same 6 wool fetched ~$586 at hour 8, so landing it by hour 2 turns $296 into
-    ~$880 against an $800 bill, with room to spare.
-
-    So this gates the mechanism, not the symptom: the day's first load must be sellable early.
-    `test_day_six_plants_every_tile_the_row_asks_for` gates the consequence.
-    """
-    from kaggle_environments import make
-    mine, his, thin = _seb_tape()
-    agent = schedule_agent.make_agent(thin, 0, router=True)
-    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
-    env.reset(2)
-    first_sell, drops = None, []
-    for t in range(24 * 7):
-        o0 = env.state[0].observation
-        a0 = agent(o0)
-        n0 = len(o0["farms"][0].get("hands") or [])
-        n1 = len(o0["farms"][1].get("hands") or [])
-        if t // 24 == 6:
-            if first_sell is None and any(o and o[0] == "SELL" for o in (a0["market"] or [])):
-                first_sell = t % 24
-            if any(x and x[0] == "DROP" for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]):
-                drops.append(t % 24)
-        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
-                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
-                   "market": his[t]["market"]}])
-
-    assert first_sell is not None and first_sell <= 2, (
-        f"day 6's first SELL is hour {first_sell}, the tape's is hour 2; drops at {drops}. "
-        f"Nothing reaches the shed early enough to fund the $800 strawberry order")
+# test_the_days_seed_is_bought_before_the_days_livestock -- REMOVED 2026-08-09, repointed to
+# `seb1326`. Its premise was a day-6 funding race: the OLD tape's (`seb`, 90494364) day 6 spent
+# $800 on 2 cows before an $800 strawberry seed order could clear, starving the seed row to
+# `plant 4/14`. Under `seb1326`, day 6 has NEITHER of those orders -- `animals_bought: {}` and
+# `seeds: {}` (`data/seed_scripts/top_guys/90976060/schedule.json`, key `"6"`) -- so there is no
+# livestock-vs-seed race left on day 6 to gate. The mechanism itself (HIRE/LAND/ANIMAL settle before
+# SEED in the emission order, so livestock always takes the bank first) still exists in the code and
+# could still matter: days 9 and 11 both carry simultaneous `animals_bought` and `seeds` rows under
+# the new tape. Re-deriving a day-9 or day-11 version needs a fresh hour-by-hour trace this pass did
+# not do, and is a natural follow-up for whoever owns `schedule_agent.py`'s buy ordering.
+#
+# test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry -- REMOVED 2026-08-09,
+# same reason. It gated getting an early sell landed by hour 2 to fund day 6's $800 strawberry bill;
+# under `seb1326` day 6 has no seed bill to fund (`seeds: {}` above), so "early enough for what"
+# no longer has an answer. It was marked `xfail(strict=True)` and had started silently XPASSing
+# under the new tape -- not because the mechanism was fixed, but because an unrelated carried-over
+# FERTILIZER stock now sells at hour 0 regardless, which trivially satisfies "any SELL by hour 2"
+# without touching wool, melon, or the routing question the test was written to gate.
 
 
 @pytest.mark.slow
@@ -2364,16 +2274,25 @@ def test_a_seed_order_the_bank_could_not_cover_is_offered_again():
 
 
 def test_day_six_plants_every_tile_the_row_asks_for():
-    """Day 6 is the first day on 50 tiles and the row asks 14 plants -- it now makes all 14.
+    """Day 6's row asks for a specific number of plants -- our agent should make exactly that many.
 
-    Held as a strict xfail from 2026-08-06 while three separate arms failed to move it: the seed
-    reserve, the pen geometry and the drop threshold. None of them was the mechanism. What was:
-    a BUY_SEED the env refuses for want of funds is SILENT -- no failure appears in the
-    observation, only seed that never arrives -- and the agent credited the attempt in
-    `state["ordered"]`, which made the refusal permanent for the rest of the day. The melon was
-    offered once at hour 1 against a bank of $15 and never again; peak melon held all day was 0.
-    Re-offering until it lands takes the day to 14/14. See
-    `test_the_days_seed_is_bought_before_the_days_livestock` for the bank measurement.
+    Held as a strict xfail from 2026-08-06 under the OLD tape (`seb`, 90494364), where day 6's row
+    asked 14 plants and a silent BUY_SEED refusal (the env reports no failure, only seed that never
+    arrives) permanently stalled the melon order for the rest of the day. Re-offering until it lands
+    fixed that, and the underlying mechanism is unchanged here.
+
+    Re-derived 2026-08-09 for `seb1326`: day 6's row is only 4 plants --
+    `plants: [MELON, MELON, STRAWBERRY, MELON]`
+    (`data/seed_scripts/top_guys/90976060/schedule.json`, key `"6"`), because `seb1326` lands its
+    land buy on day 6 with a much smaller melon/strawberry block than `seb`'s day 6, and the day's
+    seed row is `{}` -- the 3 melon and 1 strawberry needed are already carried over from day 5's
+    deliberate over-buy. Confirmed against the tape's own replayed actions
+    (`data/logs/tape_truth_90976060.log`, "day 6: {... 'PLANT': 4 ...}").
+
+    This is now a REAL GAP, not a re-offer stall: our agent plants 6 on day 6, two more than the
+    row asks for -- over-planting, the same shape as the over-selling `test_the_sells_row_is_a_day_
+    total_not_a_per_turn_quota` catches on day 4 under the old tape, now apparently showing up as
+    over-PLANTing under this one instead of over-SELLing.
     """
     from kaggle_environments import make
     mine, his, thin = _seb_tape()
@@ -2392,7 +2311,7 @@ def test_day_six_plants_every_tile_the_row_asks_for():
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
                    "market": his[t]["market"]}])
-    assert planted == 14, f"day 6 planted {planted} of the tape's 14"
+    assert planted == 4, f"day 6 planted {planted} of the tape's 4"
 
 
 def test_fed_today_relieves_the_herd_floor_instead_of_re_triggering_it(kg):
@@ -2522,50 +2441,14 @@ def test_the_ferry_ignores_a_load_the_sell_row_never_asked_for():
         f"the day's row asks for MELON and the unit carries WHEAT, but it emitted {acts[0]}")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "held gate. THIRD arm measured and reverted on day 6, 2026-08-07: CASH_SHORT_SELL_FIRST -- serve "
-    "a pen's yielding ops first AND let the deliver ferry preempt a work op, both gated on the day's "
-    "seed bill exceeding the bank so solvent days cannot be touched. The gate held (d0-d5 byte-"
-    "identical, 7 6 4 7 7 7) and the day it was built for got WORSE: d6 11 -> 13, d7 15 -> 16, "
-    "d8 13 -> 17. Same verdict as YIELD_FIRST and DEPOT_PEN_BY_LOAD before it"))
-def test_day_six_sells_the_wool_as_soon_as_the_walk_allows():
-    """The reachable version of the gate above, which asks for an hour the board cannot give.
-
-    At day 6's dawn the crew is ONE unit, the farmer, standing on (4,4). Our two sheep are at (1,4)
-    and (3,4); the tape's are at (4,4) and (4,3), so it harvests without moving and sells on hour 2.
-    We cannot match that hour without moving the pen, and `DEPOT_PEN_BY_LOAD` already measured that
-    route at 52 cells -> 59.
-
-    What IS reachable is hour 3, and hour 3 pays the bill:
-
-        h0  WEST to (3,4)        h2  EAST back to (4,4)
-        h1  HARVEST, 6 wool      h3  DROP + SELL, settling in one turn
-
-    ~$586 of wool on top of the $296 left after the strawberry order covers the $800 seed with room.
-    Today the unit is held at the pen until all four of its ops are exhausted -- FEED, CARE,
-    COLLECT_FERTILIZER, then HARVEST last -- so the wool is not even in hand until hour 4, and the
-    first sell is hour 8.
-    """
-    from kaggle_environments import make
-    mine, his, thin = _seb_tape()
-    agent = schedule_agent.make_agent(thin, 0, router=True)
-    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
-    env.reset(2)
-    first_sell = None
-    for t in range(24 * 7):
-        o0 = env.state[0].observation
-        a0 = agent(o0)
-        n0 = len(o0["farms"][0].get("hands") or [])
-        n1 = len(o0["farms"][1].get("hands") or [])
-        if t // 24 == 6 and first_sell is None and any(
-                o and o[0] == "SELL" for o in (a0["market"] or [])):
-            first_sell = t % 24
-        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
-                  {"farmer": his[t]["farmer"], "hands": list(his[t]["hands"])[:n1],
-                   "market": his[t]["market"]}])
-    assert first_sell is not None and first_sell <= 3, (
-        f"day 6's first SELL is hour {first_sell}; hour 3 is what the walk allows and what the $800 "
-        f"strawberry order needs")
+# test_day_six_sells_the_wool_as_soon_as_the_walk_allows -- REMOVED 2026-08-09, repointed to
+# `seb1326`. It traced a specific day-6 board under the OLD tape (`seb`, 90494364): our two sheep at
+# (1,4)/(3,4) against the tape's at (4,4)/(4,3), and the $800 strawberry bill they had to fund by
+# hour 3. `seb1326`'s day 6 has neither that pen geometry nor that bill (see the removal note above
+# `test_day_six_gets_a_load_to_the_shed_early_enough_to_fund_the_strawberry`), so there is nothing
+# left for "as soon as the walk allows" to measure. Like its sibling gate, it was `xfail(strict=True)`
+# and had started silently XPASSing under the new tape from an unrelated hour-0 FERTILIZER
+# carryover sale, not from the wool/sheep routing question it names.
 
 
 @pytest.mark.slow
