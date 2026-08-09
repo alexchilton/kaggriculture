@@ -433,6 +433,25 @@ BUY_DRIP = 1
 #: gain is real and costs nothing earlier.
 FEED_TURN_CAP = 6
 
+#: **Day-level ceiling on the HERD path's own asks, separate from the target `herd` itself chases.**
+#: See the emission site (`herd_ceiling`) for the full writeup. Short version: `herd` had no per-day
+#: bound at all -- only `FEED_TURN_CAP` per TURN -- so it re-asked near the full `feed_days(day) *
+#: alive` buffer (2-4 days) on every one of a day's 24 turns from day 12 on, for 1,668 units asked
+#: across one season while the rest of the 1.32.6 ladder buys 266-649 A WHOLE SEASON
+#: (`docs/fable_the_wheat_churn_2026-08-09.md`).
+#:
+#: **Not sized at `alive` (one day).** That was tried first and passed the churn measurement (1,800
+#: -> 393) but FAILED the anti-starvation check it must pass: seed 11, day 15, the shed carried
+#: 16-19 idle WHEAT the entire day while only 7 of 20 animals got fed, because FEED needs a hand to
+#: physically walk the wheat to the tile -- a ROUTING/LABOR limit, not a supply one. The old code's
+#: gross over-buying had been masking that limit with sheer surplus; six animals starved
+#: (`consecutive_unfed >= 2`, `reference/kaggriculture.py:786`) once the surplus was gone. `2 * alive`
+#: keeps two days of slack for the crew to catch up on a day it falls behind -- zero herd drops across
+#: the season, final bank $46,370 (marginally ABOVE the $45,797 unfixed baseline), 797 bought. The
+#: routing/labor limit itself is a separate, deeper bug and is NOT fixed here; this constant only
+#: keeps enough buffer that the day-budget fix does not trip it.
+FEED_BUY_CEILING_DAYS = 2
+
 #: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
 #: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
 #: one or two units at a time turns every such moment into a 1-turn DROP.
@@ -993,6 +1012,71 @@ RESERVATION_CONTEST = 0.5
 #: derived replacement for `rate[prod]`: the size at which an offer stops being price-neutral is a
 #: property of `market_price` and differs seven-fold across the products.
 RESERVATION_SLIP = 0.10
+
+#: **CAP_SELL_OFFER_SIZE / LATE_SELL_BIAS -- untested candidates toward Seb's shape, both OFF.**
+#: See `docs/fable_market_shape_2026-08-09.md`. Every cap above (`rate[prod]`, `RESERVATION_SELL_CAP`)
+#: bounds a SINGLE OFFER by a property of the market -- how far it walks the book -- and re-offers it
+#: every turn until the shed empties, on the argument that "an order is only a request... re-offering
+#: is free" (see the standing-offer note below). That argument is defended against two alternatives,
+#: "refuse to sell below 0.5x base" (-$16,025) and "cap the quota to a day total" (-$2,653), and
+#: NEITHER is the shape a real top-ranked replay actually shows: Seb's tape
+#: (`data/seed_scripts/top_guys/90976060.json`) submits 244 SELL orders all season, mean size 4.9,
+#: max single offer 30 -- against our 456/3.9/78 in a real ladder loss
+#: (`data/ladder/losses/91229682.json`). These two flags are the smallest levers toward that shape:
+#: a hard ceiling on any one offer, and a threshold on when in the day a non-terminal offer may fire
+#: at all. Both default OFF; see the test file for the RED-before-GREEN and the A/B this file cannot
+#: run for itself (an arena/win-rate measurement, not a unit test).
+CAP_SELL_OFFER_SIZE = False
+SELL_OFFER_CAP = 30
+
+LATE_SELL_BIAS = False
+LATE_SELL_FROM_HOUR = 16
+
+#: **SELL_ON_DRAIN_CADENCE -- offer on the book's recovery cadence rather than every turn. OFF.**
+#:
+#: Measured by `scripts/sell_shape.py` on FILLS (a positive bank delta; an order count would count
+#: one sale up to 24 times):
+#:
+#:     seed 11   ours 177 fills, 5.9/day, mean $575    SEB 75 fills, 2.7/day, mean $1,118
+#:     seed 12   ours 186 fills, 6.2/day, mean $792    SEB 84 fills, 3.0/day, mean $1,481
+#:
+#: Our MAX fill is *larger* than his ($7,902 vs $7,207) and our late share is the same (42% vs 47%),
+#: so we can sell big and we sell at the right time. We fragment: 2.4x the fills at half the value.
+#:
+#: The mechanism is already written down thirty lines below without being acted on. `market_price`
+#: falls monotonically in inventory and a SELL walks the book one unit at a time, while shops drain
+#: inventory every **4** steps and the town centre every 12 (`kaggriculture.py:706-716`). Offering on
+#: every turn sells into a book that has had one step to recover. Offering on the drain cadence lets
+#: each fill meet a book that has fully refilled -- fewer fills, each worth more.
+#:
+#: **This is a different lever from the two already rejected**, which is why the standing-offer
+#: defence below does not cover it:
+#:
+#:     refuse to sell below 0.5x base   -$16,025   a PRICE floor -- goods never clear
+#:     cap the quota to a day total     -$ 2,653   a VOLUME cap -- misses the book's recovery
+#:
+#: Cadence caps neither. The same quota is owed and still re-offered; it is offered on a quarter of
+#: the turns. "Re-offering is free" is true in ACTIONS and is what this doubts in PRICE.
+#:
+#: OFF until an arena can score it on win rate -- `docs/fable_market_shape_2026-08-09.md` section 4
+#: was measured on the contaminated `run_arena` and its numbers do not exist (see #54).
+SELL_ON_DRAIN_CADENCE = False
+
+#: Not a tuning choice: `kaggriculture.py`'s shop drain interval. A cadence that does not divide it
+#: meets a fully recovered book on some turns and a partial one on others, which is the
+#: fragmentation this removes.
+SELL_EVERY_N_HOURS = 4
+
+
+def sell_hour_permits(hour, liquidating):
+    """May a non-terminal SELL be offered on this turn?
+
+    `liquidating` exempts the last day: the shed has no terminal value and there is no tomorrow for
+    the book to recover into, so holding stock back to catch a better price is a pure loss.
+    """
+    if not SELL_ON_DRAIN_CADENCE or liquidating:
+        return True
+    return hour % SELL_EVERY_N_HOURS == 0
 
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
@@ -2719,6 +2803,18 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             # fertilizer hold-back for tiles that will never be worked again.
             if LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR:
                 n = int(shed.get(prod, 0))
+            # **CAP_SELL_OFFER_SIZE / LATE_SELL_BIAS -- see the flags' own docstring above.** Both
+            # apply AFTER the last-day liquidation override, so neither can touch the one turn this
+            # file already puts off limits: stock has no terminal value on the last day, and every
+            # other cap in this loop already exempts it on that same principle.
+            last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
+            if CAP_SELL_OFFER_SIZE and not last_day_liquidating:
+                n = min(n, SELL_OFFER_CAP)
+            if LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating:
+                n = 0
+            # Cadence, not a cap: the quota is untouched, it is simply offered on fewer turns.
+            if not sell_hour_permits(hour, last_day_liquidating):
+                n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
             # whole stack clears near what the LAST unit fetches. Measured over one season as the herd
@@ -3114,8 +3210,49 @@ def make_agent(schedule, me=0, router=True, start_day=None):
         # subtracts `state["ordered"][("feed", "WHEAT")]`, so the remainder is re-offered every turn
         # and the herd still gets its full ration -- just spread across the hours, which is what the
         # constant's own docstring already claimed it did.
-        short = min(max(herd, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
+        #
+        # **`herd` still had no DAY-LEVEL ceiling, only the per-turn `FEED_TURN_CAP` below.** `owed`
+        # (the row) is credited every turn via `state["ordered"][("buys", "WHEAT")]` and goes quiet
+        # once `wanted` is asked. `herd` chases `feed_days(day) * alive` -- a 2-4 DAY stock buffer --
+        # with nothing bounding the TOTAL asked in one day, so `max(herd, ...)` let it override the
+        # row on essentially every turn once the buffer target grew past a few days of herd: measured
+        # on Seb's tape, seed 11, the herd path hit its per-turn cap on 20+ of 24 turns on the worst
+        # days (17 through 29) for 1,668 units asked across the season, against a field that buys
+        # 266-649 a WHOLE SEASON on the same fixture (see `docs/fable_the_wheat_churn_2026-08-09.md`).
+        #
+        # **The ceiling is credited on ASKS, reusing `state["ordered"][("feed", "WHEAT")]` rather than
+        # a new counter** -- the row and the herd already share that exact counter (both increment it
+        # below), so it already totals everything asked today from either path. Sized at
+        # `max(wanted, FEED_BUY_CEILING_DAYS * alive)` -- see that constant's own docstring for why
+        # `alive` alone (one day) is NOT enough: it passed the churn measurement and then starved six
+        # animals, because FEED needs a hand to physically deliver the wheat and a thin buffer leaves
+        # no slack for a crew that falls behind on a busy day.
+        #
+        # **The floor is what keeps this from repeating the EARLIER starvation bug**
+        # (`consecutive_unfed >= 2` deletes the animal, `reference/kaggriculture.py:786`) -- the one
+        # `d124359` fixed, where a target already sized at one day's need was zeroed by a single ask
+        # whether or not it filled. Here the ceiling carries two days of headroom and the floor is
+        # `on_hand`-based -- an ARRIVAL, not an ask: `alive - fed_today - on_hand` is what is STILL
+        # needed today regardless of the ceiling, and `max()` below always lets it through, so a real
+        # shortfall is never silenced by the budget -- only the excess chasing of the 2-4 day buffer is.
+        herd_ceiling = max(0, max(wanted, FEED_BUY_CEILING_DAYS * alive)
+                           - state["ordered"][("feed", "WHEAT")])
+        herd_floor = max(0, alive - fed_today - on_hand)
+        herd_capped = max(min(herd, herd_ceiling), herd_floor)
+        short = min(max(herd_capped, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
         short = min(short, int(money * 0.5 // quote))
+        # **TRIED 2026-08-09, SUPERSEDED BY THE CEILING ABOVE: `feed_days(day) * alive` as a per-day
+        # cap, WITHOUT the ask-credit or the arrival floor `herd_ceiling`/`herd_floor` add.** It
+        # measured WORSE (1,435 -> 1,681 wheat bought on seed 11) and barely bound anything, offering
+        # 106-138 a day against an 84 cap -- consistent with a cap that was not actually decrementing
+        # against a running day-total the way `herd_ceiling` decrements against
+        # `state["ordered"][("feed", "WHEAT")]` below. `herd_ceiling` bounds the same seed to 797.
+        #
+        # The loop is not on this side. We buy up to the buffer, SELL the buffer, and buy it back:
+        # 1,681 bought against 1,252 sold on one seed. Seb sells 84 wheat all season and never enters
+        # it. Capping the buy while the sell still drains the same stock just meters the churn.
+        # Fix the sell side -- the herd's feed reserve must not be sellable stock -- and this top-up
+        # stops firing on its own, because `on_hand` will actually reach the buffer and hold there.
         # **Do not buy feed into a shed that is about to bin the harvest.** The sell-side half of
         # `FEED_RESERVE_YIELDS_TO_OVERFLOW` cannot work without this: freeing the slots alone left
         # discards WORSE on six seeds of six, because `herd` re-orders every unit the eviction just
@@ -3133,6 +3270,14 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             room = SHED_CAPACITY - int(sum(shed.values())) - carried_home
             floor_short = max(0, FEED_DAYS_FLOOR * alive - int(shed.get("WHEAT", 0)))
             short = max(floor_short, min(short, max(0, room)))
+        # **No feed on the last day, and this one is unconditional -- after the floor, not before.**
+        # Nothing bought tonight can be eaten: the season ends at this day's rollover, so a purchase
+        # here is a straight transfer of bank into stock that is never scored. The schedule agrees --
+        # day 29's `buys` row is 0 -- and we were offering 56 units across 10 turns anyway.
+        # It sits below `floor_short` because the floor exists to prevent an escape, and an escape on
+        # the final night costs nothing there is any season left to lose.
+        if day >= last_day:
+            short = 0
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short
