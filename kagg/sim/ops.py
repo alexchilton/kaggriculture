@@ -6,8 +6,10 @@ branch per unit -- nine cheap vector writes instead of B*U Python branches.
 
 Ports of `_apply_unit_action`. The rules that are easy to get wrong, and are therefore tested:
 
-- **Movement is blocked by the board edge and by LOCKED tiles**, and silently does nothing
-  otherwise. A no-op move still burns the unit's action for the turn.
+- **Movement is blocked by the board edge only**, and silently does nothing otherwise. A no-op move
+  still burns the unit's action for the turn. LOCKED tiles stopped blocking movement in 1.32.6, and
+  DROP/PICKUP/PLACE moved above the LOCKED guard in the same release; the tile ops below did not,
+  and they no-op on LOCKED because it is its own tile kind.
 - **WATER carries the yield bonus for non-ongoing crops**, but only inside the window
   `(max_yield_day + 1) // 2 <= age <= max_yield_day`, and only once per day.
 - **Fertilizer doubles that bonus**, but only on a day the tile is watered -- basic needs first.
@@ -26,7 +28,6 @@ from kagg.sim.tiles import (
     BOARD,
     COOP,
     EMPTY,
-    LOCKED,
     MAX_YIELD,
     MAX_YIELD_DAY,
     NO_ANIMAL,
@@ -68,8 +69,13 @@ SHED_TILES = np.array(
 def move(state, pos, ops):
     """Apply movement ops. `pos` is [B, 2] as (x, y); returns the new positions.
 
-    A move off the board or onto a LOCKED tile is silently ignored, exactly as the reference does,
-    so the unit stays put and loses the turn.
+    A move off the board is silently ignored, so the unit stays put and loses the turn.
+
+    **Moving onto a LOCKED tile is legal from 1.32.6.** It was blocked until then, and the env's own
+    comment gives the reason it changed: a hand can spawn on a locked shed-access tile, and blocking
+    movement would strand it there for the rest of the season. Tile operations still no-op on LOCKED
+    -- the guard did not disappear, it moved down past the shed ops (see `shed_adjacent`). Every op
+    below keys off the tile *kind*, and LOCKED is its own kind, so they no-op there by construction.
     """
     pos = np.array(pos, dtype=np.int64, copy=True)
     ops = np.asarray(ops)
@@ -78,12 +84,8 @@ def move(state, pos, ops):
     ny = pos[:, 1] + _DY[ops]
     in_bounds = (nx >= 0) & (nx < BOARD) & (ny >= 0) & (ny < BOARD)
 
-    # Clip only for the lookup; out-of-bounds games are masked out immediately after.
-    target = np.clip(ny, 0, BOARD - 1) * BOARD + np.clip(nx, 0, BOARD - 1)
-    unlocked = state.kind[np.arange(state.batch), target] != LOCKED
-
     is_move = (ops >= NORTH) & (ops <= WEST)
-    legal = is_move & in_bounds & unlocked
+    legal = is_move & in_bounds
     pos[:, 0] = np.where(legal, nx, pos[:, 0])
     pos[:, 1] = np.where(legal, ny, pos[:, 1])
     return pos
@@ -200,20 +202,21 @@ def plant(state, pos, active, crop_id, day, turns_per_day=24):
 
 
 def shed_adjacent(state, pos):
-    """[B] bool: is the unit on an *unlocked* shed-access tile?
+    """[B] bool: is the unit on a shed-access tile? Purely positional.
 
     `_is_shed_adjacent` gates DROP, PICKUP and PLACE's shed-drop branch. It tests the tile the unit
     is standing on, not adjacency to a separate shed tile -- the shed is the 2x2 block's centre and
     these four tiles are its access points.
 
-    The LOCKED test is not incidental. `_apply_unit_action` bails on a locked tile *before* it ever
-    reaches the DROP/PICKUP branches, and three of the four shed-access tiles sit in the NE, SW and
-    SE quadrants, which stay locked until the land is bought. Hands spawn on those tiles, so
-    omitting this lets a whole crew trade through the shed from ground it does not own.
+    **No LOCKED test, as of 1.32.6.** Until then `_apply_unit_action` bailed on a locked tile before
+    it ever reached the DROP/PICKUP/PLACE branches, and this mirrored that. 1.32.6 moved those three
+    ops *above* the guard, with the reason stated in the env source: the shed itself is always
+    owned, the tile is only a standing position, and three of the four access tiles start LOCKED, so
+    guarding first made the shed unreachable from them. Keeping the old test here costs a crew every
+    shed round trip it makes from the NE, SW or SE access tile.
     """
-    games = np.arange(state.batch)
     idx = _tile_index(pos)
-    return np.isin(idx, SHED_TILES) & (state.kind[games, idx] != LOCKED)
+    return np.isin(idx, SHED_TILES)
 
 
 def drop(state, pos, active, carried_u, shed):

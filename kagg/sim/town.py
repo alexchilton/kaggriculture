@@ -38,6 +38,12 @@ SHOPS = list(kg.SHOPS)
 SHOP_INDEX = {name: i for i, name in enumerate(SHOPS)}
 N_SHOPS = len(SHOPS)
 
+#: How many shop *instances* the town will ever open. 1.32.6 draws with replacement and caps the
+#: total count rather than guaranteeing variety, so this is not the same number as `N_SHOPS` in
+#: meaning even though it currently equals it. Pre-1.32.6 envs unlocked each shop at most once,
+#: which is exactly `N_SHOPS` instances, so that is the fallback.
+MAX_SHOP_INSTANCES = int(getattr(kg, "MAX_SHOP_INSTANCES", N_SHOPS))
+
 TURNS_PER_DAY = 24
 SHOP_INTERVAL = 4
 #: **Read from the env's own spec, not hard-coded.** `kaggle-environments` 1.32.6 ("Kaggriculture town
@@ -72,18 +78,25 @@ def center_multiplier(day):
     return out
 
 
-def drain_at(step, unlocked_mask, turns_per_day=TURNS_PER_DAY):
-    """Units removed from the market at `step`. `unlocked_mask` is [B, N_SHOPS] of bools.
+def drain_at(step, unlocked_counts, turns_per_day=TURNS_PER_DAY):
+    """Units removed from the market at `step`. `unlocked_counts` is [B, N_SHOPS].
 
-    Mirrors `_town_consume`: shop ticks land on steps divisible by 4, the centre on steps
-    divisible by 12, and the centre multiplier steps up with the day.
+    Mirrors `_town_consume`: shop ticks land on steps divisible by `SHOP_INTERVAL`, the centre on
+    steps divisible by `CENTER_INTERVAL`, and the centre multiplier follows the installed env's ramp
+    (flat 1 from 1.32.6).
+
+    **Counts, not booleans, as of 1.32.6.** `town["unlocked_shops"]` is a *list* and the env draws
+    into it with replacement, so the same shop can appear more than once and `_town_consume` loops
+    over the list -- each instance consuming independently. Eight instances drawn from eight shops
+    are all distinct only 8!/8^8 = 0.24% of the time, so a boolean mask silently under-drains
+    essentially every game. A bool array still works here and means one instance each.
     """
-    unlocked_mask = np.asarray(unlocked_mask, dtype=bool)
-    batch = unlocked_mask.shape[0]
+    counts = np.asarray(unlocked_counts).astype(np.int64)
+    batch = counts.shape[0]
     drain = np.zeros((batch, N_PRODUCTS), dtype=np.int64)
 
     if step % SHOP_INTERVAL == 0:
-        drain += unlocked_mask.astype(np.int64) @ SHOP_PULL
+        drain += counts @ SHOP_PULL
 
     if step % CENTER_INTERVAL == 0:
         drain += int(center_multiplier(step // turns_per_day)) * CENTER_PULL
@@ -94,16 +107,20 @@ def drain_at(step, unlocked_mask, turns_per_day=TURNS_PER_DAY):
 def season_drain_table(unlock_days, steps=719, turns_per_day=TURNS_PER_DAY):
     """Precompute drain for every step of a season, for one unlock schedule.
 
-    `unlock_days` maps day -> shop name, as `kagg.economics.market.observe_unlocks` returns.
+    `unlock_days` maps day -> shop name, or day -> list of shop names when more than one instance
+    opens on the same day, as `kagg.economics.market.observe_unlocks` returns.
     Returns [steps, N_PRODUCTS], so the game loop reads a row instead of recomputing.
     """
     table = np.zeros((steps, N_PRODUCTS), dtype=np.int64)
-    mask = np.zeros((1, N_SHOPS), dtype=bool)
 
     for step in range(steps):
         day = step // turns_per_day
-        for unlock_day, shop in unlock_days.items():
+        # Recomputed rather than accumulated: instances are counted, so adding into a running
+        # array every step would multiply each instance by the number of steps it has been open.
+        counts = np.zeros((1, N_SHOPS), dtype=np.int64)
+        for unlock_day, shops in unlock_days.items():
             if unlock_day <= day:
-                mask[0, SHOP_INDEX[shop]] = True
-        table[step] = drain_at(step, mask, turns_per_day)[0]
+                for shop in ([shops] if isinstance(shops, str) else shops):
+                    counts[0, SHOP_INDEX[shop]] += 1
+        table[step] = drain_at(step, counts, turns_per_day)[0]
     return table

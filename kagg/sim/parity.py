@@ -54,7 +54,8 @@ OP_NAMES = {
 ITEM_OPS = {O.PICKUP: "PICKUP", O.PLACE: "PLACE"}
 
 
-def random_script(rng, steps, allow_hire=False, allow_land=False, max_units=1, hire_rate=0.05):
+def random_script(rng, steps, allow_hire=False, allow_land=False, max_units=1, hire_rate=0.05,
+                  buy_rate=0.12, buy_max=4):
     """One game's worth of actions: a list of per-step dicts, both players.
 
     Deliberately biased toward ops that change state -- a uniform draw over 9 ops spends most of
@@ -123,8 +124,14 @@ def random_script(rng, steps, allow_hire=False, allow_land=False, max_units=1, h
             entry["buy_seed"].append(
                 {CROPS[i]: int(rng.integers(1, 3)) for i in range(len(CROPS)) if rng.random() < 0.2}
             )
+            # `buy_rate` and `buy_max` exist to make the **shed capacity** rule reachable. At the
+            # 0.12/4 defaults a 719-step script peaks at 8-11 items in a 100-item shed, so 1.32.6's
+            # "BUY_PRODUCT and BUY_ANIMAL fail once the shed is full" could not fail this gate --
+            # untested by construction, the trap CLAUDE.md records three times. Driven high, with
+            # `starting_money` raised so the farm can pay, the shed fills within a few days.
             entry["buy_product"].append(
-                {p: int(rng.integers(1, 4)) for p in ("WHEAT", "FERTILIZER") if rng.random() < 0.12}
+                {p: int(rng.integers(1, buy_max)) for p in ("WHEAT", "FERTILIZER")
+                 if rng.random() < buy_rate}
             )
             entry["buy_animal"].append(
                 {a: 1 for a in ANIMALS if rng.random() < 0.03}
@@ -135,7 +142,7 @@ def random_script(rng, steps, allow_hire=False, allow_land=False, max_units=1, h
     return script
 
 
-def run_reference(script, seed):
+def run_reference(script, seed, starting_money=3000):
     """Play a script through the real environment, recording state after every step."""
     from kaggle_environments import make
 
@@ -144,12 +151,13 @@ def run_reference(script, seed):
     # speedup the simulator exists for; the sim matches it statistically instead, tested separately.
     env = make(
         "kaggriculture",
-        configuration={"seed": seed, "weedSpawnChance": 0.0},
+        configuration={"seed": seed, "weedSpawnChance": 0.0, "startingMoney": starting_money},
         debug=False,
     )
     env.reset(num_agents=2)
 
-    trace, unlocks = [], {}
+    # `unlocks` maps day -> the shop names that opened that day, so a repeated shop survives.
+    trace, unlocks, seen = [], {}, 0
     for entry in script:
         farms = env.state[0].observation["farms"]
         actions = []
@@ -196,8 +204,15 @@ def run_reference(script, seed):
 
         env.step(actions)
         obs = env.state[0].observation
-        for shop in obs.get("town", {}).get("unlocked_shops", []):
-            unlocks.setdefault(shop, obs.get("day", 0))
+        # **Record the list, not the set.** From 1.32.6 the town draws shops *with replacement*, so
+        # `unlocked_shops` can hold the same name twice and each instance consumes independently.
+        # Keying by shop name -- which is what this did -- collapsed the duplicate and handed the
+        # simulator half the drain, on every seed the gate uses. The list only ever grows by append,
+        # so whatever is past the high-water mark opened on the day now showing.
+        shops = list(obs.get("town", {}).get("unlocked_shops", []) or [])
+        if len(shops) > seen:
+            unlocks.setdefault(obs.get("day", 0), []).extend(shops[seen:])
+            seen = len(shops)
         # **`shed` and `carried` are compared as of 2026-08-04.** Money, market inventory and a tile
         # census were the only fields, and none of them move when an item shifts between a unit's hands
         # and the shed -- so a one-turn error in the dawn drop was invisible over 719 exact steps.
@@ -217,7 +232,7 @@ def run_reference(script, seed):
         })
         if env.done:
             break
-    return trace, {day: shop for shop, day in unlocks.items()}
+    return trace, unlocks
 
 
 def _census(tiles):
@@ -271,13 +286,19 @@ def _sim_census(tiles, game_index):
     }
 
 
-def run_sim(scripts, seed=None, weed_chance=0.0, unlocks=None):
+def run_sim(scripts, seed=None, weed_chance=0.0, unlocks=None, starting_money=3000):
     """Play a list of scripts (one per game) through the batched sim, recording the same state."""
     from kagg.sim.town import SHOP_INDEX
 
     batch = len(scripts)
-    schedule = {d: SHOP_INDEX[s] for d, s in (unlocks or {}).items()}
-    game = Game(batch, weed_chance=weed_chance, unlock_schedule=schedule)
+    # `run_reference` hands back day -> list of shop names. A bare name is still accepted so any
+    # caller holding the pre-1.32.6 single-shop-per-day form keeps working.
+    schedule = {
+        d: [SHOP_INDEX[s] for s in ([names] if isinstance(names, str) else names)]
+        for d, names in (unlocks or {}).items()
+    }
+    game = Game(batch, starting_money=float(starting_money), weed_chance=weed_chance,
+                unlock_schedule=schedule)
     traces = [[] for _ in range(batch)]
 
     for step in range(len(scripts[0])):

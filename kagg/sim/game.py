@@ -139,13 +139,18 @@ class Game:
 
     def __init__(self, batch, starting_money=3000.0, weed_chance=0.005, rng=None,
                  unlock_schedule=None):
-        """`unlock_schedule` maps day -> shop index, per game or shared across the batch.
+        """`unlock_schedule` maps day -> shop index, or day -> list of shop indices.
 
         Which shop unlocks on a given day cannot be derived offline: `_spawn_weeds` consumes one
         Python RNG draw per empty tile *before* `rng.choice` picks the shop, so the order depends
         on both players' board occupancy. Reproducing that draw-for-draw would cost millions of
         Python-level RNG calls per batch. The schedule is therefore supplied by the caller --
         observed from a real episode for parity testing, or sampled for training.
+
+        **The list form exists because 1.32.6 draws with replacement.** `town["unlocked_shops"]` is
+        a list capped at `MAX_SHOP_INSTANCES`, not a set, and `_town_consume` iterates it, so two
+        instances of one shop are two independent consumers. A bare int is still accepted and means
+        a single instance.
         """
         self.batch = batch
         self.step_index = 0
@@ -155,7 +160,8 @@ class Game:
         self.tiles = [TileState(batch) for _ in range(N_PLAYERS)]
         self.farms = [FarmState(batch, starting_money) for _ in range(N_PLAYERS)]
         self.inventory = np.tile(I0.astype(np.int64), (batch, 1))
-        self.unlocked_shops = np.zeros((batch, N_SHOPS), dtype=bool)
+        # Instance counts, not flags: the same shop can unlock more than once from 1.32.6.
+        self.unlocked_shops = np.zeros((batch, N_SHOPS), dtype=np.int64)
 
         # Only the NW quadrant starts unlocked.
         locked = np.zeros(TILES, dtype=bool)
@@ -375,10 +381,16 @@ class Game:
         rows = np.arange(self.batch)
         safe_product = np.clip(item, 0, N_PRODUCTS - 1)
 
+        # **Bought goods land in the shed, so they obey `shedCapacity` -- new in 1.32.6.**
+        # `_commit_unit` checks `sum(shed.values()) >= shed_capacity` *before* debiting money, and
+        # returns False, which abandons the rest of the order rather than retrying it. Seeds are
+        # exempt: they live in `private["seeds"]`, not the shed, and are uncapped.
+        room = farm.shed.sum(axis=1) < O.SHED_CAP
+
         selling = live & (op == ORDER_SELL) & (farm.shed[rows, safe_product] > 0)
-        buying = live & (op == ORDER_BUY_PRODUCT) & (farm.money >= unit_price)
+        buying = live & (op == ORDER_BUY_PRODUCT) & (farm.money >= unit_price) & room
         seeding = live & (op == ORDER_BUY_SEED) & (farm.money >= unit_price)
-        animaling = live & (op == ORDER_BUY_ANIMAL) & (farm.money >= unit_price)
+        animaling = live & (op == ORDER_BUY_ANIMAL) & (farm.money >= unit_price) & room
 
         if selling.any():
             farm.money = np.where(selling, farm.money + unit_price, farm.money)
@@ -484,13 +496,21 @@ class Game:
         return self.step_index > LAST_STEP
 
     def _apply_unlocks(self):
-        """Open any shops whose unlock day has arrived. Shops consume from the day they appear."""
+        """Open any shops whose unlock day has arrived. Shops consume from the day they appear.
+
+        Recomputed from the schedule each step rather than accumulated into the running array.
+        Accumulating was safe while unlocks were booleans; with instance counts it would add one
+        per shop *per step*, so a shop open since day 3 would read as hundreds of consumers.
+        """
         if not self.unlock_schedule:
             return
         day = self.day
-        for unlock_day, shop in self.unlock_schedule.items():
-            if unlock_day <= day:
-                self.unlocked_shops[:, shop] = True
+        self.unlocked_shops[:] = 0
+        for unlock_day, shops in self.unlock_schedule.items():
+            if unlock_day > day:
+                continue
+            for shop in (shops if np.ndim(shops) else [shops]):
+                self.unlocked_shops[:, int(shop)] += 1
 
     def _spawn_weeds(self, tiles):
         """Weeds on empty unlocked tiles, at the configured rate.

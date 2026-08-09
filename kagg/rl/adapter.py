@@ -159,8 +159,12 @@ def state_from_obs(obs, privates):
         farm=farm,
         inventory=inventory,
         # Not recoverable from the observation and not needed to act from the current position:
-        # `unlock_day` only governs future town drain, and the key only seeds weed spawning.
-        unlock_day=jnp.full((1, J.N_SHOPS), J.NEVER, dtype=J._I),
+        # the unlock schedule only governs future town drain, and the key only seeds weed spawning.
+        # Instance-indexed since 1.32.6 (shops are drawn with replacement), so it is
+        # `MAX_INSTANCES` wide and needs the companion shop-id array; all-NEVER means a frozen town
+        # either way, which is what makes the shop ids irrelevant here.
+        unlock_day=jnp.full((1, J.MAX_INSTANCES), J.NEVER, dtype=J._I),
+        unlock_shop=jnp.zeros((1, J.MAX_INSTANCES), dtype=J._I),
         key=__import__("jax").random.PRNGKey(0),
     )
 

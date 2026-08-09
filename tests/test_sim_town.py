@@ -23,11 +23,18 @@ SEED = 11
 
 
 def _mask_for(unlocks, day):
-    mask = np.zeros((1, N_SHOPS), dtype=bool)
-    for unlock_day, shop in unlocks.items():
+    """Open shop *instances* per shop, not a set of which shops are open.
+
+    A bool mask was correct until 1.32.6 and is not now: the town draws with replacement, so
+    `observe_unlocks(11)` has YARN_STORE on days 12, 15 *and* 21, and each instance consumes
+    independently. Collapsing them reported 3 WOOL a tick against the economics model's 5.
+    """
+    counts = np.zeros((1, N_SHOPS), dtype=np.int64)
+    for unlock_day, shops in unlocks.items():
         if unlock_day <= day:
-            mask[0, SHOP_INDEX[shop]] = True
-    return mask
+            for shop in ([shops] if isinstance(shops, str) else shops):
+                counts[0, SHOP_INDEX[shop]] += 1
+    return counts
 
 
 def test_center_multiplier_matches_the_schedule():

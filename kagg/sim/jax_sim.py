@@ -98,6 +98,10 @@ MAX_UNITS = F.MAX_UNITS
 N_CROPS = F.N_CROPS
 N_PRODUCTS = M.N_PRODUCTS
 N_SHOPS = W.N_SHOPS
+#: Width of the instance-indexed unlock arrays. `MAX_SHOP_INSTANCES` is the env's cap on how many
+#: shop slots the town ever opens; `N_SHOPS` is the width an old shop-indexed schedule needs. Both
+#: are 8 today, and taking the max means neither input form can overflow if one of them moves.
+MAX_INSTANCES = max(W.MAX_SHOP_INSTANCES, W.N_SHOPS)
 N_LAND = F.N_LAND
 SHED_CAP = F.SHED_CAP
 PRICE_FLOOR = M.PRICE_FLOOR
@@ -226,7 +230,10 @@ class State(NamedTuple):
     tiles: Tiles
     farm: Farm
     inventory: jnp.ndarray        # [B, N_PRODUCTS]
-    unlock_day: jnp.ndarray       # [B, N_SHOPS] -- day each shop opens, NEVER if it never does
+    # Instance-indexed, because 1.32.6 draws shops with replacement: slot `i` is the shop
+    # `unlock_shop[:, i]` opening on day `unlock_day[:, i]`, and two slots may name the same shop.
+    unlock_day: jnp.ndarray       # [B, MAX_INSTANCES] -- day this slot opens, NEVER if never
+    unlock_shop: jnp.ndarray      # [B, MAX_INSTANCES] -- which shop occupies the slot
     key: jnp.ndarray              # PRNG key, only consumed when weeds are enabled
 
     @property
@@ -402,29 +409,60 @@ def random_unlock_days(batch, seed=0):
     return jnp.asarray(out)
 
 
-def unlock_array(schedule, batch):
-    """Build the `[B, N_SHOPS]` unlock-day array from a `{day: shop_index}` dict.
+def shop_ids_for_days(batch):
+    """The `unlock_shop` companion for any shop-indexed `[B, N_SHOPS]` day array: slot `i` is shop `i`.
 
-    Same input the numpy `Game` takes. A shop absent from the schedule never opens.
-
-    Also accepts an already-built `[B, N_SHOPS]` array, which is how a *per-game* schedule is
-    expressed -- a dict cannot say "a different order in each game", and that is the shape the
-    reference actually produces. `None` and `{}` both still mean a frozen town, unchanged, because
-    the lockstep parity harness passes `None` to both simulators and must keep getting the same
-    thing from each.
+    `random_unlock_days` and `boards.unlock_array` both produce "the day each shop opens", which is
+    one instance per shop -- so their companion is always `arange(N_SHOPS)`. Exposed as a function
+    rather than left implicit because a caller that sets `unlock_day` via `_replace` and forgets
+    `unlock_shop` inherits whatever was there, and a stale companion of all-zeros silently makes
+    every instance shop 0. That is a wrong *drain*, not a crash.
     """
-    if schedule is not None and not isinstance(schedule, dict):
-        out = np.asarray(schedule, dtype=np.int32)
-        if out.shape == (N_SHOPS,):
-            out = np.broadcast_to(out, (batch, N_SHOPS))
-        if out.shape != (batch, N_SHOPS):
-            raise ValueError(f"unlock array has shape {out.shape}, expected ({batch}, {N_SHOPS})")
-        return jnp.asarray(out)
+    return jnp.asarray(np.tile(np.arange(MAX_INSTANCES, dtype=np.int32) % N_SHOPS, (batch, 1)))
 
-    out = np.full((batch, N_SHOPS), NEVER, dtype=np.int32)
-    for day, shop in (schedule or {}).items():
-        out[:, int(shop)] = min(int(out[0, int(shop)]), int(day))
-    return jnp.asarray(out)
+
+def unlock_array(schedule, batch):
+    """Build the town's unlock schedule as `(days, shops)`, each `[B, MAX_SHOP_INSTANCES]`.
+
+    **Instance-indexed, not shop-indexed, since 1.32.6.** The env appends to `unlocked_shops` with
+    replacement, so the same shop can hold two slots and `_town_consume` iterates the list -- two
+    instances are two independent consumers. A `[B, N_SHOPS]` "day each shop opens" array cannot say
+    that at all, and a simulator built on one under-drains all but 0.24% of games.
+
+    Accepted inputs, all of which still work:
+
+    - a `{day: shop_index}` dict, one instance per entry;
+    - a `{day: [shop_index, ...]}` dict, which is what `parity.run_reference` now returns;
+    - an already-built `[B, N_SHOPS]` (or `[N_SHOPS]`) day array, meaning instance `i` is shop `i`
+      opening on day `i` -- exactly the old semantics, so `random_unlock_days` and
+      `boards.unlock_array` are unchanged;
+    - `None` or `{}`, a frozen town. `_run_lockstep` passes `None` to both simulators, so this must
+      stay a fixed point rather than sampling.
+    """
+    shop_ids = shop_ids_for_days(batch)
+
+    if schedule is not None and not isinstance(schedule, dict):
+        days = np.asarray(schedule, dtype=np.int32)
+        if days.shape == (N_SHOPS,):
+            days = np.broadcast_to(days, (batch, N_SHOPS))
+        if days.shape != (batch, N_SHOPS):
+            raise ValueError(f"unlock array has shape {days.shape}, expected ({batch}, {N_SHOPS})")
+        out = np.full((batch, MAX_INSTANCES), NEVER, dtype=np.int32)
+        out[:, :N_SHOPS] = days
+        return jnp.asarray(out), shop_ids
+
+    days = np.full((batch, MAX_INSTANCES), NEVER, dtype=np.int32)
+    shops = np.zeros((batch, MAX_INSTANCES), dtype=np.int32)
+    slot = 0
+    for day in sorted((schedule or {}).keys()):
+        entry = (schedule or {})[day]
+        for shop in (entry if np.ndim(entry) else [entry]):
+            if slot >= MAX_INSTANCES:
+                break
+            days[:, slot] = int(day)
+            shops[:, slot] = int(shop)
+            slot += 1
+    return jnp.asarray(days), jnp.asarray(shops)
 
 
 def reset_with_shops(batch, seed=0, **kw):
@@ -491,13 +529,15 @@ def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_
         hires_today=jnp.zeros((batch, players), dtype=_I),
         n_land=jnp.zeros((batch, players), dtype=_I),
     )
+    unlock_day, unlock_shop = unlock_array(unlock_schedule, batch)
     return State(
         step_index=(jnp.zeros((batch,), dtype=_I) if phase is None
                     else jnp.asarray(phase, dtype=_I)),
         tiles=tiles,
         farm=farm,
         inventory=jnp.broadcast_to(jnp.asarray(M.I0, dtype=_I), (batch, N_PRODUCTS)),
-        unlock_day=unlock_array(unlock_schedule, batch),
+        unlock_day=unlock_day,
+        unlock_shop=unlock_shop,
         key=jax.random.PRNGKey(seed),
     )
 
@@ -590,14 +630,15 @@ def _apply_unit_actions(tiles, farm, actions, day):
         want_qty = lax.dynamic_index_in_dim(actions.unit_qty, u, axis=2, keepdims=False)
         pos = lax.dynamic_index_in_dim(unit_pos, u, axis=2, keepdims=False)   # [B, P, 2]
 
-        # --- movement: blocked by the board edge and by LOCKED tiles, otherwise silent -----
+        # --- movement: blocked by the board edge only, otherwise silent --------------------
+        # LOCKED stopped blocking movement in 1.32.6: a hand can spawn on a locked shed-access
+        # tile, and refusing the move would strand it there for the season. The tile ops below
+        # still no-op on LOCKED, because each keys off the tile kind and LOCKED is its own kind.
         moving = active & (op >= O.NORTH) & (op <= O.WEST)
         nx = pos[..., 0] + _DX[op]
         ny = pos[..., 1] + _DY[op]
         in_bounds = (nx >= 0) & (nx < BOARD) & (ny >= 0) & (ny < BOARD)
-        target = jnp.clip(ny, 0, BOARD - 1) * BOARD + jnp.clip(nx, 0, BOARD - 1)
-        unlocked = _gather(tl.kind, target) != LOCKED
-        legal = moving & in_bounds & unlocked
+        legal = moving & in_bounds
         pos = jnp.stack(
             [jnp.where(legal, nx, pos[..., 0]), jnp.where(legal, ny, pos[..., 1])], axis=-1
         )
@@ -620,9 +661,11 @@ def _apply_unit_actions(tiles, farm, actions, day):
         fert_avail = _gather(tl.fertilizer_available, idx)
         care_bonus = _gather(tl.pending_care_bonus, idx)
         has_animal = animal != NO_ANIMAL
-        # Shed access is gated on an *unlocked* access tile: three of the four sit in quadrants
-        # that stay locked until bought, and hands spawn on exactly those.
-        on_shed = (idx[..., None] == SHED_TILES).any(axis=-1) & (kind != LOCKED)
+        # Shed access is purely positional from 1.32.6. DROP, PICKUP and PLACE now resolve *above*
+        # the LOCKED guard: the shed is always owned and the tile is only a standing position, and
+        # three of the four access tiles start locked, so guarding first made the shed unreachable
+        # from them.
+        on_shed = (idx[..., None] == SHED_TILES).any(axis=-1)
 
         # --- WATER: the non-ongoing yield bonus lands only inside the window, once a day ----
         doable = active & (op == O.WATER) & (kind == PLANT) & (watered == 0)
@@ -975,10 +1018,14 @@ def _process_market(farm, tiles, inventory, actions):
 
                 have = jnp.sum(jnp.where(item_hot, shed[:, seat, :], 0), axis=-1)
                 afford = money[:, seat] >= q_s
+                # Bought goods land in the shed, so from 1.32.6 they obey `shedCapacity` --
+                # checked before the money is debited, and a refusal abandons the rest of the
+                # order. Seeds are exempt: they live outside the shed and are uncapped.
+                room = jnp.sum(shed[:, seat, :], axis=-1) < SHED_CAP
                 selling = live_s & (op_s == ORDER_SELL) & (have > 0)
-                buying = live_s & (op_s == ORDER_BUY_PRODUCT) & afford
+                buying = live_s & (op_s == ORDER_BUY_PRODUCT) & afford & room
                 seeding = live_s & (op_s == ORDER_BUY_SEED) & afford
-                animaling = live_s & (op_s == ORDER_BUY_ANIMAL) & afford
+                animaling = live_s & (op_s == ORDER_BUY_ANIMAL) & afford & room
 
                 spend = (buying | seeding | animaling).astype(_F) * q_s
                 earned = selling.astype(_F) * q_s
@@ -1118,14 +1165,23 @@ def _center_multiplier(day):
     return out
 
 
-def _drain(step, day, unlock_day):
-    """Units the town removes this step. Shops tick every 4 steps, the centre every 12.
+def _drain(step, day, unlock_day, unlock_shop):
+    """Units the town removes this step. Shops tick on `SHOP_INTERVAL`, the centre on `CENTER_INTERVAL`.
 
-    `step` and `day` are `[B]` now, so every comparison against them needs a trailing axis to line
-    up with the `[B, N_PRODUCTS]` result.
+    `step` and `day` are `[B]`, so every comparison against them needs a trailing axis to line up
+    with the `[B, N_PRODUCTS]` result.
+
+    Summed **per instance** rather than per shop: 1.32.6 draws with replacement, so two slots can
+    name one shop and each pulls its products independently. `unlocked @ SHOP_PULL` over a
+    shop-indexed mask counted that once.
     """
-    unlocked = (unlock_day <= day[:, None]).astype(_I)
-    shops = jnp.where((step % W.SHOP_INTERVAL == 0)[:, None], unlocked @ SHOP_PULL, 0)
+    open_now = (unlock_day <= day[:, None])                       # [B, MAX_INSTANCES]
+    pull = SHOP_PULL[jnp.clip(unlock_shop, 0, N_SHOPS - 1)]       # [B, MAX_INSTANCES, N_PRODUCTS]
+    # `dtype=_I` is load-bearing: with x64 enabled `jnp.sum` accumulates int32 into int64, and
+    # `rollout`'s `lax.scan` rejects a carry whose dtype changed -- inventory would come back
+    # int64 against an int32 input. The old `unlocked @ SHOP_PULL` kept int32 for free.
+    per_step = jnp.sum(jnp.where(open_now[..., None], pull, 0), axis=1, dtype=_I)
+    shops = jnp.where((step % W.SHOP_INTERVAL == 0)[:, None], per_step, 0)
     centre = jnp.where(
         (step % W.CENTER_INTERVAL == 0)[:, None],
         _center_multiplier(day)[:, None] * CENTER_PULL[None, :], 0
@@ -1347,7 +1403,7 @@ def step_accounted(state, actions, weed_chance=0.0):
     # the reference settles them together and their order relative to one another is observable.
     farm, tiles, inventory, acct = _process_market(farm, tiles, state.inventory, actions)
 
-    inventory = inventory - _drain(state.step_index, day, state.unlock_day)
+    inventory = inventory - _drain(state.step_index, day, state.unlock_day, state.unlock_shop)
     tiles = _decay_plants(tiles, state.step_index)
 
     # Night is now per game, so it cannot be a `lax.cond` on a scalar: different games cross the

@@ -160,6 +160,9 @@ def _stack(states):
                        for f in states[0].farm._fields}),
         inventory=cat("inventory"),
         unlock_day=cat("unlock_day"),
+        # The shop each unlock slot names, concatenated alongside its day -- they are one schedule
+        # split over two arrays and must never be stacked independently of each other.
+        unlock_shop=cat("unlock_shop"),
         key=states[0].key,
     )
 
@@ -342,7 +345,14 @@ def states_at_day(batch, day, seed=0, min_bank=None, top=None, root="data", behi
     #
     # The recorded board is mid-season, so a day-15 seed correctly finds five of eight shops
     # already open -- the sampled days run 3..24 regardless of where the episode resumes.
-    return stacked._replace(unlock_day=J.random_unlock_days(batch, seed=seed))
+    #
+    # `unlock_shop` must move with it. `random_unlock_days` is shop-indexed -- slot `i` is shop `i`
+    # -- and the stacked state inherited the adapter's all-zero companion, which would read as
+    # eight instances of shop 0 and drain one shop's products eightfold.
+    return stacked._replace(
+        unlock_day=J.random_unlock_days(batch, seed=seed),
+        unlock_shop=J.shop_ids_for_days(batch),
+    )
 
 
 def _duplicate_seat(state, seat=0):
@@ -649,7 +659,10 @@ def states_at_mix(batch, mix, seed=0, min_bank=None, top=None, root="data", behi
         tiles=jax.tree_util.tree_map(take, stacked.tiles),
         farm=jax.tree_util.tree_map(take, stacked.farm),
         inventory=take(stacked.inventory),
+        # Both halves of the unlock schedule take the same permutation, or a game ends up with one
+        # row's unlock days against another row's shops.
         unlock_day=take(stacked.unlock_day),
+        unlock_shop=take(stacked.unlock_shop),
     )
     return (out, days) if with_days else out
 

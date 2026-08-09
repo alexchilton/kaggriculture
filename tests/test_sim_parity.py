@@ -89,6 +89,36 @@ def test_full_length_episode_with_a_hired_crew_is_exact(seed):
     assert compare(sim[: len(reference)], reference) == []
 
 
+@pytest.mark.parametrize("seed", [0, 1])
+def test_full_length_episode_against_a_full_shed_is_exact(seed):
+    """719 steps with the shed pinned at capacity, which is where 1.32.6's new buy rule bites.
+
+    **This configuration exists because the gate could not otherwise reach the rule.** 1.32.6 made
+    `BUY_PRODUCT` and `BUY_ANIMAL` fail once `sum(shed) >= shedCapacity`; measured, the ordinary
+    719-step scripts peak at **8 to 11 items in a 100-item shed**, so the rule was untested by
+    construction and a simulator ignoring it passed every episode. Driving `buy_rate` to 0.9 with
+    `buy_max` 40, and the bank high enough to pay for it, holds both farms at the 100-item cap for
+    1,429 of the 1,438 player-steps -- so the rule now decides the outcome on nearly every turn.
+
+    Fourth entry in CLAUDE.md's "a gate only tests what it exercises" list. The other three were
+    single-unit scripts, a JAX suite with no atomic-PLANT rule, and 300 episodes in which the two
+    players never once sold the same product.
+    """
+    rng = np.random.default_rng(9000 + seed)
+    script = random_script(rng, steps=719, max_units=6, allow_hire=True, hire_rate=0.5,
+                           buy_rate=0.9, buy_max=40)
+
+    reference, unlocks = run_reference(script, seed=2500 + seed, starting_money=2_000_000)
+    sim = run_sim([script], unlocks=unlocks, starting_money=2_000_000)[0]
+
+    at_cap = sum(1 for t in reference for p in (0, 1) if sum(t["shed"][p].values()) >= 100)
+    assert at_cap > 1000, (
+        f"only {at_cap} player-steps held a full shed -- this script no longer exercises the rule "
+        f"it exists for, so make it buy harder rather than accepting the pass")
+
+    assert compare(sim[: len(reference)], reference) == []
+
+
 def test_a_batch_of_different_scripts_stays_exact():
     """Games in a batch must not contaminate each other -- the whole point of batching."""
     rng = np.random.default_rng(5)
