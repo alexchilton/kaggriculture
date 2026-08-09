@@ -218,6 +218,19 @@ def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
+#: `nearest` is a PURE function of `(depots, frm, to)` and it is the hot spot of the whole planner.
+#: Profiled on the day-11 handover board (seed 11, the densest farm we plan on): 3.99s in the dawn
+#: solve, of which `nearest` is 336,324 calls costing 0.95s cumulative -- and because it scores every
+#: depot with two `dist` calls, it is also where 3.9M of the 3.94M `dist` calls and 7.9M of the
+#: `abs` calls come from. Memoising it removes that entire subtree.
+#:
+#: Safe to cache without invalidation because nothing here reads mutable state: `depots` arrives as a
+#: tuple of coordinates, `frm` and `to` are grid positions, and the tie-break is on coordinates, so
+#: the result is a pure function of the key. The board is 10x10, so the key space is bounded by
+#: (depot sets) x 100 x 101 and cannot grow without bound over a season.
+_NEAREST = {}
+
+
 class Job:
     """One tile and every op it wants today. `turns` is how long standing there costs."""
 
@@ -336,10 +349,28 @@ class Depot:
 
 
 def nearest(depots, frm, to=None):
-    """The depot cheapest to visit between `frm` and `to`. Ties broken on coordinates, so it is total."""
+    """The depot cheapest to visit between `frm` and `to`. Ties broken on coordinates, so it is total.
+
+    Memoised on `_NEAREST`; see the note there for why that is safe. The body below is the definition
+    and stays the definition -- the cache only skips recomputing it, and
+    `tests/test_nearest_is_memoised_without_changing_it.py` pins the two against each other over the
+    whole reachable key space rather than trusting that claim.
+    """
+    # Callers are not all tuple-typed (`materialise` already converts, others pass lists), and an
+    # unhashable key would raise rather than merely miss -- so normalise before touching the cache.
+    if type(depots) is not tuple:
+        depots = tuple(depots)
+    frm = (frm[0], frm[1])
+    key = (depots, frm, None if to is None else (to[0], to[1]))
+    hit = _NEAREST.get(key)
+    if hit is not None:
+        return hit
     if to is None:
-        return min(depots, key=lambda c: (dist(c, frm), c))
-    return min(depots, key=lambda c: (dist(frm, c) + dist(c, to), c))
+        out = min(depots, key=lambda c: (dist(c, frm), c))
+    else:
+        out = min(depots, key=lambda c: (dist(frm, c) + dist(c, to), c))
+    _NEAREST[key] = out
+    return out
 
 
 def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True, rush=False):
@@ -375,9 +406,26 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
     # Suffix sums of what the remaining sequence draws, so rule 1 can ask "what does the rest of the
     # day need" in O(1) instead of rescanning. Computed once: `materialise` sits inside the innermost
     # loop of the greedy and is called O(jobs x units x positions) times per pass.
-    after = [collections.Counter() for _ in range(len(work) + 1)]
+    # Built by copy-and-add rather than `after[i + 1] + work[i].needs`. `Counter.__add__` runs
+    # `update` and then `_keep_positive` over the whole accumulator on every job, and this loop is
+    # the single hottest thing in the planner: profiled on the day-11 handover board it was 300,609
+    # `__add__` calls costing 0.31s, plus its share of 1.1M `Counter.__init__` calls, inside a 3.3s
+    # solve. `needs` values are counts and never negative, so `_keep_positive` can only ever drop
+    # zeros -- and a zero is never added below -- which is why this is the same suffix sum and not an
+    # approximation of it. Every entry still ends up strictly positive, exactly as `__add__` left it.
+    #
+    # A fresh Counter per index, deliberately: the old code allocated one per iteration too, and
+    # `after[0]` is handed to `Depot(pick=...)` which holds the reference. Sharing the object when a
+    # job needs nothing would be faster still and would introduce aliasing this loop never had.
+    after = [None] * (len(work) + 1)
+    acc = collections.Counter()
+    after[len(work)] = acc
     for i in range(len(work) - 1, -1, -1):
-        after[i] = after[i + 1] + work[i].needs
+        acc = acc.copy()
+        for _k, _v in work[i].needs.items():
+            if _v > 0:
+                acc[_k] += _v
+        after[i] = acc
 
     route, pos = [], tuple(start)
 
