@@ -591,6 +591,12 @@ def draws(route):
     return out
 
 
+#: Whether a PLACE is pinned to the hand that builds its pen. See the block in `cover`'s greedy
+#: commit for the mechanism and the day-0 trace. OFF lets the two land on different hands, which
+#: silently drops the placement.
+PLACE_FOLLOWS_ITS_BUILD = True
+
+
 def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
           rush=False):
     """Cover as many jobs as the crew can reach. Returns `(work, uncovered)`.
@@ -630,13 +636,42 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
 
     used = {u: 0 for u in range(len(units))}
 
+    # **A pen is BUILT and FILLED on the same square, and nothing else orders those two.** The route
+    # is a visit ORDER -- `_live_ops` re-derives the work from the live board at each stop
+    # (`schedule_agent:1201`) -- so a hand that arrives at a square whose pen is not up yet reads
+    # bare ground, gets no ops back, and the stop is dropped. The animal rides home in its hand and
+    # the walk is spent. Between two DIFFERENT hands there is no ordering at all.
+    #
+    # Traced on the day-0 dawn plan, seed 11, with the day planned once: u3 was sent to fill (2,4)
+    # while u4 was the hand building it. `place` measured 2/4, and the wasted walks are where
+    # `build_pasture` 6/8 and `plant` 16/17 went.
+    #
+    # Expressed as a feasibility rule rather than a pin on `Job.only`, because a pin set when the
+    # BUILD commits is too late whenever the PLACE commits first -- which the greedy is free to do,
+    # it ranks on insertion cost and knows nothing about the pair. As a rule it holds in both
+    # orders: a placement may only enter a sequence that ALREADY contains its build, and only at a
+    # position after it. Placements still compete for turns on their merits; they just compete on
+    # the one hand that can actually serve them.
+    build_at = {}
+    if PLACE_FOLLOWS_ITS_BUILD:
+        for j in jobs:
+            if any(o == "BUILD" for o, _i in j.ops):
+                build_at[tuple(j.tile)] = j
+
     def slot(u, j, base, limit=None):
         """Cheapest position for `j` in unit `u`'s `base` sequence within `limit` turns, `(cost, i)`."""
         if j.only is not None and j.only != u:
             return None
+        first = 0
+        if PLACE_FOLLOWS_ITS_BUILD and any(o == "PLACE" for o, _i in j.ops):
+            b = build_at.get(tuple(j.tile))
+            if b is not None and b is not j:
+                if b not in base:
+                    return None
+                first = base.index(b) + 1
         cap = budget[u] if limit is None else limit
         best = None
-        for i in range(len(base) + 1):
+        for i in range(first, len(base) + 1):
             c = cost(u, base[:i] + [j] + base[i:])
             if c <= cap and (best is None or c < best[0]):
                 best = (c, i)

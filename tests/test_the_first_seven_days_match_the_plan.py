@@ -537,3 +537,78 @@ def test_the_dawn_plan_offers_a_place_for_every_animal_the_day_buys():
         + "\n  The pen is BUILT and PLACEd on the same square by the same plan. If the BUILD node "
           "does not carry the PLACE, only a replan can ever find it."
     )
+
+
+def test_a_placement_is_planned_onto_the_hand_that_builds_its_pen():
+    """**PLACE on a pen someone else builds is a walk to an empty square.**
+
+    The route is a visit ORDER; `_live_ops` re-derives the work from the live board at each stop
+    (`schedule_agent:1201`). So a hand that arrives at a tile whose pen has not been built yet reads
+    a bare square, gets no ops back, and the stop is dropped -- the animal goes home in its hand and
+    the walk is spent for nothing. Between two DIFFERENT hands there is no ordering at all, so
+    whether the placement works is down to which one happens to arrive first.
+
+    Traced on the day-0 dawn plan, seed 11, with the day planned once:
+
+        u3  ... (3,4)['BUILD'] (3,4)['PLACE','FEED','CARE'] (2,4)['PLACE','FEED','CARE']
+        u4  ... (2,4)['BUILD'] (1,4)['BUILD'] ...
+
+    u3 is sent to fill (2,4) and u4 is the hand that builds it. `place` measured 2/4, and the wasted
+    walks are where `build_pasture` 6/8 and `plant` 16/17 went.
+
+    `Job.only` already exists for exactly this -- `cover.slot` refuses any unit but the named one --
+    so the fix is to name it once the build is placed, not to invent a mechanism.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    CV = importlib.import_module("kagg.search.cover")
+    split = {}
+
+    real_plan = CV.plan
+    box = {"day": 0, "hour": 0}
+
+    def spying_plan(units, jobs, budget, *a, **k):
+        out = real_plan(units, jobs, budget, *a, **k)
+        if box["hour"] == 0 and box["day"] not in split:
+            who = {}
+            # `cover.plan` returns `(routes, uncovered)`.
+            for u, st in (out[0] if isinstance(out, tuple) else out).items():
+                for n in st["route"]:
+                    for op, _item in n.ops:
+                        who.setdefault((tuple(n.tile), op), u)
+            bad = [(t, who[(t, "BUILD")], who[(t, "PLACE")])
+                   for t in {tt for tt, o in who if o == "BUILD"}
+                   if (t, "PLACE") in who and who[(t, "PLACE")] != who[(t, "BUILD")]]
+            split[box["day"]] = bad
+        return out
+
+    CV.plan = spying_plan
+    try:
+        env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+        env.reset(2)
+        agent = SA.make_agent(_thin(sched), 0, router=True)
+        opp = _tape_policy(1)
+        for t in range(24 * DAYS):
+            box["day"], box["hour"] = t // 24, t % 24
+            o0, o1 = env.state[0].observation, env.state[1].observation
+            a0, a1 = agent(o0), opp(o1, t)
+            n0 = len(o0["farms"][0].get("hands") or [])
+            n1 = len(o0["farms"][1].get("hands") or [])
+            env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0],
+                       "market": a0["market"]},
+                      {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1],
+                       "market": a1["market"]}])
+    finally:
+        CV.plan = real_plan
+
+    bad = [f"    d{d}  tile {t}: BUILD on u{b}, PLACE on u{p}"
+           for d, rows in sorted(split.items()) for t, b, p in rows]
+    assert not bad, (
+        "a placement was planned onto a hand that does not build that pen:\n" + "\n".join(bad)
+        + "\n  The placing hand arrives at a bare square, `_live_ops` returns nothing and the stop "
+          "is dropped. The animal never leaves the shed and the walk is spent."
+    )
