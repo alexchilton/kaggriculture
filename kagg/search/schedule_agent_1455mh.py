@@ -272,6 +272,25 @@ FETCH_THE_FEED_AND_RETURN = True
 #: above what the rest of its own route needs. See the block in the tour walker.
 FEED_WHAT_YOU_STAND_ON = True
 
+#: Whether a hand crossing a pen it has already fed today also CAREs it.
+#:
+#: **OFF, and measured.** The arithmetic is right -- one turn, no item, one extra unit of product on
+#: the next production day -- and it still loses, because a care taken on the way past is a turn the
+#: day had already promised to something else. Every hand crosses the pen on the shed tile, so the
+#: rule fires constantly:
+#:
+#:                    d0    d1    d2    d3    d4    d5    d6
+#:     care  ON      5/4   6/5   8/5   8/6  10/7   9/7   5/8
+#:     care  OFF     4/4   5/5   5/5   6/6   6/7   7/7   7/8
+#:
+#: We overshoot the tape on five days and break day 0, which was exact. Day 6 pays for it hardest --
+#: `feed` 7/8 -> 4/8 and `buy_product` 7/9 -> 1/9 -- so the turns come out of feeding and trading,
+#: which is the wrong trade for one unit of product tomorrow.
+#:
+#: The `d4 care 6/7` this was written for is real, but it is ONE care, and this buys it by spending
+#: nine others. A rule that fires only where the hand has slack would be a different arm.
+CARE_WHAT_YOU_STAND_ON = False
+
 
 def _arrivals(units, n):
     """Where the day's `n` hires will land, in the order `farm["hands"]` will hold them.
@@ -1562,6 +1581,39 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # both surviving across turns because the stop object is the state.
         act = ["PASS"]
         at_shed = tuple(pos) in set(depots)
+
+        def underfoot():
+            """The op worth doing on the tile this hand is STANDING on, or None.
+
+            The route is a visit ORDER and `_live_ops` is consulted at STOPS, so a tile a hand
+            merely crosses is never looked at. Both branches below emit a move, and putting this on
+            only one of them measured as an exact null -- the hands that walked over the hungry pen
+            at (1,4) on day 4 were in the DEPOT branch, on their way to drop.
+
+            FEED only out of SURPLUS: the wheat a hand carries is drawn for the pens still on its
+            own route, so spending it here would just move the hunger. It feeds what it holds above
+            that count and the planned tour is untouched.
+
+            CARE only on a pen already FED today. `pending_care_bonus` is consumed only on a day the
+            animal is also fed (`router.animal_ops`), so a care on an unfed pen banks nothing, and
+            this must never spend a turn on one. It costs no item at all -- `_apply_unit_action`
+            just sets `cared_today` (`kaggriculture.py:511-517`) -- against one extra unit of
+            product on the next production day.
+            """
+            if not FEED_WHAT_YOU_STAND_ON:
+                return None
+            here = tiles[pos[1]][pos[0]]
+            if not (isinstance(here, dict) and "animal" in here):
+                return None
+            if not here.get("fed_today") and inv.get("WHEAT", 0) > 0:
+                owed = sum(1 for nd in st["route"]
+                           for o, _i in getattr(nd, "ops", ()) if o == "FEED")
+                if inv["WHEAT"] > owed:
+                    return ["FEED"]
+            if (CARE_WHAT_YOU_STAND_ON and here.get("fed_today")
+                    and not here.get("cared_today")):
+                return ["CARE"]
+            return None
         while st["route"]:
             node = st["route"][0]
             if getattr(node, "depot", False):
@@ -1577,15 +1629,10 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     # matters: the hands that walked over the hungry pen at (1,4) on day 4 were on
                     # their way to the shed to DROP, not between two work stops. Putting the check
                     # only on the travel branch changed nothing at all.
-                    if FEED_WHAT_YOU_STAND_ON and inv.get("WHEAT", 0) > 0:
-                        here = tiles[pos[1]][pos[0]]
-                        if (isinstance(here, dict) and "animal" in here
-                                and not here.get("fed_today")):
-                            owed = sum(1 for nd in st["route"]
-                                       for o, _i in getattr(nd, "ops", ()) if o == "FEED")
-                            if inv["WHEAT"] > owed:
-                                act = ["FEED"]
-                                break
+                    under = underfoot()
+                    if under is not None:
+                        act = under
+                        break
                     act = [m]
                     break
                 if node.drop:
@@ -1679,15 +1726,10 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 # own route, and spending it here would just move the hunger to one of those. It
                 # feeds only what it is carrying above that count, so the tour it was planned for is
                 # untouched.
-                if FEED_WHAT_YOU_STAND_ON and inv.get("WHEAT", 0) > 0:
-                    here = tiles[pos[1]][pos[0]]
-                    if (isinstance(here, dict) and "animal" in here
-                            and not here.get("fed_today")):
-                        owed = sum(1 for nd in st["route"]
-                                   for o, _i in getattr(nd, "ops", ()) if o == "FEED")
-                        if inv["WHEAT"] > owed:
-                            act = ["FEED"]
-                            break
+                under = underfoot()
+                if under is not None:
+                    act = under
+                    break
                 act = [m]
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]

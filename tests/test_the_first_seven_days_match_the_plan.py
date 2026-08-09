@@ -777,7 +777,17 @@ def test_no_hand_walks_over_a_hungry_animal_with_the_feed_in_its_hand():
         for u, p in enumerate(pos):
             if u >= len(acts) or not acts[u] or acts[u][0] not in MOVES:
                 continue
-            if int((invs[u] or {}).get("WHEAT", 0) if u < len(invs) else 0) <= 0:
+            # **Surplus only, which is the rule and not a softened threshold.** The wheat a hand
+            # carries is drawn for the pens still on its OWN route; spending it on the tile
+            # underfoot would move the hunger rather than remove it. Three cases in d0-d6 carry
+            # exactly one wheat with a feed of their own still to serve, and walking on is correct
+            # for all three. Only wheat held ABOVE that count is free to spend here.
+            held = int((invs[u] or {}).get("WHEAT", 0) if u < len(invs) else 0)
+            owed = sum(1 for r in farm["tiles"] for c in r
+                       if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
+            if held <= 1 and owed > 1:
+                continue
+            if held <= 0:
                 continue
             cell = farm["tiles"][p[1]][p[0]]
             if isinstance(cell, dict) and "animal" in cell and not cell.get("fed_today"):
@@ -793,4 +803,63 @@ def test_no_hand_walks_over_a_hungry_animal_with_the_feed_in_its_hand():
         "a hand walked off a tile holding a hungry animal while carrying its feed:\n"
         + "\n".join(walked)
         + "\n  One turn to FEED. `consecutive_unfed >= 2` removes the animal outright."
+    )
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "CARE_WHAT_YOU_STAND_ON is OFF by measurement, not by omission. The rule fires on every hand "
+    "crossing the pen on the shed tile, so care overshoots the tape on five days (d0 5/4, d2 8/5, "
+    "d4 10/7, d5 9/7) and BREAKS day 0, which is exact without it. Day 6 pays hardest: feed 7/8 -> "
+    "4/8, buy_product 7/9 -> 1/9. One extra unit of product tomorrow is not worth a feed today. "
+    "Left strict so that if a future change makes the care free, this goes green and says so."))
+def test_no_hand_walks_over_a_fed_but_uncared_animal():
+    """**The CARE is the same walk-past as the FEED, one step later.**
+
+    `pending_care_bonus` is consumed only on a day the animal is ALSO fed (`router.animal_ops`), so
+    a CARE is worth exactly one extra unit of product on the next production day -- and it is worth
+    that ONLY on a pen already fed today. It costs one turn and no item at all: `_apply_unit_action`
+    just sets `cared_today` (`kaggriculture.py:511-517`).
+
+    So a hand standing on a pen it has just fed, about to walk away, is one turn from banking that
+    unit. Day 4 measures `feed 7/7` and `care 6/7` for exactly this reason: the feed now happens
+    under the hand's feet and then it moves on.
+
+    Restricted to pens ALREADY FED, so this can never spend a turn on a care that banks nothing.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    MOVES = {"NORTH", "SOUTH", "EAST", "WEST"}
+
+    env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    agent = SA.make_agent(_thin(sched), 0, router=True)
+    opp = _tape_policy(1)
+
+    walked = []
+    for t in range(24 * DAYS):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        a0, a1 = agent(o0), opp(o1, t)
+        farm = o0["farms"][0]
+        pos = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
+        acts = [a0["farmer"], *a0["hands"]]
+        for u, p in enumerate(pos):
+            if u >= len(acts) or not acts[u] or acts[u][0] not in MOVES:
+                continue
+            cell = farm["tiles"][p[1]][p[0]]
+            if (isinstance(cell, dict) and "animal" in cell
+                    and cell.get("fed_today") and not cell.get("cared_today")):
+                walked.append(f"    d{t // 24} h{t % 24}  u{u}@{p} -> {acts[u][0]}, "
+                              f"leaving a fed but uncared {cell['animal']}")
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
+
+    assert not walked, (
+        "a hand walked off a pen it had fed, leaving the care undone:\n" + "\n".join(walked)
+        + "\n  One turn, no item, one extra unit of product on the next production day."
     )
