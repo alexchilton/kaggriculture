@@ -2,6 +2,17 @@
 
 Last updated 2026-08-08, on `shaping-potential`.
 
+> **Version caveat, added 2026-08-09.** The ladder moved to `kaggle-environments` 1.32.6 on
+> 2026-08-07/08. The `STATE at last update` block below, and most dollar figures elsewhere in this
+> file, were measured on 1.32.2 or against a fixture that did not yet reflect the town rebalance
+> (`competition_brief.md`, "version skew"). Both simulators now **fail parity on 1.32.6** — 8
+> failures, not the "300/300 exact" figure this file and `architecture.md` used to treat as current.
+> The *mechanisms* below (routing, feed, geometry, discard timing) are still believed correct; the
+> *dollar sizes* are not to be trusted without re-measuring on 1.32.6. See
+> `docs/the_market_2026-08-09.md` for the current, 1.32.6-dated market picture and
+> `docs/the_top_five_clusters_2026-08-09.md` for the current ladder gap (we score 1,123.5 against a
+> field whose floor is ~3,117).
+
 This file exists because items in this project get closed under one name and reopen under another.
 Melon has been opened and closed at least four times.
 **Before opening anything, check the CLOSED section — and check whether your item is really OPEN-1
@@ -129,6 +140,12 @@ tested and is **not** the cause. Left unfed until the cause is found; see the co
 
 Constraint on any fix: CARE correlates **+0.441** with money across 312 real leaderboard seats, so
 "do less CARE" is not a safe inference from the diff alone.
+
+**Partially superseded 2026-08-09.** `PRICE_AWARE_SELL_CAP` and `RESERVATION_SELL_CAP` are both now
+`True` in `schedule_agent.py`, replacing the schedule-row-only `allow` this section describes with a
+live-price rule. Whether that closes this item has not been re-measured against the mechanism
+described here; see `docs/the_market_2026-08-09.md` §4-5, which found milk and wool still
+under-priced on real ladder losses even with both flags on.
 
 ### OPEN-4 — The strawberries die eleven days too early
 

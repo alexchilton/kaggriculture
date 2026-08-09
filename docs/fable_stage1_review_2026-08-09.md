@@ -8,6 +8,10 @@ Everything below was verified against the actual saved artifact
 and `data/logs/run_scheduler_v7.log`.
 Installed env is now 1.32.6 (`kg.__version__` checked), so that landmine is closed.
 
+See also `docs/the_market_2026-08-09.md` §2 for the current 1.32.6 `DRAIN_UNITS` overstatement this
+review references, and `docs/the_top_five_clusters_2026-08-09.md` for why "get into the v23 band
+first" (below) is the higher-priority move over reviving stage 1 at all.
+
 ## The headline: (b) is not a scheduling bug, it is a decode veto, and it is measured
 
 Decoding the saved genome:

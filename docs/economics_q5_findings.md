@@ -8,6 +8,15 @@ Every number here came from a measurement, and each one names what produced it.
 `kagg/economics/` is validated against live episodes step for step and product for product in
 `tests/test_market_model.py`; `tests/test_production.py` re-measures the yield table on every run.
 
+> **Version caveat, added 2026-08-09.** §1 (yields) and §3-5 (supply, allocation, storage) are
+> version-independent — they come from per-tile production rules and `MARKET_PARAMS`, neither of
+> which changed in 1.32.6. **§2 (town drain) and the market-ceiling table in §4 were measured before
+> the 1.32.6 town rebalance and are now wrong by up to 4.67x (melon)** — `townCenterSellInterval`
+> doubled from 12 to 24 and the late-season demand ramp was deleted. Use
+> `docs/the_market_2026-08-09.md` §2 for the corrected 1.32.6 drain table, and
+> `docs/what_saturates_and_what_does_not_2026-08-09.md` for the corrected per-head animal
+> saturation and the melon-planning bug the old §2/§4 numbers caused.
+
 ---
 
 ## 1. Yields — the table in the competition docs is wrong

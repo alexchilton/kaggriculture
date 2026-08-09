@@ -50,7 +50,12 @@ Field movement, measured from the official episodes index:
 
 The public leaderboard on 2026-08-03 read top 2,723 / 20th 2,464 / median 819 over 615 teams,
 against our best-ever submission at 600.5.
-**Any target read off a leaderboard snapshot more than a few days old is stale.**
+**Any target read off a leaderboard snapshot more than a few days old is stale** — confirmed again
+by the next reading: the daily episode index on 2026-08-08 read `median_avg_score` **3,067.75** and
+`top_avg_score` **3,192.89**, against our best-ever submission at **1,123.5**
+(`docs/the_top_five_clusters_2026-08-09.md`). We are roughly a third of the way up the field, not
+close to it — read that file before treating any older "the gap is just price realised per unit"
+framing as the whole story.
 
 ## Baselines, measured locally on 1.32.2
 

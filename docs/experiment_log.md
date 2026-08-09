@@ -6,6 +6,13 @@ The point of this file is that several things in this project were "discovered" 
 measurement was made and then not written down. **If you measure something, put it here.**
 `REGISTER.md` is the live open/closed list; this is the history.
 
+> **Version caveat, added 2026-08-09.** The ladder moved to `kaggle-environments` 1.32.6 on
+> 2026-08-07/08 (`competition_brief.md`, "version skew"). Entries below that date were scored on
+> 1.32.2 and are not directly comparable to anything measured since — the town rebalance changed
+> absorption by up to 4.67x on melon. Treat every dollar figure here as dated by its own entry, not
+> as a current baseline. `docs/the_market_2026-08-09.md` holds the current, 1.32.6-dated market
+> findings.
+
 Rules for reading it: a score is mean final bank, seat-swapped, on held-out seeds never used for
 tuning, against the named opponent. **Seed variance is ~15%** — identical parameters score $11.5k on
 one 8-seed set and $13.3k on another. Always quote the seed range.
