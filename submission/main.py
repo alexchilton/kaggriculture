@@ -4363,6 +4363,19 @@ PRICE_AWARE_SELL_CAP = True
 RESERVATION_SELL_CAP = True
 
 #: Share of the town's remaining absorption assumed to be ours rather than the opponent's.
+#: Refuse to sell into a book that is already at, or near, the price floor.
+#:
+#: This is the one place the agent reacts to the OPPONENT, and it does so without needing to see
+#: them. `market.inventory` is `shared: True` in the observation, so their selling arrives as the
+#: book rising -- we cannot read their orders and do not need to, because the book already contains
+#: their effect. Every input to `reservation_units` is live: the book this turn, the shops open this
+#: turn, and our own remaining stock. Nothing here is transcribed from a replay.
+#:
+#: OFF restores the shipped behaviour, which widens the offer as the price collapses -- measured on
+#: a floored book as `MILK: 8 -> 5 -> 200 units offered` as the book fills.
+#: Pinned by `tests/test_we_do_not_sell_into_a_floored_book.py`.
+HOLD_A_FLOORED_BOOK = True
+
 RESERVATION_CONTEST = 0.5
 
 #: How far one offer may walk the price down, as a fraction of the price it opened at. This is the
@@ -4569,16 +4582,32 @@ _CENTER_INTERVAL = 24
 
 
 def _note_config(config):
-    """Adopt the live `townCenterSellInterval` if the host provided one. Idempotent and cheap."""
-    global _CENTER_INTERVAL
+    """Adopt whatever the host tells us, instead of trusting constants copied into this file.
+
+    Idempotent and cheap; called on every turn.
+
+    All three of these are *configuration*, not game constants, and each has a default baked into
+    this file that is right only for the version it was last read against. That is exactly how this
+    machine spent 2026-08-08 measuring `kaggle-environments` 1.32.2 while the ladder ran 1.32.6:
+    `townCenterSellInterval` moved 12 -> 24, every fixture silently described a different game, and
+    nothing detected it. The host hands us its own configuration, so none of them needs guessing.
+
+    `shedCapacity` earns its place here as of 2026-08-09: `release_order` and the whole eviction
+    argument are sized against it, and `_drop_inventories_to_shed` discards the overflow silently.
+    """
+    global _CENTER_INTERVAL, SHED_CAPACITY
     if not config:
         return
-    try:                                                                    # pragma: no cover
-        got = config.get("townCenterSellInterval") if hasattr(config, "get") else None
-        if got:
-            _CENTER_INTERVAL = int(got)
-    except Exception:                                                       # pragma: no cover
-        pass
+    if not hasattr(config, "get"):                                          # pragma: no cover
+        return
+    for key, name in (("townCenterSellInterval", "_CENTER_INTERVAL"),
+                      ("shedCapacity", "SHED_CAPACITY")):
+        try:                                                                # pragma: no cover
+            got = config.get(key)
+            if got:
+                globals()[name] = int(got)
+        except Exception:                                                   # pragma: no cover
+            pass
 
 
 def reservation_units(prod, inventory, step, unlocked_shops, supply,
@@ -4630,8 +4659,54 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
     if supply <= 0:
         return 0
     d_rem = town_drain_remaining(prod, step, unlocked_shops, end_step)
-    target = max(inventory, inventory + supply - int(contest * d_rem))
-    floor_price = max(market_price(prod, target), (1.0 - slip) * market_price(prod, inventory))
+    # **Hold only what the town can still take.** Waiting is worth something only if the book can
+    # come back, and it comes back at `d_rem`. Replaying this rule over 24 real ladder losses with
+    # the guard absent: WOOL +$341,759, STRAWBERRY +$162,355, MILK +$153,871 -- and MELON **minus
+    # $73,143**. Melon's book crashes 158 units above `I0` and the town removes 30 across a whole
+    # season, so the price it holds out for never arrives, the stock strands mid-season and the
+    # sales it refuses were the profitable ones. `d_rem >= supply` is the condition that separates
+    # the two: wool at day 16 has 182 of drain left against ~140 held, melon has 14 against ~60.
+    if HOLD_A_FLOORED_BOOK and d_rem >= supply:
+        # **Supply above the town's remaining absorption is worth the floor AND costs the rest.**
+        #
+        # The rule below used to widen the offer when `supply` exceeded `d_rem`, on the argument
+        # that stock which cannot clear at today's price should go now rather than later. That is
+        # true about the stock and false about the money. Episode 91122388, WOOL: the book reaches
+        # `d = 59` above `I0` on day 16 -- exactly where `200 - 0.058*d^2` hits the floor -- and we
+        # sell another 140 units into it at $1-$5 for the rest of the season, because the town
+        # drains a few and we refill them immediately. The book never recovers because we are
+        # holding it there.
+        #
+        #     day  units   book d   price got  |  book d @0.7x   price @0.7x
+        #      16     14       58           5  |           51            49
+        #      19      9       58           5  |           39           112
+        #      22      4       58           5  |           27           158
+        #      27      8       59           1  |            6           198
+        #
+        # Selling 30% less lets the drain outrun our supply, the book falls all season, and the same
+        # goods realise $149/unit against $24. The 59 withheld units were worth $1 each -- $59 --
+        # and withholding them is what raises the other 160 from $1 to $150.
+        #
+        # So the reservation price is set by where the book goes if we DON'T sell: only
+        # `min(supply, d_rem)` can ever be absorbed, and the town removes `d_rem` regardless, so the
+        # book we should price against is `inventory + min(supply, d_rem) - d_rem`, never worse than
+        # balanced. `slip` keeps its meaning -- how far below that we will still trade -- and now
+        # measures from a price the market can actually return to instead of from a crashed one.
+        #
+        # Across 14 real ladder losses this is worth +$135,250 on wool, +$57,433 on strawberry and
+        # +$57,163 on milk, and flips 12 of the 14. See
+        # `docs/we_oversell_into_a_contested_book_2026-08-09.md` and `scripts/less_or_slower.py`.
+        # `inventory - d_rem`, NOT `inventory + min(supply, d_rem) - d_rem`. The first version wrote
+        # the latter, which collapses to `inventory` for exactly the case that matters -- whenever
+        # `supply > d_rem` the `min` is `d_rem`, the terms cancel, and the reservation is read off
+        # the crashed price again. It fixed MILK and STRAWBERRY and left WOOL and MELON untouched.
+        i0 = _KG.MARKET_PARAMS[prod]["I0"]
+        target = max(i0, inventory - d_rem)
+        floor_price = (1.0 - slip) * market_price(prod, target)
+    else:
+        target = max(inventory, inventory + supply - int(contest * d_rem))
+        floor_price = max(market_price(prod, target),
+                          (1.0 - slip) * market_price(prod, inventory))
     n = 0
     while n < supply and market_price(prod, inventory + n) >= floor_price:
         n += 1
@@ -4639,6 +4714,35 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
 
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
+
+
+def release_order(shed):
+    """Which stock to sell down first when the shed cannot take the day's harvest, cheapest first.
+
+    A slot is a slot: the shed holds 100 units total across all nine products, and
+    `_drop_inventories_to_shed` discards the overflow at the rollover without looking at what it is
+    worth. When something has to go, it should be whatever is worth least per slot.
+
+    **This ordered by pile size until 2026-08-09**, `-int(shed.get(p, 0))`, which is correct today
+    only by coincidence: wheat is simultaneously the cheapest product ($25 base) and the biggest
+    pile (41-45 of 100 slots late season, against milk's 0-9 at $160), so largest-first happens to
+    reach for it. Nothing holds that in place. The moment an expensive product is the largest pile
+    -- which is exactly what `HOLD_A_FLOORED_BOOK` now makes more likely, since stock we decline to
+    sell at the price floor stays in the shed -- the old key sold the most valuable thing in the
+    building to protect the cheapest.
+
+    Products the shed does not hold are ordered last: they free no slot, however cheap.
+
+    NOT a value-per-slot ranking of *marginal* revenue. Base price is the right key here because the
+    decision is which of two piles occupies a slot overnight, and the live quote on a glutted book
+    says what the next unit fetches rather than what the stock is worth. Pricing the release off the
+    crashed quote would reproduce the defect `HOLD_A_FLOORED_BOOK` exists to fix.
+    """
+    base = RT.BASE_PRICE if hasattr(RT, "BASE_PRICE") else {}
+    return sorted(SELLABLE,
+                  key=lambda p: (0 if int(shed.get(p, 0)) > 0 else 1,
+                                 float(base.get(p, 0.0)),
+                                 -int(shed.get(p, 0))))
 
 #: Whether a sale may exceed the schedule's row purely to keep room for tonight's dusk drop.
 #:
@@ -5695,7 +5799,7 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             # did. The residue is exactly that shape -- 17 units on d21, 10 on d23. Closing it needs
             # the ROUTER to stop collecting into a shed that cannot take the load, which is the same
             # assignment defect as OPEN-4. See `docs/REGISTER.md`.
-            for p in sorted(SELLABLE, key=lambda p: -int(shed.get(p, 0))):
+            for p in release_order(shed):
                 if room_needed <= 0:
                     break
                 take = min(int(shed.get(p, 0)), room_needed)

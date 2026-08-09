@@ -147,6 +147,103 @@ def daily_burn(kind, what, n_tiles):
     return 0.0
 
 
+#: Units of rival supply arriving in the same book, per unit we sell.
+#:
+#: This is the old `OPPONENT_SHARE` reinterpreted. It used to be half of a *cap*; here it is the
+#: rate at which someone else fills the book alongside us, which is what actually sets the price we
+#: realise. Measured on the ladder: milk realises $205/unit in our wins and $73 in our losses on
+#: identical board state, so the opponent's supply is worth more than any board decision in the
+#: estimate. 1.0 means "they sell as much as we do", which is what a mirror-ish field does.
+CONTEST = 1.0
+
+#: Resolution of the sell-volume search in `best_revenue`, in units. Absolute, never relative.
+_VOLUME_STEP = 4
+
+_REVENUE_CACHE = {}
+
+
+def sale_revenue(prod, units, contest=CONTEST):
+    """Total dollars for selling `units` of `prod` across a season, on the environment's own curve.
+
+    The book is not a bucket with a lid on it. It starts 10,000 deep and `market_price` is a smooth
+    decreasing function of `inventory - I0`, so the drain is not a ceiling: selling past it lowers
+    the price and does not stop the sale. Pricing every unit at `base * 0.5` and clipping the count
+    at `DRAIN_UNITS * 0.5` gets both halves wrong at once, and the clip is the worse of the two --
+    melon yields 12 units a tile against a clip of 15, so two melon tiles and sixteen scored
+    identically and the planner stopped buying melon ground.
+
+    The model here is deliberately three lines. As the season runs, the book carries our sales plus
+    the rival's, less what the town has drained away, so by the time we have sold our `k`-th unit
+    the level above `I0` is about
+
+        net(k) = k * (1 + contest - drain / units)
+
+    -- our `k`, their `contest * k`, minus the `drain * k / units` the town has taken by that point
+    in the season. Price that with `market_price` and sum. When production is small enough that the
+    drain outruns supply the term goes negative, `net` clamps at zero and every unit fetches base
+    price, which is the correct answer for wheat and the reason wheat needs no correction.
+
+    Sampled at 24 points rather than summed unit by unit: this is a scheduling estimate inside a
+    beam search, the simulator is the judge of the result, and a precise model here would be a
+    second implementation of the game that then drifts from the first.
+    """
+    units = int(max(0, units))
+    if units <= 0:
+        return 0.0
+    key = (prod, units, round(contest, 3))
+    hit = _REVENUE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from kaggle_environments.envs.kaggriculture import kaggriculture as kg
+
+    i0 = kg.MARKET_PARAMS[prod]["I0"]
+    # `.get(prod, 0)` and not `[prod]`: FERTILIZER has no entry, and that is not an oversight in the
+    # table -- no shop carries it and `_town_center_sell` skips it explicitly, so its drain really is
+    # zero. Nothing ever leaves that book but our own sales, which makes it the steepest product in
+    # the game to oversupply and the only one where holding stock can never pay off.
+    slope = 1.0 + contest - C.DRAIN_UNITS.get(prod, 0) / float(units)
+    # Exact below 512 units, sampled above it. A resolution that VARIES with `units` makes the
+    # result non-monotone in `units` -- measured: 24 melon tiles scored below 16, and 8 cows below
+    # 4, purely from the grid moving. That is indistinguishable from a real economic optimum and
+    # would have been read as one.
+    n = units if units <= 512 else 512
+    total = 0.0
+    for j in range(n):
+        k = units * (j + 0.5) / n
+        total += kg.market_price(prod, int(round(i0 + max(0.0, slope * k))))
+    val = total / n * units
+    _REVENUE_CACHE[key] = val
+    return val
+
+
+def best_revenue(prod, produced, contest=CONTEST):
+    """What `produced` units are worth, given we may decline to sell the ones that pay nothing.
+
+    `sale_revenue` is not monotone: past some volume each extra unit earns less than it costs the
+    units behind it, and total revenue falls. That is a real property of the market and not a
+    modelling artifact -- it is the same fact `HOLD_A_FLOORED_BOOK` acts on in the shipped agent,
+    where a unit sold into a floored book earns $1 and costs ~$150 on everything sold after it.
+
+    But it must not make *ground* look worthless. Owning a tile never obliges us to dump its output,
+    so the value of production is the best we could do with it, which is monotone non-decreasing in
+    `produced` and concave. Concavity is the property the planner actually needs: without it the
+    estimate is linear and the search hands the whole farm to whichever product has the highest base
+    price, because nothing tells it the book fills up.
+    """
+    produced = int(max(0, produced))
+    if produced <= 0:
+        return 0.0
+    # The candidate volumes must form a grid that GROWS with `produced` -- a fixed absolute step, so
+    # the set searched at 200 units contains the set searched at 100. A step of `produced // 24`
+    # does not, and the maximum over a shifting grid is not monotone.
+    best = sale_revenue(prod, produced, contest)
+    for q in range(_VOLUME_STEP, produced + 1, _VOLUME_STEP):
+        v = sale_revenue(prod, q, contest)
+        if v > best:
+            best = v
+    return best
+
+
 def revenue_rate(kind, what, n_tiles):
     """Rough revenue per day once the chain is producing, from the measured season yields.
 
@@ -156,19 +253,43 @@ def revenue_rate(kind, what, n_tiles):
     """
     from kagg.economics import production as P
 
+    # **WARNING, measured 2026-08-09: the `min(..., DRAIN_UNITS * OPPONENT_SHARE)` below is wrong,
+    # and it got worse when `DRAIN_UNITS` was corrected to 1.32.6.** Do not wire this planner into a
+    # submission until it is replaced.
+    #
+    # The drain is not a ceiling. Each book starts 10,000 deep and `market_price` only falls as
+    # `inventory - I0` grows, so selling past the drain lowers the price without stopping the sale.
+    # Revenue-maximising volume against the cap this function applies:
+    #
+    #     product   drain  cap now  opt vol   $ at opt   $ at cap   forgone
+    #     MELON        30       15      180     31,509      3,750     27,759
+    #     MILK        322      161      320     51,200     25,760     25,440
+    #     WOOL        204      102      225     42,947     20,400     22,547
+    #     STRAW       452      226      400     48,000     27,120     20,880
+    #
+    # So the cap forgoes ~$96k of revenue across four products, and correcting `DRAIN_UNITS`
+    # multiplied the melon error by 4.67x rather than removing it. `scripts/measure_true_drain.py`
+    # reached the same conclusion from a tape and it was not acted on.
+    #
+    # The binding constraint is not the drain, it is **contest**. Both sides selling the same volume:
+    #
+    #     product   each sells   $/u solo   $/u contested
+    #     MELON            110        229             139
+    #     MILK             200        160              32
+    #     WOOL             200        200              40
+    #     STRAW            260        120              15
+    #
+    # which is what the ladder shows: milk realises $205/unit in our wins and $73 in our losses, on
+    # identical board state. The replacement is a marginal-revenue curve carrying a *measured* rival
+    # supply term, not a share dial -- see `docs/the_planner_prices_the_wrong_market_2026-08-08.md`.
     if kind == "ranch":
         a = R.ANIMALS[what]
         events = max(1, (R.SEASON_DAYS - a["first_yield_day"]) // max(a["interval"], 1))
         units = events * a["max_held"] * n_tiles
-        base = {"MILK": 160, "WOOL": 200, "EGG": 50}[a["product"]]
-        # Capped by the shared drain, then discounted for the price curve: selling into a drain walks
-        # the price down from base toward the floor, so realising base on every unit is not available.
-        units = min(units, C.DRAIN_UNITS[a["product"]] * OPPONENT_SHARE)
-        return units * base * 0.5 / max(R.SEASON_DAYS - a["first_yield_day"], 1)
+        days = max(R.SEASON_DAYS - a["first_yield_day"], 1)
+        return best_revenue(a["product"], units) / days
     y = max(P.TILE_YIELD_FERTILIZED[what], P.TILE_YIELD_PER_SEASON[what])
-    base = {"WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120, "MELON": 250}[what]
-    units = min(y * n_tiles, C.DRAIN_UNITS[what] * OPPONENT_SHARE)
-    return units * base * 0.5 / R.SEASON_DAYS
+    return best_revenue(what, y * n_tiles) / R.SEASON_DAYS
 
 
 def schedule(mix, bank=None, horizon=None, reserve=300.0):
@@ -197,26 +318,69 @@ def schedule(mix, bank=None, horizon=None, reserve=300.0):
     placed = {}                       # chain index -> start day
     parcel_day = {}                   # parcel index -> day bought
     parcels_bought = 0
-    running = []                      # (index, kind, what, n_tiles)
+    running = []                      # (index, kind, what, n_tiles, earns_from)
     curve = []
 
     pending = list(order)
     for day in range(horizon):
         # Yesterday's production and today's costs.
-        for i, kind, what, n in running:
-            bank += revenue_rate(kind, what, n) - daily_burn(kind, what, n)
+        #
+        # **Revenue starts at `earns_from`, not at the start day**, and getting that wrong is what put
+        # our land purchase on day 3 instead of the leader's day 7. A cow produces nothing until
+        # `first_yield_day = 8`, but this credited $720/day from the moment the chain started -- so with
+        # two cow chains, two wheat and a melon it believed it had earned $5,340 by day 3 when the real
+        # bank was about $1,800, and cheerfully bought a parcel it could not fund a crop on.
+        #
+        # Costs, by contrast, start immediately. Feed is due from the day the animal is placed.
+        for i, kind, what, n, earns_from in running:
+            if day >= earns_from:
+                bank += revenue_rate(kind, what, n)
+            bank -= daily_burn(kind, what, n)
         bank = max(bank, 0.0)
 
-        # Buy the next parcel as soon as it clears, if anything is waiting on it.
-        if parcels_bought < parcels_needed:
+        # **Chains before land, and land only out of revenue.** Buying a parcel the first day it
+        # "clears" is greedy-by-affordability, not greedy-by-value, and it is the exact mistake the
+        # beam's old `LAND_DAY_CHOICES.index(0)` hardcode made. Traced on the first run of this
+        # scheduler: day 0 spent $1,000 of a $3,000 bank on the NE parcel, which left $1,920 and blocked
+        # a $1,200 cow herd by $80 -- the largest market in the game, lost to an $80 shortfall.
+        #
+        # So: fund every chain that can start on ground already owned, then consider land, and never
+        # before `EARLIEST_REVENUE_DAY` since until then the opening bank is the whole of the money.
+        for i in list(pending):
+            kind, what, tiles = mix[i]
+            if need[i] > parcels_bought:
+                continue
+            cost = opening_cost(kind, what, len(tiles))
+            if bank < cost + reserve:
+                continue
+            bank -= cost
+            placed[i] = day
+            pending.remove(i)
+            running.append((i, kind, what, len(tiles), day + payback_days(kind, what)))
+
+        # Now land, out of what is left -- and **only when the chain that wants it can also be paid
+        # for.** Buying the parcel alone was the defect: the schedule spent $1,000 on day 3 and then had
+        # nothing left for the 24 tiles of strawberry seed the parcel was bought for, so `decode()`
+        # refused the chain and the ground sat idle. Ground with no crop on it is worse than no ground.
+        #
+        # This is what makes the rule reproduce the leader instead of merely resembling him. He buys on
+        # **days 7 and 10**, not day 3, because that is when a parcel *and* the chain behind it both
+        # clear. Requiring the pair moves our purchase from day 3 to the same window, from the same
+        # greedy rule -- the timing is derived, not copied.
+        if parcels_bought < parcels_needed and day >= C.EARLIEST_REVENUE_DAY:
             price = R.LAND_PRICES[parcels_bought]
             wanted_by = [i for i in pending if need[i] > parcels_bought]
-            if wanted_by and bank >= price + reserve and day not in parcel_day.values():
-                bank -= price
-                parcel_day[parcels_bought] = day
-                parcels_bought += 1
+            if wanted_by:
+                # The cheapest chain waiting on this parcel: if even that cannot follow, waiting is
+                # strictly better than owning idle ground.
+                follow_on = min(opening_cost(mix[i][0], mix[i][1], len(mix[i][2]))
+                                for i in wanted_by)
+                if bank >= price + follow_on + reserve and day not in parcel_day.values():
+                    bank -= price
+                    parcel_day[parcels_bought] = day
+                    parcels_bought += 1
 
-        # Start every chain that can now afford its opening cost and has its ground.
+        # And anything the new ground just unblocked.
         for i in list(pending):
             kind, what, tiles = mix[i]
             if need[i] > parcels_bought:
@@ -227,7 +391,7 @@ def schedule(mix, bank=None, horizon=None, reserve=300.0):
             bank -= cost
             placed[i] = day
             pending.remove(i)
-            running.append((i, kind, what, len(tiles)))
+            running.append((i, kind, what, len(tiles), day + payback_days(kind, what)))
         curve.append(bank)
 
     out = []
