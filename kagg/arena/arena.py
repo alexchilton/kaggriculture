@@ -32,33 +32,49 @@ class AgentFactory:
     and the factory survives the trip to a ``ProcessPoolExecutor`` worker -- which a `make_agent`
     closure never did, and which is why `scripts/arena_gate.py` documents `workers=1` as a
     constraint. The build runs in the worker, so the closure is created there rather than shipped.
+
+    Pass ``seat_kwarg="me"`` if `build` takes its seat as a construction argument, and the factory
+    is told which seat it is about to occupy. :func:`run_arena` swaps the seats on every second
+    match, and an agent that baked in seat 0 while sitting in seat 1 reads
+    ``obs["farms"][0]`` -- the *opponent's* farm -- for the whole game. It waters their tiles,
+    feeds their animals and offers stock it does not hold. That was half of every `run_arena` sweep
+    over a `schedule_agent`. It is opt-in because `build_tape_agent` and the existing callers take
+    their seat positionally and must not suddenly be handed a keyword they do not accept.
     """
 
-    __slots__ = ("build", "args", "kwargs")
+    __slots__ = ("build", "args", "kwargs", "seat_kwarg")
 
-    def __init__(self, build, *args, **kwargs):
+    def __init__(self, build, *args, seat_kwarg=None, **kwargs):
         if not callable(build):
             raise TypeError(f"AgentFactory needs a callable, got {type(build).__name__}")
         self.build = build
         self.args = args
         self.kwargs = kwargs
+        self.seat_kwarg = seat_kwarg
 
-    def __call__(self):
-        return self.build(*self.args, **self.kwargs)
+    def __call__(self, seat=None):
+        kwargs = dict(self.kwargs)
+        if self.seat_kwarg is not None and seat is not None:
+            kwargs[self.seat_kwarg] = seat
+        return self.build(*self.args, **kwargs)
 
     def __reduce__(self):
         # `__slots__` and no `__dict__`, so spell the reconstruction out rather than relying on the
         # default protocol. Keeps the class usable under `workers > 1`, which is the point of it.
-        return (_rebuild_factory, (self.build, self.args, self.kwargs))
+        return (_rebuild_factory, (self.build, self.args, self.kwargs, self.seat_kwarg))
 
 
-def _rebuild_factory(build, args, kwargs):
-    return AgentFactory(build, *args, **kwargs)
+def _rebuild_factory(build, args, kwargs, seat_kwarg=None):
+    return AgentFactory(build, *args, seat_kwarg=seat_kwarg, **kwargs)
 
 
-def _resolve(spec):
-    """A factory becomes a brand new agent; every other spec is passed through untouched."""
-    return spec() if isinstance(spec, AgentFactory) else spec
+def _resolve(spec, seat=None):
+    """A factory becomes a brand new agent, built for `seat`; every other spec passes through.
+
+    `seat` is the index the agent is about to occupy in *this* seating, which under the swap is not
+    the position it was passed to :func:`run_arena` in.
+    """
+    return spec(seat) if isinstance(spec, AgentFactory) else spec
 
 
 @dataclass(frozen=True)
@@ -106,7 +122,7 @@ def run_match(agent_a, agent_b, seed):
     from kaggle_environments import make
 
     env = make("kaggriculture", configuration={"seed": seed}, debug=False)
-    env.run([_resolve(agent_a), _resolve(agent_b)])
+    env.run([_resolve(agent_a, 0), _resolve(agent_b, 1)])
     final = env.steps[-1]
     return MatchResult(seed=seed, money=(final[0]["reward"], final[1]["reward"]))
 
