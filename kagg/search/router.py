@@ -469,7 +469,12 @@ _QUAD_ORDER = ("NW",) + tuple(R.LAND_ORDER)
 #: on day 0 -- and most of what it actually moves is CROPS, which are the low-visit class the
 #: visit-weighting says should NOT get the near ground. That is the mechanism, and it is why `3` (which
 #: starts around day 8) is the better-behaved of the two.
-DEPOT_RING_FIRST = None
+#: **ON, 2026-08-09, Alex's call.** Everything above is a MONEY argument, and money is not the
+#: criterion -- the criterion is d0-d6 matching Seb's tape op-for-op. A season bank cannot rank two
+#: planners against that, and the A/B was additionally run with the idle top-up and crew-change
+#: replan still in place, which is the mechanism that was destroying delivery legs. So the null it
+#: reported is a null about a planner that no longer exists.
+DEPOT_RING_FIRST = 1
 
 
 def field_order(unlocked, board_size=R.BOARD_SIZE):
@@ -784,6 +789,16 @@ class Node:
 #: discover. See the note at the PLACE branch for the d0 measurement.
 SERVE_THE_ANIMAL_IT_PLACES = True
 
+#: Whether a pinned BUILD carries the PLACE (and its FEED and CARE) for the animal the pin was made
+#: for, so the pen is built and filled by one chain in one plan. OFF restores the old behaviour: the
+#: placement cannot be seen until a later turn finds the pen already standing, which needs a replan.
+BUILD_THEN_PLACE = True
+
+#: Whether a pinned PLANT carries the WATER (and FERTILIZE) the seed will need the moment it is in
+#: the ground. Same defect and same shape as `BUILD_THEN_PLACE`: without it the dawn plan cannot see
+#: the 17 waters day 0 creates for itself, and only a replan finds them.
+PLANT_THEN_WATER = True
+
 
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None):
     """Every tile worth visiting today, as routing nodes.
@@ -894,9 +909,77 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
             if ops:
                 nodes.append(Node(tile, ops))
 
+    # **The chain is budgeted by the animals that exist, not by the pens that want one.**
+    # `pen_for` names an animal for every pinned pen, so gating on `shed[a] > 0` alone chained a
+    # PLACE onto ALL of them -- day 0 pins eight pens against four bought animals and every one
+    # became a four-op node. Each chained node costs BUILD + PLACE + FEED + CARE in service plus an
+    # animal draw and a wheat draw, so the crew built two pens instead of eight: `build_pasture`
+    # 8/8 -> 2/8. Pins are inserted nearest-ground-first, so spending the budget in iteration order
+    # gives the animals to the closest pens, which is the same rule the siting already used.
+    chain_left = collections.Counter()
+    for _tile, (_op, _item, _prize) in pinned.items():
+        if _op == "BUILD" and _item in ANIMALS:
+            chain_left[_item] = shed.get(_item, 0) + carried.get(_item, 0)
+
     for tile, (op, item, prize) in pinned.items():
-        if R.quadrant_of(tile[0], tile[1]) in unlocked:
-            nodes.append(Node(tile, [(op, item, prize)]))
+        if R.quadrant_of(tile[0], tile[1]) not in unlocked:
+            continue
+        ops = [(op, item, prize)]
+        later = []
+        # **A pen is BUILT and FILLED on the same square, so it is one chain, not two jobs.**
+        # The PLACE branch above is reached through `elif kind in ("PASTURE", "COOP")` -- a tile that
+        # is ALREADY a pen. Ground that becomes a pen later today is not one yet, so on day 0 the
+        # whole dawn node set is `{BUILD: 8, PLANT: 17}` with no placement anywhere in it. The four
+        # placements that happen today exist only because the crew-change replan rebuilds the plan
+        # at hours 1 and 3 against a board where some pens have since appeared, and everything
+        # hanging off a PLACE goes with it -- a planned-once day 0 measured `feed 0/4`, `care 0/4`,
+        # `place 2/4`, with two sheep left in the shed until dusk.
+        #
+        # The pin already holds both halves of the answer: `_refresh_pins` writes
+        # `pins[spot] = ("BUILD", animal, cost)`, choosing the ground and the beast together, from
+        # the schedule's own ordered row and through the same siting rules as every other pen. So
+        # the placement IS geometry -- it is decided where the pasture is decided -- and all this
+        # does is let the node say so.
+        if BUILD_THEN_PLACE and op == "BUILD" and item in ANIMALS and chain_left[item] > 0:
+            chain_left[item] -= 1
+            served = ANIMALS[item]["cost"] + _animal_remaining(
+                {"animal": item, "placed_day": day}, day)
+            if TPD - hour - 1 < SERVICE_ROUND:
+                served -= BASE_PRICE[ANIMALS[item]["product"]]
+            served = max(1.0, served)
+            if PLACE_IS_MANDATORY_FROM_DAY is not None and day >= PLACE_IS_MANDATORY_FROM_DAY:
+                served += MANDATORY
+            later.append(("PLACE", item, served))
+            # Priced exactly as the standing-pen branch prices them, so a fresh pen's dinner does
+            # not outbid an existing animal's. A BUILD costs a turn before the PLACE can start, so
+            # the service round needs one more turn of headroom here than it does there.
+            if SERVE_THE_ANIMAL_IT_PLACES and TPD - hour - 2 >= SERVICE_ROUND:
+                price = BASE_PRICE[ANIMALS[item]["product"]]
+                later.append(("FEED", "WHEAT", MANDATORY + price))
+                later.append(("CARE", None, price))
+        # **A seed put in the ground is a tile that needs watering, and it needs it today.**
+        # Same defect as the pen, same shape: `crop_ops` is only reached for a tile that is ALREADY
+        # planted, so at dawn a pinned PLANT offers one op and the WATER it creates cannot be seen
+        # until a later turn finds the seed in the ground. On day 0 that is 17 waters invisible to
+        # the plan. `crop_ops` is called on the tile as it will stand once planted rather than
+        # re-deriving a price here, so the survival rule, the yield window and the fertilizer
+        # decision stay in exactly one place.
+        elif PLANT_THEN_WATER and op == "PLANT" and item in CROP:
+            ops.extend(crop_ops({"kind": "PLANT", "crop": item, "planted_day": day,
+                                 "watered_today": False, "consecutive_unwatered": 0,
+                                 "yield_units": 0, "fertilized_until_day": -1},
+                                day, have_fert))
+        nodes.append(Node(tile, ops))
+        # **A SEPARATE node on the same tile, not extra ops on the build.** Merging them was tried
+        # and is wrong: `Node.prize` sums its ops and `Node.service` counts them, so a four-op build
+        # outbids and out-costs everything around it and the whole allocation reshuffles --
+        # `build_pasture` 8/8 -> 6/8, `plant` 17/17 -> 14/17, for two placements gained.
+        # A second stop changes nothing about the build and is exactly what the hour-1 replan used to
+        # produce. The route is a visit ORDER; `_live_ops` re-derives the work from the live board at
+        # each stop (`schedule_agent:1201`), so the second visit reads a pen that is now standing and
+        # emits the PLACE, while a stop whose pen never got built simply returns nothing and drops.
+        if later:
+            nodes.append(Node(tile, later))
     return nodes
 
 

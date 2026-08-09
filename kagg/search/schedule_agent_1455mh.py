@@ -246,6 +246,75 @@ FUND_THE_DAY_WHEN_SHORT = True
 STAND_AT_A_DRY_SHED = False
 
 
+#: Whether the DAWN plan routes the hands the day is about to hire, instead of waiting for them to
+#: appear and rebuilding the plan around them.
+#:
+#: OFF restores the crew-change replan exactly: hour 0 is planned for the pre-hire crew, the hands
+#: land in hour 0's market phase, and hour 1 sees `len(live)` jump and throws the plan away. That is
+#: two plans a day minimum -- measured d0 at h1 AND h3, d1-d6 at h1 -- and the second one is what
+#: actually covers 23 of the 24 hours.
+PLAN_THE_CREW_THAT_ARRIVES = True
+
+#: Whether the dawn plan credits the shed with the goods this turn's own market phase is about to
+#: buy. See the block at the `_solve` call for the mechanism and the day-0 measurement.
+PLAN_TODAYS_PURCHASES = True
+
+
+def _arrivals(units, n):
+    """Where the day's `n` hires will land, in the order `farm["hands"]` will hold them.
+
+    `_do_hire` appends `_spawn_hand(farm, board_size)` (`kaggriculture.py:520`): the least-occupied
+    shed-access tile, ties broken by the NWSE order of `_shed_access_tiles`, counting the units
+    standing there **at the moment that HIRE settles**.
+
+    Several HIREs in one turn all settle. The atomic block runs once per ORDER SLOT, not once per
+    turn -- `for i in range(max_len)` at `kaggriculture.py:550` re-enters `_do_hire` for every slot
+    that holds one (`:564`), and `order_states[player_id] = None` only clears that slot for the
+    market lockstep below it. So a pinned row of eight lands as eight hands in one turn, occupancy
+    advancing one hire at a time inside it, and the returned list is exactly the order they are
+    appended in -- which makes index `len(units) + k` here the same unit as index `len(units) + k`
+    tomorrow morning. That identity is what lets the dawn plan route them.
+    """
+    tiles = list(R.shed_access_tiles())
+    occ = {t: 0 for t in tiles}
+    for pos in units:
+        if tuple(pos) in occ:
+            occ[tuple(pos)] += 1
+    out = []
+    for _ in range(n):
+        t = min(occ.items(), key=lambda kv: (kv[1], tiles.index(kv[0])))[0]
+        occ[t] += 1
+        out.append(t)
+    return out
+
+
+def _hires_this_turn(state, row, day, hour, money):
+    """How many hands the market block below is about to buy. Read by the DAWN PLAN, which has to
+    route them, so it must not diverge from what that block actually orders.
+
+    Only the pinned path is modelled, and that is not a simplification: `HIRE_PINNED_DAYS` is every
+    day, because the tape hires at hour 0 on every day (`scripts/when_the_crew_arrives.py`). The
+    drip path is unreachable and a phantom crew cannot be planned against it anyway -- its whole
+    premise is that arrivals are discovered.
+
+    Affordability is checked because `_do_hire` fails SILENTLY when `farm["money"] < cost`
+    (`kaggriculture.py:691`), and a hire that never lands leaves its route orphaned: work planned
+    onto a unit that does not exist is work deleted, not work deferred.
+    """
+    if not (PLAN_THE_CREW_THAT_ARRIVES and HIRE_FIRST and day in HIRE_PINNED_DAYS and hour == 0):
+        return 0
+    want = int(row.get("hands", 0) or 0)
+    # `mult * fib(hires_today)`, a per-DAY counter, so the ladder always restarts at fib(0) = 0.
+    bank, a, b, n = float(money), 0, 1, 0
+    for _ in range(want):
+        if bank < a:
+            break
+        bank -= a
+        a, b = b, a + b
+        n += 1
+    return n
+
+
 def _days_bill(row):
     """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
 
@@ -1302,8 +1371,15 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
     return pins
 
 
-def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0):
-    """One turn of the routed plan: replan if the crew or the work changed, then walk the tours."""
+def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0,
+                 arriving=()):
+    """One turn of the routed plan. The plan is built ONCE, at dawn, and then only walked.
+
+    `arriving` is where today's hires will land (`_arrivals`). They are planned as vehicles even
+    though they do not exist yet, because `interpreter` applies unit actions BEFORE the market phase
+    (`kaggriculture.py:922` then `:928`) -- so a hand bought at hour 0 first acts at hour 1, and a
+    planner that waits to see it plans hour 0 for the pre-hire crew and then throws that plan away.
+    """
     pins = _refresh_pins(state, sched, day, tiles, unlocked)
     # Ground is only worth clearing if something is going into it. See `DIG_ONLY_IF_REPLANTING`.
     plants_left = any((sched.get(d, {}) or {}).get("plants") for d in range(day, LAST_DAY + 1))
@@ -1318,12 +1394,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # work still on the board -- nine hands passing at hour 23 with five HARVESTs offered. The `-1`
     # is the market/hire turn, which is spent once at dawn and was being charged again at dusk.
     # `tests/test_the_last_turn_of_the_day_is_worked.py` pins it; it goes red with the `-1` back.
-    budget = [max(0, TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1))] * len(units)
+    # **The crew the plan routes is the crew the day will have, not the crew standing at dawn.**
+    # Phantoms sit at the end, on the squares `_arrivals` says they will land on, and their index
+    # here is the index they will occupy in `farm["hands"]` -- so the route built for phantom k is
+    # already waiting for the real unit k when it appears an hour later.
+    plan_units = list(units) + [tuple(p) for p in arriving]
+    budget = [max(0, TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1))] * len(plan_units)
+    # A hand bought in THIS turn's market phase cannot act in this turn's unit phase -- the unit
+    # phase already ran. It works from `hour + 1`, so it is one turn poorer than everyone else.
+    for k in range(len(units), len(plan_units)):
+        budget[k] = max(0, budget[k] - 1)
     routes = state["routes"]
     # Only shed cells inside a quadrant we own. A hand wakes on a LOCKED one and a LOCKED tile no-ops
     # before PICKUP is ever reached, so treating all four as depots strands the hand for the whole day.
     depots = tuple(c for c in R.shed_access_tiles() if _owned(c, unlocked)) or (SPAWN,)
-    load = {u: collections.Counter(invs[u] if u < len(invs) else {}) for u in range(len(units))}
+    load = {u: collections.Counter(invs[u] if u < len(invs) else {}) for u in range(len(plan_units))}
     # What today's SELL row still owes the shed. The market reads the shed and nothing else, so a
     # product the row wants is worth nothing while it rides in a hand. See `DELIVER_THE_SELL_ROW`.
     owed_sale = collections.Counter({p: int(q) for p, q in (sched.get(day, {}).get("sells") or {}).items()
@@ -1353,14 +1438,33 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     short_of_cash = (FUND_THE_DAY_WHEN_SHORT and any(q > 0 for q in owed_sale.values())
                      and _days_bill(sched.get(day, {})) > money)
 
+    # **The shed the plan reasons about is the shed the day will have, not the one it wakes to.**
+    # `interpreter` runs the unit phase and only then `_process_market` (`kaggriculture.py:922` then
+    # `:928`), so everything the `buys` and `animals_bought` rows order lands at the END of this
+    # turn. A dawn plan reading the live shed sees none of it. `BUY_ANIMAL` commits to
+    # `private["shed"]` exactly like a product (`:672`), and `build_nodes` gates its PLACE branch on
+    # `shed.get(a, 0) > 0` -- so an empty pen the day means to fill offers NOTHING at dawn, which is
+    # why d3 and d6 planned zero placements while owning the pen to put the animal in.
+    #
+    # Credited at hour 0 only, and only from the current day's row: that is the single turn where the
+    # plan runs ahead of the purchase. The goods are drawable from hour 1, which is also the first
+    # hour a hand hired alongside them can act, so no route needs them sooner.
+    plan_supply = shed
+    if PLAN_TODAYS_PURCHASES and hour == 0:
+        plan_supply = collections.Counter(shed)
+        for row_name in ("buys", "animals_bought"):
+            for item, qty in (sched.get(day, {}).get(row_name) or {}).items():
+                if int(qty) > 0:
+                    plan_supply[item] += int(qty)
+
     def nodes_for(skip):
-        return [n for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
+        return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
                                           pen_for=state.get("pen_for") or {})
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
     # vehicle at all, and planning work onto it silently deletes that work for the day.
-    live = [u for u in range(len(units)) if _mobile(units[u], unlocked)]
+    live = [u for u in range(len(plan_units)) if _mobile(plan_units[u], unlocked)]
 
     # **New work is a replan trigger, not just new workers.** See `URGENT_OPS`. The crew stabilises by
     # mid-morning and every unit is committed, so between the last hire and the first idle unit nothing
@@ -1376,12 +1480,30 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     fresh = urgent - state["seen_urgent"] - routed
     state["seen_urgent"] = urgent
 
-    if state["crew"] != len(live) or not routes:
-        # A full replan only when the crew changes -- hands are hired through the morning, so the dawn
-        # plan genuinely cannot know how many vehicles it has.
-        sub = _solve([units[u] for u in live], nodes_for(set()),
+    if not routes or (not PLAN_THE_CREW_THAT_ARRIVES and state["crew"] != len(live)):
+        # **ONE plan, at dawn, and the crew is no longer an excuse to rebuild it.** The old trigger
+        # was `state["crew"] != len(live)`, justified as "hands are hired through the morning, so the
+        # dawn plan genuinely cannot know how many vehicles it has". It does know. The schedule row
+        # says how many, `_hires_this_turn` says how many of those the bank can settle, and
+        # `_arrivals` says which square each lands on -- so the only thing the dawn plan lacked was
+        # the arithmetic, not the information.
+        #
+        # What the trigger cost: unit actions run BEFORE the market phase, so hour 0 was planned for
+        # the pre-hire crew, the hands appeared at hour 1, and the whole plan was thrown away and
+        # rebuilt for 23 hours. Every day, measured: d0 replanned at h1 and h3, d1-d6 at h1.
+        # **The shed the plan draws on is the shed the day will have, not the one it wakes to.**
+        # `interpreter` runs the unit phase and only then `_process_market` (`kaggriculture.py:922`
+        # then `:928`), so everything the `buys` row orders lands at the END of this turn. A dawn
+        # plan reading the live shed sees none of it and routes no work that needs it: day 0 buys
+        # WHEAT 8, the plan saw 0, and FEED went 2/4 -> 0/4 with `pickup` 5/5 -> 1/5. That is not a
+        # feed served late, it is a turn spent PASSing.
+        #
+        # Credited only at hour 0, and only for the CURRENT day's row, because that is the one turn
+        # where the plan runs ahead of the purchase. The goods are drawable from hour 1, which is
+        # also the first hour the hands hired alongside them can act, so no route needs them sooner.
+        sub = _solve([plan_units[u] for u in live], nodes_for(set()),
                      [budget[u] for u in live], depots,
-                     {k: load[u] for k, u in enumerate(live)}, supply=shed,
+                     {k: load[u] for k, u in enumerate(live)}, supply=plan_supply,
                      at_risk=_at_risk_tiles(tiles),
                      pointless=_pointless_tiles(tiles, day, plants_left),
                      tiles=tiles, wanted=owed_sale, fund=short_of_cash)
@@ -2128,8 +2250,14 @@ def make_agent(schedule, me=0, router=True):
         shed_before = collections.Counter(shed)
 
         if router:
+            # The dawn plan has to route the hands this turn's market phase is about to buy, so the
+            # arithmetic the market block does at the BOTTOM of this function has to be available at
+            # the top. `_hires_this_turn` is that block's rule stated once; if the two ever disagree
+            # the plan orphans a route, so they must be read together.
+            arriving = _arrivals(units, _hires_this_turn(state, sched.get(day, {}) or {},
+                                                         day, hour, money))
             acts = _router_acts(state, sched, day, hour, tiles, units, invs, shed,
-                                seeds, unlocked, money)
+                                seeds, unlocked, money, arriving=arriving)
         else:
             # ------------------------------------------------------------------ what the BOARD needs now
             # Carried stock, computed once: a task whose input is neither in the shed nor in a hand must not be

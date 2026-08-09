@@ -329,3 +329,211 @@ def test_nothing_the_row_asked_to_sell_ends_the_day_in_a_hand():
         + "\n  The sell rule cannot reach this -- the market sells from the SHED. It is a routing "
           "defect: nothing schedules the trip home."
     )
+
+
+def test_the_day_is_planned_once_and_only_at_dawn():
+    """**One plan per day, built at hour 0, covering all 24 hours.**
+
+    The day is fully deterministic: `hires`, `animals_bought`, `builds`, `places`, `plants`, `buys`
+    and `sells` are all written in the schedule before it starts, and the board evolves from them by
+    rules we simulate exactly. There is nothing for a mid-day replan to discover.
+
+    The trigger this pins is the crew one. `interpreter` applies unit actions BEFORE
+    `_process_market` (`kaggriculture.py:922` then `:928`), so a hand hired at hour 0 does not exist
+    when hour 0 is planned and appears at hour 1. `state["crew"] != len(live)` then fires and throws
+    the dawn plan away -- so what actually covers the day is an hour-1 plan for 23 hours, and hour 0
+    is planned for the pre-hire crew alone.
+
+    The fix is not to stop hiring at dawn; the tape hires at dawn too. It is for the dawn plan to
+    ROUTE the hands it knows are coming, from the square `_spawn_hand` will land them on and from
+    the turn they can first act.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    solves = collections.Counter()
+
+    real_solve = SA._solve
+    box = {"hour": 0, "day": 0}
+
+    def counting_solve(*a, **k):
+        solves[(box["day"], box["hour"])] += 1
+        return real_solve(*a, **k)
+
+    SA._solve = counting_solve
+    try:
+        env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+        env.reset(2)
+        agent = SA.make_agent(_thin(sched), 0, router=True)
+        opp = _tape_policy(1)
+        for t in range(24 * DAYS):
+            box["day"], box["hour"] = t // 24, t % 24
+            o0, o1 = env.state[0].observation, env.state[1].observation
+            a0, a1 = agent(o0), opp(o1, t)
+            n0 = len(o0["farms"][0].get("hands") or [])
+            n1 = len(o0["farms"][1].get("hands") or [])
+            env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0],
+                       "market": a0["market"]},
+                      {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1],
+                       "market": a1["market"]}])
+    finally:
+        SA._solve = real_solve
+
+    per_day = collections.Counter()
+    for (day, _hour), n in solves.items():
+        per_day[day] += n
+    late = sorted((d, h, n) for (d, h), n in solves.items() if h != 0)
+
+    assert not late and all(per_day[d] == 1 for d in range(DAYS)), (
+        "the day was not planned once at dawn:\n"
+        + "\n".join(f"    d{d}  {per_day[d]} plan(s)" for d in range(DAYS))
+        + ("\n  replans away from hour 0:\n"
+           + "\n".join(f"    d{d} h{h}  x{n}" for d, h, n in late) if late else "")
+    )
+
+
+def test_the_dawn_plan_can_see_the_goods_the_day_is_about_to_buy():
+    """**The dawn plan is built before the day's shopping settles, and must be told about it.**
+
+    `interpreter` applies unit actions and only THEN calls `_process_market`
+    (`kaggriculture.py:922` then `:928`), so day 0's `buys: {WHEAT: 8}` reaches the shed at the end
+    of hour 0. `_router_acts` runs at the top of hour 0 and hands `_solve` the shed as it stands --
+    empty of that wheat. FEED needs WHEAT, so the plan correctly concludes there is nothing to feed
+    with and routes no feeds at all.
+
+    That, not the crew, is why a single dawn plan lost to a plan rebuilt at hour 1: the hour-1 plan
+    was simply the first one that could see the goods. Measured on d0 with the crew planned ahead:
+
+        feed 0/4    pickup 1/5    drop 0/1     (dawn plan, blind to the buys)
+        feed 2/4    pickup 5/5    drop 1/1     (rebuilt at hour 1, wheat now in the shed)
+
+    The fix is the same shape as `_arrivals`: the row already says what will be bought, so credit it
+    at plan time instead of discovering it an hour later.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    seen = {}
+
+    real_solve = SA._solve
+    box = {"day": 0, "hour": 0}
+
+    def spying_solve(*a, **k):
+        if box["hour"] == 0 and box["day"] not in seen:
+            seen[box["day"]] = collections.Counter(k.get("supply") or {})
+        return real_solve(*a, **k)
+
+    SA._solve = spying_solve
+    try:
+        env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+        env.reset(2)
+        agent = SA.make_agent(_thin(sched), 0, router=True)
+        opp = _tape_policy(1)
+        for t in range(24 * DAYS):
+            box["day"], box["hour"] = t // 24, t % 24
+            o0, o1 = env.state[0].observation, env.state[1].observation
+            a0, a1 = agent(o0), opp(o1, t)
+            n0 = len(o0["farms"][0].get("hands") or [])
+            n1 = len(o0["farms"][1].get("hands") or [])
+            env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0],
+                       "market": a0["market"]},
+                      {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1],
+                       "market": a1["market"]}])
+    finally:
+        SA._solve = real_solve
+
+    short = []
+    for day in range(DAYS):
+        buys = {p: int(q) for p, q in (sched.get(day, {}).get("buys") or {}).items() if int(q) > 0}
+        if not buys:
+            continue
+        supply = seen.get(day, collections.Counter())
+        for product, qty in buys.items():
+            if supply.get(product, 0) < qty:
+                short.append(f"    d{day}  {product}: plan sees {supply.get(product, 0)}, "
+                             f"the row buys {qty} this morning")
+
+    assert not short, (
+        "the dawn plan was built blind to goods the same turn's market phase buys:\n"
+        + "\n".join(short)
+        + "\n  Nothing downstream recovers this -- a FEED that was never routed is not a FEED that "
+          "happens late, it is a turn spent PASSing."
+    )
+
+
+def test_the_dawn_plan_offers_a_place_for_every_animal_the_day_buys():
+    """**A pen that does not exist yet offers no PLACE, so a one-plan day places nothing.**
+
+    `build_nodes` reaches the PLACE branch through `elif kind in ("PASTURE", "COOP")` -- a tile that
+    is ALREADY a pen. On day 0 the pens are built during the day, so at dawn the whole node set is
+    `{BUILD: 8, PLANT: 17}` and there is no placement in it to route. The four placements that do
+    happen today exist only because the crew-change replan at hour 1 and hour 3 rebuilds the plan
+    against a board where some pens have since appeared.
+
+    Everything hanging off a PLACE goes with it. `SERVE_THE_ANIMAL_IT_PLACES` attaches the FEED and
+    the CARE to the placement node, so `feed 0/4` and `care 0/4` on a planned-once day 0 are not a
+    feeding defect at all -- they are two placements that were never in the plan.
+
+    The pin already knows the answer: `_refresh_pins` writes `pins[spot] = ("BUILD", animal, cost)`,
+    so the ground and the beast are chosen together at dawn. The node has to carry the whole chain.
+    """
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+    offered = {}
+
+    real_solve = SA._solve
+    box = {"day": 0, "hour": 0}
+
+    def spying_solve(units, nodes, *a, **k):
+        if box["hour"] == 0 and box["day"] not in offered:
+            seen = collections.Counter()
+            for n in nodes:
+                for op, *_rest in n.ops:
+                    seen[op] += 1
+            offered[box["day"]] = seen
+        return real_solve(units, nodes, *a, **k)
+
+    SA._solve = spying_solve
+    try:
+        env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+        env.reset(2)
+        agent = SA.make_agent(_thin(sched), 0, router=True)
+        opp = _tape_policy(1)
+        for t in range(24 * DAYS):
+            box["day"], box["hour"] = t // 24, t % 24
+            o0, o1 = env.state[0].observation, env.state[1].observation
+            a0, a1 = agent(o0), opp(o1, t)
+            n0 = len(o0["farms"][0].get("hands") or [])
+            n1 = len(o0["farms"][1].get("hands") or [])
+            env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0],
+                       "market": a0["market"]},
+                      {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1],
+                       "market": a1["market"]}])
+    finally:
+        SA._solve = real_solve
+
+    short = []
+    for day in range(DAYS):
+        want = sum(int(q) for q in (sched.get(day, {}).get("animals_bought") or {}).values())
+        if not want:
+            continue
+        got = offered.get(day, collections.Counter()).get("PLACE", 0)
+        if got < want:
+            short.append(f"    d{day}  dawn plan offers {got} PLACE, the row buys {want} animals "
+                         f"(nodes offer {dict(offered.get(day, {}))})")
+
+    assert not short, (
+        "the dawn plan had no placement to route for animals the day buys:\n" + "\n".join(short)
+        + "\n  The pen is BUILT and PLACEd on the same square by the same plan. If the BUILD node "
+          "does not carry the PLACE, only a replan can ever find it."
+    )
