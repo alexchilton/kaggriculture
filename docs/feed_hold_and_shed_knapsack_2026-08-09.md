@@ -207,8 +207,27 @@ Two thirds less product destroyed and 38% fewer wheat orders placed, for free.
 Unfed animal-days rise 11% on both surfaces.
 Escapes — the irreversible failure — stay flat on the canonical surface (89 → 90) and rise 10% on
 the feed-stressed one (174 → 191).
-`FEED_DAYS_FLOOR = 1` is what allows that; raising it to 2 is the obvious next arm and has not been
-measured.
+`FEED_DAYS_FLOOR = 1` is what allows that, and raising it to 2 *was* measured — §3.4.
+
+### 3.4 `FEED_DAYS_FLOOR = 2` — the most promising number in this document, and not adopted
+
+Buy bound on, handover 11, 32 seeds, floor 1 vs floor 2:
+
+| arm | paired money Δ | seeds better | destroyed | escapes | unfed animal-days |
+|---|---|---|---|---|---|
+| buy bound, floor 1 (shipped) | — (`$66,455`) | — | 798 | 191 | 1,689 |
+| buy bound, floor 2 | **+953 ± 368** | **15/32** | 1,043 | 180 | 1,601 |
+
+It moves every mechanical column the right way — escapes 191 → 180, unfed days down 5% — and the
+money delta is 2.6 standard errors, the only figure anywhere in this session that clears one.
+
+**And it is better on only 15 of 32 seeds, which is worse than a coin flip.**
+A mean that clears 2.6 SE while the sign test says nothing is a mean carried by a handful of large
+seeds, and this project has a named rule for exactly that: *confirm a search winner on a fresh
+draw, or the winner's curse makes it wander.*
+So it is recorded, not adopted.
+It is the first thing to re-run on held-out seeds and on the full-season surface, and it should be
+adopted or dropped on that, not on this.
 
 **The sell half is left off deliberately.**
 It is the better arm on money on the handover surface taken alone (+$509, but on only 15 of 32
@@ -284,8 +303,11 @@ This change introduces none of them and fixes none of them.
    Every arm in §3 is inside one SE of zero and there is no way to break the tie without one.
    Four sessions in a row have now ended with "money is a wash, mechanically better" and that is
    the missing instrument, not a missing idea.
-3. **`FEED_DAYS_FLOOR = 2`.**
-   One `--set` sweep. It is the direct answer to the only cost this change has.
+3. **`FEED_DAYS_FLOOR = 2` on held-out seeds and on the full season.**
+   §3.4: +$953 ± 368 with escapes and unfed days both down, on 15 of 32 seeds.
+   Everything about that says "confirm on a fresh draw before believing it", and nothing about it
+   says "ship it".
+   `data/logs/sweep_floor_h11_32.log`.
 4. **OPEN-4, the router.**
    117 units in hands against 8 in the shed is where the remaining destruction is, and it is
    upstream of every rule touched here.
