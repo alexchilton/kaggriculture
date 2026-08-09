@@ -1,6 +1,7 @@
 """Bundle the covering planner into one self-contained `submission/main.py`.
 
-`scripts/build_submission.py` copies a single dependency-free file verbatim, which is right for
+`scripts/build_submission.py` (deleted 2026-08-09) copied a single dependency-free file verbatim,
+which was right for
 `kagg/agents/contrarian.py` and useless here: the planner is four modules that import each other
 plus a 64 KB schedule, and it is the agent that actually wins. Building the old way ships
 contrarian and reports "submission verified" while none of the season's work is in the file --

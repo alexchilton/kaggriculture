@@ -66,7 +66,7 @@ kagg/agents/      hand-written agents, used as sparring partners and pool member
 kagg/rl/          the parked RL track
 kagg/sim/         batched simulator (numpy + JAX), 30-200x, end-to-end parity exact
 scripts/          benchmarks, analyses, probes, submission builders
-submission/       generated; build with scripts/build_submission.py
+submission/       generated; build with scripts/build_planner_submission.py
 docs/             findings and decisions -- docs/README.md is the index
 reference/        competition docs and the full env source (ground truth)
 data/             git-ignored scratch for replays, runs, checkpoints, logs

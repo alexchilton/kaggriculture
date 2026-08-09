@@ -25,7 +25,7 @@ kagg/search/schedule_agent.py  a closed-loop agent. Reads obs every turn. No emi
         |  cover.plan          cover.py decides WHO does what, in what order
         |  cover.materialise   inserts the shed trips as real stops
         v
-submission/main.py             built by scripts/build_submission.py
+submission/main.py             built by scripts/build_planner_submission.py
 ```
 
 `scripts/build_schedule.py` generates a schedule; `scripts/schedule_ladder.py` scores one.

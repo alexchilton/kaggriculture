@@ -251,6 +251,13 @@ kaggle competitions leaderboard kaggriculture -s
 ```
 
 Submission needs `main.py` at the root exposing an `agent` function.
-Build it with `scripts/build_submission.py`, which rebuilds verbatim and refuses to ship anything
-that cannot beat `starter` from both seats — a hand-rolled `main.py` once spliced a docstring over
-line 1, failed to import, and banked exactly the $3,000 start.
+Build it with `scripts/build_planner_submission.py`, which inlines the four `kagg/search` modules
+plus the schedule into one self-contained file and verifies the result imports and runs — a
+hand-rolled `main.py` once spliced a docstring over line 1, failed to import, and banked exactly
+the $3,000 start.
+
+The older `scripts/build_submission.py` was deleted on 2026-08-09. It copied a *single*
+dependency-free agent file verbatim, which fits `kagg/agents/contrarian.py` and cannot express the
+planner, so building the old way silently shipped contrarian while reporting "submission verified".
+Its gate was "beats `starter`", which this project's own notes call worthless — `starter` sells
+almost nothing, so the market is never contested. Use `scripts/gate_pool.py` for a real gate.

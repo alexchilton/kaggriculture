@@ -4,7 +4,7 @@ This is the gate `scripts/build_planner_submission.py` deliberately does not do,
 slow and because it answers a different question. The build asks "is the artifact the code we
 measured". This asks "does that code beat a field".
 
-Both matter and neither substitutes for the other. `build_submission.py`'s original gate was
+Both matter and neither substitutes for the other. The deleted `build_submission.py`'s gate was
 "beats `starter`", which this project's own notes call worthless: `starter` sells almost nothing,
 so the market is never contested and every number off it is roughly 2x reality.
 
