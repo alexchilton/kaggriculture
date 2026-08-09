@@ -235,24 +235,61 @@ BANK_THE_HAND_WHEN_SHORT = True
 #: a committed tour is the thrash this file warns about twice, so the trigger is not one unit.
 BANK_THE_HAND_MIN = 4
 
-#: Whether a unit whose CRITICAL draw finds the shed empty STANDS and retries next turn, instead of
-#: dropping that attempt and walking on. See the note where it is read. It saves the day-12 SHEEP at
-#: (1,6) and it is the half of that fix which costs turns; the non-destructive `node.pick` handling
-#: around it is free and stays on unconditionally.
+#: Whether a unit whose CRITICAL draw finds the shed empty SURVIVES to retry next turn, instead of
+#: `del node.pick[item]` discarding the requirement outright. See the note where it is read for the
+#: mechanism. It saves the day-12 SHEEP at (1,6).
 #:
-#: **OFF.** `scripts/matched_days.py` scores it as free -- animals lost 1 -> 0, harvest 348 and
-#: thirst 25 unchanged, PASS 984 -> 976 -- and that harness runs 29 INDEPENDENT days off Seb's board,
-#: so it cannot see compounding by construction. On the full season, seed 11, weeds off, d0-d16:
+#: **Two earlier versions of this flag measured losing, both because they made the WHOLE TURN wait,
+#: not just the one stalled draw.**
+#:
+#: `scripts/matched_days.py` scores an UNCONDITIONAL stand (`break` the instant a critical draw
+#: fails, whatever else is queued) as free -- animals lost 1 -> 0, harvest 348 and thirst 25
+#: unchanged, PASS 984 -> 976 -- but that harness runs 29 INDEPENDENT days off Seb's board and
+#: cannot see compounding by construction. On the full season, seed 11, weeds off, d0-d16:
 #:
 #:                   money@d16   cows   work   idle
 #:     off              23,483    8/8   1412   1300
 #:     on               16,363    5/8   1273   1381
 #:
-#: A blocked hand is 139 work ops over seventeen days, and work ops are feeds. The animal it saves on
-#: day 12 is real; so are the three cows it costs by day 16. The defect it found is real too and the
-#: diagnosis is right -- `materialise` plans each tour independently and cannot see the shed drain
-#: from the sell block or from another unit's draw in the same replan. The fix for that is to make the
-#: draw SEE the contention at plan time, not to make the hand wait for it at execution time.
+#: A blocked hand is 139 work ops over seventeen days, and work ops are feeds. Bounding how many
+#: consecutive turns any one stand may run (`STAND_AT_A_DRY_SHED_MAX_TURNS`, tried and removed --
+#: see git history) did not fix this: measured 2026-08-09 on a 7-seed animal-death census
+#: (`scripts/animal_death_diag.py`, mirror, both seats), bounded to 4 turns, OFF 42 deaths vs ON 94
+#: -- MORE than double, two seeds clean OFF (19, 41: 0 deaths) showing 10 and 18 ON -- and
+#: `scripts/mirror_gate.py --set STAND_AT_A_DRY_SHED=False --seeds 16` gave the OFF arm a 96.9% win
+#: rate against the bounded-ON default, paired margin t=+6.48. Bounding the DURATION of one stand
+#: did not touch the FREQUENCY of them: a real board has fifteen to twenty animals all competing for
+#: the same handful of hands, and ANY full-turn block on one hand costs every other animal that hand
+#: would otherwise have fed or cared for that turn.
+#:
+#: **A THIRD version, also measured losing, 2026-08-09: skip the stalled draw for the rest of THIS
+#: TURN's search instead of blocking on it, so the unit looks for other route work rather than
+#: standing.** It does not touch `node.pick` and only falls through to PASS when nothing else in
+#: the route is actionable either -- the single case the old unconditional `break` was ever correct
+#: for. It fixes the same narrow unit test
+#: (`tests/test_a_stranded_feed_survives_a_dry_shed.py`) and is a strictly smaller intervention than
+#: either blocking version above. It is STILL net negative at scale, just less catastrophically:
+#:
+#:     7-seed animal-death census, mirror, both seats:
+#:         OFF (this default)   42 deaths
+#:         ON (skip, not block)  66 deaths -- worse, though well short of the blocking version's 94
+#:
+#:     `scripts/mirror_gate.py --set STAND_AT_A_DRY_SHED=False --seeds 16` (32 paired seasons):
+#:         candidate (OFF)  W25 D0 L7   78.1%   mean bank $75,068
+#:         baseline (ON)                        mean bank $61,668
+#:         paired margin per seed: mean $+26,800   SE $8,546   t=+3.14   SIGNIFICANT for OFF
+#:
+#: Not blocking the turn removed most of the cost (t=+6.48 -> t=+3.14, 94 -> 66 deaths) but not all
+#: of it. The likely remaining mechanism: leaving the stalled `Depot` node IN the route (rather than
+#: deleting it) means the route keeps including a return trip to that depot tile on later turns even
+#: when the shed has nothing for it, and every one of those round trips is real movement cost this
+#: unit could have spent on other animals or tiles -- a cost the OLD (delete-and-forget) behaviour
+#: never pays, because an abandoned draw is simply gone and the unit's route never detours back for
+#: it. Three attempts (unconditional block, bounded block, skip-without-block) have now measured
+#: losing for three different reasons, all at EXECUTION time. The underlying defect's real fix is
+#: still to make the draw SEE the contention at PLAN time -- that fix lives in `cover.materialise`
+#: and is out of scope here. This flag stays OFF; the narrow unit test stays RED, correctly, as an
+#: open and now well-characterised defect rather than a silently reintroduced regression.
 STAND_AT_A_DRY_SHED = False
 
 
@@ -1569,6 +1606,103 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
         n += 1
     return n
 
+
+def shop_thin(prod, unlocked_shops):
+    """True while no shop instance the town has currently unlocked sells `prod`.
+
+    `_KG.SHOPS` is the fixed map from shop name to the products it sells; `unlocked_shops` is
+    `town.unlocked_shops`, `shared: True` in the observation and read fresh every turn. This is
+    NOT the same question `town_drain_remaining` answers -- that sums a `D_rem` that is already
+    nonzero from the town centre alone for every product in `_KG.TOWN_CENTER_PRODUCTS`.
+    `shop_thin` asks only about the SHOP channel, because that is the one thing the draw controls:
+    MELON is in no shop at all (`SHOPS`, `reference/kaggriculture.py`), so it is thin on every
+    board by construction; WOOL is in exactly one (`YARN_STORE`), drawn with replacement from 8
+    slots, so `P(never drawn) = 34%` (`docs/the_book_is_shallow_2026-08-09.md`) and it is thin on
+    a little over a third of boards; WHEAT is in five of eight and is almost never thin.
+
+    FERTILIZER is in no shop and not in `TOWN_CENTER_PRODUCTS` either, so it reads thin on every
+    board -- correctly, since `test_fertilizer_has_no_town_drain_at_all` already establishes its
+    book never recovers on its own.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return True
+    shops = _KG.SHOPS
+    for name in (unlocked_shops or []):
+        products = shops.get(name)
+        if products and prod in products:
+            return False
+    return True
+
+
+#: **SHOP_THIN_DEPTH_RULE -- apply the reservation depth rule below base, but only where the town
+#: has not (yet, or ever) given the opponent a shop to race us for the drain.** OFF by default.
+#:
+#: The sibling attempt to this flag applied `reservation_units` below base for EVERY product and
+#: measured NET NEGATIVE: 32 mirror seasons (16 seeds x both seatings), candidate (rule OFF) beat
+#: the rule-ON baseline W26 D0 L6, 81.2%, mean bank $69,633 vs $61,833, paired margin per seed
+#: $+15,599 (SE $5,386, t=+2.90, significant). The mechanism: `market.inventory` is one shared
+#: object, so every unit the town removes is one re-sale at a good price, and whoever sells first
+#: has it. Holding below-base stock back to protect a price hands that re-sale to the opponent
+#: whenever they are also selling into the same book -- and `RESERVATION_CONTEST = 0.5` already
+#: assumes we get only half of `d_rem`, so a hold that assumes the whole half is ours loses the
+#: part the opponent takes while we wait.
+#:
+#: What that measurement did NOT separate is that "the opponent is also selling into this book" is
+#: not equally true of every product. It depends on whether a SHOP is open for it: MELON has no
+#: shop on any board, so the town's `d_rem` for it is the town centre alone -- small, fixed, and
+#: exogenous to both players' selling -- and its sub-base sell volume was measured UNCHANGED at 78
+#: units whether the blanket rule was on or off, i.e. the below-base branch was already a close
+#: match for the reservation number there. WOOL, MILK and STRAWBERRY all gain a second demand
+#: channel the moment their shop unlocks, and it is that channel -- not the seed, not the price
+#: level -- that the blanket measurement's loss is attributed to in the accompanying doc.
+#:
+#: `shop_thin` is exactly the observable half of that distinction: it reads `town.unlocked_shops`,
+#: `shared: True`, so it needs nothing hidden. This flag applies the SAME rule the above-base
+#: branch already ships with (`RESERVATION_SELL_CAP`), only while `shop_thin(prod, unlocked_shops)`
+#: is true for the specific product on the specific turn -- MELON and FERTILIZER on every board,
+#: WOOL before day 3 or on the ~34% of boards that never draw `YARN_STORE`, and WHEAT/MILK/
+#: STRAWBERRY only in the opening days before their (much likelier) shop lands.
+#:
+#: See `docs/fable_shop_aware_market_2026-08-09.md` for the measurement this shipped or did not
+#: ship against. `tests/test_shop_thin_depth_rule.py` pins the OFF-is-byte-identical rail and the
+#: ON-changes-orders composition check `RESERVATION_SELL_CAP`'s own history says a helper-only test
+#: cannot be trusted to catch.
+SHOP_THIN_DEPTH_RULE = False
+
+
+def below_base_sell_units(prod, have, allow, rate_cap, sold_today, market_inv, step,
+                          unlocked_shops, supply):
+    """How many units of `prod` to offer THIS turn while its price is below base.
+
+    Base case, both flags off (the shipped default): the day-total/`rate[prod]` cap exactly as
+    before either flag existed -- `min(have, allow, rate_cap)`, then trimmed to what the day has
+    not already sold.
+
+    Two flags may shrink that further, and both only ever shrink (`min`), never widen, so either
+    one on its own is a no-op unless it actually narrows the offer:
+
+    `DEPTH_RULE_BELOW_BASE` (blanket, every product): 32 mirror seasons, `t=+2.90` for turning it
+    OFF (see its own docstring) -- holding sub-base stock hands the town's absorption to a
+    contesting opponent. Shipped OFF.
+
+    `SHOP_THIN_DEPTH_RULE` (per product, gated on `shop_thin`): the same rule, but only while the
+    town currently has no shop open for `prod`. Measured 2026-08-09
+    (`docs/fable_shop_aware_market_2026-08-09.md`): 32 mirror seasons, `t=-0.27`, not significant
+    even split by WOOL-starved vs WOOL-healthy boards. Shipped OFF.
+
+    Both read `reservation_units` at the same `(market_inv, step, unlocked_shops, supply)`, so
+    when both happen to be on they compose via `min` rather than double-applying two different
+    numbers.
+    """
+    n = min(have, allow, rate_cap)
+    n = min(n, allow - sold_today)
+    blanket = DEPTH_RULE_BELOW_BASE and RESERVATION_SELL_CAP
+    per_product = SHOP_THIN_DEPTH_RULE and RESERVATION_SELL_CAP and shop_thin(prod, unlocked_shops)
+    if blanket or per_product:
+        n = min(n, reservation_units(prod, market_inv, step, unlocked_shops, supply))
+    return n
+
+
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
 
@@ -2179,8 +2313,27 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # both surviving across turns because the stop object is the state.
         act = ["PASS"]
         at_shed = tuple(pos) in set(depots)
-        while st["route"]:
-            node = st["route"][0]
+        # **`skip` is scoped to THIS TURN only and never persisted.** It lets a critical depot draw
+        # that cannot fill right now be passed over so the unit can still find something else to do
+        # this turn, without either (a) destroying the requirement outright (the pre-fix bug:
+        # `del node.pick[item]` unconditionally lost the day-12 SHEEP's feed) or (b) blocking the
+        # WHOLE turn on it. A first version of this fix did (b) -- an unconditional `break` the
+        # instant a critical draw failed, later bounded to `STAND_AT_A_DRY_SHED_MAX_TURNS` turns --
+        # and it measured catastrophic even bounded: a 7-seed animal-death census went 42 -> 94
+        # deaths, and `mirror_gate.py` gave the OLD (unfixed) behaviour a 96.9% win rate against it,
+        # t=+6.48. Blocking on every failed critical draw compounds across a real 15-20 animal herd,
+        # where many units hit this on many days -- one unit's stand costs every OTHER animal that
+        # unit would otherwise have fed or cared for, which is exactly the mechanism the file's own
+        # unbounded-version docstring already recorded (8/8 -> 5/8 cows) and bounding the DURATION
+        # of one stand did not touch the FREQUENCY of them. Skipping past the stalled node to find
+        # other route work removes that cost: the unit only ever stands (falls through to `act`
+        # staying `["PASS"]`) when there genuinely is nothing else in its route this turn either --
+        # the same single case the old unconditional `break` handled, and nothing more.
+        skip = []
+        while True:
+            node = next((n for n in st["route"] if n not in skip), None)
+            if node is None:
+                break
             if getattr(node, "depot", False):
                 # Any shed-access tile serves. The plan named one so it could cost the detour, but
                 # `_is_shed_adjacent` (`kaggriculture.py:325`) does not care which, and standing on
@@ -2188,7 +2341,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 if not at_shed:
                     m = _step_towards(pos, node.tile, unlocked)
                     if m is None:               # unreachable: drop the stop rather than idle on it
-                        st["route"].pop(0)
+                        st["route"].remove(node)
                         continue
                     act = [m]
                     break
@@ -2226,8 +2379,13 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # be_funded_by_the_same_turns_sales`, `test_the_biggest_sale_takes_the_
                         # earliest_slot`): most shortfalls are not an animal about to escape, and
                         # blocking a hand on all of them shifts timing far beyond this one starvation.
+                        #
+                        # `STAND_AT_A_DRY_SHED` on: skip this stop for the rest of THIS TURN's search
+                        # (see `skip` above) -- the requirement survives untouched for a later turn,
+                        # but the unit looks for other work now instead of blocking on PASS.
                         if node.critical and STAND_AT_A_DRY_SHED:
-                            break
+                            skip.append(node)
+                            continue
                         del node.pick[item]
                         continue
                     node.pick[item] -= take
@@ -2236,18 +2394,18 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     shed[item] -= take
                     act = ["PICKUP", item, take]
                     break
-                st["route"].pop(0)
+                st["route"].remove(node)
                 continue
             if pos != node.tile:
                 m = _step_towards(pos, node.tile, unlocked)
                 if m is None:                       # unreachable: drop the stop rather than idle on it
-                    st["route"].pop(0)
+                    st["route"].remove(node)
                     continue
                 act = [m]
                 break
             ops = _live_ops(node.tile, tiles[node.tile[1]][node.tile[0]], day, inv, pins, seeds)
             if not ops:
-                st["route"].pop(0)
+                st["route"].remove(node)
                 continue
             op, item = ops[0]
             act = _emit(op, item)
@@ -2924,26 +3082,47 @@ def make_agent(schedule, me=0, router=True, start_day=None):
                     # hold-back -- still binds, and `LIQUIDATE_LAST_DAY` below still overrides on the
                     # final day, so the deadline case is not this rule's to get wrong.
                     if RESERVATION_SELL_CAP:
-                        n = min(have, reservation_units(
+                        n = min(n, reservation_units(
                             prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
                             day * TPD + hour, unlocked_shops, have + standing[prod]))
+                    # **TRIED AND REVERTED, 2026-08-09: a day-total cap here too, via `allow`.**
+                    # `tests/test_stock_the_schedule_never_names.py::test_stock_the_remaining_rows_
+                    # DO_ask_for_is_still_held` wants the day's cumulative offer bounded even when
+                    # `price_ok`, and adding `n = min(n, allow - state["ordered"][("sold", prod)])`
+                    # here does make it pass. It also DIRECTLY CONTRADICTS `PRICE_AWARE_SELL_CAP`'s
+                    # own documented purpose, pinned by `tests/test_price_aware_sell_cap.py`'s own
+                    # docstring: "the DAY TOTAL is no longer the ceiling" once price says a product
+                    # is not glutted -- `allow`/`still_owed` is a fact about ONE REPLAY's row, which
+                    # is exactly what this flag exists to stop trusting. `steady_sched`'s own
+                    # docstring there is explicit: it is built so `allow` stays pinned near
+                    # `rate[prod]` "so the ONLY thing that can widen an offer is the flag under
+                    # test" -- i.e. that test's whole premise is that `allow` must NOT bind here.
+                    # Confirmed by measurement, not assertion: with the cap added,
+                    # `test_flag_on_lets_a_scarce_product_exceed_the_row` fails (offered 4, wants
+                    # >4) and `test_turning_the_flag_on_actually_changes_what_is_ordered` fails too
+                    # (`RESERVATION_SELL_CAP` on vs off become byte-identical over a 400-turn trace,
+                    # because `rate[prod]` -- now always intersected in, see the fix above -- was
+                    # already the binding constraint on every turn that mattered in that fixture,
+                    # the exact "flag that looks live and is not" trap this suite was built to catch).
+                    # Two test files assert opposite things about the same branch; not resolved here
+                    # -- reported, not decided. See `docs/fable_...` for both directions measured.
                 else:
-                    n = min(have, allow, rate[prod])
                     # **The row is a DAY TOTAL, and re-offering it every turn made it a per-turn quota.**
                     # `rate` bounds one offer; nothing bounded the day. Seb's day-4 row asks
                     # `WHEAT 28, FERTILIZER 4` and he sells exactly that -- 28 and 4. We sold 34 and 5,
                     # and day 5 then sold 10 against his 26 with the stock already gone. The carry above
                     # is what recovers a genuinely missed row; it is not a licence to outrun a met one.
-                    n = min(n, allow - state["ordered"][("sold", prod)])
                     # **The book is past I0 here -- this is the flooding case, not the safe one.**
                     # `allow` and `rate[prod]` above are day totals read off a 1.32.2 replay and know
                     # nothing about this board's shop draw. `reservation_units` does. See
                     # `DEPTH_RULE_BELOW_BASE`'s docstring for why the rule was unreachable in exactly
-                    # the regime it was written for. `min`, never `max`: below base it may only shrink.
-                    if DEPTH_RULE_BELOW_BASE and RESERVATION_SELL_CAP:
-                        n = min(n, reservation_units(
-                            prod, market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
-                            day * TPD + hour, unlocked_shops, have + standing[prod]))
+                    # the regime it was written for, and `below_base_sell_units`'s docstring for
+                    # `SHOP_THIN_DEPTH_RULE`, the per-product version of the same idea. `min`, never
+                    # `max`: below base either flag may only shrink the offer, never widen it.
+                    n = below_base_sell_units(
+                        prod, have, allow, rate[prod], state["ordered"][("sold", prod)],
+                        market_inv.get(prod, _KG.MARKET_I0 if _KG else 10000),
+                        day * TPD + hour, unlocked_shops, have + standing[prod])
                 # **Then top up to keep room for the drop.** Applied AFTER the caps rather than
                 # through `allow`, because `allow` is bounded by `rate[prod]` two lines up and the
                 # whole point is that the row cannot know about a full shed. It can only ever
