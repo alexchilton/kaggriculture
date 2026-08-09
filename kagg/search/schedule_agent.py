@@ -994,6 +994,25 @@ RESERVATION_CONTEST = 0.5
 #: property of `market_price` and differs seven-fold across the products.
 RESERVATION_SLIP = 0.10
 
+#: **CAP_SELL_OFFER_SIZE / LATE_SELL_BIAS -- untested candidates toward Seb's shape, both OFF.**
+#: See `docs/fable_market_shape_2026-08-09.md`. Every cap above (`rate[prod]`, `RESERVATION_SELL_CAP`)
+#: bounds a SINGLE OFFER by a property of the market -- how far it walks the book -- and re-offers it
+#: every turn until the shed empties, on the argument that "an order is only a request... re-offering
+#: is free" (see the standing-offer note below). That argument is defended against two alternatives,
+#: "refuse to sell below 0.5x base" (-$16,025) and "cap the quota to a day total" (-$2,653), and
+#: NEITHER is the shape a real top-ranked replay actually shows: Seb's tape
+#: (`data/seed_scripts/top_guys/90976060.json`) submits 244 SELL orders all season, mean size 4.9,
+#: max single offer 30 -- against our 456/3.9/78 in a real ladder loss
+#: (`data/ladder/losses/91229682.json`). These two flags are the smallest levers toward that shape:
+#: a hard ceiling on any one offer, and a threshold on when in the day a non-terminal offer may fire
+#: at all. Both default OFF; see the test file for the RED-before-GREEN and the A/B this file cannot
+#: run for itself (an arena/win-rate measurement, not a unit test).
+CAP_SELL_OFFER_SIZE = False
+SELL_OFFER_CAP = 30
+
+LATE_SELL_BIAS = False
+LATE_SELL_FROM_HOUR = 16
+
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
 #: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
@@ -2719,6 +2738,15 @@ def make_agent(schedule, me=0, router=True, start_day=None):
             # fertilizer hold-back for tiles that will never be worked again.
             if LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR:
                 n = int(shed.get(prod, 0))
+            # **CAP_SELL_OFFER_SIZE / LATE_SELL_BIAS -- see the flags' own docstring above.** Both
+            # apply AFTER the last-day liquidation override, so neither can touch the one turn this
+            # file already puts off limits: stock has no terminal value on the last day, and every
+            # other cap in this loop already exempts it on that same principle.
+            last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
+            if CAP_SELL_OFFER_SIZE and not last_day_liquidating:
+                n = min(n, SELL_OFFER_CAP)
+            if LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating:
+                n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
             # whole stack clears near what the LAST unit fetches. Measured over one season as the herd
