@@ -49,7 +49,38 @@ from . import cover as DP
 #: d5 lands EXACTLY on both feed and water, d4 gains a care, twelve sells and $494. What it costs
 #: is d4's watering and the d6 land parcel, and the parcel is NOT the planner's doing -- see the
 #: wool note below. d0-d3 is byte-identical at every setting.
-ACTIVE_UNTIL_DAY = 7
+ACTIVE_UNTIL_DAY = 30
+
+#: Raise instead of returning a plan that leaves work on the board. A DEV INSTRUMENT: on a
+#: workstation an uncovered day should stop the run and be looked at, and on Kaggle a raising agent
+#: is marked errored and the season ends where it threw.
+#:
+#: **OFF as of 2026-08-10, because it is what everything is measured under.** It trips on day 8 at
+#: seed 11 (`19 jobs left uncovered ... against crew budgets [24, 23, 23]`), so every grid, gate and
+#: sweep in this session forced it off at runtime to get past d7. Leaving the file saying True while
+#: no measurement ever ran that way is the worst of both -- and `build_planner_submission.py` refuses
+#: to bundle a crew with it on, for the Kaggle reason above.
+#:
+#: Turn it back on deliberately, for a diagnostic run, not as a default.
+STRICT_FEASIBILITY = False
+
+
+class InfeasibleDay(AssertionError):
+    """The planner could not fit a day that we know is playable.
+
+    Carries the dropped jobs and the crew's budgets, because the useful question is never "did it
+    fail" but "what did it think the work cost". `AssertionError` rather than a bare `Exception` so
+    it reads as the broken invariant it is.
+    """
+
+    def __init__(self, day, uncovered, budget):
+        self.day, self.uncovered, self.budget = day, list(uncovered), list(budget)
+        ops = collections.Counter(o for j in self.uncovered for o, _i in j.ops)
+        super().__init__(
+            f"day {day}: {len(self.uncovered)} jobs left uncovered {dict(ops)}, "
+            f"costing {sum(j.turns for j in self.uncovered)} job-turns against crew budgets "
+            f"{self.budget}. Seb plays this day, so the pricing is wrong, not the day. "
+            f"Tiles: {sorted(j.tile for j in self.uncovered)}")
 
 #: **The d6 land parcel slips for want of a WOOL sale, not for want of turns or money.** Traced
 #: hour by hour at seed 11: Seb sells `WOOL 6` at h09 and `WOOL 6` again at h13, taking his bank
@@ -124,27 +155,60 @@ def _split(ordered, k, weight):
     return runs
 
 
-def _fits(unit_pos, seq, held, depots, budget, wanted, rush):
-    """Turns the tour costs once `materialise` has put the shed trips in. Same question `cover.cost`
-    asks, asked the same way, so a run accepted here is a run the executor can actually walk."""
-    route = DP.materialise(unit_pos, seq, held, depots, wanted, False, rush)
+def _fits(unit_pos, seq, held, depots, budget, wanted, rush, due=None):
+    """Turns the tour costs, priced on the WORK -- `wanted` is deliberately not passed through.
+
+    `wanted` is the day's still-owed sell row, and `materialise` uses it to insert a mid-tour trip
+    to the shed whenever a hand is carrying enough of it to justify one. Sizing a lane through that
+    charges the lane for deliveries that have not been decided yet, and charges them again and
+    again as the lane grows. Measured on d4 at seed 11, where the row still owes 36 WHEAT:
+
+        u1  lane 3 tiles   with wanted 23 turns (1 shed stop)   without 14
+        u4  lane 4 tiles   with wanted 22 turns                 without 17
+        u0  lane 4 tiles   with wanted 21 turns (3 shed stops)  without 19
+
+    u1's three tiles are 14 turns of work quoted at 23, so the hand is declared full and refuses a
+    tile ONE SQUARE away -- and then spends the day passing. That day drops 7 jobs and burns 64
+    PASS turns at the same time, which is the contradiction this resolves.
+
+    The deliveries are not lost by pricing them out here. `materialise` is called again on the lane
+    that is actually committed, with `wanted` intact, and `cover.plan` adds the closing trip home
+    afterwards out of the turns the tour did not spend. This is the same double charge in both
+    places; only the sizing question is answered without it.
+    """
+    route = DP.materialise(unit_pos, seq, held, depots, None, False, rush)
     return DP.turns(unit_pos, route) <= budget
 
 
-def _pack(unit_pos, run, held, depots, budget, wanted, rush):
-    """Take as much of the front of `run` as fits, in order. The tail is returned uncovered.
+def _pack(unit_pos, run, held, depots, budget, wanted, rush, share=None, due=None):
+    """Take as much of the front of `run` as fits, in order. The tail is returned to the caller.
+
+    `share` caps the lane in job turns -- the hand's fair portion of the work still unassigned --
+    so one hand cannot swallow the sweep and starve the hands behind it. `None` means uncapped,
+    which is what the last hand of a crew gets.
 
     Deliberately NOT a knapsack. The run is a walk; dropping a tile out of its middle to fit a
     cheaper one later costs the walk between them and breaks the property the sweep was built for.
     A hand that finishes its block early idles -- Seb's do, on 2 of 8 hand-days at d0 and d3 -- and
     that is a better outcome than pulling it onto the far side of the board.
     """
-    taken = []
+    taken, acc = [], 0.0
     for i, job in enumerate(run):
-        if not _fits(unit_pos, taken + [job], held, depots, budget, wanted, rush):
-            return taken, run[i:]
+        if share is not None and taken and acc + job.turns > share:
+            break
+        if not _fits(unit_pos, taken + [job], held, depots, budget, wanted, rush, due):
+            break
         taken.append(job)
-    return taken, []
+        acc += job.turns
+    # `_fits` sized the lane on its work, so the deliveries are still to be paid for. Cost the lane
+    # that is actually being committed, once, with the sell row in -- that is the route the executor
+    # walks -- and give back tiles from the end until it fits. Trimming here rather than refusing
+    # during growth is the whole point: growth asked the question once per candidate tile and
+    # compounded a speculative ferry into every answer.
+    while taken and DP.turns(unit_pos, DP.materialise(unit_pos, taken, held, depots, wanted,
+                                                      False, rush, due=due)) > budget:
+        taken.pop()
+    return taken, run[len(taken):]
 
 
 #: Order the ops of one tile must be taken in. A pen is BUILT, then FILLED, then FED -- all on the
@@ -158,7 +222,7 @@ def _tile_rank(job):
 
 
 def cover(units, jobs, budget, depots=DP.SHED, carry=None, supply=None, deliver=True, wanted=None,
-          day=None, rush=False):
+          day=None, rush=False, due=None):
     """Assign every job to a unit as a contiguous block. Returns `(work, uncovered)`.
 
     **The unit of ownership is the TILE, not the op.** A pen's whole day -- build it, put the animal
@@ -199,7 +263,7 @@ def cover(units, jobs, budget, depots=DP.SHED, carry=None, supply=None, deliver=
     def commit(u, seq):
         work[u].extend(seq)
         used[u] = DP.turns(units[u], DP.materialise(units[u], work[u], held(u), depots,
-                                                    wanted, False, rush))
+                                                    wanted, False, rush, due=due))
 
     # ---- group every job onto its tile, in the order that tile's ops must be taken ---------------
     at = collections.defaultdict(list)
@@ -239,6 +303,12 @@ def cover(units, jobs, budget, depots=DP.SHED, carry=None, supply=None, deliver=
         return sum(j.turns for t in tiles for j in at[t])
 
     # ---- how many hands go to each crew ----------------------------------------------------------
+    # **This split is known to be mis-weighted and is the next thing to fix.** Job turns omit the
+    # walk and omit the shed ferries `materialise` inserts when a hand fills with harvest -- the
+    # same blind spot that made `_split` and `_fits` wrong. Herd work sits on the shed's doorstep
+    # and is cheap per op; crop work has to be carried. So proportioning by job turns over-crews the
+    # cheap side: on d4 it gives 3 hands to 24 job turns of pen work and 3 to 31 job turns of crop
+    # work whose materialised cost is nearer 94.
     n = len(units)
     hw, cw = weight(herd_tiles), weight(crop_tiles)
     if not herd_tiles:
@@ -254,30 +324,226 @@ def cover(units, jobs, budget, depots=DP.SHED, carry=None, supply=None, deliver=
     herd_hands = order_by_shed[:k_herd]
     crop_hands = order_by_shed[k_herd:]
 
-    def run_crew(tiles, hands, risk_first):
+    def run_crew(tiles, hands, risk_first, far_first=False, mop=False):
         if not tiles or not hands:
             uncovered.extend(j for t in tiles for j in at[t])
             return
         seq = serpentine(tiles, depots[0])
+        if far_first:
+            # **Sweep from the far edge home, not from the shed out.** `serpentine` orders rows by
+            # distance from the shed, and the pens sit ON the shed -- so a single pooled sweep in
+            # that order makes every hand meet the pen block first, spend its budget there, and
+            # drop the far crop edge. Reversing keeps the boustrophedon contiguous (a reversed walk
+            # is still a walk) and puts the tiles that nobody can reach in front of the tiles that
+            # everybody passes.
+            seq.reverse()
         if risk_first:
             # A pen that missed yesterday dies tonight, so it leads regardless of where it sits in
             # the sweep. Everything else keeps the sweep order behind it.
             seq.sort(key=lambda t: not any(j.at_risk for j in at[t]))
         ordered = [j for t in seq for j in at[t]]
-        runs = _split(ordered, len(hands), lambda j: j.turns)
-        pool = list(hands)
-        for run in runs:
+        # **A lane is cut to what its hand can walk.** No lane sizes are decided in advance: the
+        # nearest free hand takes as much of the remaining sweep as its budget carries, and the next
+        # hand resumes on the job it stopped at.
+        #
+        # Sizing lanes first, by equal job turns, was wrong. A run's real cost is its job turns PLUS
+        # its walk PLUS the shed ferries `materialise` inserts when a hand fills up with harvest,
+        # and none of that is in `job.turns`. Runs of equal weight therefore cost wildly different
+        # numbers of turns, the expensive ones overflow, and `_pack` returned the tail straight to
+        # `uncovered` -- ten crop ops binned on d4 at seed 11, exactly that day's `harvest 10/14`
+        # and `water 11/17`.
+        # **A hand comes BACK for a second lane.** Measured on d4, seed 11, before this loop cycled:
+        #
+        #     u0 used 15/24 spare  9      u1 23/23 spare  0      u2 12/23 spare 11
+        #     u3 used 21/23 spare  2      u4 22/23 spare  1      u5 11/23 spare 12
+        #     UNCOVERED  WATER 6, HARVEST 3   tiles (0,0) (0,1) (1,0) (2,0) (3,0) (4,0)
+        #
+        # **32 spare turns across three hands, and nine job-turns binned.** `pool.remove(pick)` took
+        # each hand out and never put it back, so once every hand had had one lane the loop exited
+        # and the rest of the sweep went straight to `uncovered` -- not because anyone was out of
+        # turns, but because the crew had run out as a LIST. u2 stopped after two tiles at 12/23 and
+        # u5 after two at 11/23, both capped by `share` and neither ever asked again.
+        #
+        # That is also the shape the tape has and we did not. Seb puts six of his seven hands on crop
+        # work on d4, and three of them -- u0, u5, u6 -- do their pens and THEN go and water. There
+        # is no herd crew and crop crew in his day; there are hands that finish one thing and pick up
+        # another. A second pass is what that looks like from inside this planner.
+        #
+        # `share` is deliberately dropped after the first pass. It exists to stop the first hand
+        # taking eight tiles and starving the last one (`place 4/4 -> 3/4`, a sheep left in the
+        # shed), and by the time every hand has had a lane that balance has already been struck --
+        # holding the cap past that point stops being fairness and becomes the loss above.
+        # `mop` starts the loop already past its first pass: the share cap is a fairness rule for
+        # dividing work nobody has yet, and a mop-up is dividing work everybody has already refused.
+        # It also switches on the seat/spare arithmetic below, which is what a hand that already
+        # walked a tour needs.
+        i, first = 0, not mop
+        while i < len(ordered):
+            pool = [u for u in hands if budget[u] - used[u] > 0]
             if not pool:
-                uncovered.extend(run)
-                continue
-            pick = min(pool, key=lambda u: (DP.dist(units[u], run[0].tile), u))
-            pool.remove(pick)
-            taken, rest = _pack(units[pick], run, held(pick), depots, budget[pick], wanted, rush)
-            if taken:
-                commit(pick, taken)
-            uncovered.extend(rest)
+                break
+            start_of_pass = i
+            while pool and i < len(ordered):
+                head = ordered[i].tile
+                pick = min(pool, key=lambda u: (DP.dist(units[u], head), u))
+                pool.remove(pick)
+                # **A fair share of what is LEFT, and never more than the hand can walk.**
+                # Feasibility alone is not enough: letting each hand take everything that fits gave
+                # u0 eight tiles at 24/24 and left the last hand of six with no lane at all, which
+                # on d0 piles the pens onto hands that run out of turns before the animals go in --
+                # `place 4/4 -> 3/4` and a sheep left standing in the shed. Balance alone is not
+                # enough either; that is the equal-weight cut this replaces. The share is recomputed
+                # against the REMAINING work each time, so a hand that could not walk its share
+                # hands the surplus on rather than dropping it, and the last hand is capped only by
+                # its budget.
+                share = None
+                if first and pool:
+                    share = max(1.0, sum(j.turns for j in ordered[i:]) / (len(pool) + 1))
+                # **On a second lane the hand starts where it stopped, on the turns it has left.**
+                # `_pack` prices a tour from a start square against a budget, and after the first
+                # pass neither of those is still `units[pick]` and `budget[pick]` -- pricing the
+                # mop-up from the hand's dawn position would hand it a full day it has already
+                # spent. `commit` then re-materialises the WHOLE of `work[u]` from the dawn square
+                # and rewrites `used[u]`, so the true cost is still measured end to end here; this
+                # only decides how much is offered.
+                #
+                # `held(pick)` is the dawn carry either way, which on a second lane is an
+                # approximation -- the hand may have picked up or dropped since. It is the same
+                # approximation the first pass makes and it is not made worse by cycling.
+                seat = units[pick]
+                spare = budget[pick]
+                if not first and work[pick]:
+                    seat = work[pick][-1].tile
+                    spare = max(0, budget[pick] - used[pick])
+                taken, _rest = _pack(seat, ordered[i:], held(pick), depots, spare,
+                                     wanted, rush, share, due)
+                # **The budget is checked against the WHOLE tour, because that is what gets walked.**
+                # Pricing the mop-up from `seat` on the turns left over is how much to OFFER; it is
+                # not the cost. The hand walks one tour from its dawn square, and `materialise`
+                # re-derives every depot stop over the combined sequence -- a ferry the first lane
+                # did not need can appear once the second lane's harvest is added to the same hand.
+                #
+                # Skipping this check measured d4 `u2 33/23` and `u5 28/23`: the crop rows covered,
+                # and covered by tours ten and five turns longer than the day. A hand that runs out
+                # mid-tour does not do a shortened version of the plan, it silently stops, so an
+                # over-budget lane is not an optimistic plan -- it is a plan whose tail is fiction.
+                # **Reserving the walk home on the mop-up was tried and is a LOSS. Do not
+                # restore it without new evidence.** `deliver=True` here, measured against the tape
+                # on the 17-day grid at seed 11:
+                #
+                #                     d4 water  d4 sell  d6 feed  d6 care  d4 money
+                #     tape                  17       55        7        7      1063
+                #     mop-up                15       34        5        5       115
+                #     mop-up + deliver      13       38        3        3       395
+                #
+                # It buys money back and gives up the watering the pass exists for. The produce
+                # problem it targets is real -- see the note below -- but charging the closing trip
+                # up front refuses jobs, which is the same trade already recorded at `cover.cost`
+                # (d10-d16, $1,722). The fix has to be to choose different WORK, not to price the
+                # same work more pessimistically.
+                while taken:
+                    trial = work[pick] + taken
+                    if DP.turns(units[pick],
+                                DP.materialise(units[pick], trial, held(pick), depots,
+                                               wanted, False, rush, due=due)) <= budget[pick]:
+                        break
+                    taken.pop()
+                if taken:
+                    commit(pick, taken)
+                    i += len(taken)
+            # No hand took anything this pass, so another pass would offer the same jobs to the
+            # same hands and get the same answer. Stop rather than spin.
+            if i == start_of_pass:
+                break
+            first = False
+        uncovered.extend(ordered[i:])
 
+    # **Measured 2026-08-10: one merged sweep is a trade, not a win, and the reason is ORDER.**
+    # Pooling every tile into one serpentine and letting each hand take what it can reach makes the
+    # herd rows exact -- d4 and d6 both `feed 7/7` and `care 7/7`, d0's missing care lands -- because
+    # a hand collects a pen on its way past instead of a second crew walking out for it.
+    #
+    # It also destroys the crops: d2 `water 17/17 -> 12/17`, d3 `14/14 -> 9/14`, d4 `harvest 11/14
+    # -> 6/14` and `sell 46/55 -> 19/55`, and the d4 parcel is never bought at all (`tiles 50/50 ->
+    # 25/50`). `serpentine` orders rows by distance from the shed and the pens sit ON the shed, so
+    # in a single sweep every hand meets the pen block first, spends its budget there, and the far
+    # crop edge is what falls off the end. Splitting by type was accidentally ring-fencing hands for
+    # the crops.
+    #
+    # So the partition is not what to keep -- the protection it gave the crops is. Do not restore
+    # the merge without an ordering that reaches the far edge first.
+    # **Measured 2026-08-10: both single-sweep variants lose. Do not restore either without new
+    # evidence.** Pooling every tile into one serpentine and cutting it by reachability makes the
+    # herd rows exact -- d4 and d6 `feed 7/7` and `care 7/7`, d0's missing care lands -- because a
+    # hand collects a pen on its way past instead of a second crew walking out for it. It also
+    # destroys the crops: d2 `water 17/17 -> 12/17`, d4 `harvest 11/14 -> 6/14`, `sell 46/55 ->
+    # 19/55`, and the d4 parcel is never bought (`tiles 50/50 -> 25/50`).
+    #
+    # The diagnosis was ordering: `serpentine` runs shed-outward and the pens sit ON the shed, so
+    # every hand meets them first and the far crop edge falls off the end. Reversing the sweep to
+    # run far-edge-home was then measured too, and is worse again -- d0 `water 17/17 -> 12/17`,
+    # d4 `harvest 4/14`, `sell 20/55`, d6 parcel gone -- because every lane then opens with a long
+    # walk out and the shed trips land at the wrong end of the day.
+    #
+    # Note what the far-first run does to the tests in
+    # `tests/test_a_lane_is_cut_to_what_its_hand_can_walk.py`: **all three pass.** Every crop job is
+    # assigned and no hand is idle. Coverage is not the objective; executing the coverage is. A
+    # green run there is necessary and nowhere near sufficient.
+    # Everything already in `uncovered` at this point was refused for a STOCK reason, not a turns
+    # reason: no animal in the shed to place, no seed to plant, nothing to feed with. Those refusals
+    # are correct and the tape agrees with them -- d1 drops PLACE/FEED/CARE x3 against three empty
+    # pens and one animal, and `place 1/1` matches Seb exactly. Only what the lane loop below bins
+    # is a claim that the work does not FIT, which is the claim we know to be false.
+    guarded = len(uncovered)
     run_crew(herd_tiles, herd_hands, risk_first=True)
-    run_crew(crop_tiles, crop_hands, risk_first=False)
+    run_crew(crop_tiles, crop_hands, risk_first=False, far_first=True)
+
+    # **A hand that finished its own crew's work goes and helps the other one.** This is NOT the
+    # merged sweep ruled out above, and the difference is what makes it safe: the two crews are still
+    # run first, separately, over their own tiles, so the crops keep every bit of the ring-fencing
+    # that partition was worth. The mop-up only ever sees jobs BOTH crews have already given up on --
+    # by this point they are otherwise on their way into `uncovered`, so the worst case is that
+    # nobody can take them and we are exactly where we were.
+    #
+    # It is also the shape the tape has. On d4 Seb puts six of his seven hands on crop work and three
+    # of them -- u0, u5, u6 -- work their pens and THEN go and water. He has no herd crew and crop
+    # crew; he has hands that finish one thing and pick up another. Measured on our d4 before this:
+    # u0 sat on 9 spare turns and u3 on 2 while six WATER and three HARVEST were binned, and no
+    # amount of re-cutting the crop lanes could reach them, because u0 was in the wrong crew.
+    left = uncovered[guarded:]
+    if left:
+        del uncovered[guarded:]
+        # At-risk first for the same reason the herd crew leads with it: a pen that missed yesterday
+        # dies tonight, and this is the last pass that can save it.
+        run_crew(sorted({j.tile for j in left}), list(range(len(units))),
+                 risk_first=True, mop=True)
+    starved = uncovered[guarded:]
+
+    # **A dropped job is a wrong constraint, not a full day. FAIL LOUDLY.** Alex's call, 2026-08-10.
+    #
+    # The day is feasible -- Seb plays it, on the same board, with the same crew. So when this
+    # planner reports that a job will not fit, the arithmetic that priced it is wrong, and silently
+    # binning the job hides that behind a plausible-looking grid. d4 is the worked example: 17 WATER
+    # jobs offered, 11 toured, 6 dropped, and the executor emits exactly the 11 it was handed -- so
+    # the entire `water 11/17` row is priced here, not lost downstream.
+    #
+    # The known-wrong constraint is the shed ferry. `DP.materialise` reads `wanted` as "deliver
+    # before the next job" and inserts a ~12-turn round trip per crop tile.
+    #
+    # The right rule is **deliver by the hour the cadence needs it**. `wanted` carries a quantity
+    # and no deadline, so every unit reads as due immediately. It is not due immediately and it is
+    # not due at the closing trip either -- "closing trip" is merely what d4 looks like, because d4's
+    # sells are late. A day whose row needs goods at h6 genuinely does want a ferry; it wants one
+    # sized to the shortfall at h6, not to the whole row.
+    #
+    # So the ferry is justified only for the quantity needed EARLIER than the hand would have
+    # reached the shed anyway, and only by however much the shed is short at that hour. Measured on
+    # his d4 tape: Seb makes no drop before h18 -- all six are the closing walk home, sells follow at
+    # h18-h23 -- so d4's justified ferry quantity is zero and we charge a trip per tile for it.
+    #
+    # Temporary and deliberately disruptive: it turns a quiet 6-op shortfall into a stack trace
+    # naming the day. Delete it once the ferry is priced against the closing trip.
+    if STRICT_FEASIBILITY and starved:
+        raise InfeasibleDay(day, starved, budget)
 
     return work, uncovered
