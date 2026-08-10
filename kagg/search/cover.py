@@ -803,10 +803,6 @@ RANK_BY_THE_TRIP_HOME = False
 #: a row asking for 49 and 6.
 RANK_HOME_DAYS = frozenset({4})
 
-#: Whether a tour that cannot get its load home gives up trailing jobs until it can. Never a trade:
-#: the produce those jobs make is stranded by definition, so the turns buy nothing as things stand.
-TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
-
 
 def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
           day=None,
@@ -1279,7 +1275,7 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
             home = materialise(units[u], seq, held, depots, wanted, True, rush, due=due)
             if turns(units[u], home) <= budget[u]:
                 route, cost = home, turns(units[u], home)
-            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in RANK_HOME_DAYS:
+            elif wanted:
                 # **The trailing job is producing goods that will be STRANDED, so dropping it is a
                 # gain and not a trade.** u1 on d4 harvests (2,1) at h15 and (1,1) at h18, ends six
                 # steps from the shed with eight wheat and passes to dusk; the rollover sweeps it
@@ -1289,6 +1285,15 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
                 # Only when the tour cannot come home AND ends holding something today's row wants
                 # -- `materialise(deliver=True, wanted_only=True)` is that question -- so a tour
                 # carrying nothing the market is waiting for is never shortened.
+                #
+                # **An invariant, not an option.** This was a flag, off, gated on `day == 4`. The
+                # market reads the shed on every day of the season, so there is no board on which
+                # stranding the row beats giving up a job: the job at stake is one harvest and the
+                # load at stake is everything the hand already carries. Left off and day-gated it
+                # cost `sell 19/55` on d4 of `seb1326` -- five of six tours planned with NO closing
+                # drop, u2 finishing two moves from the shed and u6 three, both loaded -- and the 36
+                # units it missed re-offered on d5, which is why d5 opens on $9 and cannot buy its
+                # melon seed. See `tests/test_no_tour_strands_the_row_it_was_sent_to_fetch.py`.
                 trimmed = list(seq)
                 while trimmed:
                     trimmed.pop()
