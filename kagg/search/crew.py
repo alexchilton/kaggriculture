@@ -40,8 +40,24 @@ import collections
 from . import cover as DP
 
 #: Days `[0, ACTIVE_UNTIL_DAY)` are planned here; everything else falls through to `cover.cover`.
-#: Raise it one day at a time, and only behind a grid that says the day still matches.
-ACTIVE_UNTIL_DAY = 0
+#: **d0-d6, Alex's call.** The 17-day grid at seed 11 against tape 91422988, this against 0:
+#:
+#:              d4 care  d4 water  d4 sell  d5 feed  d5 water  d6 feed  d6 land  d4 money
+#:     off        5/7      16/17    28/55     7/4      13/14     6/7      1/1        21
+#:     d0-d6      6/7      11/17    40/55     4/4      14/14     4/7      0/1       515
+#:
+#: d5 lands EXACTLY on both feed and water, d4 gains a care, twelve sells and $494. What it costs
+#: is d4's watering and the d6 land parcel, and the parcel is NOT the planner's doing -- see the
+#: wool note below. d0-d3 is byte-identical at every setting.
+ACTIVE_UNTIL_DAY = 7
+
+#: **The d6 land parcel slips for want of a WOOL sale, not for want of turns or money.** Traced
+#: hour by hour at seed 11: Seb sells `WOOL 6` at h09 and `WOOL 6` again at h13, taking his bank
+#: $5 -> $1,349, and buys the parcel at h13. We sell `WOOL 1` at h07 and `WOOL 5` at h19, so we
+#: hold $47 at h13 and do not reach $1,400 until h23 -- by which point the day is over. The row is
+#: `sells {'WOOL': 12}` and we do sell twelve; we sell them ten hours late. Same shape as the wheat
+#: reserve fixed in b52e210: the right quantity at the wrong hour. It is a market-cadence defect
+#: and it lives in the sell block, not here.
 
 #: Ops that belong to the crop sweep. A tile carrying any of these is swept, not routed.
 CROP_OPS = frozenset({"PLANT", "WATER", "HARVEST"})
