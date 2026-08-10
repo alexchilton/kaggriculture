@@ -354,6 +354,51 @@ def _arrivals(units, n):
     return out
 
 
+def _clear_the_spawn_ring(units, unlocked, n):
+    """Step the farmer off the spawn ring when doing so saves a hand from the dead corner.
+
+    `_spawn_hand` counts `[farmer] + hands` when it picks the least-occupied shed-access tile, so a
+    farmer standing on the ring is not a bystander -- it rotates where every one of the day's hires
+    lands. The ring is `[(4,4), (5,4), (4,5), (5,5)]` and, while only the NW quadrant is owned, all
+    four orthogonal neighbours of `(5,5)` are locked: a hand that spawns there cannot move, cannot
+    work and cannot be walked home, and `_mobile` writes it off for the day.
+
+    Seven hires over four tiles must strand ONE hand there whatever we do -- the tape strands one on
+    d4 and its seat reads 0 work / 0 move / 23 idle, same as ours. What is ours to give away is the
+    SECOND. With the farmer on `(4,4)` the rotation shifts a step and the 3rd and 7th hires both land
+    on `(5,5)`; with the ring clear it is the 4th alone.
+
+    Measured on d4 of `seb1326`, seed 11:
+
+        Seb  farmer (4,3) as the hires settle   (4,4) (5,4) (4,5) (5,5) (4,4) (5,4) (4,5)   1 dead
+        ours farmer (4,4), doing a PICKUP       (5,4) (4,5) (5,5) (4,4) (5,4) (4,5) (5,5)   2 dead
+
+    Returns `(move, arrivals)` -- the compass step the farmer must take this turn, or `None` if
+    standing still is no worse. The unit phase runs before the market phase (`kaggriculture.py:922`
+    then `:928`), so the step lands BEFORE the hires and is what they see.
+
+    The step is only ever taken onto an OWNED neighbour: walking the farmer into a locked quadrant
+    would box IT in and trade one dead seat for another.
+    """
+    here = tuple(units[0])
+    stay = _arrivals(units, n)
+    if here not in set(R.shed_access_tiles()):
+        return None, stay
+    lost = sum(1 for p in stay if not _mobile(p, unlocked))
+    best = None
+    for name, (dx, dy) in STEP.items():
+        step = (here[0] + dx, here[1] + dy)
+        if not (0 <= step[0] < R.BOARD_SIZE and 0 <= step[1] < R.BOARD_SIZE):
+            continue
+        if not _owned(step, unlocked):
+            continue
+        alt = _arrivals([step] + list(units[1:]), n)
+        if sum(1 for p in alt if not _mobile(p, unlocked)) < lost:
+            best = (name, alt)
+            break
+    return best if best else (None, stay)
+
+
 def _hires_this_turn(state, row, day, hour, money):
     """How many hands the market block below is about to buy. Read by the DAWN PLAN, which has to
     route them, so it must not diverge from what that block actually orders.
@@ -2341,10 +2386,23 @@ def make_agent(schedule, me=0, router=True):
             # arithmetic the market block does at the BOTTOM of this function has to be available at
             # the top. `_hires_this_turn` is that block's rule stated once; if the two ever disagree
             # the plan orphans a route, so they must be read together.
-            arriving = _arrivals(units, _hires_this_turn(state, sched.get(day, {}) or {},
-                                                         day, hour, money))
+            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money)
+            # **The farmer is not a bystander to where its own crew lands.** See
+            # `_clear_the_spawn_ring`: `_spawn_hand` counts it, so standing on the ring rotates every
+            # spawn and puts a second hand on the dead `(5,5)` corner -- 23 turns, on d4 the
+            # difference between banking the row and carrying 43 wheat to midnight.
+            #
+            # The step and the arrivals are computed TOGETHER and used together. They have to be:
+            # `_arrivals` is what the dawn plan routes phantoms onto, so an arrivals list that
+            # assumed a step the farmer then did not take would orphan a route -- the exact failure
+            # `PLAN_THE_CREW_THAT_ARRIVES` exists to avoid.
+            step_off, arriving = _clear_the_spawn_ring(units, unlocked, n_hires)
             acts = _router_acts(state, sched, day, hour, tiles, units, invs, shed,
                                 seeds, unlocked, money, arriving=arriving)
+            if step_off is not None and acts:
+                # The plan was cut from where the farmer STANDS, so its first stop is simply reached
+                # a turn later. That is the whole price: one farmer turn against a hand's twenty-three.
+                acts[0] = [step_off]
         else:
             # ------------------------------------------------------------------ what the BOARD needs now
             # Carried stock, computed once: a task whose input is neither in the shed nor in a hand must not be
