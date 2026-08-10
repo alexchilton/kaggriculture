@@ -262,6 +262,14 @@ DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
 #: individually: each is locally reasonable and none looked AHEAD for produce still to come.
 #: The closing drop is deliberately NOT gated -- it runs after every job by construction, and it is
 #: what this rule funnels the whole day's load into.
+#:
+#: **NARROWED 2026-08-10 to HARVEST only.** It was written against `Job.yields()`, and `YIELDING` is
+#: `("HARVEST", "COLLECT_FERTILIZER")` -- so a day whose only production is fertilizer could not bank
+#: until its last pen was walked. Day 5 of `seb1326`, seed 11, held $17 from h03 to h19 with four
+#: fertilizer in the crew's hands, re-offering a $100 strawberry seed on every one of those turns; it
+#: arrived at h21 and was still in the bag at dusk. The tape gates on HARVEST and nothing else --
+#: `d4 HARVEST 5..19 / DROP 19 22 22 22 23` against `d6 COLLECT_FERTILIZER 3 4 6 8 10 11 14 /
+#: DROP 9 15 17 19`, where he banks with three collections still ahead. See `Job.harvests()`.
 BANK_ONLY_AFTER_THE_LAST_HARVEST = True
 
 
@@ -345,6 +353,17 @@ class Job:
     def yields(self):
         return any(o in YIELDING for o, _i in self.ops)
 
+    def harvests(self):
+        """Produce the day cannot bank ahead of -- see `BANK_ONLY_AFTER_THE_LAST_HARVEST`.
+
+        A STRICT subset of `yields()`, and the difference is the whole point.  `YIELDING` also holds
+        `COLLECT_FERTILIZER`, so gating the bank on `yields()` froze every fertilizer day's cash in
+        the crew's hands: day 5 of `seb1326`, seed 11, sat on $17 from h03 to h19 re-offering a
+        strawberry it could not afford, while four fertilizer -- $100 apiece -- walked around in its
+        pockets.  Seb banks at h9 of his own day 6 with three collections still ahead.
+        """
+        return any(o == "HARVEST" for o, _i in self.ops)
+
     def __repr__(self):
         return f"Job{self.tile}{[o for o, _i in self.ops]}/{self.turns}t"
 
@@ -397,6 +416,9 @@ class Depot:
         return collections.Counter()
 
     def yields(self):
+        return False
+
+    def harvests(self):
         return False
 
     def __repr__(self):
@@ -630,7 +652,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # **Is there still a harvest ahead on this tour?** See `BANK_ONLY_AFTER_THE_LAST_HARVEST`.
         # `work[i:]` includes the job about to be walked to, which is right: a drop planned on the
         # way TO a harvest is as early as one planned between two.
-        reaping = BANK_ONLY_AFTER_THE_LAST_HARVEST and any(w.yields() for w in work[i:])
+        reaping = BANK_ONLY_AFTER_THE_LAST_HARVEST and any(w.harvests() for w in work[i:])
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))
@@ -1166,6 +1188,13 @@ def predict_yield(node, tiles):
     """
     if tiles is None:
         return {}
+    # **`node.tile` is `(x, y)` and the board is `tiles[y][x]`. This is NOT a transposition bug.**
+    # Written down because it was "fixed" once, on 2026-08-10, on the strength of the d4 pen block
+    # -- pens at `tiles[3][3] [3][4] [4][2] [4][3] [4][4]` against jobs `Job(3,3) Job(3,4) Job(4,2)
+    # Job(4,3) Job(4,4)`, which is very nearly symmetric and fits BOTH readings. The decisive case
+    # is a job off that diagonal: on `seb1326` d4 the FEED job's tile is `(1,4)`, there is no animal
+    # at `tiles[1][4]`, and there is one at `tiles[4][1]`. `_router_acts` reads
+    # `tiles[node.tile[1]][node.tile[0]]` for the same reason.
     x, y = node.tile
     try:
         cell = tiles[y][x]
@@ -1205,6 +1234,11 @@ def yield_products(node, tiles):
 
     The PRODUCT is knowable at dawn even when the quantity is not: it is the crop in the ground, or
     the animal in the pen. That is all this returns.
+
+    **`node.tile` is `(x, y)` and the board is `tiles[y][x]`. That is not a bug -- see
+    `predict_yield`, where the decisive measurement is recorded.** This read was "corrected" to
+    `tiles[i][j]` on 2026-08-10 off a near-symmetric pen block that fits either reading, which is
+    exactly how a convention gets flipped by accident.
     """
     if tiles is None:
         return frozenset()
