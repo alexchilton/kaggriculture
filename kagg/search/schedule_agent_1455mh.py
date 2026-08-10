@@ -225,25 +225,6 @@ def _pointless_tiles(tiles, day, plants_left):
 #: dollar figure enters the routing.
 FUND_THE_DAY_WHEN_SHORT = True
 
-#: Whether a unit whose CRITICAL draw finds the shed empty STANDS and retries next turn, instead of
-#: dropping that attempt and walking on. See the note where it is read. It saves the day-12 SHEEP at
-#: (1,6) and it is the half of that fix which costs turns; the non-destructive `node.pick` handling
-#: around it is free and stays on unconditionally.
-#:
-#: **OFF.** `scripts/matched_days.py` scores it as free -- animals lost 1 -> 0, harvest 348 and
-#: thirst 25 unchanged, PASS 984 -> 976 -- and that harness runs 29 INDEPENDENT days off Seb's board,
-#: so it cannot see compounding by construction. On the full season, seed 11, weeds off, d0-d16:
-#:
-#:                   money@d16   cows   work   idle
-#:     off              23,483    8/8   1412   1300
-#:     on               16,363    5/8   1273   1381
-#:
-#: A blocked hand is 139 work ops over seventeen days, and work ops are feeds. The animal it saves on
-#: day 12 is real; so are the three cows it costs by day 16. The defect it found is real too and the
-#: diagnosis is right -- `materialise` plans each tour independently and cannot see the shed drain
-#: from the sell block or from another unit's draw in the same replan. The fix for that is to make the
-#: draw SEE the contention at plan time, not to make the hand wait for it at execution time.
-STAND_AT_A_DRY_SHED = False
 
 
 #: Whether the DAWN plan routes the hands the day is about to hire, instead of waiting for them to
@@ -523,17 +504,6 @@ def feed_days(day):
     """
     return FEED_DAYS_LATE if day >= FEED_DAYS_FROM_DAY else FEED_DAYS
 
-#: **TRIED and REVERTED: cap one BUY_PRODUCT to 4 so the day's feed is metered across the hours.**
-#: The motivating measurement is real -- the leader places sixteen WHEAT buys of 1-6 across h1-h22 on
-#: day 0 against our single block, and `market_price` moves with every unit -- but a ceiling per order
-#: cannot fund a large herd. Seb runs 19 animals, which is 38 wheat a day at `FEED_DAYS = 2`, and the
-#: herd starved out from day 15. Animals in pens, seed 11, Seb's schedule, day 16 onward:
-#:
-#:     cap = 4     7  8  8  8  8 ... 8
-#:     no cap     17 17 17 17 17 ... 17
-#:
-#: Meter by placing MORE orders, never by shrinking the one order that feeds the herd.
-FEED_ORDER_CAP = None
 
 #: Most WHEAT bought in one order. **This is a cadence control, not the cap `FEED_ORDER_CAP` was.**
 #: That one bounded the DAY's feed and starved a 19-animal herd; this bounds a single order while the
@@ -655,91 +625,6 @@ DELIVER_THE_SELL_ROW = True
 #: than the sale returns and `work` falls 25 ops on day 8 alone.
 MIN_SELL_ROW_DROP = 6
 
-#: **A late-delivery exemption to this floor was built, measured, and REVERTED. Do not rebuild it.**
-#:
-#: The diagnosis behind it is correct and still stands. Day 6, seed 11: the row asks
-#: `{WOOL: 12, FERTILIZER: 7}`, `collect_fertilizer` is 7/7 so we gather everything the tape does,
-#: and both sides sell all 12 wool. The fertilizer splits:
-#:
-#:     ours  1@90 h8, 2@90 h13, 1@90 h14, 1@89 h15                  = 5 of 7, last sale h15
-#:     tape  1 h2, 1 h5, 1@90 h18, 1@90 h20, 2@89 h21, 1@89 h22     = 7 of 7
-#:
-#: $627 to our $449, which is the bulk of day 7's dawn gap of -$137, and the two we never shipped are
-#: exactly the `sh:ferti 2/0` in that dawn's shed. Same signature at day 8's dawn and at day 11's
-#: (`sh:melon 18/0`, against a day-10 row asking for exactly 18 melons of which we sold none). It is
-#: a TIME-OF-DAY problem, not a load-size one, which is why neither `DELIVER_THE_SELL_ROW` nor the
-#: deliver ferry reaches it: both wait for a six-unit load that never forms.
-#:
-#: The fix -- drop the census to 1 from hour H, and let the ferry skip its slack test after H, since
-#: in the evening the tour is not resumed and slack is near zero by construction -- turned
-#: `test_the_afternoons_collections_reach_the_shed_before_the_market_closes` green and made the
-#: day-matching WORSE. Swept on H against the 120-cell steal-gate baseline:
-#:
-#:               d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF        7  6  4  7  7  7 11  8 11 14  19  19   120
-#:     from h16   7  6  4  7  9  8 14 12 10 12  17  20   126
-#:     from h18   7  6  4  7  7  7 12 11 11 13  17  20   122
-#:     from h19   7  6  4  7  7  7 11  9 11 14  19  18   120
-#:     from h20   7  6  4  7  7  7 11  8 11 14  19  19   120   byte-identical to OFF
-#:     from h21   (identical to OFF)
-#:     from h22   (identical to OFF)
-#:
-#: h20 and later are INERT -- nothing is left to divert that late, so they are OFF with extra code.
-#: h19 ties on total and is disqualified in order: it pays d7 8 -> 9 to buy d11 19 -> 18. h16 and h18
-#: are simply worse, and the shape says why -- d4, d5 and d6 all regress at h16, because pulling a
-#: hand off work to walk home costs more than the goods. A melon WATER is worth ~$250; the fertilizer
-#: being rescued is $90.
-#:
-#: So the two stranded fertilizer are real and the delivery rule is not how to get them. The unit
-#: should not have been holding them at h13 in the first place -- u2 carries 1 from h13 to h23, does
-#: no work at all after h14, and walks PAST the depot at (4,3) at h18. That is a ROUTING failure, not
-#: a delivery-threshold one, and it is where the next attempt belongs.
-#: **Send a carrier home mid-tour, then resume it.** `DELIVER_THE_SELL_ROW` can only fire on a depot
-#: cell, so it waits for an incidental visit -- which is the 16-of-22 ceiling on day 9 and the 12
-#: melons still in two hands at hour 23 of day 10 (`docs/idle_at_h10_2026-08-07.md` 2e). A rule that
-#: only fires AT the shed cannot send a unit there.
-#:
-#: This is the mirror of the draw ferry below: preempt the tour, walk home, act, resume. It replaces
-#: a MOVE with a different MOVE, so it can never delete a work op on the turn it fires, and it needs
-#: no new drop code -- on arrival `DELIVER_THE_SELL_ROW` fires as it stands.
-#:
-#: **The test is SLACK against the detour, never the load's value against the route's.** The route is
-#: resumed, not abandoned, so the two are never traded off. Where the slack genuinely is not there
-#: the answer is "keep the route": an abandoned FEED can cost an animal outright, while a load that
-#: sells tomorrow instead of today gives up roughly a tenth of its price.
-#:
-#: Deliberately NOT in `build_nodes`. Fable's second review (`docs/fable_delivery_node_2026-08-07.md`)
-#: withdrew the delivery-node proposal on measurement: priced honestly a delivery node's prize is
-#: gating value, which is not computable at plan time, so it inserts last and is always refused;
-#: made mandatory it is placed first unconditionally and re-permutes every yielding tour's spine.
-#: Either way it pays the d2 permutation tax (see `router.py`) on days that are currently exact.
-#:
-#: **ON, but measured as very nearly inert, and the census below is why.** Seed 11, weeds off, d0-d11:
-#:
-#:     day-by-day cells   d9 15 -> 14, every other day byte-identical.  No regression.
-#:     sellables in hands at hour 23   IDENTICAL on all twelve days (d10 stays 14, d11 stays 20)
-#:
-#: So it does NOT fix the defect it was built for. Gate census over the 818 off-depot unit-turns that
-#: were holding a sellable (`scratchpad/ferry_gates.py`, `data/logs/ferry_gates.log`):
-#:
-#:      304  37.2%   today's row still owes only 1 of the load
-#:      182  22.2%   ... owes 0
-#:      174  21.3%   no committed route -- the return leg already covers these
-#:       57   7.0%   no slack
-#:      100  12.2%   ... owes 2 to 5
-#:        1   0.1%   FIRES
-#:
-#: The binding constraint is the CENSUS, not the slack: `owed_sale` is the row minus what the shed
-#: already holds, so by mid-morning the row rarely still owes six units of precisely what one unit
-#: happens to carry. The 12 melons stranded in hands on day 10 are not owed by the row at all -- that
-#: day's `sell` is 35/35, exact. They are surplus the row never names, which is a DIFFERENT and much
-#: riskier change (the broad version of it measured -$15,272 over twelve seeds).
-#:
-#: Kept ON because it is a strict in-order improvement with nothing regressed, and because it is the
-#: right structure for that change if the census is ever relaxed. It is NOT load-bearing today.
-#: **TURNED OFF 2026-08-07.** Costs 4 cells (115 -> 119) for something already documented above as
-#: near-inert: it fires once in 818 candidate unit-turns and hands-at-dusk are identical ON vs OFF.
-DELIVER_FERRY = False
 
 #: Turns of slack held back before the ferry will divert. It exists because `Node.service` is
 #: `len(ops)` fixed at plan time and the executor re-derives ops on arrival, so a tour's remaining
@@ -748,13 +633,6 @@ DELIVER_FERRY = False
 #: and not of the tour's length.
 DELIVER_FERRY_MARGIN = 3
 
-#: Diagnostic sink for the opportunistic drop. `None` ships. Set it to a list and every unit-turn
-#: spent standing on a depot holding something appends one `(act, gate)` pair naming the FIRST gate
-#: that refused, or `"fires"`. It exists because lowering `MIN_OPPORTUNISTIC_DROP` to 3 and to 2
-#: measured byte-identical to 4 while `scripts/depot_chances.py` showed the chances arriving as often
-#: as the tape's -- so the threshold is not the gate, and guessing which one is has already cost a
-#: day elsewhere in this file.
-DROP_TRACE = None
 
 
 def _trace_drop(sink, act, st, inv, shed, carried, tiles):
@@ -801,39 +679,6 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
 #: this number rather than restate the geometry.
 PEN_SPOTS = ()
 
-#: **Site a pen at the free tile NEAREST a depot, across every quadrant we own.**
-#:
-#: The measurement above is sound and its conclusion does not generalise, because day 0 is the one day
-#: on which the two layouts are distance-identical -- 22 either way, and 23 either way on day 6. The
-#: gap opens when the later quadrants unlock. At day 11's dawn:
-#:
-#:     ours  dist sum 51, 15 pens, including (5,0), (8,0), (9,0) -- 22 of the 51 in three pens
-#:     his   dist sum 44, 15 pens, furthest (8,4) at 4; the rest go SOUTH into SW at
-#:           (1,6), (2,5), (2,6), (4,6), (4,7), every one within 5
-#:
-#: `field_order` is near-first WITHIN a quadrant -- a boustrophedon sweep anchored at that quadrant's
-#: shed corner -- but it is quadrant-MAJOR, and pens draw from the same sweep as crops. By day 10 the
-#: near tiles of NE are planted, so a new pen falls to the tail of NE at y=0, nine steps out, while
-#: SW's near band sits empty. A pen is a permanent daily FEED + CARE + COLLECT, so that distance is
-#: paid ~20 times a season; a crop tile is watered once a day and harvested once.
-#:
-#: **OFF. It does exactly what it says and the cell metric punishes it.** Measured, seed 11, weeds off:
-#:
-#:                 d0 d1 d2 d3 d4  d5 d6 d7 d8 d9 d10 d11  total
-#:     baseline     7  6  4  7  7   7 11 15 13 14  19  20   130
-#:     nearest      8  7  7  7  9  10 11 15 12 17  18  22   143
-#:
-#: The geometry lands -- `test_a_pen_is_not_built_on_the_far_edge_while_near_ground_is_free` goes
-#: GREEN with this on, no pen beyond 5 steps at day 11 -- and d0, d1, d2, d4 and d5 all go backwards.
-#:
-#: The reason is worth stating, because it is a property of the METRIC and not of the change. We are
-#: scored on resembling Seb. His day-0 block sums to 22 from the depot; nearest-first sums to **14**.
-#: That is less walking every day for twenty days and it reads as a REGRESSION, because it is further
-#: from him. Any real improvement he did not himself make will score the same way.
-#:
-#: So this is the first arm in the project that is plausibly right and is refused by the objective
-#: rather than by the board. It should be re-measured on BANK, head to head, before it is written off.
-PEN_NEAREST_DEPOT = False
 
 #: Alex's narrowing, and the numbers say it is the right one: the damage and the benefit are on
 #: DIFFERENT DAYS. Every cell the rule above cost is on d0-d5, where our layout already matches his
@@ -1006,35 +851,6 @@ LIQUIDATE_LAST_DAY = True
 #: middle of a flat region, not a peak worth defending.
 LIQUIDATE_FROM_HOUR = 16
 
-#: How far ahead the sell loop looks when deciding what stock is SURPLUS. `None` = the whole rest of
-#: the season, which is the conservative reading: only stock that no remaining row will EVER name is
-#: released early. A small integer treats stock as surplus unless the next N days ask for it, which
-#: releases far more, far sooner.
-#:
-#: **Why the conservative setting is the shipped one.** See the block above the sell loop for the
-#: measurement -- we meet every milk row exactly, on the day, all season, and still finish day 28
-#: holding 67 milk to the tape's 16, because we simply produce more than his rows name. Only the
-#: surplus is ours to release; the rest is his plan and it works.
-#:
-#: **A short horizon was measured and it is much worse.** Swept on the `seb` tape, seed 11, weeds
-#: off, 30 days, by `scripts/breakdown.py --diff`. `money` is the season SUM of the daily
-#: ours-minus-tape gap, `d29` that gap on the last day alone, `cells` the independent differing-cell
-#: count, and `sh:milk` the summed milk-stock gap:
-#:
-#:     horizon   money sum      d29   sh:milk   cells   first day it fires   d6-d11 cells
-#:     OFF        -107,267   +6,247      +521     384   never (d29 dump)     8 4 7 12 12 13
-#:     None (on)   -89,307   +5,533      +446     383   d25                  8 4 7 12 12 13
-#:     10         -189,721  -13,414       -82     439   d6                  10 11 9 16 16 20
-#:     5          -199,371  -16,928      -109     444   d6                  10 11 9 16 16 20
-#:
-#: The short horizons fail through the mechanism this file already documents twice. They first fire
-#: on day 6, on WOOL, and day 6 goes from $137 behind the tape to $1,430 behind on the day the extra
-#: wool clears -- `market_price` falls monotonically in inventory, and wool is the product where that
-#: was measured hardest (123 units -> 138 for revenue $29,041 -> $21,811). They also overshoot:
-#: `sh:milk` swings from +521 to -109, which is not tracking the tape, it is missing it from the
-#: other side. Every day from d6 on has MORE differing cells, so the in-order rule rejects them on
-#: their own terms and not on the dollar.
-SELL_SURPLUS_HORIZON = None
 
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
@@ -1092,29 +908,6 @@ SEED_BEFORE_LIVESTOCK = True
 #: already is. See the note above the seed bill for the day-6 measurement.
 SELLS_FUND_THE_TURN = True
 
-#: Whether to hire a hand that will spawn walled in -- on a shed-access corner whose neighbours are all
-#: LOCKED. It cannot move or BUILD, but PICKUP and DROP test shed-adjacency only and it is standing on
-#: a shed tile, so it works as a loader. Off restores the old refusal, which cost -17 hand-turns a day
-#: on one quadrant: our day-0 crew ramped 0,2,2,4,4,6,7 against the tape's 0,7,7,7,7,7,7.
-HIRE_ONTO_LOCKED = False
-
-#: How many turns sooner an idle unit must reach a claimed tile before it may take it off the unit
-#: that claimed it. `None` disables stealing entirely and restores the old rule, where every tile in
-#: a committed tour is off limits to everyone else for the rest of the day.
-#:
-#: **This is the open-loop problem again, moved from the schedule to the work.** `sells` forfeited a
-#: row that could not be filled on its day; a claim forfeits work to a unit that cannot reach it.
-#: Measured on Seb's tape, seed 11, day 0: a PLACE node is available from hour 9 and replans run at
-#: hours 9, 14, 15, 16, 17 and 18 -- the work is visible and the planner IS running -- but the pen was
-#: claimed at hour 6 by a unit with a long tour, so every idle unit after that was forbidden to take
-#: it and the animal was placed at **hour 18**. Placed that late it cannot be fed: the shed is four
-#: moves away and the budget at hour 20 is `24 - 20 - 1 = 3`, so it goes unfed and uncared, which is
-#: `feed -2` and `care -2` against the tape on day 0.
-#:
-#: A claim is not a freehold. It is only worth honouring while the claimant is the one who gets there
-#: first. If a stolen node's original owner arrives to find nothing to do it goes idle and is topped
-#: up on the next turn, so the loss is bounded at one turn and the gain is the whole afternoon.
-STEAL_MARGIN = None      # measured NET NEGATIVE once hiring was fixed: 46 cells against 39
 
 #: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
 #: `PEN_NEAREST_DEPOT_FROM_DAY` needed, and for the same reason: the cost and the benefit are on
@@ -1464,8 +1257,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
         spot = spot or next((c for c in R.shed_access_tiles()
                              if _owned(c, unlocked) and tiles[c[1]][c[0]] is None
                              and c not in taken), None)
-        if PEN_NEAREST_DEPOT or (PEN_NEAREST_DEPOT_FROM_DAY is not None
-                                 and day >= PEN_NEAREST_DEPOT_FROM_DAY):
+        if PEN_NEAREST_DEPOT_FROM_DAY is not None and day >= PEN_NEAREST_DEPOT_FROM_DAY:
             spot = spot or _nearest_ground(order, tiles, taken, unlocked)
         spot = spot or _next_ground(order, tiles, taken)
         if spot is None:
@@ -1794,8 +1586,6 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # be_funded_by_the_same_turns_sales`, `test_the_biggest_sale_takes_the_
                         # earliest_slot`): most shortfalls are not an animal about to escape, and
                         # blocking a hand on all of them shifts timing far beyond this one starvation.
-                        if node.critical and STAND_AT_A_DRY_SHED:
-                            break
                         # **At hour 0 an empty shed is not a shortfall, it is arriving early.**
                         # `interpreter` runs the unit phase and only then `_process_market`
                         # (`kaggriculture.py:922` then `:928`), so nothing the day buys is in the
@@ -1989,8 +1779,6 @@ RESERVATION_SELL_CAP = True
 HOLD_A_FLOORED_BOOK = True
 RESERVATION_CONTEST = 0.5
 RESERVATION_SLIP = 0.10
-CAP_SELL_OFFER_SIZE = False
-SELL_OFFER_CAP = 30
 #: **Hold a sale until the town has drained the book -- unless today still has to be paid for.**
 #:
 #: `townCenterSellInterval = 24` on this economy, so the book drains once a day; `market_price`
@@ -2012,10 +1800,6 @@ LATE_SELL_BIAS = True
 #: is the flat rule that was measured as a loss and left off.
 LATE_SELL_YIELDS_TO_DEMAND = True
 LATE_SELL_FROM_HOUR = 16
-FEED_DAYS_FLOOR = 1
-FEED_RESERVE_YIELDS_TO_OVERFLOW = False
-SELL_ON_DRAIN_CADENCE = False
-SELL_EVERY_N_HOURS = 4
 
 
 def market_price(prod, inventory):
@@ -2321,74 +2105,8 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
 
-#: Whether the wheat feed reserve may give up shed slots on a night the shed would otherwise BIN
-#: product. Measured 2026-08-09, and it is the largest single source of discards in the game.
-#:
-#: `feed_days(day)` is one constant doing two jobs -- it sizes the BUY (`herd = feed_days(day) *
-#: alive - ...`) and the SELL guard (`have -= feed_days(day) * alive - ...`). From day 16 it returns
-#: 4, so a 19-head herd reserves 76 units against a shed of **100 slots shared by all nine
-#: products**. The shed never actually carries that much, which is worse rather than better: `have`
-#: for WHEAT is pinned at 0, we can never sell a single unit of wheat after day 16, and the pile
-#: becomes a one-way ratchet.
-#:
-#: `release_order` cannot reach it. The eviction correctly picks wheat first -- cheapest product at
-#: $25 -- and is then capped by that same `have`, so the one pile causing the crowding is the one
-#: pile the eviction is forbidden to touch. On Seb's tape, seed 11, weeds off, handover at d11:
-#:
-#:     day  shedWHEAT  shedTOT  hands  alive  lost
-#:      17     52         52      69     19     21
-#:      21     48         50     142     19     92
-#:      25     52         70      65     19     35
-#:      28     43         66      53     19     19
-#:
-#: **12 of 17 discarding nights, 320 units destroyed**, and the same shape appears in two real
-#: ladder losses (`data/ladder/losses/`): 263 units binned against the opponent's 23, concentrated
-#: in STRAWBERRY, MILK, FERTILIZER and WOOL. Wheat survives because wheat is in the SHED, and the
-#: shed is what survives the rollover -- hands are what dies.
-#:
-#: **This does not touch the BUY, and that is deliberate.** `FEED_DAYS_LATE` went 2 -> 4 on
-#: 2026-08-08 because escapes went 4 -> 0 over six seasons and an escape is irreversible. Buying
-#: less would re-open that. What changes is only that a reserve standing in a shed which is about to
-#: destroy $120 strawberries may fall to `FEED_DAYS_FLOOR`, and only by the number of slots the
-#: night actually needs.
-#:
-#: **It is reactive on purpose.** `room_needed` is computed from what the hands are carrying RIGHT
-#: NOW, so it is ~0 at dawn and only bites late in the day, after the feeding rounds have run.
-#: Forecasting the day's inflow at dawn instead was tried, moved the right fields (discards
-#: 101 -> 47) and cost **$4,385 of final bank**, because selling earlier walks the price down by
-#: more than the saved product is worth. Sizing the hold per day belongs to the planner, which is
-#: the only component that knows the day's inflow; this flag is the trigger, not the budget.
-#: **MEASURED AND SWITCHED OFF 2026-08-09. The diagnosis holds; this remedy does not.**
-#:
-#: Seven seed/mode combinations, day-gated code, `docs/fable_the_discard_problem_2026-08-09.md` §3:
-#: discards got WORSE in 5 of 7 and money worse in 4 of 7. Full-season seed 12 is the killer --
-#: **-$13,304 of final bank to save 39 units of discard**, which is a bad trade at any price. It is
-#: inconsistent in both direction and magnitude, so it is not a fresh-draw winner and ~15% seed
-#: variance cannot rescue it.
-#:
-#: Everything above about the DEFECT is still true and still unfixed: the shed really does hold
-#: 43-60 of its 100 slots as wheat on nights that bin product, and `release_order` really cannot
-#: reach that pile. What is wrong is the remedy -- selling the reserve down walks the wheat price
-#: against us by more than the saved product is worth, which is the same lesson the dawn-forecast
-#: arm taught at -$4,385. See `tests/test_the_feed_reserve_yields_a_shed_slot.py`, kept as an
-#: xfail record of the open defect, and tasks #45/#46 for the two remedies that have not been tried:
-#: sizing the hold in the PLANNER, and treating the hundred slots as one budget.
-#:
-#: The `day >= FEED_DAYS_FROM_DAY` gates at the two call sites are kept regardless. Without them
-#: this fired from day 0 against a four-animal herd and forced a wheat purchase on day 0; gating it
-#: took `test_router.py` from 11 failures to 8, a strict subset.
-FEED_RESERVE_YIELDS_TO_OVERFLOW = False
 
 
-def sell_hour_permits(hour, liquidating):
-    """May a non-terminal SELL be offered on this turn?
-
-    `liquidating` exempts the last day: the shed has no terminal value and there is no tomorrow for
-    the book to recover into, so holding stock back to catch a better price is a pure loss.
-    """
-    if not SELL_ON_DRAIN_CADENCE or liquidating:
-        return True
-    return hour % SELL_EVERY_N_HOURS == 0
 
 #: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
 #: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
@@ -2446,29 +2164,6 @@ SEED_BEFORE_LIVESTOCK = True
 #: already is. See the note above the seed bill for the day-6 measurement.
 SELLS_FUND_THE_TURN = True
 
-#: Whether to hire a hand that will spawn walled in -- on a shed-access corner whose neighbours are all
-#: LOCKED. It cannot move or BUILD, but PICKUP and DROP test shed-adjacency only and it is standing on
-#: a shed tile, so it works as a loader. Off restores the old refusal, which cost -17 hand-turns a day
-#: on one quadrant: our day-0 crew ramped 0,2,2,4,4,6,7 against the tape's 0,7,7,7,7,7,7.
-HIRE_ONTO_LOCKED = False
-
-#: How many turns sooner an idle unit must reach a claimed tile before it may take it off the unit
-#: that claimed it. `None` disables stealing entirely and restores the old rule, where every tile in
-#: a committed tour is off limits to everyone else for the rest of the day.
-#:
-#: **This is the open-loop problem again, moved from the schedule to the work.** `sells` forfeited a
-#: row that could not be filled on its day; a claim forfeits work to a unit that cannot reach it.
-#: Measured on Seb's tape, seed 11, day 0: a PLACE node is available from hour 9 and replans run at
-#: hours 9, 14, 15, 16, 17 and 18 -- the work is visible and the planner IS running -- but the pen was
-#: claimed at hour 6 by a unit with a long tour, so every idle unit after that was forbidden to take
-#: it and the animal was placed at **hour 18**. Placed that late it cannot be fed: the shed is four
-#: moves away and the budget at hour 20 is `24 - 20 - 1 = 3`, so it goes unfed and uncared, which is
-#: `feed -2` and `care -2` against the tape on day 0.
-#:
-#: A claim is not a freehold. It is only worth honouring while the claimant is the one who gets there
-#: first. If a stolen node's original owner arrives to find nothing to do it goes idle and is topped
-#: up on the next turn, so the loss is bounded at one turn and the gain is the whole afternoon.
-STEAL_MARGIN = None      # measured NET NEGATIVE once hiring was fixed: 46 cells against 39
 
 #: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
 #: `PEN_NEAREST_DEPOT_FROM_DAY` needed, and for the same reason: the cost and the benefit are on
@@ -2858,7 +2553,7 @@ def make_agent(schedule, me=0, router=True):
         # leave the shed on the last day, so it is what `still_owed` below releases early. Days after
         # today only: today's own row is `today`, and double-counting it would hide real surplus.
         still_owed = collections.Counter()
-        horizon = day + (SELL_SURPLUS_HORIZON if SELL_SURPLUS_HORIZON is not None else len(sched))
+        horizon = day + len(sched)
         for d in sorted(sched):
             for p, q in (sched[d].get("sells") or {}).items():
                 if d <= day:
@@ -3071,8 +2766,6 @@ def make_agent(schedule, me=0, router=True):
                 # `money@d15` moving 2,252 -> 1,931 on seed 11 alone (`test_the_feed_gate_is_a_late_
                 # season_lever.py`). It is early cash-flow divergence, not a discard fix: the herd is
                 # 4-9 animals here and the shed is nowhere near its 100-slot cap.
-                if FEED_RESERVE_YIELDS_TO_OVERFLOW and day >= FEED_DAYS_FROM_DAY:
-                    releasable = max(have, int(shed.get("WHEAT", 0)) - FEED_DAYS_FLOOR * alive)
             # **The carry recovers a MISSED row; it is not a licence to dump the shed.** `market_price`
             # falls monotonically in inventory and a SELL walks n units down that curve one at a time,
             # so a bigger offer clears at a worse mean price -- measured as wool 123 units -> 138 for
@@ -3246,13 +2939,8 @@ def make_agent(schedule, me=0, router=True):
             # file already puts off limits: stock has no terminal value on the last day, and every
             # other cap in this loop already exempts it on that same principle.
             last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
-            if CAP_SELL_OFFER_SIZE and not last_day_liquidating:
-                n = min(n, SELL_OFFER_CAP)
             if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
                     and not unfunded):
-                n = 0
-            # Cadence, not a cap: the quota is untouched, it is simply offered on fewer turns.
-            if not sell_hour_permits(hour, last_day_liquidating):
                 n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
@@ -3387,7 +3075,7 @@ def make_agent(schedule, me=0, router=True):
                     # hires is `(5,4) (4,5) (5,5) (4,4) (5,4) (4,5) (5,5)`, so only the 3rd and 7th are
                     # stuck -- and `break` threw away hires 3 to 7, four of which were perfectly good.
                     # That is what forced the old two-a-turn dribble and cost -17 hand-turns a day.
-                    if walled and not HIRE_ONTO_LOCKED:
+                    if walled:
                         occ[(x, y)] += 1     # this slot is taken; the NEXT hire lands elsewhere
                         continue
                     occ[(x, y)] += 1
