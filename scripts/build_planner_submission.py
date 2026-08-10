@@ -53,8 +53,24 @@ MODULES = (
     ("kagg.economics.production", "kagg/economics/production.py"),
     ("kagg.search.routines", "kagg/search/routines.py"),
     ("kagg.search.cover", "kagg/search/cover.py"),
+    # **After `cover`, and it is not optional.** `cover.plan` does `from . import crew as CREW` on
+    # every call to pick the assignment routine, so a bundle without it imports fine, passes the
+    # entry-point check, and then dies with `ImportError: cannot import name 'crew'` on the first
+    # observation of a real game. `crew` imports `cover` at module scope and `cover` imports `crew`
+    # inside the function, so this is the order that resolves.
+    ("kagg.search.crew", "kagg/search/crew.py"),
     ("kagg.search.router", "kagg/search/router.py"),
-    ("kagg.search.schedule_agent", "kagg/search/schedule_agent.py"),
+    # **`schedule_agent_1455mh.py` bundled UNDER the name `kagg.search.schedule_agent`.** The two
+    # files diverged at `6f31999` (2026-08-09) and `schedule_agent.py` has had none of the work
+    # since: no `PLAN_THE_CREW_THAT_ARRIVES`, no `WALK_THE_LOAD_HOME`, no `NEVER_SELL_TODAYS_RATION`,
+    # no `_clear_the_spawn_ring`. Every grid, gate and sweep in this repo runs `_1455mh`; shipping
+    # the other one would ship a measurement nobody has taken -- the exact indirection between the
+    # search space and the artifact that put `contrarian` on the ladder on 2026-08-07.
+    #
+    # The dotted name stays `kagg.search.schedule_agent` because the entry point below and the
+    # loader resolve `_SA` by it, and because `_1455mh` itself imports only its three siblings
+    # (`cover`, `router`, `routines`), all of which are bundled above.
+    ("kagg.search.schedule_agent", "kagg/search/schedule_agent_1455mh.py"),
 )
 
 #: Package stubs, created only where nothing real is already imported. Empty `__path__`, so an
@@ -173,8 +189,14 @@ def agent(obs, config=None):
     me = int(obs.get("player", 0) or 0)
     fresh = int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0
     if fresh or me not in _AGENTS:
-        _AGENTS[me] = _SA.make_agent(_SCHEDULE, me, router=True,
-                                     start_day=_REPLAY_DAYS or None)
+        # `start_day` exists only on the older `schedule_agent`. The module bundled here is
+        # `schedule_agent_1455mh`, which plans its opening rather than replaying one, and its
+        # `make_agent` has no such parameter -- passing it unconditionally is a TypeError on the
+        # first observation, i.e. a submission that banks the $3,000 start. Sent only when a replay
+        # opening was actually asked for; `--replay-days` defaults to 0 and the builder refuses the
+        # combination outright if the bundled module cannot honour it.
+        _kw = {"start_day": _REPLAY_DAYS} if _REPLAY_DAYS else {}
+        _AGENTS[me] = _SA.make_agent(_SCHEDULE, me, router=True, **_kw)
     live = _AGENTS[me](obs, config)
 
     # **The opening is replayed verbatim; the planner still SEES every turn.** It is driven above
@@ -622,7 +644,10 @@ def reproduce(days=30, replay_days=0, verbose=True):
     # planner is called on every turn so its clock and ledger stay warm, its answer is discarded for
     # the replayed days, and `start_day` stops the missed-row catch-up inventing debt for days
     # somebody else played (see `schedule_agent.make_agent`).
-    repo_agent = SA.make_agent(thin, 0, router=True, start_day=replay_days or None)
+    # Same conditional as the bundled entry point: `start_day` belongs to the older
+    # `schedule_agent`, and the module bundled here plans its opening rather than replaying one.
+    repo_agent = SA.make_agent(thin, 0, router=True,
+                               **({"start_day": replay_days} if replay_days else {}))
     opening = _opening(replay_days) if replay_days else []
 
     def repo_play(obs):
@@ -684,6 +709,27 @@ if __name__ == "__main__":
     # Rebound so `standalone()`, `plays_a_real_game()` and `reproduce()` verify the file that was
     # just built rather than whatever is at the default path. They all read TARGET at call time.
     TARGET = pathlib.Path(_args.out)
+    # **Refuse to ship a dev instrument that RAISES.** `crew.STRICT_FEASIBILITY` turns a day the
+    # planner cannot fully cover into an `InfeasibleDay` exception. That is the right behaviour on a
+    # workstation, where an uncovered day should stop the run and be looked at, and it is fatal on
+    # the ladder: `kaggle_environments` marks a raising agent as errored and the season ends where
+    # it threw. It currently trips on day 8 at seed 11.
+    _crew_src = pathlib.Path("kagg/search/crew.py").read_text()
+    if "\nSTRICT_FEASIBILITY = True" in _crew_src:
+        sys.exit("refusing to build: kagg/search/crew.py has STRICT_FEASIBILITY = True.\n"
+                 "  It raises InfeasibleDay on a day the planner cannot cover, which on Kaggle is a\n"
+                 "  dead agent from that day on. Set it False to ship, or bundle a crew that has it\n"
+                 "  off. This is a deliberate refusal, not a failure -- nothing has been written.")
+    # **Refuse a replay opening the bundled module cannot honour**, rather than emitting a file that
+    # raises `TypeError` on its first observation and banks the $3,000 start. `start_day` is a
+    # parameter of the OLD `schedule_agent`; `MODULES` above bundles `schedule_agent_1455mh`, which
+    # plans its opening instead of replaying one.
+    if _args.replay_days:
+        import inspect as _inspect
+        _agent_src = pathlib.Path(dict((d, p) for d, p in MODULES)["kagg.search.schedule_agent"])
+        if "start_day" not in _agent_src.read_text().split("def make_agent", 1)[-1].split(")", 1)[0]:
+            sys.exit(f"--replay-days {_args.replay_days} was asked for, but {_agent_src} has no "
+                     f"`start_day` on make_agent. Bundle a module that does, or build with 0.")
     path = build(replay_days=_args.replay_days, target=TARGET)
     if _args.replay_days:
         print(f"opening: {_args.replay_days} days ({_args.replay_days * 24} turns) replayed from "
