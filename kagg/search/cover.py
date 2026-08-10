@@ -183,6 +183,29 @@ DELIVER_MIN = 6
 #: the end of the tour because the drop cannot be selective. See the block in `materialise`.
 REDRAW_RATHER_THAN_CARRY = True
 
+#: Whether that re-draw refuses when the thing it means to draw back is on today's SELL row.
+#:
+#: **The re-draw is planned as a certainty and is not one.** `_process_market` runs AFTER the unit
+#: phase in the same turn (`kaggriculture.py:922` then `:928`), so the drop lands in the shed and the
+#: turn's SELL orders lift it out again before the hand comes back. On this board the row's produce
+#: and the herd's dinner are the same commodity, which is what makes it reachable at all.
+#:
+#: Measured, seed 11 day 4, Seb's tape. The herd hand banks one fertilizer at h6 and sheds three
+#: wheat with it -- `DROP` is all-or-nothing (`kaggriculture.py:333`) -- then asks for three back at
+#: h8 and gets one, because that turn's row sold `WHEAT 1` and `FERTILIZER 1`. The shed then reads
+#: empty from h9 to h18, so `FETCH_THE_FEED_AND_RETURN` cannot rescue it either: its gate is
+#: `shed["WHEAT"] > 0`. The cow placed at `(3,3)` at h14 is never fed and never cared for.
+#:
+#: Seb does not make the trip. Same day, same board, same purchases (6 wheat in the shed at dawn and
+#: 1 bought -- he is NOT better supplied): he draws the whole shed at dawn across two carriers,
+#: sends a third hand out with the cow, and emits no DROP at all before h18. See
+#: `docs/how_seb_feeds_the_herd.md`.
+#:
+#: Narrowed, not switched off. The day-1 case `REDRAW_RATHER_THAN_CARRY` was added for -- fertilizer
+#: held from h5 to h16, four units sold for $2 less than the tape -- has nothing owed ahead that the
+#: row also sells, so it still fires.
+REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE = True
+
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
 #:
@@ -217,6 +240,29 @@ DELIVER_SURPLUS_NOT_THE_ROW = False
 #: one turn. See the note where it fires. This is the cheap half of the delivery defect above: it
 #: never buys a walk, so it cannot take turns away from feeding the way the detour version did.
 DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
+
+#: **Harvest all day, bank at dusk.** No mid-tour DROP while the tour still has produce to take.
+#:
+#: Read off Seb's own actions on day 4 of both tapes -- fourteen harvests each time, and not one
+#: DROP until the harvesting was finished:
+#:
+#:     seb (interval 12)  HARVEST 4 6 7 8 9 11 12 12 13 14 15 15 15 17   DROP 20 20 21 22 23
+#:     seb1326 (24)       HARVEST 4 6 8 9 10 11 11 13 14 14 14 14 15 18  DROP 18 21 21 21 22 23 23
+#:
+#: The env rebalance moved the sweep earlier and made it longer -- seven drops from h18 rather than
+#: five from h20, because at `townCenterSellInterval` 24 the town absorbs less per tick -- and left
+#: the ordering rule untouched. His algorithm did not change; the volume it has to move did.
+#:
+#: Ours on `seb1326` day 4 dropped at h14 and h16, sold those part-loads for $282 and $507, then
+#: took its LAST drop at h21 while still harvesting at h21, h21 and h22 -- so that produce was in
+#: hand when the day closed. The row asked `WHEAT 49, FERTILIZER 6`; we filled 27 and 3, and the
+#: bank finished the day at $73 against his $1,107.
+#:
+#: All three mid-tour drop paths are gated on this, because the defect is in none of them
+#: individually: each is locally reasonable and none looked AHEAD for produce still to come.
+#: The closing drop is deliberately NOT gated -- it runs after every job by construction, and it is
+#: what this rule funnels the whole day's load into.
+BANK_ONLY_AFTER_THE_LAST_HARVEST = True
 
 
 def dist(a, b):
@@ -384,7 +430,7 @@ def nearest(depots, frm, to=None):
 
 
 def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True, rush=False,
-                wanted_only=False):
+                wanted_only=False, due=None):
     """Turn a WORK SEQUENCE into the tour that actually gets walked, shed trips included.
 
     This is the whole of the day-planning model. The search above chooses which tiles a hand works
@@ -400,6 +446,26 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
     2. **The hand is carrying enough of today's row to justify a trip.** See `DELIVER_MIN`. The stop
        drops everything and immediately re-draws whatever the rest of the sequence still needs.
     3. **The tour ends holding something.** A closing drop, if `deliver`.
+
+    `due` is **the cadence deadline**: turns from the START of this tour by which the row's produce
+    has to be standing in the shed. `None` means no deadline is known and rule 2 fires on quantity
+    alone, which is what every caller did before the deadline existed.
+
+    It exists because rule 2 had no clock. `wanted` carries a quantity and no hour, so every unit of
+    it read as due immediately and a hand holding `DELIVER_MIN` of the row bought a ~12-turn round
+    trip -- however early in the day it was, and however soon it was going to walk past the shed
+    anyway. On day 4 of tape 91422988 that is the whole of `water 11/17`: 17 WATER jobs offered, 11
+    toured, 6 refused, every refused tile one square from the last tile taken and priced at twelve
+    turns. Seb plays that day and makes **no drop before hour 18** -- all six of his are the closing
+    walk home, and his sells follow at h18-h23. His justified ferry quantity is zero.
+
+    So the trip is justified only for produce needed EARLIER than the hand would have reached the
+    shed regardless. `left` below is when this tour delivers on its own; when that already beats the
+    deadline, the ferry buys nothing but a shorter tour. It is deliberately a LOWER bound -- it counts
+    the walk and the work still ahead but not the depot stops rules 1 and 2 have yet to insert -- so
+    it errs towards "the hand gets home early", which errs towards refusing the ferry. That is the
+    conservative direction here: the cost of a wrong refusal is produce banked by the closing trip
+    instead of mid-tour, and the cost of a wrong ferry is a tile that never gets watered.
 
     `deliver` is whether the closing trip is charged AT ALL. It normally must be: the market reads
     the SHED and nothing else, so produce still in a hand is unsold. But at the very end of the day
@@ -437,6 +503,18 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
             if _v > 0:
                 acc[_k] += _v
         after[i] = acc
+
+    # Suffix walk cost, for the deadline test at rule 2: `tail[i]` is the turns spent from ARRIVING at
+    # `work[i].tile` until the closing drop is done. Same shape and the same reason as `after` above --
+    # computed once, so the "would this hand have got home in time anyway" question is O(1) per job
+    # rather than re-materialising the remainder inside the loop that materialises it.
+    # Skipped entirely when no deadline was passed, since nothing then reads it.
+    tail = None
+    if due is not None and work:
+        tail = [0] * (len(work) + 1)
+        tail[len(work) - 1] = work[-1].turns + dist(work[-1].tile, nearest(depots, work[-1].tile)) + 1
+        for i in range(len(work) - 2, -1, -1):
+            tail[i] = work[i].turns + dist(work[i].tile, work[i + 1].tile) + tail[i + 1]
 
     route, pos = [], tuple(start)
 
@@ -543,11 +621,23 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # its drop -- the produce accumulates and the feed is consumed as it goes, so the hand is
         # clean by the last pens -- it just gets it later than the greedy version wanted.
         owed_ahead = any(after[i][p] > 0 for p, q in held.items() if q > 0)
-        if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead:
+        # **What the market will sell, the hand cannot draw back.** See
+        # `REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`. The drop and the day's SELL orders hit the same
+        # shed on the same turn and the market goes second, so banking the herd's wheat on a day whose
+        # row sells wheat does not cost a turn -- it costs the feed.
+        contested = (REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE
+                     and any(wanted.get(p, 0) > 0 for p, q in after[i].items() if q > 0))
+        # **Is there still a harvest ahead on this tour?** See `BANK_ONLY_AFTER_THE_LAST_HARVEST`.
+        # `work[i:]` includes the job about to be walked to, which is right: a drop planned on the
+        # way TO a harvest is as early as one planned between two.
+        reaping = BANK_ONLY_AFTER_THE_LAST_HARVEST and any(w.yields() for w in work[i:])
+        if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
+                and not reaping:
             route.append(Depot(d, drop=True))
             held = collections.Counter()
             pos = d
-        elif (REDRAW_RATHER_THAN_CARRY and free and spare > 0 and owed_ahead
+        elif (REDRAW_RATHER_THAN_CARRY and free and spare > 0 and owed_ahead and not contested
+              and not reaping
               and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items())):
             # **A hand standing at the shed holding the row's produce should bank it and take its
             # wheat straight back.** The free drop above refuses whenever anything in the hand is
@@ -569,7 +659,17 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
             route.append(Depot(d, drop=True, pick=back))
             held = collections.Counter(back)
             pos = d
-        if load >= DELIVER_MIN:
+        # **Rule 2 now has a clock.** `left` is when this tour delivers under its own steam: what has
+        # been walked so far, plus the step onto this job, plus every job and step still ahead, plus
+        # the closing drop. A ferry is only worth its twelve turns when that lands AFTER the row needs
+        # the goods. See the `due` paragraph in the docstring for the day-4 measurement.
+        #
+        # `turns(start, route)` rather than a running total, deliberately: it is O(len(route)) and it
+        # runs only on the rare job that already cleared `DELIVER_MIN`, whereas a `spent` accumulator
+        # would have to be kept correct at all six places this loop moves `pos` -- and this function
+        # is the one place in the planner where the cost model must not be paraphrased.
+        if load >= DELIVER_MIN and not reaping and (
+                due is None or turns(start, route) + dist(pos, j.tile) + tail[i] > due):
             d = nearest(depots, pos, j.tile)
             # The drop takes the wheat with it, so the same stop draws back everything still ahead.
             back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
@@ -688,7 +788,7 @@ TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
 
 def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
           day=None,
-          rush=False):
+          rush=False, due=None):
     """Cover as many jobs as the crew can reach. Returns `(work, uncovered)`.
 
     `work` is `{unit_index: [Job, ...]}` -- the WORK SEQUENCE, without shed trips; run it through
@@ -736,8 +836,9 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         # taking.
         if RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS:
             return turns(units[u], materialise(units[u], work, load(u), depots, wanted, True, rush,
-                                               wanted_only=True))
-        return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush))
+                                               wanted_only=True, due=due))
+        return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush,
+                                           due=due))
 
     used = {u: 0 for u in range(len(units))}
 
@@ -794,7 +895,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
             rank = c
             if rank_home:
                 rank = turns(units[u], materialise(units[u], seq, load(u), depots, wanted, True,
-                                                   rush, wanted_only=True))
+                                                   rush, wanted_only=True, due=due))
             if best is None or rank < best[0]:
                 best = (rank, i)
         return (cost(u, base[:best[1]] + [j] + base[best[1]:]), best[1]) if best else None
@@ -1124,7 +1225,7 @@ def yield_products(node, tiles):
 
 
 def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
-         rush=False, day=None):
+         rush=False, day=None, due=None):
     """`cover`, materialised, in the shape `schedule_agent` already consumes."""
     depots = tuple(depots) or SHED
     # **The crew planner, on the days it has been measured for.** Same signature, same return shape,
@@ -1132,16 +1233,16 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
     # this module. `crew.ACTIVE_UNTIL_DAY` is 0 until a day's grid says otherwise.
     from . import crew as CREW
     assign = (CREW.cover if day is not None and day < CREW.ACTIVE_UNTIL_DAY else cover)
-    work, left = assign(units, jobs, budget, depots, carry, supply, deliver, wanted, day, rush)
+    work, left = assign(units, jobs, budget, depots, carry, supply, deliver, wanted, day, rush, due)
     out = {}
     for u, seq in work.items():
         held = (carry or {}).get(u) or {}
-        route = materialise(units[u], seq, held, depots, wanted, False, rush)
+        route = materialise(units[u], seq, held, depots, wanted, False, rush, due=due)
         cost = turns(units[u], route)
         # The closing trip, out of the turns the tour did not spend. See the note in `cover.cost`:
         # it is worth having and it is never worth a job, so it goes on last and only if it fits.
         if deliver:
-            home = materialise(units[u], seq, held, depots, wanted, True, rush)
+            home = materialise(units[u], seq, held, depots, wanted, True, rush, due=due)
             if turns(units[u], home) <= budget[u]:
                 route, cost = home, turns(units[u], home)
             elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in RANK_HOME_DAYS:
@@ -1158,7 +1259,7 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
                 while trimmed:
                     trimmed.pop()
                     alt = materialise(units[u], trimmed, held, depots, wanted, True, rush,
-                                      wanted_only=True)
+                                      wanted_only=True, due=due)
                     if not any(getattr(st, "depot", False) and st.drop for st in alt):
                         break            # nothing left worth carrying home; keep the longer tour
                     if turns(units[u], alt) <= budget[u]:

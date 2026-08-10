@@ -296,6 +296,25 @@ WALK_THE_LOAD_HOME = True
 #: The churn is real and is netted at order assembly instead: see `NET_THE_TWO_LEGS`.
 RESERVE_COUNTS_WHEAT_IN_HANDS = True
 
+#: Whether the wheat every hungry animal needs TODAY is withheld from the market unconditionally,
+#: rather than being released against a purchase the row merely plans.
+#:
+#: The reserve it floors is `feed_days(day) * (alive + arriving) - drawn - will_buy`, and `will_buy`
+#: is the row's `buys` line -- a forecast. On `seb1326` d6 the row buys 7 wheat, so the reserve came
+#: out at `7 - 0 - 7 = 0` and the whole shed was sellable. We sold six at h00, re-ordered six at h01
+#: and filled THREE. Four wheat reached a hand, `feed 4/7`, and two cows escaped between d7 and d8
+#: (`kaggriculture.py:804` -- two consecutive unfed days and the animal is gone, pen left standing).
+#:
+#: The two claims on that wheat are not symmetrical, and that is the whole argument. A forecast that
+#: fails on the MULTI-DAY buffer costs some margin tomorrow; one that fails on today's ration costs
+#: the animal permanently, along with every unit it would have produced for the rest of the season.
+#: So the floor covers only mouths unfed right now, less the wheat the crew already carries, and
+#: leaves the rest of the buffer exactly as it was -- it must not grow into the "hold back a whole
+#: day's feed" rule that stopped the day selling at all (d2 `sell 4/5 -> 2/5`, d3 money $448 -> $95).
+#:
+#: Pinned by `tests/test_no_animal_is_ever_lost_to_starvation.py`.
+NEVER_SELL_TODAYS_RATION = True
+
 #: Never emit a SELL and a BUY_PRODUCT of the same good in the same turn; cancel the smaller leg
 #: against the larger. Both legs pay the spread, and no reserve arithmetic can be right and do that
 #: at the same time. `tests/test_we_never_sell_and_buy_the_same_good_in_one_turn.py`.
@@ -351,8 +370,11 @@ def _hires_this_turn(state, row, day, hour, money):
     if not (PLAN_THE_CREW_THAT_ARRIVES and HIRE_FIRST and day in HIRE_PINNED_DAYS and hour == 0):
         return 0
     want = int(row.get("hands", 0) or 0)
-    # `mult * fib(hires_today)`, a per-DAY counter, so the ladder always restarts at fib(0) = 0.
-    bank, a, b, n = float(money), 0, 1, 0
+    # `mult * fib(hires_today)`, a per-DAY counter, so the ladder restarts every dawn -- but it
+    # restarts at **`_fib(0) = 1`, not 0** (`kaggriculture.py:677`). Seven hires cost `1 1 2 3 5 8 13`
+    # = 33. Starting at 0 charged `0 1 1 2 3 5 8` = 20, one position short the whole way up, so on any
+    # bank between the two totals this predicted a hand the market phase could not pay for.
+    bank, a, b, n = float(money), 1, 1, 0
     for _ in range(want):
         if bank < a:
             break
@@ -386,8 +408,36 @@ def _days_bill(row):
     for _ in range(int(row.get("hires") or 0)):            # `mult * fib(n)`, mult 1 by default
         bill += a
         a, b = b, a + b
-    bill += sum(R.LAND_PRICES[:int(row.get("land") or 0)])
+    bill += _land_bill(row)
     return bill
+
+
+def _land_bill(row):
+    """What the row's parcels cost. Split out because they are the one thing NOT bought at dawn."""
+    return sum(R.LAND_PRICES[:int(row.get("land") or 0)])
+
+
+def _days_bill_now(row):
+    """What the row spends AT HOUR 0, which is the only figure the dawn bank has to cover.
+
+    `_days_bill` is the day's whole bill and answers a different question. Comparing THAT to the dawn
+    bank is what put day 4's delivery deadline at hour 0: the row buys a $400 cow and a $1000 parcel,
+    the bank holds $480, and summing them says the day is short by a thousand. It is not short at
+    dawn -- the cow, the seven hires and one wheat come to about $461 and fit -- and the parcel is
+    bought late, out of the day's own selling.
+
+    The parcel is excluded rather than dated because the agent is never told the hour. `land_turns`
+    is in `TAPE_ONLY` and is stripped before the schedule reaches us, so the land block buys on the
+    first turn it can pay. An obligation with no due date cannot be a dawn one, and treating it as
+    such rushes the whole row to the shed.
+
+    Measured on tape 91422988 day 4: Seb buys his cow at h0 on a $45 bank, holds $12 from h2 to h18
+    with nothing due, and funds the parcel at h21 out of the SELLs sitting in earlier order slots of
+    that same turn. Nothing about his morning is short of cash.
+
+    This is one slice of `docs/the_day_is_a_cash_ledger.md`.
+    """
+    return _days_bill(row) - _land_bill(row)
 
 
 def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=(), tiles=None,
@@ -1353,8 +1403,12 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # If it does, the produce the row means to sell is what unblocks it, so it is harvested first and
     # delivered on sight rather than batched. Recomputed every turn: the moment the sales land the
     # day stops being short and the plan goes back to plain covering.
+    # **Against the DAWN spend, not the day's whole bill.** The parcel is bought late and out of the
+    # day's own selling, so counting it here says day 4 is $1,000 short at hour 0 when it is not
+    # short at all -- and a short day sets `due = hour`, which drags the entire SELL row to the shed
+    # before anything has grown. See `_days_bill_now`.
     short_of_cash = (FUND_THE_DAY_WHEN_SHORT and any(q > 0 for q in owed_sale.values())
-                     and _days_bill(sched.get(day, {})) > money)
+                     and _days_bill_now(sched.get(day, {})) > money)
 
     # **The shed the plan reasons about is the shed the day will have, not the one it wakes to.**
     # `interpreter` runs the unit phase and only then `_process_market` (`kaggriculture.py:922` then
@@ -2746,6 +2800,22 @@ def make_agent(schedule, me=0, router=True):
                 reserve = feed_days(day) * (alive + arriving) - drawn - will_buy
                 if RESERVE_COUNTS_WHEAT_IN_HANDS:
                     reserve -= carried_wheat
+                # **TODAY'S dinner is never released against a purchase that has not cleared.**
+                # See `NEVER_SELL_TODAYS_RATION`. `will_buy` is a forecast, and the terms above can
+                # net the reserve to nothing on the strength of it: `seb1326` d6, row `buys WHEAT 7`,
+                # gave `7 - 0 - 7 = 0` and the day sold six of the seven wheat in the shed at h00.
+                # The buy-back went out at h01 for six and filled THREE. Four wheat reached a hand,
+                # four of seven animals ate, and two cows walked off between d7 and d8
+                # (`kaggriculture.py:804`).
+                #
+                # The floor is one wheat per mouth not yet fed, less what the crew already carries --
+                # the immediate, un-hedgeable need. It is deliberately NARROWER than `reserve`: the
+                # multi-day buffer may still be released by a forecast, because a forecast that fails
+                # only costs tomorrow's margin. Today's costs the animal.
+                if NEVER_SELL_TODAYS_RATION:
+                    unfed = sum(1 for r in tiles for c in r
+                                if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
+                    reserve = max(reserve, unfed + arriving - carried_wheat)
                 have = max(0, have - max(0, reserve))
                 # **The reserve yields slots rather than let the harvest be binned.** The full
                 # `feed_days(day)` buffer stands for ordinary rows; only the eviction may dip below

@@ -89,6 +89,29 @@ WORK = ("PLANT", "WATER", "HARVEST", "FERTILIZE", "FEED", "CARE", "COLLECT_FERTI
 OPS = WORK + ("PASS",) + MOVES
 
 
+#: Configuration keys a recording carries that CHANGE THE GAME, and so must be taken from the
+#: recording rather than from whatever version of the env happens to be installed. `seed` and
+#: `weedSpawnChance` are deliberately NOT here: the recordings carry `seed: None`, and an unpinned
+#: seed makes every number downstream noise (see `project_kaggriculture_fix_the_seed`).
+ECONOMY_KEYS = ("townCenterSellInterval",)
+
+
+def env_config(replay):
+    """The economy the tape was PLAYED on, read off the recording.
+
+    Without this the grid replays a tape on whatever economy is installed today. On 2026-08-08 the
+    env went to 1.32.6 and `townCenterSellInterval` moved 12 -> 24, so `seb` (recorded at 12) was
+    being replayed at 24: his sells filled differently, his d4 parcel was refused for want of $35,
+    and the tape column reported him on 25 tiles, 8 pens and 6 melon at d6 where his own file
+    records 50, 9 and 13. Three false leads came off those cells in a single session.
+
+    Pinned by `tests/test_the_tape_column_reproduces_the_tape.py`, which replays each tape and
+    requires it to land on the board it recorded.
+    """
+    cfg = json.loads(pathlib.Path(replay).read_text()).get("configuration") or {}
+    return {k: cfg[k] for k in ECONOMY_KEYS if cfg.get(k) is not None}
+
+
 def tape_policy(replay, team, seat_wanted):
     d = json.loads(pathlib.Path(replay).read_text())
     seat = d["info"]["TeamNames"].index(team)
@@ -153,11 +176,15 @@ SHED_MARKET_OPS = ("SELL", "BUY_PRODUCT", "BUY_ANIMAL")
 MARKET_FILL_OPS = ("SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL")
 
 
-def run(make0, opp, seed, weeds, stop_day=None):
+def run(make0, opp, seed, weeds, stop_day=None, economy=None):
     from kaggle_environments import make
 
     from kagg.analysis.fills import record_fills
-    env = make("kaggriculture", configuration={"seed": seed, "weedSpawnChance": weeds}, debug=True)
+    # `economy` comes from the tape via `env_config`. BOTH sides of the comparison play on it --
+    # ours and the tape's -- because a grid whose two columns ran different economies compares
+    # nothing. Defaults to the installed env when a caller has no tape in hand.
+    cfg = dict(economy or {}, seed=seed, weedSpawnChance=weeds)
+    env = make("kaggriculture", configuration=cfg, debug=True)
     env.reset(2)
     p0, p1 = make0(), opp()
     days, ops = [], collections.defaultdict(collections.Counter)
@@ -286,8 +313,9 @@ def main():
     # show seven, which is a 4x cost on the loop being iterated hardest. `run` needs one day
     # beyond the last printed column, because column d is the board at the END of day d.
     horizon = args.days + 1 if args.handover is None else None
+    economy = env_config(replay)
     his, his_ops = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds,
-                       stop_day=horizon)
+                       stop_day=horizon, economy=economy)
 
     def mine():
         # `start_day` only exists on HEAD's agent, and only --handover needs it. Passing it
@@ -305,7 +333,7 @@ def main():
             return a(o)
         return f
 
-    ours, our_ops = run(mine, opp, args.seed, args.weeds, stop_day=horizon)
+    ours, our_ops = run(mine, opp, args.seed, args.weeds, stop_day=horizon, economy=economy)
 
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]
@@ -316,7 +344,8 @@ def main():
             if any(d[k] for d in ours[:args.days + 1]) or any(d[k] for d in his[:args.days + 1])]
 
     print(f"tape {args.tape}   seed {args.seed}   weeds {args.weeds}   "
-          f"CUMULATIVE_SELLS={schedule_agent.CUMULATIVE_SELLS} "
+          + "".join(f"{k} {v}   " for k, v in economy.items())
+          + f"CUMULATIVE_SELLS={schedule_agent.CUMULATIVE_SELLS} "
           f"SELL_CARRY_DAYS={schedule_agent.SELL_CARRY_DAYS} "
           f"HIRE_FIRST={schedule_agent.HIRE_FIRST}")
     print("  state rows (money, tiles, pens, crops, herd) are the board at the END of that day; "
