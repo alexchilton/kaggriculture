@@ -1991,7 +1991,26 @@ RESERVATION_CONTEST = 0.5
 RESERVATION_SLIP = 0.10
 CAP_SELL_OFFER_SIZE = False
 SELL_OFFER_CAP = 30
-LATE_SELL_BIAS = False
+#: **Hold a sale until the town has drained the book -- unless today still has to be paid for.**
+#:
+#: `townCenterSellInterval = 24` on this economy, so the book drains once a day; `market_price`
+#: falls monotonically in inventory (`kaggriculture.py:177`) and recovers as the shops restock every
+#: 4 steps. Selling before the drain is selling into the bottom of the curve.
+#:
+#: Read off Seb's tape, and it is NOT a constant hour -- his sell hour tracks his cash need:
+#:
+#:     d2   SELL FERTILIZER  h15x3 h19x2      nothing to fund
+#:     d3   SELL FERTILIZER  h15x4 h18x1      nothing to fund
+#:     d6   SELL WOOL        h09x6 h13x6      BUY_LAND at h13, bank $5 -> $1,349
+#:
+#: `LATE_SELL_BIAS` has shipped OFF this whole time, and switched on FLAT it is strictly worse on
+#: d6: it delays the wool past h13 and the parcel that the wool was for. The gate below is the
+#: missing half, and it is Alex's framing -- once the bank covers the day the timing is free money,
+#: while it does not the timing IS the purchase.
+LATE_SELL_BIAS = True
+#: Whether an unfunded shopping list buys the day out of the hold above. Without it `LATE_SELL_BIAS`
+#: is the flat rule that was measured as a loss and left off.
+LATE_SELL_YIELDS_TO_DEMAND = True
 LATE_SELL_FROM_HOUR = 16
 FEED_DAYS_FLOOR = 1
 FEED_RESERVE_YIELDS_TO_OVERFLOW = False
@@ -2911,6 +2930,19 @@ def make_agent(schedule, me=0, router=True):
                 standing_supply[_k] += int(_v)
         market_inv = (obs.get("market") or {}).get("inventory") or {}
         unlocked_shops = list((obs.get("town") or {}).get("unlocked_shops") or [])
+        # **Does the rest of today still cost more than the bank holds?** See `LATE_SELL_BIAS`.
+        # Recomputed every turn, because the answer changes as the day's sales land: a morning that
+        # opens short sells until it is funded and then stops, which is exactly the d6 shape on the
+        # tape -- `WOOL 6` at h09, `WOOL 6` at h13, `BUY_LAND` at h13, and nothing after.
+        #
+        # `_days_bill` is the WHOLE row -- animals, seed, feed, hires and land -- not just the land.
+        # Land dominates it by an order of magnitude, but a day that cannot afford its cows is just
+        # as stuck, and the melon/strawberry rows on d5 and d7 are the cases Alex named alongside it.
+        # Deliberately gross rather than net of what has already been bought: `state["ordered"]` does
+        # not scope per category, and over-selling by one turn on a funded day is a far cheaper error
+        # than under-funding a $1,000 parcel. If that proves too blunt, the fix is a per-category
+        # remainder, not a tolerance.
+        unfunded = LATE_SELL_YIELDS_TO_DEMAND and (money + pending) < _days_bill(row)
         for prod in SELLABLE:
             have = int(shed.get(prod, 0))
             # What the EVICTION may reach, which is `have` for everything except wheat. See
@@ -3216,7 +3248,8 @@ def make_agent(schedule, me=0, router=True):
             last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
             if CAP_SELL_OFFER_SIZE and not last_day_liquidating:
                 n = min(n, SELL_OFFER_CAP)
-            if LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating:
+            if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
+                    and not unfunded):
                 n = 0
             # Cadence, not a cap: the quota is untouched, it is simply offered on fewer turns.
             if not sell_hour_permits(hour, last_day_liquidating):
