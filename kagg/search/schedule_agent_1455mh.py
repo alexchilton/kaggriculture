@@ -2783,6 +2783,32 @@ def make_agent(schedule, me=0, router=True):
         alive = sum(1 for r in tiles for c in r
                     if isinstance(c, dict) and "animal" in c
                     and RT.will_be_fed(c, day))
+        # **An animal today's row will PLACE is a mouth today, and `alive` cannot see it.** `alive`
+        # is a board read, so on the morning of a placement it is short by exactly the animals still
+        # sitting in the shop. Day 4 is where that first costs something, because it is the first
+        # row that places an animal AND sells wheat: shed 6, pens 6, `places ['COW']`,
+        # `sells {'WHEAT': 49}`. The sell row is meant to come out of the fourteen-tile wheat
+        # harvest, which reaches a hand at h14 and the shed at h23; at h00 the only wheat on the
+        # board is the herd's dinner, and we sold one unit of it and bought the same unit back at
+        # h01. Seb buys his seventh wheat at h02 and never sells before h18. Six wheat reached our
+        # hands, six of seven pens were fed, and `feed 5/7` on d6 is the same shape a day later.
+        #
+        # **Today's row only, netted against the board.** The cumulative variant is the one recorded
+        # as TRIED AND REVERTED at `feed_days` -- it ran ahead of the board whenever a placement
+        # slipped (`place 0/4` on d9/d10) and bought feed for animals that did not exist. Reading
+        # one row, minus the animals already standing that were placed today, bounds the error at
+        # the day's own placements, and errs toward holding a spare wheat rather than selling a
+        # ration: the spread costs pennies, a missed feed costs the animal-day and the care chain.
+        #
+        # Gated through `RT.will_be_fed` on a synthetic cell rather than a second copy of the
+        # cadence, so that from `FEED_CADENCE_FROM_DAY` a pen placed today and not yet producing
+        # reserves nothing -- which is what the router will actually do with it.
+        placed_today = sum(1 for r in tiles for c in r
+                           if isinstance(c, dict) and "animal" in c
+                           and int(c.get("placed_day", -1)) == day)
+        arriving = sum(1 for a in list((row.get("places") or []))[placed_today:]
+                       if RT.will_be_fed({"animal": a, "consecutive_unfed": 0,
+                                          "placed_day": day}, day))
         # SELL first: the proceeds have to be in the bank before anything below spends them, and that
         # ordering is exactly what decided whether BUY_LAND cleared at all.
         #
@@ -2941,7 +2967,20 @@ def make_agent(schedule, me=0, router=True):
             if prod == "WHEAT":
                 carried_wheat = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
                 drawn = max(0, int(shed_before.get("WHEAT", 0)) - int(shed.get("WHEAT", 0)))
-                will_buy = int((row.get("buys") or {}).get("WHEAT", 0))
+                # **What is still to be BOUGHT, not what the row buys all day.** Once the purchase
+                # has actually gone out it is sitting in `shed`, and counting the row's whole-day
+                # figure as well counts the same unit twice. Measured on d4: suppressing the h00
+                # sale moved it to h01 and changed nothing else -- shed 7, `alive + arriving` 7,
+                # and `will_buy` still reading 1, so `reserve = 7 - 0 - 1 = 6` released the same
+                # wheat one hour later. `owed` further down already nets the counter this way for
+                # the buy side; this is the same subtraction on the sell side.
+                #
+                # NOT the over-suppression recorded at `DUSK_FEED_TOPUP` ("minus what it already
+                # ordered -- 14 lost"). That one netted prior orders out of a GAP that was already
+                # measured against the shed those orders had filled. Here the term is a forecast of
+                # stock not yet in the shed, so once it arrives the forecast is spent by definition.
+                will_buy = max(0, int((row.get("buys") or {}).get("WHEAT", 0))
+                               - int(state["ordered"][("buys", "WHEAT")]))
                 # **`ripe_wheat` is NOT feed and must not cancel the reserve.** It is wheat standing
                 # in the FIELD. Subtracting it treated an unharvested crop as though it were already
                 # in a hand, so a full field released the shed's real stock to the market and the
@@ -2973,7 +3012,11 @@ def make_agent(schedule, me=0, router=True):
                 # -- see the table at `DUSK_FEED_TOPUP`, 8 animals lost against 2. Wheat in a hand at
                 # dusk is already earmarked for a pen, so it is not spare on EITHER side. The reserve
                 # is the side that was wrong.
-                reserve = feed_days(day) * alive - drawn - will_buy
+                # `alive + arriving`: the mouths TODAY, not the pens standing at dawn. Without
+                # `arriving` the ration bought for the day's new animal is subtracted from the
+                # reserve that protects it -- `will_buy` is that purchase -- so d4 h00 read
+                # `6 - (1*6 - 0 - 1) = 1` sellable out of a shed that was exactly tight.
+                reserve = feed_days(day) * (alive + arriving) - drawn - will_buy
                 if RESERVE_COUNTS_WHEAT_IN_HANDS:
                     reserve -= carried_wheat
                 have = max(0, have - max(0, reserve))
