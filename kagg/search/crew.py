@@ -49,7 +49,16 @@ from . import cover as DP
 #: d5 lands EXACTLY on both feed and water, d4 gains a care, twelve sells and $494. What it costs
 #: is d4's watering and the d6 land parcel, and the parcel is NOT the planner's doing -- see the
 #: wool note below. d0-d3 is byte-identical at every setting.
-ACTIVE_UNTIL_DAY = 30
+#: **11, measured, 2026-08-10.** Same 12 recorded seats x 8 seeds, only this number moving:
+#:
+#:     ACTIVE_UNTIL_DAY =  7   0.271   (26W 70L)   new planner d0-d6, `cover.cover` after
+#:     ACTIVE_UNTIL_DAY = 11   0.427   (41W 55L)   new planner d0-d10
+#:     ACTIVE_UNTIL_DAY = 30   0.302   (29W 67L)   new planner all season
+#:
+#: So the whole-game extension is a LOSS as things stand: d11-d29 is territory this planner was
+#: never tuned on, and it gives back more there than d7-d10 wins. 30 is the intended destination and
+#: it is not ready; 11 is where it currently pays.
+ACTIVE_UNTIL_DAY = 11
 
 #: Raise instead of returning a plan that leaves work on the board. A DEV INSTRUMENT: on a
 #: workstation an uncovered day should stop the run and be looked at, and on Kaggle a raising agent
