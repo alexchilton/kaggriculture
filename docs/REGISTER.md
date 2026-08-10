@@ -1,4 +1,4 @@
-is # Register — what is open, what is closed, and what keeps reopening
+is cl# Register — what is open, what is closed, and what keeps reopening
 
 Last updated 2026-08-08, on `shaping-potential`.
 

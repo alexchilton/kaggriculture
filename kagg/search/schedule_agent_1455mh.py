@@ -289,7 +289,41 @@ FEED_WHAT_YOU_STAND_ON = True
 #:
 #: The `d4 care 6/7` this was written for is real, but it is ONE care, and this buys it by spending
 #: nine others. A rule that fires only where the hand has slack would be a different arm.
-CARE_WHAT_YOU_STAND_ON = False
+CARE_WHAT_YOU_STAND_ON = True
+
+#: A hand whose tour is finished walks its load to the shed instead of standing still.
+#:
+#: The only one of the four deleted return mechanisms worth having back, and the only one that
+#: cannot compete with the plan for turns: it fires on a turn whose alternative is PASS. See the
+#: long note at the point of use for the tape reading it comes from -- 91422988 d4 h15-h23, where
+#: Seb's whole crew walks home in four waves and sells 49 wheat and 6 fertilizer off the drops.
+#:
+#: The goods are not lost without it -- `_drop_inventories_to_shed` empties every hand at the
+#: rollover -- only late, and `_process_market` reads the shed, so late means unsold and then
+#: re-bought.
+WALK_THE_LOAD_HOME = True
+
+#: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
+#:
+#: **Left ON, and the alternative is measured, not assumed.** It disagrees with `DUSK_FEED_TOPUP`,
+#: which counts the shed and nothing else, and that disagreement is what has d4 sell the shed bare
+#: at h19/h22/h23 and buy it straight back. Turning it OFF makes the two agree and is worse on every
+#: axis that matters: d4 `sell 41/55 -> 23/55`, d10 `feed 7/12 -> 2/12`, season money at d16
+#: $9,975 -> $9,487, and the churn does not go away -- it moves to d5-d7 and grows from 9 turns to
+#: 15. A reserve that holds back a whole day's feed stops the day selling at all.
+#:
+#: The churn is real and is netted at order assembly instead: see `NET_THE_TWO_LEGS`.
+RESERVE_COUNTS_WHEAT_IN_HANDS = True
+
+#: Never emit a SELL and a BUY_PRODUCT of the same good in the same turn; cancel the smaller leg
+#: against the larger. Both legs pay the spread, and no reserve arithmetic can be right and do that
+#: at the same time. `tests/test_we_never_sell_and_buy_the_same_good_in_one_turn.py`.
+NET_THE_TWO_LEGS = True
+
+#: Whether the dusk top-up counts wheat still in hands. It is swept into the shed at the rollover
+#: (`kaggriculture.py:812`), so at dusk it is wheat we own -- but only if the hand gets home, which
+#: is why this is re-measured alongside `WALK_THE_LOAD_HOME` rather than trusted from before it.
+TOPUP_COUNTS_HANDS = True
 
 
 def _arrivals(units, n):
@@ -376,7 +410,7 @@ def _days_bill(row):
 
 
 def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=(), tiles=None,
-           wanted=None, fund=False):
+           wanted=None, fund=False, day=None):
     """One day's assignment, by whichever planner is switched on. Same return shape either way.
 
     `tiles` feeds the yield prediction and `wanted` today's still-owed SELL row. Together they are
@@ -401,8 +435,9 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     # left a hand cannot both work and get back, and the overnight sweep banks the produce anyway --
     # so reserving it there only refuses the last harvest of the day. See `cover.materialise`.
     deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS
+    # `day` gates `cover.RESERVE_FROM_DAY`, which must never fire on d0-d9.
     out, _uncovered = DP.plan(units, jobs, budget, depots, carry, supply=supply, deliver=deliver,
-                              wanted=owed, rush=fund)
+                              wanted=owed, rush=fund, day=day)
     return out
 from . import routines as R
 
@@ -433,15 +468,15 @@ SHED_CAPACITY = 100
 #: **This is what the tape does.** Seed 11, weeds off: his dawn shed runs 43, 51, 57, 47 wheat
 #: against our 15-20, and he buys in BURSTS -- 105 on day 8, 95 on day 19, then nothing at all the
 #: next day, which lets the shop's book refill before he draws on it again. He offers 929 wheat
-#: across the season to our 405. At `FEED_DAYS = 2` our buffer was effectively ONE day: we bought
+#: across the season to our 405. At `FEED_DAYS = 1` our buffer was effectively ONE day: we bought
 #: about seventeen and fed about seventeen, so any hiccup was a missed feed.
 #:
 #: `FEED_DAYS = 1` was tried in the other direction and measured -$6,236 over twelve seeds, which is
 #: presumably why this sat at 2; nothing had ever tried going UP.
-FEED_DAYS = 2
+FEED_DAYS = 1
 
 #: Days of feed held once the season turns TURN-BOUND. See `feed_days()`.
-FEED_DAYS_LATE = 4
+FEED_DAYS_LATE = 1
 
 #: The day the buffer widens. This is the same hinge the register records for the whole season: up to
 #: about here the farm is CASH-bound (dawn bank $28 on day 4, $15 on day 6, land parcels to fund) and
@@ -449,8 +484,33 @@ FEED_DAYS_LATE = 4
 FEED_DAYS_FROM_DAY = 16
 
 
+#: **TRIED AND REVERTED 2026-08-10: target the wheat buffer from the SCHEDULE's placement rows.**
+#: The idea is right in principle -- the schedule says when pens fill, so tomorrow's feed is
+#: knowable tonight -- and it measured WORSE, per-process, 13 losses against 7 and $62,427 against
+#: $65,940. Cumulative placements run ahead of the board whenever a placement slips (`place 0/4` on
+#: d9/d10), so it buys feed for animals that do not exist. An "arrivals only" variant was worse
+#: still. Do not re-derive: the board-read target at `FEED_DAYS = 1` is the measured best.
+
 def feed_days(day):
-    """Days of wheat to hold, as a function of the day. Two early, four late.
+    """Days of wheat to hold, as a function of the day. One, matching the tape.
+
+    **Measured 2026-08-10 against Seb's own shed.** Reading `private["shed"]` out of his replay, his
+    dawn WHEAT equals his PEN COUNT on every day of the season, in both recorded games. He runs a
+    one-day buffer and tops it up continuously; the small constant buying and selling is a buffer
+    controller, not market timing.
+
+    Ours was 2 early and 4 late, which overshoots then stocks out -- seed 13 held 32 units for 7
+    pens on d5 and ZERO on d9, with four animals at `consecutive_unfed >= 1` and two dead. Six
+    seeds, whole season:
+
+        FEED_DAYS=2 LATE=4   10 lost   mean $60,671      (was shipped)
+        FEED_DAYS=1 LATE=1    7 lost   mean $65,940
+        FEED_DAYS=2 LATE=2   10 lost   mean $60,001
+
+    The old note below argued 4 late because escapes went 4 -> 0 on a sweep of this constant alone.
+    That was measured on the volatile mechanism, where a bigger multiplier was the only way to keep
+    the trough off zero. It is the VARIANCE that kills, not the mean, and 550 units a season already
+    exceeds Seb's ~400.
 
     **A flat 4 measured better on escapes and worse on everything else, and both halves were real.**
     Six seeds, seat 0 (`data/logs/feed_days_sweep.log`): escapes 4 -> 0 going from 2 to 4, which is
@@ -506,6 +566,40 @@ BUY_DRIP = 1
 #: At 6 the first eleven days are BYTE-IDENTICAL to uncapped and every day from d11 improves, so the
 #: gain is real and costs nothing earlier.
 FEED_TURN_CAP = 6
+
+#: **The shed must hold TOMORROW's feed by dusk.** Seb's dawn WHEAT equals his PEN COUNT on every
+#: day of both recorded games -- 4/4, 5/5, 6/6, 7/7, 11/11, 15/15, 18/18, 21/21. He does not achieve
+#: that by buying harder during the day; he simply never ends a day short.
+#:
+#: We do. Traced on 91422988, seed 11, day 6: we arrive at h0 with **2 wheat for 7 pens and $12**,
+#: and from h6 we are sitting on $1,402 still ordering ONE unit a turn, because `BUY_DRIP = 1` and
+#: because the daytime target `feed_days * alive - fed_today - on_hand - ordered` shrinks every time
+#: an animal is fed. The shed oscillates 0<->1 all day and never accumulates. `feed` lands 4/7.
+#:
+#: A daytime buy cannot fix that -- it is the wrong end of the day. This is an explicit end-of-day
+#: top-up to the count that will need feeding TOMORROW, taken from the schedule's own `places` row,
+#: and it is self-limiting: once the shed reaches the target the gap is <= 0 and it stops.
+DUSK_FEED_TOPUP = True
+
+#: Hour from which the dusk top-up may fire. **The LAST turn, measured, six seeds, whole season:**
+#:
+#:     h18   2 lost   $58,308      h22  16 lost   $57,407
+#:     h21   3 lost   $53,441      h23   2 lost   $61,039
+#:
+#: **h18 ships, not h23, and that is a deliberate trade.** h23 is worth +$2,731 a season but leaves
+#: d6 at `feed 2/7`; h18 puts d6 at `feed 7/7` and `care 7/7`, exact against the tape. d0-d6 matching
+#: is the project's objective and the season money is downstream of it -- see `matching-the-tape`.
+#:
+#: Earlier hours interleave with the evening's selling and produce a round trip -- on d4 we sold 8
+#: at h14, 8 at h17, then bought 6 at h18, sold 6 at h19, bought 6 at h21, and so on, paying the
+#: spread each time and buying 21 units on a day the tape buys 1. Seb sits on 1 wheat and $12 from
+#: h4 to h18 and then sells 5 at h19 and 12 at h23. One order, after the book work is done, is both
+#: cheaper and exactly his shape.
+DUSK_FEED_HOUR = 18
+
+#: First day the dusk top-up may fire. **d0 and d1 are exact against the tape and must stay that
+#: way** -- ungated, the top-up buys one extra wheat on d0 (`buy_product 9/8`) and both days go red.
+DUSK_FROM_DAY = 2
 
 #: Floor for the opportunistic mid-tour drop below. A unit standing at a depot mid-tour re-checks this
 #: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
@@ -1495,9 +1589,17 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 if int(qty) > 0:
                     plan_supply[item] += int(qty)
 
+    #: **The ground our plan will actually sow.** See the WEED branch of `router.build_nodes`.
+    #: A weed blocks only its own tile, so digging one on ground nothing is going into is a turn
+    #: spent tidying. `DIG_ONLY_IF_REPLANTING` asks the season-wide question and answers yes while
+    #: most of the board is pasture or unplanned. A pin IS the plan, so "in our geometry" is exactly
+    #: "pinned to be planted".
+    _plantable = {t for t, p in (pins or {}).items() if p and p[0] == "PLANT"}
+
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
-                                          pen_for=state.get("pen_for") or {})
+                                          pen_for=state.get("pen_for") or {},
+                                          plantable=_plantable)
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
@@ -1544,7 +1646,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                      {k: load[u] for k, u in enumerate(live)}, supply=plan_supply,
                      at_risk=_at_risk_tiles(tiles),
                      pointless=_pointless_tiles(tiles, day, plants_left),
-                     tiles=tiles, wanted=owed_sale, fund=short_of_cash)
+                     tiles=tiles, wanted=owed_sale, fund=short_of_cash, day=day)
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
         state["crew"] = len(live)
     # **NO REPLAN, NO TOP-UP. The day is deterministic and is planned once, at hour 0.**
@@ -1566,6 +1668,23 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # `HIRE_PINNED_DAYS` is every day for the same reason: the dawn plan cannot route hands that
     # do not exist yet, and the schedule already says how many there will be.
     acts = []
+    #: Tiles an underfoot CARE has already been claimed for THIS turn. `underfoot()` reads the board
+    #: as it stood at the start of the turn, so without this every hand standing on the same uncared
+    #: pen emits its own CARE and only the first banks the bonus. (4,4) is a pen ON a shed-access
+    #: tile, so the whole dawn shift stands on it at h2: eight turns, thirteen wasted hand-turns over
+    #: d0-d6, which was the entire overshoot that had this rule shipped OFF.
+    cared_this_turn = set()
+    #: Tiles where a hand is standing on its own next WORK stop and so will be offered that tile's
+    #: ops by `_live_ops` this turn. The underfoot rule is for a hand CROSSING a tile; letting a
+    #: passer-by take the care first only moves the wasted turn onto the hand whose job it was.
+    #: Depot stops are excluded: a DROP or PICKUP emits no CARE, so treating one as work would
+    #: suppress a care nothing else takes.
+    working_tiles = {
+        tuple(st["route"][0].tile)
+        for u2, st in routes.items()
+        if st and st["route"] and not getattr(st["route"][0], "depot", False)
+        and u2 < len(units) and tuple(units[u2]) == tuple(st["route"][0].tile)
+    }
     for u, pos in enumerate(units):
         inv = collections.Counter(invs[u] if u < len(invs) else {})
         st = routes.get(u)
@@ -1611,7 +1730,13 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 if inv["WHEAT"] > owed:
                     return ["FEED"]
             if (CARE_WHAT_YOU_STAND_ON and here.get("fed_today")
-                    and not here.get("cared_today")):
+                    and not here.get("cared_today")
+                    and tuple(pos) not in cared_this_turn
+                    and tuple(pos) not in working_tiles):
+                # Claimed on RETURN: both call sites consume a non-None `underfoot()`
+                # unconditionally (`act = under; break`). A third caller that inspects without
+                # emitting would need the claim moved to the call sites.
+                cared_this_turn.add(tuple(pos))
                 return ["CARE"]
             return None
         while st["route"]:
@@ -1809,6 +1934,40 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # surplus rule that replaces it lives in `cover.materialise`, where the route is known.
         #
         # `tests/test_the_whole_day_is_planned_including_the_drop.py` pins both halves.
+        #
+        # ------------------------------------------------------------------ the return leg, restored
+        # **The fourth one above comes back, and only the fourth one.** The other three fired off
+        # whatever tile a unit stood on and competed with the plan for turns. This one fires only
+        # when the plan has nothing left to say: the tour is finished, the hand is full, and the
+        # alternative on this exact turn is PASS. It cannot take a turn from a job because there is
+        # no job left to take it from.
+        #
+        # It is the back half of the tape's day. 91422988 d4 h15-h23 is Seb's entire crew turning
+        # round and walking to (4,4) -- u0 spends eight consecutive turns carrying twelve wheat and
+        # doing nothing else -- arriving in four waves that DROP and sell 5, 12, 12 and 20 wheat plus
+        # 6 fertilizer, which is the schedule row for the day to the unit. Ours, same hours: u1 and
+        # u5 standing at (1,1) and (2,0) holding eight wheat each from h19 to dusk while the market
+        # bought 6 wheat at h18, 6 at h21 and 6 at h23 against a shed the harvest never reached.
+        #
+        # `cover.plan` declines the closing stop on five of six tours that day, and is right to: the
+        # trip costs 7 turns and 5 are spare, and `_drop_inventories_to_shed` (`kaggriculture.py:812`)
+        # empties every hand at the rollover regardless. Nothing is LOST by declining it. It is only
+        # late -- and late is the entire difference, because `_process_market` reads the shed, so a
+        # load that lands at the rollover is a load the day could not sell and then paid to replace.
+        #
+        # Walking five of the six steps and not arriving is worth nothing today, but it is worth
+        # nothing either way; the unit was passing. On the days it does arrive it is worth the sell.
+        if WALK_THE_LOAD_HOME and act == ["PASS"] and any(v > 0 for v in inv.values()):
+            if at_shed:
+                # Same clamp as the planned drop: DROP `del`s every item after taking what fits
+                # (`kaggriculture.py:333`), so a full shed DESTROYS the load rather than refusing it.
+                if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
+                    act = ["DROP"]
+            else:
+                home = min(depots, key=lambda t: RT.dist(pos, t))
+                m = _step_towards(pos, home, unlocked)
+                if m is not None:
+                    act = [m]
         acts.append(act)
     return acts
 
@@ -2613,7 +2772,17 @@ def make_agent(schedule, me=0, router=True):
         # ------------------------------------------------------------------ the market, bank-aware
         orders = []
         # How many mouths there are, needed BEFORE the sell loop so the herd's feed is not sold.
-        alive = sum(1 for r in tiles for c in r if isinstance(c, dict) and "animal" in c)
+        #
+        # **Mouths we will actually FEED, once feeding is not nightly.** `RT.animal_ops` offers a
+        # FEED only to a pen that is hungry or already producing (`FEED_ONLY_WHEN_IT_BUYS_SOMETHING`),
+        # so counting every pen reserves a ration for animals nobody is going to feed. That is not a
+        # rounding error: the reserve is `feed_days(day) * alive` and it is netted against `drawn`,
+        # the wheat that really left the shed this turn. Feed half as often and `drawn` halves while
+        # the reserve does not, so the guard holds back roughly twice the herd's appetite and the day
+        # stops selling -- d2 `sell 4/5 -> 2/5`, d3 money $448 -> $95, season $9,975 -> $5,774.
+        alive = sum(1 for r in tiles for c in r
+                    if isinstance(c, dict) and "animal" in c
+                    and RT.will_be_fed(c, day))
         # SELL first: the proceeds have to be in the bank before anything below spends them, and that
         # ordering is exactly what decided whether BUY_LAND cleared at all.
         #
@@ -2792,8 +2961,22 @@ def make_agent(schedule, me=0, router=True):
                 # The other three terms stay: `carried_wheat` is in a hand right now, `drawn` already
                 # left the shed this turn, and `will_buy` is a commitment the same turn loop honours.
                 # All three are wheat that exists or is being bought; standing crop is neither.
-                have = max(0, have - max(0, feed_days(day) * alive - carried_wheat
-                                         - drawn - will_buy))
+                # **`carried_wheat` comes out of the reserve, because the top-up cannot see it.**
+                # Both sides guard the same floor -- `feed_days(day) * alive`, 7 on day 4 -- from
+                # different stock. Netting off the 28 wheat in hands leaves a reserve of 0, so the
+                # shed is offered bare; `DUSK_FEED_TOPUP` then reads `(alive + arriving) - shed`,
+                # sees an empty shed and buys the cap straight back. d4 h19, h22 and h23 each SELL
+                # WHEAT and BUY_PRODUCT WHEAT in the SAME turn, paying the spread on both legs, and
+                # the day closes `buy_product 21/1` against a tape that buys one wheat.
+                #
+                # Making the two agree by teaching the top-up about hands was measured and is worse
+                # -- see the table at `DUSK_FEED_TOPUP`, 8 animals lost against 2. Wheat in a hand at
+                # dusk is already earmarked for a pen, so it is not spare on EITHER side. The reserve
+                # is the side that was wrong.
+                reserve = feed_days(day) * alive - drawn - will_buy
+                if RESERVE_COUNTS_WHEAT_IN_HANDS:
+                    reserve -= carried_wheat
+                have = max(0, have - max(0, reserve))
                 # **The reserve yields slots rather than let the harvest be binned.** The full
                 # `feed_days(day)` buffer stands for ordinary rows; only the eviction may dip below
                 # it, and only as far as `FEED_DAYS_FLOOR`. `max(have, ...)` so this can never
@@ -3445,7 +3628,8 @@ def make_agent(schedule, me=0, router=True):
         # day 6's dawn shed, `sh:wheat 8/7`.
         fed_today = sum(1 for r in tiles for c in r
                         if isinstance(c, dict) and "animal" in c and c.get("fed_today"))
-        herd = feed_days(day) * alive - fed_today - on_hand - state["ordered"][("feed", "WHEAT")]
+        herd = (feed_days(day) * alive - fed_today - on_hand
+                - state["ordered"][("feed", "WHEAT")])
         # **The drip has to bound the HERD path too, or it bounds nothing that matters.** This read
         # `max(herd, min(max(0, owed), BUY_DRIP))`: the row was dripped and the herd's whole remaining
         # need then overrode it, so the one order `BUY_DRIP` exists to spread was the one it never
@@ -3466,6 +3650,43 @@ def make_agent(schedule, me=0, router=True):
             # same day -- seed, animals, the second feed top-up -- is sized against that wrong bank.
             money -= quote * short
 
+        # **End the day holding tomorrow's ration.** See `DUSK_FEED_TOPUP`.
+        if (DUSK_FEED_TOPUP and day >= DUSK_FROM_DAY and hour >= DUSK_FEED_HOUR
+                and len(orders) < 9):
+            # **Tomorrow's animals are tomorrow's wheat bill.** Pre-buying a ration for a pen that
+            # will not exist until the next day is one purchase too many on the day it fires, and on
+            # d2 that single wheat is the whole gap: `buy_product 6/5`, money $624 against $654, one
+            # unit at ~$31. The tape places a COW on d3 and buys its feed ON d3, where its row says
+            # `buys: {WHEAT: 7}` against d2's 5.
+            arriving = 0
+            # **Shed only, and re-evaluated every turn.** Three variants were measured and this is
+            # the one that works, over six seeds, whole season:
+            #
+            #     shed only                       2 lost   mean $58,308   <-- this
+            #     minus wheat in hands            8 lost   mean $59,475
+            #     minus `on_hand` (adds ripe)     6 lost   mean $59,735
+            #     minus what it already ordered  14 lost   mean $60,639
+            #
+            # Wheat in a hand at dusk was DRAWN for a pen and is already earmarked, so counting it as
+            # spare inventory under-buys; `ripe_wheat` is standing crop and is only ours if it gets
+            # harvested. Subtracting its own prior orders over-suppresses because `state["ordered"]`
+            # does not scope the way that needs. The naive form is the correct one.
+            # **Only the SURPLUS in hands counts.** Wheat a hand is carrying is drawn for pens it
+            # still has to serve today; counting it as spare stock under-buys and the pen it was
+            # for goes hungry -- d6 `feed 7/7 -> 5/7` with the raw sum. What is held ABOVE the pens
+            # still unfed is genuinely ours at the rollover.
+            carried_now = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
+            unfed_now = sum(1 for r in tiles for c in r
+                            if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
+            spare = max(0, carried_now - unfed_now) if TOPUP_COUNTS_HANDS else 0
+            gap = (alive + arriving) - int(shed.get("WHEAT", 0)) - spare
+            gap = min(gap, FEED_TURN_CAP, int(money // quote))
+            if gap > 0:
+                orders.append(["BUY_PRODUCT", "WHEAT", gap])
+                state["ordered"][("feed", "WHEAT")] += gap
+                state["ordered"][("buys", "WHEAT")] += gap
+                money -= quote * gap
+
         if not HIRE_FIRST:
             # Hire TWO a turn. `_spawn_hand` picks by occupancy when the HIRE settles, so a third order in
             # one turn puts a hand on `(5,5)` in SE with both neighbours locked, unable to move all day.
@@ -3478,6 +3699,50 @@ def make_agent(schedule, me=0, router=True):
                 for _ in range(min(2, target - state["hired"])):
                     orders.append(["HIRE"])
                     state["hired"] += 1
+
+        # ------------------------------------------------------------------- net the two legs
+        # **A turn that sells wheat and buys wheat has already lost, whatever the reserves say.**
+        # Two guards protect the same floor -- `feed_days(day) * alive`, 7 on day 4 -- from different
+        # stock: the sell guard nets off wheat carried in hands, `DUSK_FEED_TOPUP` counts the shed
+        # alone. So the sell empties the shed, the top-up sees it empty, and both fire in the same
+        # turn: d4 h19 `SELL WHEAT 6` beside `BUY_PRODUCT WHEAT 1`, again at h22, and inverted at
+        # h23. Nine such turns over d0-d16, and `buy_product 21/1` on d4 against a tape that buys
+        # ONE wheat all day.
+        #
+        # Made to agree at the source it is worse, and that was measured rather than argued -- see
+        # `RESERVE_COUNTS_WHEAT_IN_HANDS` for the arm and `DUSK_FEED_TOPUP` for the three top-up
+        # variants. Both of those change how much is held back, which changes what the day can sell
+        # at all. Netting changes neither: the same reserve, the same target, minus the round trip
+        # that cancels itself. The larger leg survives at its net size and the smaller disappears.
+        if NET_THE_TWO_LEGS:
+            sells = collections.Counter()
+            buys = collections.Counter()
+            for o in orders:
+                if o and o[0] == "SELL":
+                    sells[o[1]] += int(o[2])
+                elif o and o[0] == "BUY_PRODUCT":
+                    buys[o[1]] += int(o[2])
+            for prod_ in set(sells) & set(buys):
+                cancel = min(sells[prod_], buys[prod_])
+                if cancel <= 0:
+                    continue
+                for side, want in (("SELL", cancel), ("BUY_PRODUCT", cancel)):
+                    left = want
+                    for o in orders:
+                        if left <= 0:
+                            break
+                        if o and o[0] == side and o[1] == prod_:
+                            take = min(left, int(o[2]))
+                            o[2] = int(o[2]) - take
+                            left -= take
+                # The buy legs were debited against `state["ordered"]` when queued; a cancelled buy
+                # is one we never place, so the running total has to give it back or the next turn
+                # sizes its top-up against a purchase that did not happen.
+                state["ordered"][("feed", prod_)] = max(
+                    0, state["ordered"][("feed", prod_)] - cancel)
+                state["ordered"][("buys", prod_)] = max(
+                    0, state["ordered"][("buys", prod_)] - cancel)
+            orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _order_sells(_fit_slots(orders, state))}

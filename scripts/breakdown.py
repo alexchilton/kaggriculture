@@ -54,6 +54,21 @@ TAPES = {
     # and re-cuts the herd from wool to milk: MILK 179 -> 303, WOOL 230 -> 104, MELON 132 -> 96.
     "seb1326": ("data/seed_scripts/top_guys/90976060.json",
                 "data/seed_scripts/top_guys/90976060/schedule.json", "Seb (allegedly)"),
+    # Downloaded 2026-08-09 by Alex, straight off Kaggle. Seb banks $104,699 against Valmorlee's
+    # $94,320, seated SECOND (`TeamNames` is ['Valmorlee', 'Seb (allegedly)']) -- the only tape here
+    # where he is not seat 0, so anything reading seat 0 by hand gets the opponent.
+    # `townCenterSellInterval = 24`: the REBALANCED economy, i.e. the game we actually play.
+    # d0-d3 are identical to `seb` below; it diverges from d4, with 21 builds against 19, six of them
+    # on d7, the third parcel on d6 rather than d8, and the crew dipping to 6 on d6.
+    "seb2988": ("data/seed_scripts/top_guys/91422988.json",
+                "data/seed_scripts/top_guys/91422988/schedule.json", "Seb (allegedly)"),
+    # **`townCenterSellInterval = 12` -- the PRE-rebalance economy.** The town drains at half the rate
+    # of the game we play, so prices move differently and his recorded bank is NOT reproducible here:
+    # replaying both seats' own actions on seed 11 diverges at turn 32 (d1 h8) by one dollar on a
+    # single BUY_PRODUCT and ends at $10,264 against his recorded $110,820.
+    # It is still a valid target for the SCHEDULE and for the op sequence, which is what we generate.
+    # It is not a target for money, fills, or any state row.
+    # See `docs/the_tape_column_does_not_replay_his_game_2026-08-09.md`.
     "seb": ("data/seed_scripts/top_guys/90494364.json",
             "data/seed_scripts/top_guys/90494364/schedule.json", "Seb (allegedly)"),
     "oldleader": ("data/seed_scripts/new_leader/90016067.json",

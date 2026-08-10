@@ -806,13 +806,7 @@ def test_no_hand_walks_over_a_hungry_animal_with_the_feed_in_its_hand():
     )
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "CARE_WHAT_YOU_STAND_ON is OFF by measurement, not by omission. The rule fires on every hand "
-    "crossing the pen on the shed tile, so care overshoots the tape on five days (d0 5/4, d2 8/5, "
-    "d4 10/7, d5 9/7) and BREAKS day 0, which is exact without it. Day 6 pays hardest: feed 7/8 -> "
-    "4/8, buy_product 7/9 -> 1/9. One extra unit of product tomorrow is not worth a feed today. "
-    "Left strict so that if a future change makes the care free, this goes green and says so."))
-def test_no_hand_walks_over_a_fed_but_uncared_animal():
+def test_no_fed_animal_is_left_uncared_by_every_hand_that_stood_on_it():
     """**The CARE is the same walk-past as the FEED, one step later.**
 
     `pending_care_bonus` is consumed only on a day the animal is ALSO fed (`router.animal_ops`), so
@@ -821,10 +815,19 @@ def test_no_hand_walks_over_a_fed_but_uncared_animal():
     just sets `cared_today` (`kaggriculture.py:511-517`).
 
     So a hand standing on a pen it has just fed, about to walk away, is one turn from banking that
-    unit. Day 4 measures `feed 7/7` and `care 6/7` for exactly this reason: the feed now happens
-    under the hand's feet and then it moves on.
+    unit. Day 4 measured `feed 7/7` and `care 6/7` for exactly this reason: the feed happened under
+    the hand's feet at h13 and it walked EAST at h14, and a second hand walked the same tile at h15.
 
-    Restricted to pens ALREADY FED, so this can never spend a turn on a care that banks nothing.
+    **What this asks was narrowed once, deliberately.** It used to fail any hand that stepped off a
+    fed-uncared tile, and was xfail(strict) on the grounds that `CARE_WHAT_YOU_STAND_ON` overshot the
+    tape. Both halves of that are now wrong. The rule ships ON; the overshoot was hands sharing a
+    tile all emitting their own CARE against a board none of them had updated yet, which
+    `cared_this_turn` and `working_tiles` fix (see `test_one_pen_is_cared_by_one_hand_in_a_turn`).
+
+    What remains is a hand walking off (4,4) or (3,4) while ANOTHER hand, parked on that same tile
+    at its own work stop, cares it in the same turn. That is the rule working, not failing -- the
+    passer-by yields and the animal is cared. So the question is per TILE and per TURN, not per
+    hand: was this animal left uncared by everyone who stood on it.
     """
     import importlib
 
@@ -846,20 +849,95 @@ def test_no_hand_walks_over_a_fed_but_uncared_animal():
         farm = o0["farms"][0]
         pos = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
         acts = [a0["farmer"], *a0["hands"]]
+        cared_now = {p for u, p in enumerate(pos)
+                     if u < len(acts) and acts[u] and acts[u][0] == "CARE"}
         for u, p in enumerate(pos):
             if u >= len(acts) or not acts[u] or acts[u][0] not in MOVES:
+                continue
+            if p in cared_now:          # someone standing here is caring it this very turn
                 continue
             cell = farm["tiles"][p[1]][p[0]]
             if (isinstance(cell, dict) and "animal" in cell
                     and cell.get("fed_today") and not cell.get("cared_today")):
                 walked.append(f"    d{t // 24} h{t % 24}  u{u}@{p} -> {acts[u][0]}, "
-                              f"leaving a fed but uncared {cell['animal']}")
+                              f"leaving a fed but uncared {cell['animal']} nobody else cared")
         n0 = len(o0["farms"][0].get("hands") or [])
         n1 = len(o0["farms"][1].get("hands") or [])
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
 
     assert not walked, (
-        "a hand walked off a pen it had fed, leaving the care undone:\n" + "\n".join(walked)
+        "every hand that stood on a fed pen walked off it, leaving the care undone:\n"
+        + "\n".join(walked)
         + "\n  One turn, no item, one extra unit of product on the next production day."
+    )
+
+
+def test_one_pen_is_cared_by_one_hand_in_a_turn():
+    """**Hands sharing a tile all read the same board, so they all take the same underfoot care.**
+
+    `underfoot()` is evaluated once per unit inside a single turn's action loop, against `tiles` as
+    it stood at the START of that turn. `cared_today` cannot be set by a CARE this turn has not
+    played yet, so every hand standing on an uncared pen sees an uncared pen and emits its own CARE.
+    The env applies them all; the first banks the `pending_care_bonus` and the rest are turns spent
+    on nothing.
+
+    This is not a hypothetical. Measured at `2c5c757` with `CARE_WHAT_YOU_STAND_ON` forced on, seed
+    11, d0-d6 -- eight turns, thirteen wasted hand-turns:
+
+        d0 h7   (4,4)  units [0, 4]           d4 h2   (4,4)  units [0, 6, 8]
+        d1 h2   (4,4)  units [0, 4]           d4 h15  (1,4)  units [5, 6]
+        d2 h2   (4,4)  units [0, 1, 4, 6]     d5 h2   (4,4)  units [0, 4, 6]
+        d3 h2   (4,4)  units [0, 1, 6]        d6 h2   (4,4)  units [0, 6]
+
+    (4,4) is a pen on a shed-access tile, which is why it recurs: it is where the crew converges to
+    DROP and PICKUP, and at h2 the whole dawn shift is standing on it at once.
+
+    Those thirteen turns are the entire reason the rule was measured as a loss and shipped OFF. They
+    are also the whole overshoot -- subtract them and d0-d5 care matches the tape exactly, 4/4 5/5
+    5/5 6/6 7/7 7/7. So this test is what makes `CARE_WHAT_YOU_STAND_ON` shippable, and the flag
+    being on is part of the assertion rather than a fixture: with it off there are no underfoot
+    cares at all and this would pass by having nothing to check.
+    """
+    import collections
+    import importlib
+
+    from kaggle_environments import make
+
+    sched = _schedule()
+    SA = importlib.import_module(MODULE)
+
+    assert SA.CARE_WHAT_YOU_STAND_ON, (
+        "this test is vacuous with the rule off -- no CARE is ever emitted underfoot, so there is "
+        "nothing to double up. If the rule is being reverted, delete this test with it."
+    )
+
+    env = make("kaggriculture", configuration={"seed": SEED, "weedSpawnChance": 0.0}, debug=True)
+    env.reset(2)
+    agent = SA.make_agent(_thin(sched), 0, router=True)
+    opp = _tape_policy(1)
+
+    doubled = []
+    for t in range(24 * DAYS):
+        o0, o1 = env.state[0].observation, env.state[1].observation
+        a0, a1 = agent(o0), opp(o1, t)
+        farm = o0["farms"][0]
+        pos = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
+        acts = [a0["farmer"], *a0["hands"]]
+        carers = collections.defaultdict(list)
+        for u, (p, ac) in enumerate(zip(pos, acts)):
+            if ac and ac[0] == "CARE":
+                carers[p].append(u)
+        for tile, us in carers.items():
+            if len(us) > 1:
+                doubled.append(f"    d{t // 24} h{t % 24}  tile {tile}  units {us}  "
+                               f"-- {len(us) - 1} turn(s) spent on an already-cared pen")
+        n0 = len(o0["farms"][0].get("hands") or [])
+        n1 = len(o0["farms"][1].get("hands") or [])
+        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
+                  {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
+
+    assert not doubled, (
+        "more than one hand cared the same pen in the same turn:\n" + "\n".join(doubled)
+        + "\n  `pending_care_bonus` is banked once. Every CARE after the first is a wasted turn."
     )

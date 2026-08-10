@@ -553,6 +553,34 @@ def _animal_remaining(cell, day):
     return max(0, days_left) // a["interval"] * price
 
 
+#: Water a tile that is NOT at risk, so the field stops coming due all on one day.
+#:
+#: The alternate-day rule (`consecutive_unwatered >= 1`) is correct per tile and synchronises the
+#: field in aggregate: everything watered on d11 falls due together on d13. Measured on seed 11,
+#: tiles on the brink at dawn against tiles rescued -- d12 has 15 due and 136 idle turns and still
+#: loses 2; d15 has 34 due, 2 idle turns in the entire day, and loses 6. The trough has turns going
+#: spare while the spike cannot cover its backlog.
+#:
+#: **Priced at a fraction of the survival water, never level with it.** A tile that weeds tonight is
+#: an asset lost outright; a top-up is a convenience. At equal price a spike day spends its turns on
+#: tiles that were never at risk.
+#: **MEASURED AND OFF.** It does what it was built for and loses the season doing it. Seed 11,
+#: tape 91422988, final bank: baseline $79,905 with 16 tiles starved; with this on, $63,645 with 5
+#: starved. Stacked on the crew planner for d0-d3 it is $91,943 -> $62,284. Brink misses over
+#: d0-d20 fall 13 -> 4 and the board carries zero dry tiles from d27 -- the rule is not broken, the
+#: tiles are simply worth less than the turns it takes to save them.
+#:
+#: The argument for switching it on was that the earlier `>= 0` widening had been rejected for
+#: reasons that had expired (wrong tape, measured only over d0-d7 where 17 tiles fit in a day). That
+#: argument was wrong on its own terms: the trough day's idle turns are not free, because spending
+#: them puts the hand somewhere else when the next spike lands.
+TOP_UP_SAFE_TILES = False
+#: Not before day 7. Seventeen tiles fit inside one day with room to spare, Seb waters alternate days
+#: there and takes zero weeds doing it, and d0-d6 is matched to the tape op for op.
+TOP_UP_FROM_DAY = 7
+TOP_UP_DISCOUNT = 8.0
+
+
 def crop_ops(cell, day, have_fertilizer):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
@@ -626,6 +654,8 @@ def crop_ops(cell, day, have_fertilizer):
             # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
+        elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY and not cell["watered_today"]:
+            out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
         # fertilizer bonus on a production day. Watering it on any other day is pure walk.
@@ -636,6 +666,8 @@ def crop_ops(cell, day, have_fertilizer):
                 out.append(("WATER", None, _crop_remaining(cell, day)))
             elif fertilized and produces_tomorrow and room > 0:
                 out.append(("WATER", None, price))
+            elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
+                out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
         if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
                 and price > BASE_PRICE["FERTILIZER"]):
             out.append(("FERTILIZE", "FERTILIZER", price))
@@ -674,6 +706,45 @@ def _one_shot_is_finished(info, age, room):
     return age >= info["max_day"] or room <= 0
 
 
+def produces_tonight(cell, day):
+    """Whether tonight's refresh adds `yield_units` to this pen.
+
+    The env's own arithmetic, copied rather than approximated (`kaggriculture.py:809-810`): the
+    refresh runs for `next_day = day + 1`, so the offset is measured against TOMORROW. Reading it
+    off `day` instead shifts every pen by one night, which no season total can show.
+    """
+    a = ANIMALS[cell["animal"]]
+    since = (day + 1) - int(cell.get("placed_day", 0)) - a["first_yield_day"]
+    if since < 0:
+        return False
+    return a["interval"] <= 0 or since % a["interval"] == 0
+
+
+#: Whether a FEED is offered only when it buys something. See the note in `animal_ops`.
+FEED_ONLY_WHEN_IT_BUYS_SOMETHING = True
+
+#: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
+#: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
+#: -- and the cycling starts at d5 (4 of 7) and is unmistakable by d7 (3 of 17).
+#:
+#: Applied from d0 it drags days that have nothing to do with feeding: a rolling half-herd is hungry
+#: every morning, every one of those feeds prices as CRITICAL, and the routes reorder around them.
+#: d2 `sell 4/5 -> 2/5` and d3 `water 14/14 -> 12/14` are rows that are exact in the tape and were
+#: exact in ours.
+FEED_CADENCE_FROM_DAY = 7
+
+
+def will_be_fed(cell, day):
+    """Whether `animal_ops` would offer this pen a FEED today. The market block sizes its wheat
+    purchases off this, so it has to be the same rule and not a second copy of it."""
+    if not FEED_ONLY_WHEN_IT_BUYS_SOMETHING or day < FEED_CADENCE_FROM_DAY:
+        return True
+    if cell.get("consecutive_unfed", 0) >= 1:
+        return True
+    a = ANIMALS[cell["animal"]]
+    return ((day + 1) - int(cell.get("placed_day", 0)) - a["first_yield_day"]) >= 0
+
+
 def animal_ops(cell, day, have_wheat):
     """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed."""
     a = ANIMALS[cell["animal"]]
@@ -682,22 +753,50 @@ def animal_ops(cell, day, have_wheat):
     fed = cell["fed_today"]
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
-        # **Every feed is mandatory, not only the one that prevents an escape.** Priced at one unit of
-        # product a cow's FEED was $160 for a turn against a melon water's $250, so on any tight day the
-        # ratio rule skipped the pen -- and skipping it forfeits the day's production AND the care
-        # bonus, since `pending_care_bonus` is only paid out on a day the animal is also fed. Across 312
-        # leaderboard seats FEED correlates +0.452 with final money and WATER -0.276, so the ranking was
-        # inverted against the only op-level evidence we have.
+        # **A feed buys two things, and on most nights it buys neither.** From
+        # `_daily_refresh_animals` (`kaggriculture.py:795-820`):
         #
-        # A hungry day is still worth more than a healthy one -- the animal itself is on the line -- so
-        # the two stay ordered above the shared mandatory floor.
-        # A hungry pen is one missed day from the animal escaping outright
-        # (`reference/kaggriculture.py:786`), which is irreversible: the structure survives, the
-        # animal does not, and nothing on the board buys it back the same day. See `CRITICAL`.
-        floor = CRITICAL if (hungry and FEED_IS_CRITICAL_WHEN_AT_RISK) else MANDATORY
-        prize = floor + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
-        out.append(("FEED", "WHEAT", prize))
-        fed = True
+        #     if days_since_first >= 0 and days_since_first % a["interval"] == 0:
+        #         base = 1
+        #         bonus = tile.pop("pending_care_bonus", 0) if tile["fed_today"] else 0
+        #         tile["yield_units"] = min(a["max_held"], tile["yield_units"] + base + bonus)
+        #
+        # `base = 1` lands whether or not the animal was fed. Production never reads `fed_today`.
+        # So a FEED resets `consecutive_unfed`, and on a production night it releases
+        # `pending_care_bonus` -- and on any other night it buys nothing at all.
+        #
+        # The comment that stood here said the opposite -- "skipping it forfeits the day's
+        # production AND the care bonus" -- and that false half is what made every feed MANDATORY.
+        # The +0.452 correlation with money is real and is not evidence for feeding daily; it is
+        # evidence for keeping animals alive, which the hungry branch below already does.
+        #
+        # The tape feeds on a cycle and uses the whole of the one-day slack: seventeen pens on d7
+        # and THREE feeds, four feeds on d5 against seven pens. The intervals agree -- a COW
+        # produces every second night and a SHEEP every third -- so a daily feed on a cow is wasted
+        # on at least half the nights by construction.
+        # **Producing, not "tonight".** The first cut of this asked whether the pen yields TONIGHT
+        # and fed only then. It measured d16 money $9,975 -> $4,814, and the reason is the care
+        # chain: `CARE` is offered only on a pen that is fed (below), and `pending_care_bonus` is
+        # banked only on a night that is BOTH fed and cared. Feed nightly and a production night
+        # pays `base 1 + bonus 1`; feed only on the payout night and it pays 1. Same turns per unit
+        # of product, half the product.
+        #
+        # So the waste is not the daily feed. It is the daily feed of an animal that has not STARTED
+        # producing: a COW placed on d0 first yields on d8 (`first_yield_day 8`), so eight days of
+        # feeding it buy nothing but its survival, which one feed in two also buys.
+        #
+        # That is what the tape does, and it is why d7 looks the way it does -- he goes from 7 pens
+        # to 17 that day and feeds THREE. The twelve he has just placed are years from a yield in
+        # game terms; the three that are producing get fed. By d9 he is feeding 11 of 17 and by d10,
+        # 12 of 18, as the rest come on line.
+        if will_be_fed(cell, day):
+            # A hungry pen is one missed day from the animal escaping outright
+            # (`reference/kaggriculture.py:804`), which is irreversible: the structure survives, the
+            # animal does not, and nothing on the board buys it back the same day. See `CRITICAL`.
+            floor = CRITICAL if (hungry and FEED_IS_CRITICAL_WHEN_AT_RISK) else MANDATORY
+            prize = floor + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
+            out.append(("FEED", "WHEAT", prize))
+            fed = True
     if not cell["cared_today"] and fed:
         # `pending_care_bonus` is only consumed on a day the animal is ALSO fed, so an uncared or
         # unfed pen banks nothing. One care = one extra unit of product on the next production day.
@@ -809,7 +908,8 @@ BUILD_THEN_PLACE = True
 PLANT_THEN_WATER = True
 
 
-def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None):
+def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
+                plantable=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -911,8 +1011,20 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         break
             elif kind == "WEED":
                 # Worth exactly the planting it unblocks, so late in the season a weed is furniture.
+                #
+                # **And worth nothing at all on ground we are not going to plant.** A weed blocks
+                # only the tile it sits on, so clearing one we will never sow is a turn spent to
+                # tidy up. `DIG_ONLY_IF_REPLANTING` already asks whether the SEASON has plantings
+                # left, but that is one global flag for the whole board -- it says yes while 25
+                # squares are pinned for pasture and 15 more are outside any plan, and every weed
+                # on them still offers a DIG. `plantable` is the per-tile form of the same
+                # question, which is what Alex asked for: do not randomly dig.
+                #
+                # Measured on 91422988: `dig 5/0` on d5 against a tape that digs nothing all
+                # season, plus stray digs on d12, d13 and d14.
                 best = max((plant_prize(c, day) for c in R.CROPS), default=0)
-                ops = [("DIG", None, best * 0.5)] if best else []
+                ops = ([("DIG", None, best * 0.5)]
+                       if best and (plantable is None or tile in plantable) else [])
             else:
                 ops = []
             if ops:
