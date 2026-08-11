@@ -448,8 +448,13 @@ def _hires_this_turn(state, row, day, hour, money):
 #: against the board it had before.
 PLAN_THE_LAND_THAT_ARRIVES = True
 
+#: Whether the dawn plan may count the day's own `sells` row toward a parcel it cannot afford out of
+#: the standing bank. The market block already buys on `money + pending`; this makes the plan use the
+#: same test rather than a strictly more pessimistic one. See `_land_this_turn`.
+SELLS_FUND_THE_DAWN_PARCEL = True
 
-def _land_this_turn(sched, day, hour, unlocked, money, n_hires):
+
+def _land_this_turn(sched, day, hour, unlocked, money, n_hires, prices=None):
     """The quadrant the market block below is about to buy, or None. Read by the DAWN PLAN.
 
     Same contract as `_hires_this_turn`, for the same reason and with the same failure mode. The env
@@ -498,7 +503,23 @@ def _land_this_turn(sched, day, hour, unlocked, money, n_hires):
     for _ in range(int(n_hires or 0)):
         bank -= a
         a, b = b, a + b
-    if bank < LAND_PRICES[owned]:
+    # **The plan and the buyer must apply the SAME test, or they disagree about the same parcel.**
+    # The market block buys on `money + pending` -- the day's own sales settle in earlier order
+    # slots, so a parcel is affordable out of revenue that has not landed at dawn. Reading `money`
+    # alone here made the dawn plan strictly more pessimistic than the code that does the buying,
+    # and Victor's d6 is the gap between them: we take the parcel at h13 on a bank of $53, three
+    # hours EARLIER than the tape, and then leave 42 unit-turns idle because the plan that governs
+    # the day was built as though the ground were never coming.
+    #
+    # The revenue is the schedule's own `sells` row at the day's opening prices. That is a forecast,
+    # and the docstring above is right that a wrong one orphans routes onto locked ground -- so it
+    # is deliberately the row and not a guess at what the shed might yield. The row is the plan's
+    # statement of what the day sells; if it does not hold, the day was already wrong.
+    revenue = 0.0
+    if SELLS_FUND_THE_DAWN_PARCEL:
+        row_sells = (sched.get(day) or {}).get("sells") or {}
+        revenue = sum(float((prices or {}).get(p, 0.0)) * int(q) for p, q in row_sells.items())
+    if bank + revenue < LAND_PRICES[owned]:
         return None
     return R.LAND_ORDER[owned]
 
@@ -2735,7 +2756,8 @@ def make_agent(schedule, me=0, router=True):
             # hour 0 has its MOVE refused (`kaggriculture.py:313`) and loses that one turn, and a
             # shed cell inside the parcel is treated as a depot an hour early. That is at most one
             # turn per unit on one day of the season, against the 128 idle unit-turns d10 spends now.
-            _land = _land_this_turn(sched, day, hour, unlocked, money, n_hires)
+            _land = _land_this_turn(sched, day, hour, unlocked, money, n_hires,
+                                    prices=(obs.get("market") or {}).get("prices") or {})
             plan_unlocked = (unlocked | {_land}) if _land else unlocked
             # **Owning the quadrant is not enough -- the CELLS have to read empty too.** They are the
             # string `"LOCKED"` until `_do_buy_land` rewrites them to `None` (`kaggriculture.py:709-713`),
