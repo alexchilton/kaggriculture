@@ -1170,6 +1170,11 @@ URGENT_OPS = ()
 #: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
 ANIMAL_OVER_HIRE = True
 
+#: Whether the schedule's `seeds` row is a FLOOR on what is offered, independent of how much ground
+#: today can actually plant. See the block in the market phase. Applies to the emission only; the
+#: reservation `seed_bill` stays pin-derived, which is what keeps d0's livestock intact.
+SEED_ROW_IS_A_FLOOR = True
+
 #: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
 #: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
 SEED_BEFORE_LIVESTOCK = True
@@ -3593,6 +3598,30 @@ def make_agent(schedule, me=0, router=True):
                 want_seed[c] = max(0, int(q) - done)
         seed_bill = sum(RT.SEED_COST.get(c, 0) * max(0, int(q) - int(seeds.get(c, 0)))
                         for c, q in want_seed.items())
+        # **The `seeds` row is bought; it is not re-derived from what today can plant.**
+        # `seeds` and `plants` are separate rows and they deliberately disagree. Victor's d6 asks
+        # `seeds {WHEAT 1, STRAWBERRY 3}` against ONE plant: he buys four, plants one, and carries
+        # three into d7, which needs fifteen seeds for fourteen plants. Seed lives in
+        # `private["seeds"]`, never the shed, so a surplus carries with no capacity cost at all.
+        #
+        # Under `router`, `want_seed` is the remaining PLANT pins, and pins are sited only on ground
+        # that is empty AT DAWN. So a full board buys nothing: `buy_seed 1/4` on d6, and on d8 the
+        # row's `{WHEAT 8, STRAWBERRY 2}` is offered as WHEAT 8 and no strawberry at all -- which is
+        # why all seven of d8's plants come out wheat and `strawb` sticks at 18/20.
+        #
+        # **Applied to the EMISSION only, never to `seed_bill`.** That is the whole reason three
+        # earlier attempts at this failed. `seed_bill` is reserved out of the bank before any
+        # BUY_ANIMAL (see `SEED_BEFORE_LIVESTOCK`), so folding the row into it makes seed outrank
+        # livestock: d0 went `buy_animal 5/5 -> 4/5`, `place 5/5 -> 4/5`, `sheep 4/4 -> 3/4` and
+        # stopped matching. The bill stays exactly what the pins justify; only what is OFFERED is
+        # floored at the row.
+        emit_seed = collections.Counter(want_seed)
+        if SEED_ROW_IS_A_FLOOR:
+            for c, q in (row.get("seeds") or {}).items():
+                # Net off today's own plantings, exactly as the non-router branch above does: the
+                # row is a static day total and does not shrink as the ground is sown.
+                done = state["planted"][c] - state["planted_dawn"][c]
+                emit_seed[c] = max(int(emit_seed.get(c, 0)), max(0, int(q) - done))
 
         # **The crew comes before the goods.** See `HIRE_FIRST`. SELL stays above this because it only
         # raises the bank; everything BELOW spends it, and a hand that is not standing at dawn cannot be
@@ -3893,7 +3922,7 @@ def make_agent(schedule, me=0, router=True):
         # mechanism the paragraph above describes -- which is what exposed the missing retry below.
         # With that fixed the trade-off is GONE: the dear block fills first and the cheap one is
         # re-offered until the day's sales cover it, so both land. d6-d11 read 11 15 13 15 18 20.
-        for crop, qty in sorted(want_seed.items(),
+        for crop, qty in sorted(emit_seed.items(),
                                 key=lambda kv: -RT.SEED_COST.get(kv[0], 0) * int(kv[1])):
             # **No cross-turn `ordered` credit on the seed row.** A BUY_SEED the env rejects for want of
             # funds is silent -- there is no failure in the observation, only seed that never arrives --
