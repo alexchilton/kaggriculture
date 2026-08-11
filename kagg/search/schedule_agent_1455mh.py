@@ -2069,10 +2069,67 @@ HERD_FLOOR_SHEEP = 1
 #: carries it, so only the town centre eats it, and the 87 tapes close with a melon SURPLUS of +38 to
 #: +158 without exception. Whether to plant melon is therefore a fixed-quantity question that no draw
 #: can inform, and a different one; bundling it here would confound the two.
-SHOP_ADAPT_CROPS = True
+#: **OFF as of 2026-08-11, on evidence from 2,744 ladder seats. Do not switch it back on with these
+#: pairs.** `docs/the_ladder_is_two_scripts.md` counts every PLANT action in the official episode
+#: datasets for 2026-08-09 and -10:
+#:
+#:     WHEAT       362,044   69.3%
+#:     STRAWBERRY  104,461   20.0%
+#:     MELON        54,795   10.5%
+#:     CARROT          796    0.2%
+#:     TOMATO            3    0.0%   (three actions, in one game, all season)
+#:
+#: Both pairs below swap TOWARD the two crops the entire ladder has priced at zero. Carrot growers
+#: bank below the field median ($79,847 vs $82,136); the single tomato grower banked $58,119. The
+#: local sweep measured the same thing independently -- 0.806 against HEAD's 0.871 over 232 matched
+#: games -- so two instruments agree and the cadence-pair reasoning was simply pointed the wrong way.
+#: It was correct that the pairs are interchangeable at no cost to the routing, and that is not the
+#: question that decides a crop.
+#:
+#: **The obvious replacement pair does not work either, and the reason is worth keeping.**
+#: `STRAWBERRY <-> MELON` is the axis the field actually varies (Script A 37/19, Script B 42/24,
+#: THUNDER 31..39) and it is cadence-compatible -- same first-yield day, both hold the tile to the
+#: end. But `_adapt_crops` scores on `town_drain_remaining`, and melon's drain is 29 units a SEASON,
+#: so the headroom goes negative after three tiles and the rule would cap melon at ~3 where every
+#: winning script plants 19-24.
+#:
+#: That is the real defect, and it is upstream of the pairs: **the headroom model treats the town's
+#: drain as a cliff when the price curve is a slope.** A melon sold past the drain still fetches $229
+#: at 50 units above I0 and $166 at 100. Any rule built on "units the town will eat" will therefore
+#: under-plant every steep-curve, low-drain product. The proper fix is to score the marginal unit off
+#: `market_price` at the inventory everything already committed leaves behind -- not a constant, not
+#: a drain count.
+#:
+#: **`STRAWBERRY <-> MELON` was tried on 2026-08-11 and is STRUCTURALLY INCAPABLE of adapting.**
+#: It is the pair the field actually varies (Script A 37/19, Script B 42/24, THUNDER 31..39) and it
+#: is cadence-compatible -- same first-yield day, both hold their tile to the season's end -- so it
+#: looked like the one defensible pair left. Measured on the schedule's own row (STRAWBERRY 41 /
+#: MELON 17) across four very different draws:
+#:
+#:     4x SMOOTHIE (strawberry-rich)     STRAW 54   MELON 4
+#:     no strawberry shop at all         STRAW 54   MELON 4
+#:     the 91888327 loss board           STRAW 54   MELON 4
+#:     2 strawberry shops (typical)      STRAW 54   MELON 4
+#:
+#: **Identical on every board**, and it moves melon from 17 to 4 against a field that plants 19-24.
+#: The reason is not a tuning miss: no shop carries melon, so its drain is 29 units on EVERY board
+#: that can be drawn. With one side of the pair constant, the only thing that can move is
+#: strawberry's headroom, and that is always large enough to take everything after melon's fourth
+#: tile. **A pair whose member has board-independent demand cannot produce a board-dependent split.**
+#:
+#: The weeds argument for melon -- that a tile lost to a missed watering never delivers its 12 units,
+#: so the field's 19-24 tiles are sized for what survives -- is a good reason to think melon is worth
+#: MORE than the drain implies. It is not a reason this pair can adapt, because nothing on the board
+#: moves melon's side of the comparison either way.
+#:
+#: The axis the field really trades is **wheat against strawberry+melon** (Script A plants 144 wheat
+#: and 56 straw+melon; Script B 108 and 66). Wheat's demand does vary with the draw -- 5 of 8 shop
+#: types carry it, 745 to 1,461 units. That is the pair worth building, and it needs the marginal-
+#: revenue scoring above plus a schedule that plants wheat at all. Ours plants 24.
+SHOP_ADAPT_CROPS = False
 
-#: Pairs whose members are interchangeable at no cost to the routing. Order inside a pair is the
-#: tie-break, so the cheaper seed leads.
+#: Kept so the disabled machinery stays readable and its tests keep running. Every pair tried so far
+#: is recorded on the flag above; none of them should be re-enabled as written.
 CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
 
 #: Days strictly before this keep the schedule's own crops; from here the mix floats every turn.

@@ -106,11 +106,40 @@ WHEAT_BOARD = ["PIZZA_SHOP"] * 5 + ["BAKERY", "BRUNCH_SPOT", "SMOOTHIE_SHOP"]
 SCHEDULE_STRAWBERRY_TILES = 41
 
 
+def test_the_crop_swap_is_disabled_and_stays_disabled():
+    """The pairs below swap toward crops the whole ladder has priced at zero. Evidence, not opinion.
+
+    Every PLANT action in the official episode datasets for 2026-08-09 and -10, 2,744 seats:
+
+        WHEAT 69.3%   STRAWBERRY 20.0%   MELON 10.5%   CARROT 0.2%   TOMATO 0.0%
+
+    TOMATO is three actions in one game all season. Carrot growers bank below the field median.
+    The local ladder sweep agreed independently at 0.806 against 0.871 over 232 matched games.
+
+    This test is the record of that decision, so re-enabling the flag with these pairs goes red
+    rather than quietly shipping. The mechanism itself is still exercised by the tests below, which
+    call `_adapt_crops` directly -- it works, it is simply aimed wrong, and the note on the flag
+    explains why no correct pair exists until the headroom model prices a marginal unit off the
+    curve instead of counting the town's drain.
+    """
+    assert SA.SHOP_ADAPT_CROPS is False, (
+        "SHOP_ADAPT_CROPS was re-enabled -- read its docstring and "
+        "docs/the_ladder_is_two_scripts.md before changing this")
+
+
+def adapt_only(crop, qty, day, shops, planted=None):
+    """`_adapt_crops` on its own, bypassing the disabled flag, so the mechanism stays covered."""
+    return SA._adapt_crops(collections.Counter({crop: qty}),
+                           planted or collections.Counter(), collections.Counter(),
+                           day, list(shops), 29)
+
+
 def test_a_strawberry_row_becomes_tomato_when_no_shop_wants_strawberry():
     """The ongoing pair. Same schedule, two draws; the crop must follow the draw."""
-    sched = sched_for("STRAWBERRY", SCHEDULE_STRAWBERRY_TILES)
-    rich = pin_crops(sched, SA.CROP_ADAPT_FROM_DAY, STRAWBERRY_BOARD)
-    poor = pin_crops(sched, SA.CROP_ADAPT_FROM_DAY, TOMATO_BOARD)
+    rich = adapt_only("STRAWBERRY", SCHEDULE_STRAWBERRY_TILES, SA.CROP_ADAPT_FROM_DAY,
+                      STRAWBERRY_BOARD)
+    poor = adapt_only("STRAWBERRY", SCHEDULE_STRAWBERRY_TILES, SA.CROP_ADAPT_FROM_DAY,
+                      TOMATO_BOARD)
     assert rich["STRAWBERRY"] > poor["STRAWBERRY"], (
         f"identical planting on both boards: strawberry-rich {dict(rich)}, tomato-rich {dict(poor)}")
     assert poor["TOMATO"] > rich["TOMATO"], (
@@ -119,9 +148,8 @@ def test_a_strawberry_row_becomes_tomato_when_no_shop_wants_strawberry():
 
 def test_a_wheat_row_becomes_carrot_when_the_town_eats_carrot():
     """The short one-shot pair. PET_CAFE is single-product, so it drains carrot twice as fast."""
-    sched = sched_for("WHEAT", 20)
-    carroty = pin_crops(sched, SA.CROP_ADAPT_FROM_DAY, CARROT_BOARD)
-    wheaty = pin_crops(sched, SA.CROP_ADAPT_FROM_DAY, WHEAT_BOARD)
+    carroty = adapt_only("WHEAT", 20, SA.CROP_ADAPT_FROM_DAY, CARROT_BOARD)
+    wheaty = adapt_only("WHEAT", 20, SA.CROP_ADAPT_FROM_DAY, WHEAT_BOARD)
     assert carroty["CARROT"] > wheaty["CARROT"], (
         f"identical planting on both boards: carrot board {dict(carroty)}, "
         f"wheat board {dict(wheaty)}")
