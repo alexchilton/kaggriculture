@@ -1547,6 +1547,12 @@ def _claimed_tiles(units, routes, idle, margin):
     return busy
 
 
+#: **A shed-access cell is plantable on any day the schedule owes no pen.** See the block in
+#: `_refresh_pins` that reads this. `router.field_order` reserves those four cells permanently; this
+#: releases them for the days between one pen and the next.
+PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -1629,11 +1635,27 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # is untouched. Anchored on `planted + live`, which never falls, so this cannot inflate the total.
     if SHOP_ADAPT_CROPS and day >= CROP_ADAPT_FROM_DAY:
         want = _adapt_crops(want, state["planted"], live, day, unlocked_shops, LAST_DAY)
+    # **Shed-access ground is held for a pen that is DUE, not for one ten days out.**
+    # `router.field_order` leaves the four shed-access cells out of the sweep on purpose -- they are
+    # worth more as pens, where FEED, CARE, COLLECT_FERTILIZER, PICKUP and DROP all happen without a
+    # move -- and that is right while a pen is waiting for ground. `have >= want_pens` is exactly the
+    # question "does the schedule owe a pen today", and it is already computed above for the BUILD
+    # loop; when nothing is owed, the cells are ordinary soil and a pen that turns up later can take
+    # ordinary soil too (the BUILD loop already falls through to `_next_ground` for that).
+    #
+    # d11, seed 11: the day owes eleven plantings. Six pins go onto the six empty squares in
+    # `field_order`, four more ride on the wheat tiles a harvest clears
+    # (`router.REPLANT_A_CLEARED_TILE`), and the eleventh -- the fifth strawberry -- has nowhere to
+    # go while (4,5) sits empty. The schedule builds 15 pens; twelve are standing by d8 and the next
+    # is **d21**. `plant 9/11`, and `water 38/41` because each of those plantings owes a water.
+    plant_order = order
+    if PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED and have >= want_pens:
+        plant_order = list(order) + [c for c in R.shed_access_tiles() if _owned(c, unlocked)]
     for crop, qty in want.items():
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
         for _ in range(qty - state["planted"][crop] - live[crop]):
-            spot = _next_ground(order, tiles, taken)
+            spot = _next_ground(plant_order, tiles, taken)
             if spot is None:
                 break
             pins[spot] = ("PLANT", crop, RT.plant_prize(crop, day))
