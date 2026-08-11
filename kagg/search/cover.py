@@ -124,6 +124,37 @@ REPAIR = True
 #: which is also why it terminates -- total cost is bounded below and strictly decreases.
 COMPACT = True
 
+#: Whether a hand that can REACH work nobody else can may be emptied to afford it.
+#:
+#: `COMPACT` pools the leftovers but only on a strict fall in TOTAL turns, and that is the wrong
+#: currency. The fair-share cap two hundred lines below is justified on the opposite principle --
+#: "an idle unit's turns are free and the scarce resource is per-unit TIME, not total walking" --
+#: so a move that raises total walking while lowering the MAXIMUM is exactly the trade the day
+#: wants, and is exactly the one `COMPACT` refuses.
+#:
+#: Measured on Victor's d12, seed 11. Four ripe tiles sit uncovered in the north-east corner --
+#: (8,0), (9,0), (8,1), (9,1), each WATER,HARVEST,PLANT, four turns of work apiece. u7 walks six
+#: squares to the (9,2) pen and six back every day and all four lie on that path, so inserting them
+#: into u7 costs +1, 0, 0 and -1 turns of TRAVEL. They are free to reach. What u7 has not got is the
+#: sixteen turns of WORK, and the day's spare turns are elsewhere:
+#:
+#:     slack  u0:-3  u1:11  u2:4  u3:2  u4:7  u5:7  u6:2  u7:-3  u8:-5  u9:0  u10:3
+#:     36 spare unit-turns, largest single pool 11, sixteen needed on ONE hand
+#:
+#: u9 is the other hand that reaches the corner cheaply, and its whole day is (7,0) then nine moves
+#: to (0,2) -- one lone tile that u8 is already working the squares around. Shedding it frees 13.
+#:
+#: `REPAIR` cannot do this: it displaces exactly ONE job, and one is not enough to free sixteen
+#: turns. This displaces as many as it takes, and only commits if the job actually seats.
+MAKE_ROOM = True
+
+#: How many hands to try emptying for one job, cheapest to reach first, and how many stops may be
+#: shed from one hand. Both bound the work: this pass is O(jobs x hands x stops x moves) in `slot`,
+#: which is the call that disqualified submission 55352401 on time. It only runs at all when the
+#: greedy, `COMPACT` and `REPAIR` have all left something on the board.
+MAKE_ROOM_HANDS = 3
+MAKE_ROOM_MOVES = 8
+
 #: Cache `slot` against the route it was computed for, and clear that unit's cache when its route
 #: changes. **This is a pure speed change: it cannot alter a plan**, and the flag exists so that
 #: claim stays falsifiable rather than merely asserted -- flipping it off restores the exact
@@ -1196,6 +1227,75 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     break
                 if done:
                     break
+
+    # ---------------------------------------------------------------------------------- make room
+    # See `MAKE_ROOM`. Everything above ranks on turns SAVED; this ranks on turns FREED, on the one
+    # hand that can reach the job. Commits only when the job actually seats, so coverage is
+    # monotone and the outer loop terminates on a bounded quantity.
+    def _reach(u, j):
+        """Marginal cost of `j` on `u`'s route with the budget ignored. `None` if it cannot go."""
+        got = slot(u, j, routes[u], limit=float("inf"))
+        return None if got is None else got[0] - used[u]
+
+    def _make_room(u, j):
+        """Shed stops off `u` onto hands that can pay for them until `j` fits. `(routes, used)`."""
+        trial = {v: list(routes[v]) for v in range(len(units))}
+        tused = dict(used)
+        for _ in range(MAKE_ROOM_MOVES + 1):
+            got = slot(u, j, trial[u])                 # `slot` caps at `budget[u]`
+            if got is not None:
+                trial[u] = trial[u][:got[1]] + [j] + trial[u][got[1]:]
+                tused[u] = got[0]
+                return trial, tused
+            best = None
+            for m in list(trial[u]):
+                rest = [x for x in trial[u] if x is not m]
+                after = cost(u, rest)
+                saved = tused[u] - after
+                if saved <= 0:
+                    continue
+                for v in range(len(units)):
+                    if v == u or (m.only is not None and m.only != v):
+                        continue
+                    g = slot(v, m, trial[v])           # the receiving hand must genuinely afford it
+                    if g is None:
+                        continue
+                    key = (-saved, g[0] - tused[v], v)
+                    if best is None or key < best[0]:
+                        best = (key, m, v, g[0], g[1], rest, after)
+            if best is None:
+                return None
+            _k, m, v, vc, vi, rest, uc = best
+            trial[u], tused[u] = rest, uc
+            trial[v] = trial[v][:vi] + [m] + trial[v][vi:]
+            tused[v] = vc
+        return None
+
+    if MAKE_ROOM:
+        moved = True
+        while moved and left:
+            moved = False
+            for j in sorted(left, key=lambda j: (not (j.at_risk and j.required), not j.funds,
+                                                 not j.required, not j.at_risk, j.tile)):
+                reach = sorted((r, u) for u, r in
+                               ((u, _reach(u, j)) for u in range(len(units))
+                                if (j.only is None or j.only == u) and affordable(claim(u, j)))
+                               if r is not None)
+                for _r, u in reach[:MAKE_ROOM_HANDS]:
+                    room = _make_room(u, j)
+                    if room is None:
+                        continue
+                    trial, tused = room
+                    for v in range(len(units)):
+                        if trial[v] != routes[v]:
+                            routes[v], used[v] = trial[v], tused[v]
+                            touch(v)
+                    booked.update(claim(u, j))
+                    left.remove(j)
+                    moved = True
+                    break
+                if moved:
+                    break                              # `left` has changed; rescan it
 
     return routes, left
 
