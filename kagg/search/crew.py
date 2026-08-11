@@ -72,7 +72,27 @@ from . import cover as DP
 #:
 #: So 11 is not a verdict that the sweep planner is worse late; it is a verdict that it was worse
 #: late THERE. Re-measure on the Victor grid before treating either number as settled.
-ACTIVE_UNTIL_DAY = 30
+ACTIVE_UNTIL_DAY = 8
+
+#: Days OUTSIDE the threshold that still use the crew planner.
+#:
+#: **d10 is not an ordinary day and must not be planned like one.** It is the third parcel plus
+#: fourteen hires. Under `cover.cover` it stranded TWO hands for all 24 turns, bought six of a
+#: twelve-wheat row, and read `pass 134/78`. The crew planner handles it.
+#:
+#: Measured over d0-d16 on the Victor grid, seed 11 -- final bank, weeds and strawberry tiles at
+#: d16, the d8 placement, and moves per work op against the tape's 0.97:
+#:
+#:     lawn<30 (was)   $15,669   17 weeds   24/36   place 1/2   mv/wk 1.23
+#:     lawn<11         $16,303    4 weeds   33/36   place 1/2   mv/wk 1.06
+#:     lawn<9  + {10}  $15,341    3 weeds   33/36   place 1/2   mv/wk 1.05
+#:     lawn<8  + {9,10}$19,123    4 weeds   32/36   place 2/2   mv/wk 1.09
+#:     lawn<8  + {10}  $19,080    3 weeds   34/36   place 2/2   mv/wk 1.07   <- taken
+#:
+#: `lawn<8 + {10}` and `lawn<7 + {10}` are identical, so d7 plays the same under either planner.
+#: `{9,10}` banks $43 more and gives back a weed and two strawberry tiles; money is not the
+#: criterion. `lawn<9` losing the d8 placement is what says d8 specifically wants `cover.cover`.
+ACTIVE_EXTRA_DAYS = frozenset({10})
 
 #: Raise instead of returning a plan that leaves work on the board. A DEV INSTRUMENT: on a
 #: workstation an uncovered day should stop the run and be looked at, and on Kaggle a raising agent

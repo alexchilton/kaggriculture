@@ -1266,7 +1266,9 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
     # so everything below is unchanged. Imported here and not at module scope because `crew` imports
     # this module. `crew.ACTIVE_UNTIL_DAY` is 0 until a day's grid says otherwise.
     from . import crew as CREW
-    assign = (CREW.cover if day is not None and day < CREW.ACTIVE_UNTIL_DAY else cover)
+    assign = (CREW.cover if day is not None and (day < CREW.ACTIVE_UNTIL_DAY
+                                                or day in getattr(CREW, 'ACTIVE_EXTRA_DAYS', ()))
+              else cover)
     work, left = assign(units, jobs, budget, depots, carry, supply, deliver, wanted, day, rush, due)
     out = {}
     for u, seq in work.items():
