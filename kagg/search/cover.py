@@ -272,6 +272,39 @@ DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
 #: DROP 9 15 17 19`, where he banks with three collections still ahead. See `Job.harvests()`.
 BANK_ONLY_AFTER_THE_LAST_HARVEST = True
 
+#: Whether a hand banks mid-tour anyway on a day that cannot pay its own bill yet.
+#:
+#: `BANK_ONLY_AFTER_THE_LAST_HARVEST` above is read off days where the harvest is REVENUE -- it can
+#: wait for dusk because nothing that day depends on it. It is wrong on a day where the harvest is
+#: WORKING CAPITAL, and d10 of the Victor tape is that day. Measured, seed 11, with the seed rows
+#: reordered by need:
+#:
+#:     h6   HARVEST 6 melon                       melon in shed: 0
+#:     h7   6 melon in hand, bank $16
+#:     h10 h11 h12 h13   four strawberry stops reached, strawberry seed 0, bank $16
+#:     h20  DROP x2 -- first melon to reach the shed all day
+#:     h21  bank $16 -> $1,943, buy STRAWBERRY 12, every stop already walked
+#:
+#: Thirty melon rode around in hands from h6 to h20 while the day's own seed went unbought. The tape
+#: does the opposite and its row says so plainly: `SELL MELON 6` at h12/h15/h17/h20/h22 against
+#: `BUY_SEED STRAWBERRY` at h12/h13/h15 -- it banks five times through the day, each sale funding the
+#: next seed block. "Harvest all day, bank at dusk" is not what he plays on a day he has to finance.
+#:
+#: `rush` is the existing short-of-cash signal `_solve` already computes and passes here, so this adds
+#: no new notion of poverty -- it lets the cheap drop (`DROP_WHERE_THE_TOUR_ALREADY_STANDS`, zero
+#: detour, one turn) fire while harvests remain, and ONLY then. The detour drop is untouched: a day
+#: this short of money cannot afford a 12-turn ferry either, which is the whole finding of
+#: `DELIVER_MIN` and the d4 water row.
+#: **REVERTED 2026-08-11, same day it was written.** It never reached d10 -- `rush` was False there
+#: (`_days_bill` priced seed at $0, fixed separately) and every melon harvest is the LAST job on its
+#: tour, so no rule in `materialise`'s loop has a later job to insert a delivery before. What it did
+#: reach was d6, where the extra drops shifted the cash timing and one `BUY_PRODUCT WHEAT` stopped
+#: filling: `buy_product 5/5 -> 4/5`, one wheat short in the shed from d7 dawn onwards and never
+#: recovered. Days match IN ORDER, so buying +$113 on d6-d13 money with a d6 op regression is a loss.
+#:
+#: Left False rather than deleted only until the d6 row is re-confirmed green; delete it then.
+BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -312,8 +345,19 @@ class Job:
         # in `test_the_whole_day_zero_schedule_is_executed`, one WEED at (1,1) from a PLANT at h23.
         # The executor already emits the WATER on the next turn because `_live_ops` re-derives at the
         # tile; what was missing is the planner KNOWING it has to.
-        self.turns = len(self.ops) + (1 if any(o == "PLANT" for o, _i in self.ops)
-                                      and not any(o == "WATER" for o, _i in self.ops) else 0)
+        #
+        # **A WATER already in the list only covers the PLANT if the tile is not being harvested
+        # first.** A mature tile that is reaped and immediately re-sown reads
+        # `[WATER, HARVEST, PLANT]`, and that water is the OLD crop's -- on a one-shot it *is* the
+        # yield (`router.crop_ops`), which is why it precedes the HARVEST. The seed that goes in
+        # afterwards still needs its own. Victor's d8: u6 waters (0,2) at h17, harvests h18, plants
+        # h19 and waters again h20 -- four turns against a job costed at three -- so a tour costed at
+        # exactly its 23-turn budget reached its last stop at h22 with three ops and two hours, and
+        # the day's tenth planting was never emitted.
+        _plants = any(o == "PLANT" for o, _i in self.ops)
+        _waters = any(o == "WATER" for o, _i in self.ops)
+        _reaps = any(o == "HARVEST" for o, _i in self.ops)
+        self.turns = len(self.ops) + (1 if _plants and (_reaps or not _waters) else 0)
         self.needs = collections.Counter(needs) if needs is not None else collections.Counter(
             i for o, i in self.ops if i and o in DRAWN)
         #: What this job puts INTO the hand, by product. Predicted from the tile's `yield_units`
@@ -652,7 +696,12 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # **Is there still a harvest ahead on this tour?** See `BANK_ONLY_AFTER_THE_LAST_HARVEST`.
         # `work[i:]` includes the job about to be walked to, which is right: a drop planned on the
         # way TO a harvest is as early as one planned between two.
-        reaping = BANK_ONLY_AFTER_THE_LAST_HARVEST and any(w.harvests() for w in work[i:])
+        # `rush` exempts it: see `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`. A day that cannot pay its
+        # own bill needs the produce in the shed while the market is open, not swept there overnight
+        # by `_drop_inventories_to_shed` after it has closed.
+        reaping = (BANK_ONLY_AFTER_THE_LAST_HARVEST
+                   and any(w.harvests() for w in work[i:])
+                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush))
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))

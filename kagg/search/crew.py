@@ -92,7 +92,25 @@ ACTIVE_UNTIL_DAY = 8
 #: `lawn<8 + {10}` and `lawn<7 + {10}` are identical, so d7 plays the same under either planner.
 #: `{9,10}` banks $43 more and gives back a weed and two strawberry tiles; money is not the
 #: criterion. `lawn<9` losing the d8 placement is what says d8 specifically wants `cover.cover`.
-ACTIVE_EXTRA_DAYS = frozenset({10})
+#:
+#: **EMPTY since 2026-08-11, and the d10 exemption above is why the note is kept.** Every figure in
+#: it was measured on a board where d8 planted nine of ten and d9 planted two of one -- `Job.turns`
+#: was charging three turns for a stop that harvests and re-sows, which costs four -- so d10 opened
+#: somewhere the tape never stood, and "`cover.cover` strands two hands on d10" was a statement
+#: about that board. With the turn priced correctly d8 and d9 are exact, and the exemption inverts:
+#:
+#:                          crew planner    cover.cover
+#:      d10  plant             16/23           19/23
+#:      d10  water             35/43           39/43
+#:      d10  sell              46/55           55/55
+#:      d11  harvest            3/4             4/4
+#:      d12  plant              7/8             8/8
+#:      d12  harvest          11/13           13/13
+#:      d12  fertilize          2/3             3/3
+#:
+#: d0-d9 are identical under both. Pinned by
+#: `tests/test_day_ten_sells_everything_the_tape_sells.py`.
+ACTIVE_EXTRA_DAYS = frozenset()
 
 #: Raise instead of returning a plan that leaves work on the board. A DEV INSTRUMENT: on a
 #: workstation an uncovered day should stop the run and be looked at, and on Kaggle a raising agent
