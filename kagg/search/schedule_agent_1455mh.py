@@ -121,7 +121,21 @@ WATER_AT_RISK = True
 LAST_TURN_IS_WORKABLE = True
 
 #: Turns remaining at or below which the walk back to the shed stops being charged. See `_solve`.
-DELIVER_CUTOFF_TURNS = 2
+#:
+#: **99 as of 2026-08-11 -- i.e. the closing trip is never charged.** The tape makes 10 DROPs across
+#: d0-d16 and we made 63: Victor's produce reaches the shed on the overnight sweep
+#: (`_drop_inventories_to_shed`, `kaggriculture.py:812`), which is free, and ours paid a walk home
+#: for it. On the Victor grid, seed 11, against the old value of 2:
+#:
+#:     weeds d16   9 -> 5        money d16   17,649 -> 21,242
+#:     water rose on five of the last six days; move fell 1494 -> 1474
+#:
+#: **The DROP count barely moves in any arm, and that is the thing to remember.** Rules 2 and 3 of
+#: `cover.materialise` both emit `Depot(drop=True)` and substitute for each other -- kill the mid-day
+#: ferry and the closing trip collects the goods, kill the closing trip and the ferry fires. Measured:
+#: `DELIVER_MIN = inf` gave 64 drops, this gives 63, `WALK_THE_LOAD_HOME = False` gave 59, against a
+#: baseline of 63. Any future attempt to cut the ferrying has to move both rules or neither.
+DELIVER_CUTOFF_TURNS = 99
 
 
 def _at_risk_tiles(tiles):
