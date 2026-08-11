@@ -97,7 +97,11 @@ PACKAGES = ("kagg", "kagg.economics", "kagg.search")
 #: 90976060, while this line shipped 90494364. So the local fixtures and the submission were
 #: different agents, and their disagreement (mirror +2.9%, tape season -19%) was never about the sell
 #: rule at all. One plan now, everywhere.
-PLAN = pathlib.Path("data/seed_scripts/top_guys/90976060/schedule.json")
+#: **VICTOR (91854176 seat 1), 2026-08-11.** Every fix in the eleven commits of 2026-08-11
+#: was measured against THIS schedule and THIS tape on `scripts/breakdown.py --tape victor`.
+#: Shipping 90976060 would put a planner tuned on one plan onto another -- the same
+#: indirection between the search space and the artifact this file already records twice.
+PLAN = pathlib.Path("data/seed_scripts/victor/schedule.json")
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 
 #: The raw replay the plan was distilled from. `--replay-days N` embeds its author's ACTUAL per-turn
@@ -115,8 +119,8 @@ TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 #: bank drifts and later purchases can fail. Weeds are rare (0.005) and the day-0 board is
 #: deterministic -- 25 open tiles, 75 LOCKED, every seed -- so the opening should mostly land. That
 #: is a measurement, not an assumption, and it is what building both artifacts is for.
-REPLAY = pathlib.Path("data/seed_scripts/top_guys/90976060.json")
-REPLAY_SEAT = 0
+REPLAY = pathlib.Path("data/seed_scripts/top2/91854176.json")
+REPLAY_SEAT = 1
 
 TARGET = pathlib.Path("submission/main.py")
 
@@ -471,7 +475,9 @@ def standalone():
 #: and still demands the bundle reproduce the repo modules to the dollar. It passed on both builds.
 #: What is re-anchored is only the absolute figure, to the current tree measured on the current
 #: economy. Re-measure it whenever the environment version moves, and record the version here.
-REFERENCE = {"seed": 11, "ours": 24603, "interval": 24, "measured": "2026-08-11"}
+#: Re-anchored 2026-08-11 (evening) after twelve commits and the swap of PLAN to Victor.
+#: The previous $24,603 was measured on the 90976060 plan and is not comparable.
+REFERENCE = {"seed": 11, "ours": 89054, "interval": 24, "measured": "2026-08-11"}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,
