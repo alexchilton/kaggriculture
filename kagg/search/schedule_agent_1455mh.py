@@ -679,7 +679,13 @@ def feed_days(day):
 #: day's target is re-offered every turn, so the herd still gets everything it needs -- just spread.
 #: `market_price` moves per unit inside one order and the shops restock every 4 steps, so eight orders
 #: of 1 clear cheaper than one of 8. The tape buys 1 at a time, eight times, across hours 5-19.
+#: **That sentence is about SEB'S tape.** Victor orders `BUY_PRODUCT WHEAT 11` in one order at h00.
+#: This still governs the HERD top-up; the schedule's own row is handled by `BUY_THE_ROW_AT_DAWN`.
 BUY_DRIP = 1
+
+#: Whether the schedule's own WHEAT row is ordered whole at hour 0, out of the dawn bank, instead of
+#: being metered by `BUY_DRIP` like the herd's ration. See the note at the emission for the d0 trace.
+BUY_THE_ROW_AT_DAWN = True
 
 #: Most WHEAT the HERD path may buy in one turn. Separate from `BUY_DRIP` because that one also caps
 #: the schedule row (`min(owed, BUY_DRIP)`), so reusing it varies two things at once -- a sweep on it
@@ -3862,6 +3868,24 @@ def make_agent(schedule, me=0, router=True):
         # and the herd still gets its full ration -- just spread across the hours, which is what the
         # constant's own docstring already claimed it did.
         short = min(max(herd, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
+        # **The schedule's row is an instruction, not a cadence.** `BUY_DRIP` and `FEED_TURN_CAP`
+        # exist to spread the HERD's ration across the day; applying them to `owed` metered the row
+        # too. Traced hour by hour on the Victor grid, seed 11, d0:
+        #
+        #     h00  owed=11  short=1  money=600  cap=12  orders=8
+        #     h04  owed= 7  short=0  money= 33  cap= 0     <- dead for the rest of the day
+        #
+        # Twelve were affordable at dawn and we ordered one; by h04 the bank was $33, the
+        # affordability cap was 0, and the remaining seven were never bought. `buy_product 4/11`,
+        # and since a FEED eats one wheat, only four of the five animals placed that day could eat
+        # -- `feed 4/5`, `care 4/5`, and the herd's missed night inherited by every later day.
+        #
+        # Scoped to hour 0 deliberately. The whole-day version was tried
+        # (`max(min(herd, FEED_TURN_CAP), min(owed, BUY_DRIP))`) and took d7 `buy_product` 14/14 ->
+        # 0/14: spending earlier at every hour starves the later orders. At dawn the bank is at its
+        # maximum for the day and the row is exactly what the schedule says the day needs.
+        if BUY_THE_ROW_AT_DAWN and hour == 0 and owed > 0:
+            short = max(short, owed)
         short = min(short, int(money * 0.5 // quote))
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
