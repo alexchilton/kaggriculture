@@ -1512,7 +1512,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
 
 
 def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0,
-                 arriving=(), unlocked_shops=(), fertilizer_price=None):
+                 arriving=(), unlocked_shops=(), fertilizer_price=None, hold_farmer=False):
     """One turn of the routed plan. The plan is built ONCE, at dawn, and then only walked.
 
     `arriving` is where today's hires will land (`_arrivals`). They are planned as vehicles even
@@ -1706,6 +1706,15 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         and u2 < len(units) and tuple(units[u2]) == tuple(st["route"][0].tile)
     }
     for u, pos in enumerate(units):
+        # The call site is about to overwrite the farmer's action with the spawn-ring step. Walking
+        # its route here anyway CONSUMES the first stop -- a depot draw empties `node.pick` and
+        # decrements the local shed for a PICKUP that is then never emitted -- so the route believes
+        # stock is in hand that is not. The first pen then offers no FEED, `FETCH_THE_FEED_AND_RETURN`
+        # inserts an unplanned shed round trip, and the tour spends 27 turns of a 21-turn budget.
+        # Defer instead of delete: leave the route untouched and start it one turn late.
+        if hold_farmer and u == 0:
+            acts.append(["PASS"])
+            continue
         inv = collections.Counter(invs[u] if u < len(invs) else {})
         st = routes.get(u)
         if st is None:
@@ -2755,7 +2764,7 @@ def make_agent(schedule, me=0, router=True):
                                 seeds, plan_unlocked, money, arriving=arriving,
                                 unlocked_shops=list((obs.get("town") or {}).get("unlocked_shops")
                                                     or []),
-                                fertilizer_price=_fert)
+                                fertilizer_price=_fert, hold_farmer=step_off is not None)
             if step_off is not None and acts:
                 # The plan was cut from where the farmer STANDS, so its first stop is simply reached
                 # a turn later. That is the whole price: one farmer turn against a hand's twenty-three.
