@@ -100,3 +100,26 @@ def test_the_day_does_not_outrun_its_buys_row(bought, day):
         f"d{day} row buys {want} and the day filled {dict(got)}; "
         + ", ".join(f"{c}: bought {g} against a row of {w}" for c, (g, w) in sorted(over.items()))
         + ". The dusk top-up fires on the shed alone and cannot see what the day already bought.")
+
+
+@pytest.mark.parametrize("day", range(DAYS))
+def test_the_day_also_meets_its_buys_row(bought, day):
+    """The other side of the same cap, and the reason it needs one.
+
+    Capping on ORDERS rather than fills cuts both ways. `state["ordered"]` is credited when an order
+    is queued and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race still
+    closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn queues
+    `SELL WOOL 5, SELL FERTILIZER 1, BUY_LAND, BUY_SEED STRAWBERRY 3, BUY_PRODUCT WHEAT 1`.
+    `_process_market` walks the slots in order, so the $1,000 parcel and the seed take everything the
+    wool raised and the wheat, last in the queue, fills nothing -- `buy_product 4/5`, with the bank
+    back to $90 by dusk and nothing spending it.
+    """
+    want = _rows().get(day) or {}
+    if not want:
+        pytest.skip(f"d{day} has no buys row")
+    got = bought.get(day, collections.Counter())
+    short = {c: (int(got.get(c, 0)), int(q)) for c, q in want.items() if int(got.get(c, 0)) < int(q)}
+    assert not short, (
+        f"d{day} row buys {want} and the day filled {dict(got)}; "
+        + ", ".join(f"{c}: bought {g} against a row of {w}" for c, (g, w) in sorted(short.items()))
+        + ". An order that cannot fill still counts against the row, so the day stops retrying.")

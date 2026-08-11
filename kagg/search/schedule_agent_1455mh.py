@@ -1170,6 +1170,11 @@ URGENT_OPS = ()
 #: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
 ANIMAL_OVER_HIRE = True
 
+#: Whether the row-driven wheat order stands down on a turn that is also buying land. BUY_LAND sits
+#: in an earlier order slot and takes the bank with it, so the ration behind it fills nothing while
+#: still counting against the row. See the block in the market phase.
+SKIP_THE_RATION_ON_A_LAND_TURN = True
+
 #: Whether the dusk feed top-up is capped by what the day's `buys` row still owes. A day with no
 #: `buys` row is unaffected -- there the top-up formula is the only rule there is.
 TOPUP_STAYS_INSIDE_THE_ROW = True
@@ -4070,6 +4075,18 @@ def make_agent(schedule, me=0, router=True):
         if BUY_THE_ROW_AT_DAWN and hour == 0 and owed > 0:
             short = max(short, owed)
         short = min(short, int(money * 0.5 // quote))
+        # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
+        # is QUEUED, and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race
+        # still closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn
+        # queues `SELL WOOL 5, SELL FERTILIZER 1, BUY_LAND, BUY_SEED STRAWBERRY 3, BUY_PRODUCT WHEAT
+        # 1`. `_process_market` walks the slots in order, so the $1,000 parcel and the seed take
+        # everything the wool raised and the wheat -- last in the queue -- fills nothing. The row of
+        # five closed at four and the bank was back to $90 by dusk with nothing spending it.
+        #
+        # Skipped rather than resized: the turn a parcel clears is not a turn that can also feed the
+        # herd, and holding the order costs nothing because the row is re-offered every turn.
+        if SKIP_THE_RATION_ON_A_LAND_TURN and any(o and o[0] == "BUY_LAND" for o in orders):
+            short = 0
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             state["ordered"][("feed", "WHEAT")] += short
