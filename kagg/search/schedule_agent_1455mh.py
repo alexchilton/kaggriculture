@@ -429,6 +429,66 @@ def _hires_this_turn(state, row, day, hour, money):
     return n
 
 
+#: Whether the dawn plan is told about a parcel this turn's market phase is CERTAIN to buy.
+#: Off restores the pre-2026-08-11 behaviour, where the day the board grows by half is planned
+#: against the board it had before.
+PLAN_THE_LAND_THAT_ARRIVES = True
+
+
+def _land_this_turn(sched, day, hour, unlocked, money, n_hires):
+    """The quadrant the market block below is about to buy, or None. Read by the DAWN PLAN.
+
+    Same contract as `_hires_this_turn`, for the same reason and with the same failure mode. The env
+    applies unit actions BEFORE the market phase (`kaggriculture.py:922` then `:928`), so a
+    `BUY_LAND` emitted at hour 0 settles at the END of hour 0 -- and the day is planned once, at
+    dawn. Without this the twenty-five tiles that arrive are invisible to the only plan the day gets.
+
+    Measured on the Victor grid, seed 11, day 10 -- the day his schedule takes the second parcel at
+    hour 0 and plants 23 tiles, 18 of them on the new ground:
+
+        plant  ours 1 / tape 23      water  ours 18 / tape 43      idle  ours 128 / tape 78
+
+    on an identical crew of fourteen. `tests/test_the_dawn_plan_owns_the_land_it_buys_today.py` had
+    it as `d10 bought ['SW'] and the dawn plan offered no job on it -- 29 jobs planned, all on
+    ['NE', 'NW']`.
+
+    **Which parcel is not a guess.** `_do_buy_land` takes `LAND_ORDER[len(unlocked) - 1]`
+    (`kaggriculture.py:699-708`), so the name is deterministic from what we already own.
+
+    **CERTAIN, not likely.** `_do_buy_land` returns silently on a short bank, and work planned onto
+    ground that never unlocks is work deleted, not deferred -- every op aimed past the border no-ops
+    for the rest of the day. So this predicts only from the bank standing at dawn, minus the hire
+    bill, because HIRE sits in an earlier order slot than BUY_LAND in the same turn's queue. The
+    market block's own test may still buy on `money + pending`, i.e. funded by the day's sales; that
+    case is deliberately NOT predicted here. On the Victor schedule that is d6 -- $432 at dawn
+    against a $1,000 parcel -- and it stays unplanned, which is the conservative direction.
+    """
+    if not (PLAN_THE_LAND_THAT_ARRIVES and hour == 0):
+        return None
+    owned = len(unlocked) - 1
+    if owned < 0 or owned >= len(LAND_PRICES):
+        return None
+    # The schedule's `land` day is a FLOOR -- the same running total the market block walks, so the
+    # two cannot disagree about whether a parcel is due.
+    need_by, run = None, 0
+    for d in sorted(sched):
+        run += int((sched[d] or {}).get("land", 0) or 0)
+        if run > owned:
+            need_by = d
+            break
+    if need_by is None or day < need_by:
+        return None
+    # `mult * fib(hires_today)` starting at `_fib(0) = 1` -- the same ladder `_hires_this_turn`
+    # walks. Charged here because those orders settle first and the parcel is paid from what is left.
+    bank, a, b = float(money), 1, 1
+    for _ in range(int(n_hires or 0)):
+        bank -= a
+        a, b = b, a + b
+    if bank < LAND_PRICES[owned]:
+        return None
+    return R.LAND_ORDER[owned]
+
+
 def _days_bill(row):
     """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
 
@@ -2596,6 +2656,30 @@ def make_agent(schedule, me=0, router=True):
             # assumed a step the farmer then did not take would orphan a route -- the exact failure
             # `PLAN_THE_CREW_THAT_ARRIVES` exists to avoid.
             step_off, arriving = _clear_the_spawn_ring(units, unlocked, n_hires)
+            # **The ground the plan works is the ground the day will have.** See `_land_this_turn`.
+            # `_clear_the_spawn_ring` above keeps the REAL set deliberately: it decides where hands
+            # physically land this turn, and at hour 0 the parcel is not ours yet.
+            #
+            # The residual cost is stated rather than hidden: a unit routed into the new quadrant at
+            # hour 0 has its MOVE refused (`kaggriculture.py:313`) and loses that one turn, and a
+            # shed cell inside the parcel is treated as a depot an hour early. That is at most one
+            # turn per unit on one day of the season, against the 128 idle unit-turns d10 spends now.
+            _land = _land_this_turn(sched, day, hour, unlocked, money, n_hires)
+            plan_unlocked = (unlocked | {_land}) if _land else unlocked
+            # **Owning the quadrant is not enough -- the CELLS have to read empty too.** They are the
+            # string `"LOCKED"` until `_do_buy_land` rewrites them to `None` (`kaggriculture.py:709-713`),
+            # and `build_nodes` offers a plantable tile only where the cell is empty. Flagging the
+            # quadrant owned while every cell still says LOCKED left d10's dawn plan with exactly the
+            # 29 NW/NE jobs it had before, which is how the first cut of this fix measured as nothing.
+            # Copied, never mutated in place: `tiles` is the live observation and the market block
+            # below reads it (`tiles[b][a] != "LOCKED"`) to place the day's pens.
+            plan_tiles = tiles
+            if _land:
+                plan_tiles = [list(row) for row in tiles]
+                for _y, _row in enumerate(plan_tiles):
+                    for _x, _cell in enumerate(_row):
+                        if _cell == "LOCKED" and R.quadrant_of(_x, _y) == _land:
+                            _row[_x] = None
             # The shop draw decides which crop goes in the ground (`SHOP_ADAPT_CROPS`), so the plan
             # needs it BEFORE the market block below reads it for the sell rule. `shared: True` in
             # the observation spec, so both seats see the same list.
@@ -2605,8 +2689,8 @@ def make_agent(schedule, me=0, router=True):
             # refusing to fertilize a tile because the unit is notionally worth five times what
             # anyone will pay. The quote is in the observation, so it need not be estimated.
             _fert = ((obs.get("market") or {}).get("prices") or {}).get("FERTILIZER")
-            acts = _router_acts(state, sched, day, hour, tiles, units, invs, shed,
-                                seeds, unlocked, money, arriving=arriving,
+            acts = _router_acts(state, sched, day, hour, plan_tiles, units, invs, shed,
+                                seeds, plan_unlocked, money, arriving=arriving,
                                 unlocked_shops=list((obs.get("town") or {}).get("unlocked_shops")
                                                     or []),
                                 fertilizer_price=_fert)

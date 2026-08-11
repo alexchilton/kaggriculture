@@ -73,6 +73,15 @@ TAPES = {
             "data/seed_scripts/top_guys/90494364/schedule.json", "Seb (allegedly)"),
     "oldleader": ("data/seed_scripts/new_leader/90016067.json",
                   "data/seed_scripts/new_leader/schedule.json", "somewhere after"),
+    # **The rebase target, 2026-08-11.** Victor @ Tufa Labs is #2 on the ladder at 3,149.8 and is a
+    # fixed script -- 97-99% of turns identical across seven games on both seats, with byte-identical
+    # season SELL totals -- so the plan reads off one tape without averaging. This is his best of the
+    # ten downloaded, $119,407 against Efe Can Celiksoy's $108,925, seated SECOND.
+    # `townCenterSellInterval = 24`, i.e. the economy we actually play, unlike `seb`/`seb2`.
+    # Why not Seb: his tape is the interval-12 shape (WHEAT 24 / STRAWBERRY 41), his own bank halved
+    # when the economy changed and he withdrew. See `docs/the_ladder_is_two_scripts.md`.
+    "victor": ("data/seed_scripts/top2/91854176.json",
+               "data/seed_scripts/victor/schedule.json", "Victor @ Tufa Labs"),
 }
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 CROPS = ("WHEAT", "STRAWBERRY", "MELON", "TOMATO", "CARROT")

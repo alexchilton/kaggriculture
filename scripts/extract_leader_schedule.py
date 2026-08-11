@@ -34,6 +34,10 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--replay", default="data/seed_scripts/new_leader/90016067.json")
 ap.add_argument("--team", default="somewhere after")
 ap.add_argument("--out", default="data/seed_scripts/new_leader/schedule.json")
+# **The tile coordinates must come from THIS replay's tape.** This path was hardcoded to the old
+# leader's `tape.json`, so extracting any other player wrote a schedule whose day counts were his and
+# whose `plant_tiles`/`build_tiles` were someone else's -- silently, since both files exist and parse.
+ap.add_argument("--tape", default="data/seed_scripts/new_leader/tape.json")
 args = ap.parse_args()
 
 TD = 24
@@ -139,7 +143,7 @@ print(f"{'first plant':>14}: day {min((dd for dd in range(n_days) if day_rows[dd
 # is unstable (one run in three banked $2). The tape defines them exactly; carry them.
 tiles = {}
 try:
-    tape = json.loads(pathlib.Path("data/seed_scripts/new_leader/tape.json").read_text())
+    tape = json.loads(pathlib.Path(args.tape).read_text())
 except FileNotFoundError:
     tape = None
 if tape:

@@ -58,7 +58,21 @@ from . import cover as DP
 #: So the whole-game extension is a LOSS as things stand: d11-d29 is territory this planner was
 #: never tuned on, and it gives back more there than d7-d10 wins. 30 is the intended destination and
 #: it is not ready; 11 is where it currently pays.
-ACTIVE_UNTIL_DAY = 11
+#:
+#: **30 as of 2026-08-11, Alex's call, with that loss on the record.** Two things changed under the
+#: sweep above, and both cut against 11:
+#:
+#:   - It was measured against SEB-era opponents and a Seb-shaped schedule (WHEAT 24). The target is
+#:     now Victor's (WHEAT 139), so the d11-d29 the sweep priced is not the d11-d29 we now play.
+#:   - The d11+ region is what `cover.cover` produces, and on the Victor baseline it OSCILLATES --
+#:     idle unit-turns run 128, 11, 66, 12, 100, 8, 101 across d10-d16 against his 78, 57, 39, 48,
+#:     38, 23, 49, with watering swinging 18, 58, 21, 45, 21, 43, 31 against his 43, 41, 46, 27, 45,
+#:     35, 59. A tile weeds after two days unwatered, so a field watered on that rhythm sits on the
+#:     threshold, and our first weed lands on d12 against a tape that never weeds once.
+#:
+#: So 11 is not a verdict that the sweep planner is worse late; it is a verdict that it was worse
+#: late THERE. Re-measure on the Victor grid before treating either number as settled.
+ACTIVE_UNTIL_DAY = 30
 
 #: Raise instead of returning a plan that leaves work on the board. A DEV INSTRUMENT: on a
 #: workstation an uncovered day should stop the run and be looked at, and on Kaggle a raising agent
