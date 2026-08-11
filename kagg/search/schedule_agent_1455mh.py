@@ -2786,7 +2786,8 @@ def make_agent(schedule, me=0, router=True):
             # bought four animals at turn 0 and four more at turn 1 until the bank was empty, which is why
             # it reached day 1 on $61 and could then never afford a hand again.
             state.update(day=day, assigned={}, hired=0, ordered=collections.Counter(), tour={},
-                         routes={}, crew=-1, seen_urgent=set())   # `pins`, `planted` and `pen_for` survive by design
+                         routes={}, crew=-1, seen_urgent=set(),
+                         dawn_row_sent=False)   # `pins`, `planted` and `pen_for` survive by design
             # `planted` is cumulative for the season, so a day's own progress is the difference from
             # this mark. Only the non-router seed path needs it: under `router` the demand is read off
             # the live PLANT pins, which pop as they are planted and so reconcile themselves.
@@ -4072,7 +4073,20 @@ def make_agent(schedule, me=0, router=True):
         # (`max(min(herd, FEED_TURN_CAP), min(owed, BUY_DRIP))`) and took d7 `buy_product` 14/14 ->
         # 0/14: spending earlier at every hour starves the later orders. At dawn the bank is at its
         # maximum for the day and the row is exactly what the schedule says the day needs.
-        if BUY_THE_ROW_AT_DAWN and hour == 0 and owed > 0:
+        # **A block refused a slot is still the dawn block.** The append below is gated on
+        # `len(orders) < 9`, and on Victor's d7 the h00 queue already holds ten orders -- two
+        # sells, seven hires and the cow -- so the 14-wheat row is dropped on the floor with
+        # $2,512 standing ready to pay for it, and from h01 the `hour == 0` gate hands it to the
+        # 1/turn drip. u1 then drains the shed at h02, u4's depot want `{WHEAT: 3}` is deleted
+        # against a shed reading 0, and the day closes `feed 9/10`, `care 9/10`, `collect_fert
+        # 6/7`. The tape's own cadence on the same day: Victor's h01 queue is also exactly ten,
+        # and he ships `BUY_PRODUCT WHEAT 6` as a block at h02, the first turn with a free slot.
+        # So the boost stays live until the block is actually QUEUED -- not until h00 has passed.
+        # `dawn_row_sent` is set at the append, never by the slot gate refusing it; a partial
+        # send shrunk by the money guard still counts as sent, which is today's behaviour for a
+        # thin bank, and `SKIP_THE_RATION_ON_A_LAND_TURN` zeroing `short` leaves it unsent so a
+        # land day re-offers once the parcel's turn is over.
+        if BUY_THE_ROW_AT_DAWN and owed > 0 and not state.get("dawn_row_sent", False):
             short = max(short, owed)
         short = min(short, int(money * 0.5 // quote))
         # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
@@ -4089,6 +4103,10 @@ def make_agent(schedule, me=0, router=True):
             short = 0
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
+            # The dawn block is SENT the moment any order sized by its boost is queued -- even one
+            # the money guard shrank -- and never by the slot gate refusing it. See the note at the
+            # boost above.
+            state["dawn_row_sent"] = True
             state["ordered"][("feed", "WHEAT")] += short
             state["ordered"][("buys", "WHEAT")] += short
             # Debit at the price we just QUOTED, not the old hardcoded $60. Charging $60 for wheat
