@@ -688,6 +688,27 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
 
     if held > 0 and age >= info["first"] and (info["ongoing"] or _one_shot_is_finished(info, age, room)):
         out.append(("HARVEST", None, held * price))
+    # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
+    # (`kaggriculture.py:454-455`); an ongoing one only collects, so a spent strawberry sits on its
+    # square for the rest of the season while the schedule still wants somewhere to plant.
+    #
+    # The signal is exact and needs no estimate. `_new_crop` starts an ongoing crop at
+    # `max_lifespan_step = -1` (`:211`) and `_daily_refresh_crops` sets it once, to
+    # `(next_day + 1) * turns_per_day`, at the moment `production_count == cd["max_yield"]` (`:789`).
+    # From that step the tile only rots (`:746-752`). So `>= 0` means "will never produce again".
+    #
+    # Emitted AFTER the harvest above, so a spent tile still holding units is stripped before it is
+    # demolished -- `_live_ops` walks the ops in order.
+    #
+    # Priced at the planting it unblocks, exactly as the WEED branch in `build_nodes` prices its own
+    # DIG, and halved for the same reason: clearing ground is worth what goes into it, and only if
+    # something does. Victor digs 30 spent strawberries from d19 on and replants behind them; we hold
+    # the dead tiles and `plant` falls to 3/16 by d23 while `sell` collapses.
+    if (DIG_A_SPENT_ONGOING_CROP and info["ongoing"]
+            and int(cell.get("max_lifespan_step", -1)) >= 0):
+        best = max((plant_prize(c, day) for c in R.CROPS), default=0)
+        if best > 0:
+            out.append(("DIG", None, best * 0.5))
     return out
 
 
@@ -947,6 +968,10 @@ BUILD_THEN_PLACE = True
 #: the ground. Same defect and same shape as `BUILD_THEN_PLACE`: without it the dawn plan cannot see
 #: the 17 waters day 0 creates for itself, and only a replan finds them.
 PLANT_THEN_WATER = True
+
+#: Whether an ongoing crop that has produced its lifetime maximum is offered a DIG, so the
+#: ground it is sitting on can be replanted. See the note in `crop_ops`.
+DIG_A_SPENT_ONGOING_CROP = True
 
 #: Whether a stop that HARVESTS a one-shot crop also carries the PLANT its cleared tile can take.
 #: Third instance of the same shape as `BUILD_THEN_PLACE` and `PLANT_THEN_WATER`, and the same shape
