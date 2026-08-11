@@ -968,6 +968,48 @@ def _order_sells(orders):
     return out
 
 
+#: Whether the day's WHEAT row is queued ahead of the hires, animals and seeds at hour 0.
+#: See `_wheat_row_first`.
+WHEAT_ROW_OUTRANKS_SHOPPING = True
+
+
+def _wheat_row_first(orders, hour):
+    """Hour 0's wheat buy, moved in front of HIRE / BUY_ANIMAL / BUY_SEED. SELLs stay put.
+
+    `buy_product` is a FILL, not an offer. `_process_market` walks the slots in order and
+    `_do_buy_product` re-checks the bank per unit (`kaggriculture.py:666-673`), so a late slot is
+    paid out of whatever the earlier ones left. Measured on the Victor grid, seed 11, d0 h00 --
+    identical quantity, different slot:
+
+        ours  HIRE x4  COW 1  SHEEP 4  MELON 5  WHEAT 5  BUY_PRODUCT WHEAT 11   -> 5 of 11 clear
+        tape  BUY_PRODUCT WHEAT 11  HIRE x4  COW 1  SHEEP 4  WHEAT 5  MELON 5   -> 11 of 11
+
+    A FEED eats one wheat, so those six units are the herd's first night.
+
+    **SELLs are deliberately not moved.** A SELL settles before any atomic order in a LATER slot,
+    which is what lets a thin day fund its own purchases -- the tape takes a $1,000 parcel on a $718
+    bank that way. Sliding the wheat above a sell would break that and buy nothing: the wheat is
+    cheap, and what it needs is to be ahead of the *spending*, not ahead of the income.
+
+    This does not contradict `HIRE_FIRST`, which is about the HOUR a hand is bought. `_hire_cost` is
+    `mult * fib(hires_today)` on a per-DAY counter, so the crew costs the same wherever in the turn
+    it sits, and a hire in slot 5 of hour 0 still works 23 turns.
+    """
+    if not (WHEAT_ROW_OUTRANKS_SHOPPING and hour == 0):
+        return orders
+    first_spend = next((i for i, o in enumerate(orders)
+                        if o and o[0] in ("HIRE", "BUY_ANIMAL", "BUY_SEED")), None)
+    if first_spend is None:
+        return orders
+    wheat = [i for i, o in enumerate(orders)
+             if o and o[0] == "BUY_PRODUCT" and len(o) > 1 and o[1] == "WHEAT" and i > first_spend]
+    if not wheat:
+        return orders
+    moved = [orders[i] for i in wheat]
+    rest = [o for i, o in enumerate(orders) if i not in set(wheat)]
+    return rest[:first_spend] + moved + rest[first_spend:]
+
+
 def _fit_slots(orders, state):
     """The turn's orders, cut to what the env will actually accept, with the losers un-counted."""
     if not FIT_ORDER_SLOTS:
@@ -3991,6 +4033,6 @@ def make_agent(schedule, me=0, router=True):
             orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
-                "market": _order_sells(_fit_slots(orders, state))}
+                "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
 
     return agent
