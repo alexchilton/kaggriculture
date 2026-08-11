@@ -948,9 +948,23 @@ BUILD_THEN_PLACE = True
 #: the 17 waters day 0 creates for itself, and only a replan finds them.
 PLANT_THEN_WATER = True
 
+#: Whether a stop that HARVESTS a one-shot crop also carries the PLANT its cleared tile can take.
+#: Third instance of the same shape as `BUILD_THEN_PLACE` and `PLANT_THEN_WATER`, and the same shape
+#: again as `_land_this_turn`: the board the plan reasons about must be the board the day will have.
+#:
+#: HARVEST on a one-shot crop sets the cell to `None` (`kaggriculture.py:454-455`); on an ongoing
+#: crop, a PASTURE or a COOP it does not, so only the first kind makes room. `_refresh_pins` pins
+#: PLANTs onto ground that is empty at DAWN, which is why d8 planned exactly five: 7 free squares
+#: less 2 builds, against a row of ten. The tape reaches ten by harvesting six during the day.
+#:
+#: Chained onto the node rather than pinned, deliberately. A pin would be worse than useless here:
+#: `build_nodes` skips a pinned tile outright and `_live_ops` returns nothing on one, so pinning a
+#: tile that still holds a crop would delete the very HARVEST that was going to clear it.
+REPLANT_A_CLEARED_TILE = True
+
 
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
-                plantable=None, fertilizer_price=None):
+                plantable=None, fertilizer_price=None, replant=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -970,6 +984,24 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
             kind = cell.get("kind")
             if kind == "PLANT":
                 ops = crop_ops(cell, day, have_fert, fertilizer_price)
+                # **A one-shot harvest is a demolition, so the tile it clears is plantable ground.**
+                # See `REPLANT_A_CLEARED_TILE`. Budgeted from the day's remaining `plants` row, in
+                # iteration order, exactly as `chain_left` budgets placements: the row is a count and
+                # this must not invent one. Priced at `plant_prize` like every other PLANT, so the
+                # combined stop outbids a bare harvest by what the seed is actually worth.
+                if (REPLANT_A_CLEARED_TILE and replant
+                        and not CROP[cell["crop"]]["ongoing"]
+                        and any(o == "HARVEST" for o, _i, _p in ops)):
+                    crop = next((c for c in replant if replant[c] > 0
+                                 and plant_prize(c, day) > 0), None)
+                    if crop is not None:
+                        replant[crop] -= 1
+                        ops = list(ops) + [("PLANT", crop, plant_prize(crop, day))]
+                        if PLANT_THEN_WATER:
+                            ops.extend(crop_ops({"kind": "PLANT", "crop": crop, "planted_day": day,
+                                                 "watered_today": False, "consecutive_unwatered": 0,
+                                                 "yield_units": 0, "fertilized_until_day": -1},
+                                                day, have_fert))
             elif "animal" in cell:
                 ops = animal_ops(cell, day, have_wheat)
             elif kind in ("PASTURE", "COOP"):

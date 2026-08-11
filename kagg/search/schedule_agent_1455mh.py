@@ -1667,11 +1667,32 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     #: "pinned to be planted".
     _plantable = {t for t, p in (pins or {}).items() if p and p[0] == "PLANT"}
 
+    #: **What the cumulative `plants` row still wants and could find no dawn ground for.**
+    #: `_refresh_pins` sites a PLANT only where `tiles[y][x] is None`, so on a full board the row
+    #: silently truncates -- d8 wants ten seeds, has seven free squares, spends two on builds and
+    #: pins exactly five. The shortfall is real ground: the day's own one-shot HARVESTs clear their
+    #: tiles, which is how the tape puts ten seeds on seven squares. Handed to `build_nodes` as a
+    #: budget so a harvest node may carry a PLANT; see `router.REPLANT_A_CLEARED_TILE`.
+    #:
+    #: Counted the same way `_refresh_pins` counts it -- cumulative over days up to today, less what
+    #: is already planted and already pinned -- because a row that failed on a thin board was never
+    #: retried and that is what `state["planted"]` is for.
+    _replant = collections.Counter()
+    if RT.REPLANT_A_CLEARED_TILE:
+        _pinned_plants = collections.Counter(p[1] for p in (pins or {}).values()
+                                             if p and p[0] == "PLANT")
+        for d in sorted(sched):
+            if d <= day:
+                _replant.update(sched[d].get("plants") or [])
+        _replant -= collections.Counter(state["planted"])
+        _replant -= _pinned_plants
+
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
                                           pen_for=state.get("pen_for") or {},
                                           plantable=_plantable,
-                                          fertilizer_price=fertilizer_price)
+                                          fertilizer_price=fertilizer_price,
+                                          replant=collections.Counter(_replant))
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
