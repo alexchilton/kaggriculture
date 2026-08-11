@@ -735,7 +735,17 @@ def produces_tonight(cell, day):
 
 
 #: Whether a FEED is offered only when it buys something. See the note in `animal_ops`.
-FEED_ONLY_WHEN_IT_BUYS_SOMETHING = True
+#:
+#: **OFF since 2026-08-11: the cadence was calibrated on Seb's tape and we are matching Victor's.**
+#: The mechanism's reasoning is sound and its evidence is real -- production never reads `fed_today`,
+#: so on a non-payout night a feed buys only survival. It is simply not what THIS tape does. Victor
+#: feeds every animal every day: 5, 0, 5, 5, 5, 6, 7, 10, 12, 12, 12, 12 against a herd that reaches
+#: twelve, with d1 the only zero and that a two-unit, 47-turn day where neither side feeds.
+#:
+#: Ours tracked him exactly to d6 and broke at d7 -- `FEED_CADENCE_FROM_DAY`, not a coincidence.
+#: `feed 8/10` there and `7/12 9/12 8/12 9/12` after, with CARE mirroring it cell for cell because
+#: `animal_ops` offers CARE only on a pen it is feeding.
+FEED_ONLY_WHEN_IT_BUYS_SOMETHING = False
 
 #: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
 #: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
