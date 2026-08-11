@@ -615,7 +615,11 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
         # the window is worth nothing at all.
         if in_window and room > 0:
             # Worth fertilizing only if the remaining window cannot fill the tile on plain waters.
-            waters_left = info["max_day"] - age + 1
+            # **Clipped to the season, not just to the window.** A tile whose window runs past the
+            # last day is credited with waters nobody will ever give it, and the FERTILIZER it
+            # spends is a PRODUCT that could have been sold instead. `_crop_remaining` and the
+            # window pricer below already clip this way; these two gates did not.
+            waters_left = min(info["max_day"] - age + 1, R.SEASON_DAYS - day)
             if (not fertilized and have_fertilizer and waters_left < room
                     and cell.get("fertilized_until_day", -1) < day):
                 gain = min(room, waters_left * 2) - min(room, waters_left)
@@ -673,7 +677,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
         # fertilizer bonus on a production day. Watering it on any other day is pure walk.
-        produces_tomorrow = (age + 1 >= info["first"]
+        # `day + 1 < R.SEASON_DAYS` because "tomorrow" on the last day is a day that never runs, and
+        # both the fertilizer bonus and the water below are bought purely for that production.
+        produces_tomorrow = (day + 1 < R.SEASON_DAYS
+                             and age + 1 >= info["first"]
                              and (age + 1 - info["first"]) % info["interval"] == 0)
         if not cell["watered_today"]:
             if cell["consecutive_unwatered"] >= 1:
