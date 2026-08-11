@@ -1170,6 +1170,10 @@ URGENT_OPS = ()
 #: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
 ANIMAL_OVER_HIRE = True
 
+#: Whether the dusk feed top-up is capped by what the day's `buys` row still owes. A day with no
+#: `buys` row is unaffected -- there the top-up formula is the only rule there is.
+TOPUP_STAYS_INSIDE_THE_ROW = True
+
 #: Whether the schedule's `seeds` row is a FLOOR on what is offered, independent of how much ground
 #: today can actually plant. See the block in the market phase. Applies to the emission only; the
 #: reservation `seed_bill` stays pin-derived, which is what keeps d0's livestock intact.
@@ -4106,6 +4110,22 @@ def make_agent(schedule, me=0, router=True):
             spare = max(0, carried_now - unfed_now) if TOPUP_COUNTS_HANDS else 0
             gap = (alive + arriving) - int(shed.get("WHEAT", 0)) - spare
             gap = min(gap, FEED_TURN_CAP, int(money // quote))
+            # **And never past what the day's own `buys` row still owes.** The top-up reads the shed
+            # and nothing else, so it cannot see what the day has already bought. Victor's d6 row is
+            # `buys {WHEAT 5}` and he drips exactly five; we take four by h01 and the top-up adds two
+            # more at h18 and h19 -- the first of them against a herd with `unfed 0`, nothing left to
+            # feed tonight. Six for a row of five, and the same over-run on d10 (14/12) and d11 (7/6).
+            #
+            # The row is the plan's statement of the day's ration. This rule exists to catch a row
+            # that is SHORT, not to add to one already met, and a wheat round trip pays the spread
+            # both ways -- the same lesson `NET_THE_TWO_LEGS` records on the sell side.
+            #
+            # A day with no `buys` row keeps the top-up unbounded: there the formula is the only rule
+            # there is.
+            if TOPUP_STAYS_INSIDE_THE_ROW:
+                row_buys = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
+                if row_buys > 0:
+                    gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
             if gap > 0:
                 orders.append(["BUY_PRODUCT", "WHEAT", gap])
                 topup_orders.add(id(orders[-1]))
