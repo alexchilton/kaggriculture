@@ -2963,6 +2963,10 @@ def make_agent(schedule, me=0, router=True):
 
         # ------------------------------------------------------------------ the market, bank-aware
         orders = []
+        # Which BUY_PRODUCT orders came from the DUSK TOP-UP rather than the row. Held by identity
+        # rather than index because `NET_THE_TWO_LEGS` runs after several later appends. Only these
+        # may cancel a sell -- see the netting block for why the row's own buys must not.
+        topup_orders = set()
         # How many mouths there are, needed BEFORE the sell loop so the herd's feed is not sold.
         #
         # **Mouths we will actually FEED, once feeding is not nightly.** `RT.animal_ops` offers a
@@ -3980,6 +3984,7 @@ def make_agent(schedule, me=0, router=True):
             gap = min(gap, FEED_TURN_CAP, int(money // quote))
             if gap > 0:
                 orders.append(["BUY_PRODUCT", "WHEAT", gap])
+                topup_orders.add(id(orders[-1]))
                 state["ordered"][("feed", "WHEAT")] += gap
                 state["ordered"][("buys", "WHEAT")] += gap
                 money -= quote * gap
@@ -4017,7 +4022,13 @@ def make_agent(schedule, me=0, router=True):
             for o in orders:
                 if o and o[0] == "SELL":
                     sells[o[1]] += int(o[2])
-                elif o and o[0] == "BUY_PRODUCT":
+                elif o and o[0] == "BUY_PRODUCT" and id(o) in topup_orders:
+                    # **Only the TOP-UP leg counts as the accident.** The round trip this rule was
+                    # written for is the sell guard and `DUSK_FEED_TOPUP` disagreeing about the same
+                    # stock, which is this order and no other. The row's own `buys` line is not an
+                    # accident: Victor's d5 sells WHEAT 17 at dawn and buys seven singles back
+                    # through the day on purpose, and netting the two deleted seven real sales and
+                    # then, once the counter gave them back, two real purchases instead.
                     buys[o[1]] += int(o[2])
             for prod_ in set(sells) & set(buys):
                 cancel = min(sells[prod_], buys[prod_])
@@ -4028,6 +4039,8 @@ def make_agent(schedule, me=0, router=True):
                     for o in orders:
                         if left <= 0:
                             break
+                        if side == "BUY_PRODUCT" and id(o) not in topup_orders:
+                            continue
                         if o and o[0] == side and o[1] == prod_:
                             take = min(left, int(o[2]))
                             o[2] = int(o[2]) - take
@@ -4039,6 +4052,15 @@ def make_agent(schedule, me=0, router=True):
                     0, state["ordered"][("feed", prod_)] - cancel)
                 state["ordered"][("buys", prod_)] = max(
                     0, state["ordered"][("buys", prod_)] - cancel)
+                # **And the SELL leg the same way, for exactly the same reason.** It was credited
+                # with the full offer when queued, above, and nothing here gave any of it back --
+                # so a day that offered 17 and shipped 10 spent the rest of the day believing its
+                # row was met, and `CUMULATIVE_SELLS` never re-offered the seven. Victor's d5 is a
+                # deliberate 17-at-dawn against seven singles bought back through the day; the
+                # netting is welcome to keep cancelling the overlap, but it may not also mark the
+                # cancelled units as sold.
+                state["ordered"][("sold", prod_)] = max(
+                    0, state["ordered"][("sold", prod_)] - cancel)
             orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
