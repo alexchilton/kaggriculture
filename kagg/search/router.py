@@ -872,7 +872,24 @@ class Node:
         self.prize = sum(p for _o, _i, p in ops)
         self.service = len(ops) + (DEPOT_NODE_EXTRA_SERVICE
                                    if tuple(tile) in _DEPOT_TILES else 0)
-        self.needs = collections.Counter(i for o, i, _p in ops if i and o in DRAWN)
+        # **A BUILD draws nothing.** `BUILD_PASTURE`/`BUILD_COOP` take no item out of the shed
+        # (`kaggriculture.py:486-490`); they cost money and a turn. `DRAWN` carries "BUILD" because
+        # its supply check downstream wants the pin's animal NAME, and `BUILD_THEN_PLACE` writes that
+        # name onto the BUILD op as well as the PLACE that follows it -- so counting both asked the
+        # shed for two animals per pen.
+        #
+        # Measured on the Victor grid, seed 11, d0: u0 drew `COW x2 SHEEP x2` for two pens and u3
+        # drew `SHEEP x6` for three. Ten animals for five pens on a day whose row buys five
+        # (`COW 1, SHEEP 4`). The shed ran dry before the last pen, its PLACE found nothing in hand,
+        # and the day read `place 4/5` against `build_pasture 5/5` -- five pens standing and four
+        # filled -- taking `feed 4/5` and `care 4/5` with it, and every later day inheriting a herd
+        # one head light.
+        #
+        # `router.py`'s own supply check already records the trap ("PLACE only, never BUILD. BUILD is
+        # in DRAWN and carries the animal name too"); `needs` never got the same guard. Fixed here
+        # rather than in `DRAWN` because that tuple is what the supply check reads.
+        self.needs = collections.Counter(i for o, i, _p in ops
+                                         if i and o in DRAWN and o != "BUILD")
         # **A PLACE draws the feed for the animal it is about to put in the pen.**
         # `build_nodes` cannot emit a FEED node for a tile until an animal is standing on it, so the
         # feed that MUST follow a placement is invisible at plan time and no wheat is ever drawn for

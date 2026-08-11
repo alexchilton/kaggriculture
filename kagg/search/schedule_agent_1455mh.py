@@ -3676,10 +3676,29 @@ def make_agent(schedule, me=0, router=True):
             # A hire deferred an hour costs nothing: `hires_today` is a per-DAY counter, so the
             # fibonacci price is the same at hour 1, and the hand simply starts an hour later. A
             # placement deferred loses the feed and the care with it.
+            # **One order per SPECIES, not per head.** `maxMarketOrdersPerTurn` is 10
+            # (`kaggriculture.py:538`), `_parse_order` takes any `n > 0` (`:626-635`) and the lockstep
+            # loop commits one animal per unit-iteration, so `SHEEP 4` fills four pens in ONE slot.
+            #
+            # The cost of not doing this is a slot famine at hour 0, not a price. Victor's d0 h00 is
+            # `BUY_PRODUCT WHEAT 11`, four HIREs, `COW 1`, `SHEEP 4` and both BUY_SEED rows -- nine of
+            # ten slots, the whole day's shopping. Ours was four HIREs and five single-head animal
+            # orders, also nine, and the wheat block below is guarded by `len(orders) < 9` -- so the
+            # day's wheat row was refused for want of a SLOT while the bank still held $3,000. It
+            # then dribbled out from h01 against a bank the hires and animals had emptied, reaching
+            # four of eleven. A FEED eats one wheat, so `feed 4/5` and `care 4/5` on the five animals
+            # placed that day are the same defect one step further down.
+            #
+            # The per-head loop stays for the ACCOUNTING -- affordability, the seed-bill reserve and
+            # the hire eviction still decide one head at a time -- and only the emission is batched.
+            # A partly affordable batch is safe: `_do_buy_animal` re-checks the bank per unit
+            # (`:666-673`) and stops, exactly as the per-order form did.
+            want = 0
             for _ in range(max(0, qty - state["bought"][a])):
                 if money < R.ANIMALS[a]["cost"] + (seed_bill if SEED_BEFORE_LIVESTOCK else 0):
                     continue
-                if len(orders) >= (10 if ANIMAL_OVER_HIRE else 8):
+                # The slot is charged once, for the first head of this species.
+                if want == 0 and len(orders) >= (10 if ANIMAL_OVER_HIRE else 8):
                     if not ANIMAL_OVER_HIRE:
                         continue
                     last = next((i for i in range(len(orders) - 1, -1, -1)
@@ -3688,9 +3707,11 @@ def make_agent(schedule, me=0, router=True):
                         continue
                     orders.pop(last)
                     state["hired"] -= 1
-                orders.append(["BUY_ANIMAL", a, 1])
+                want += 1
                 state["bought"][a] += 1
                 money -= R.ANIMALS[a]["cost"]
+            if want:
+                orders.append(["BUY_ANIMAL", a, want])
 
         # **TAKEN 2026-08-07: order the seed rows dearest crop first.** A BUY_SEED fills only what
         # the bank covers, so under a thin bank the row order decides which crop gets planted, and the
