@@ -1,3 +1,9 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** Measured against the Seb tape (`90494364`), optimal under
+> the OLD `townCenterSellInterval=12` economy. His median bank halved and he has since withdrawn from
+> the ladder (`docs/the_ladder_is_two_scripts.md`, 2,744 ladder seats). The planning-cadence findings
+> below (single dawn plan, the four blind spots) are architecture, not target-dependent, and still
+> stand — only "match the tape op-for-op" as the definition of done is now known to cap the ceiling.
+
 # Planning the day once: four correct diagnoses, three of them net-negative
 
 2026-08-09, seed 11, weeds off, Seb tape `90494364`, measured by

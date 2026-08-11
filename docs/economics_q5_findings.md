@@ -16,6 +16,9 @@ Every number here came from a measurement, and each one names what produced it.
 > `docs/the_market_2026-08-09.md` §2 for the corrected 1.32.6 drain table, and
 > `docs/what_saturates_and_what_does_not_2026-08-09.md` for the corrected per-head animal
 > saturation and the melon-planning bug the old §2/§4 numbers caused.
+>
+> **2026-08-11 addendum.** `docs/what_the_town_will_actually_eat.md` supersedes §2/§4 again, this
+> time with a direct measurement off 87 tapes' closing inventory rather than a computed table.
 
 ---
 

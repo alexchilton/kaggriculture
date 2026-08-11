@@ -1,3 +1,12 @@
+> **SUPERSEDED, added 2026-08-11.** This doc's central conclusion — "we do not need a new day-0-10
+> tape" and "our schedule already matches Seb's build on the levers that matter most" — is
+> contradicted by `docs/the_ladder_is_two_scripts.md`, measured from 2,744 ladder seats: the field
+> plants 108-147 WHEAT tiles a season and our schedule plants 24, which is the single largest gap to
+> the field found so far. Seb's tape (what this doc says we already match) was optimal under the OLD
+> `townCenterSellInterval=12` economy; his median bank halved and he has since withdrawn from the
+> ladder. This doc's 20-episode sample predates that population-scale measurement — read
+> `the_ladder_is_two_scripts.md` first.
+
 # What the leaders actually grow, measured from `data/ladder/leaders_0808/`
 
 20 real episodes from the top of the ladder on 2026-08-08, plus our two named losses (91229682,

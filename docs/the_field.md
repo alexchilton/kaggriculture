@@ -11,6 +11,11 @@ This file exists because "the leaders" get described from memory and the descrip
 > `docs/the_top_five_clusters_2026-08-09.md`, which also show our own ladder position (1,123.5)
 > against the current field floor (~3,117) — read those two before treating this file's field as
 > "close."
+>
+> **2026-08-11 addendum.** `docs/the_ladder_is_two_scripts.md` measures 2,744 ladder seats directly
+> and reconfirms the open-loop finding at population scale: most of the field is scripted, two shared
+> scripts dominate, and the one clearly reactive top player (#1) beats the fixed scripts by ~110
+> rating points through an adaptive herd, not a different opening.
 
 ## The winners submit fixed 720-turn scripts
 

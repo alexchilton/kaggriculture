@@ -9,6 +9,12 @@ Every number below names the script or log that produced it.
 Numbers explicitly marked 1.32.2 are historical and are kept only where the 1.32.6 column sits
 next to them.
 
+> **2026-08-11 addendum.** `docs/what_the_town_will_actually_eat.md` re-measures season absorption
+> directly off 87 recorded ladder tapes' closing inventory, rather than off `MARKET_PARAMS`/`SHOPS`
+> computed here — read it for the current appetite table. It confirms melon and fertilizer are always
+> oversupplied and wheat's book never saturates. `docs/the_ladder_is_two_scripts.md` is the current
+> position on strategy: the field plants 108-147 WHEAT a season, we plant 24.
+
 ## 1. The mechanism — selling is computable, not a judgement call
 
 Three facts from `reference/kaggriculture.py`, together making the sell decision arithmetic:

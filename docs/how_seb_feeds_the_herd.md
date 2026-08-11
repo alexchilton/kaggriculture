@@ -1,3 +1,9 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** Seb's tape was optimal under the OLD
+> `townCenterSellInterval=12` economy; his median bank halved and he has since withdrawn from the
+> ladder (`docs/the_ladder_is_two_scripts.md`, 2,744 ladder seats). The route mechanics below are
+> still an accurate reading of the recorded tape — only the choice to imitate this particular herd
+> and feed cadence, rather than the field's, is now in question.
+
 # How Seb feeds seven animals on day 4
 
 Read straight off tape 91422988, seed 11, Seb's own seat, day 4.

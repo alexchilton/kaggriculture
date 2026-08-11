@@ -12,6 +12,16 @@ Last updated 2026-08-08, on `shaping-potential`.
 > `docs/the_market_2026-08-09.md` for the current, 1.32.6-dated market picture and
 > `docs/the_top_five_clusters_2026-08-09.md` for the current ladder gap (we score 1,123.5 against a
 > field whose floor is ~3,117).
+>
+> **Second version caveat, added 2026-08-11.** The `STATE at last update` block below, and the
+> baseline command it names, judge the agent against Seb's recorded tape. `docs/the_ladder_is_two_scripts.md`
+> (2,744 ladder seats) found that tape was optimal under the OLD `townCenterSellInterval=12` economy —
+> Seb's own median bank halved when the rebalance landed and he has since withdrawn from the ladder.
+> Matching his tape op-for-op is still useful as a bug-finding harness (see the mechanism note on
+> OPEN-1 through OPEN-8), but it is no longer the strategic target. The field plants 108-147 WHEAT
+> tiles a season; our schedule plants 24. See `docs/the_ladder_is_two_scripts.md` for the rebase
+> recommendation (Dmitry Belan or Efe Can Celiksoy) and `docs/what_the_town_will_actually_eat.md` for
+> the current market-appetite picture.
 
 This file exists because items in this project get closed under one name and reopen under another.
 Melon has been opened and closed at least four times.
@@ -266,6 +276,52 @@ anything cut for space. Insufficient real funds is not guarded.
 
 Unblocked as of the green slow suite.
 
+### OPEN-10 — Rebase the schedule off Dmitry Belan or Efe Can Celiksoy, not Seb
+
+Owner: nobody. `docs/the_ladder_is_two_scripts.md`, 2,744 ladder seats.
+
+Seb's tape (`data/seed_scripts/top_guys/90976060/schedule.json`, the plan this repo matches
+op-for-op) was optimal under the OLD `townCenterSellInterval=12` economy: WHEAT 24 / STRAWBERRY 41 /
+MELON 17. His own median bank halved ($137,747 -> $77,737) when the town rebalance landed and he has
+since withdrawn from the ladder. The field's answer to the new economy is the thing he does not do:
+plant 108-147 wheat.
+
+**Dmitry Belan** (35 games, `COW 9..9 SHEEP 4..4 WHEAT 142..143 STRAW 36..37`) is recommended as the
+rebase target — near-zero variance makes it a pure script, so the plan reads noise-free. **Efe Can
+Celiksoy** (53 games, WHEAT 143..146) is an equally clean second source for cross-checking. Not
+THUNDER THUNDER (the #1 by rating): it is reactive (7/30 days identical across its own games; one
+same-seat pair only 1.2% identical), so there is no fixed plan to extract from it — it is a sparring
+opponent and the evidence that an adaptive cow/sheep split is worth roughly 110 rating points on top
+of a fixed script.
+
+This is not the planner, the watering or the market logic; it is the target. Nothing in the
+"matching-the-tape" line of work (OPEN-1 through OPEN-9 above, and the mechanism docs banded
+2026-08-11) needs to be redone — it needs to be repointed at a different tape and re-derived, the way
+`router_tape_repoint_2026-08-09.md` did once already for the 1.32.2 -> 1.32.6 move.
+
+### OPEN-11 — Watering: 61 of our tiles go to weed against the opponent's 0, in a real loss
+
+Owner: nobody. Loss `91888327` (seed unrecorded here, `weedSpawnChance=0.005`,
+`townCenterSellInterval=24`), re-verified 2026-08-11 with `python -u scripts/why_we_lost.py
+data/seed_scripts/ladder/91888327.json --me "alex chilton"`:
+
+```
+WEEDS by origin (CROP = a missed watering, EMPTY = a spawn):
+   US    from CROP  64  from EMPTY   6  cleared   9  DIGs   9  final  61
+   THEM  from CROP  34  from EMPTY  15  cleared  49  DIGs  49  final   0
+```
+
+We lose 64 tiles to a missed watering against their 34, clear 9 of ours against their 49, and finish
+the season with 61 dead tiles standing against their 0. This is a distinct failure from OPEN-4 (the
+strawberries die eleven days too early) — that item is about *when* a tile is allowed to die at
+season end; this one is about *how many* die from under-watering and are then never cleared.
+
+**A claim reported to this session and not independently re-verified in this pass: 44 of 64 losses in
+the loss sample show a weed-driven divergence concentrated on d13 and d16.** No script or log
+producing that aggregate was found under `data/logs/` or `scripts/` as of 2026-08-11 — the per-episode
+figure above is confirmed, the 44-of-64 aggregate is not. Per this file's own ground rule, treat the
+aggregate as UNVERIFIED until a script that reproduces it is committed and named here.
+
 ---
 
 ### OPEN-CLI — carried over from the CLI task list, 2026-08-09
@@ -333,6 +389,8 @@ Do not reopen without new evidence that contradicts the named artifact.
 | C-20 | Dropping the harvest earlier is free money | FALSE. Four arms; the one that worked mechanically moved the first DROP h19 → h5 and still lost $8,292, because `DROP 116 → 137` bought `HARVEST 300 → 294`. A late harvest is already priced. | `experiment_log.md` §20 |
 | C-21 | Pen geometry is a lever | FALSE. His exact tiles buy 2 cells of 150, and the Manhattan sum from (4,4) is 22 for both day-0 blocks. `DEPOT_RING_FIRST` ships off; its money sign reversed on a held-out draw. | `experiment_log.md` §21 |
 | C-22 | `Node.service` under-counting is a bug to fix | It is the packing calibration that matches the tape. Correct prices, worse reproduction, every arm. Both constants ship at 0 and will not move. | `experiment_log.md` §22 |
+| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. | `kagg/search/schedule_agent_1455mh.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
+| C-24 | Fertilizer priced at its $100 base when deciding whether to fertilize | Fixed. The live market quote (`obs["market"]["prices"]["FERTILIZER"]`) is read every turn and threaded into `_router_acts` as `fertilizer_price` — nothing eats fertilizer, so its book only ratchets up ($50 by day 17, $20 by day 26 in 85/85 recorded games), and pricing at base meant refusing to fertilize a tile for a price nobody would pay. Shipped, unconditional (no flag to disable). | `kagg/search/schedule_agent_1455mh.py:2602-2612` |
 
 ---
 

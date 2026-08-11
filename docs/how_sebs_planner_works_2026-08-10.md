@@ -1,3 +1,10 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** Seb's tape was optimal under the OLD
+> `townCenterSellInterval=12` economy. His own median bank halved ($137,747 -> $77,737) when the town
+> rebalance landed and he has since withdrawn from the ladder (`docs/the_ladder_is_two_scripts.md`,
+> measured from 2,744 ladder seats). The route-reconstruction findings below are still correct — the
+> doc reads real recorded actions, not opinion — but the ladder now plants 108-147 WHEAT a season
+> against our 24, and matching Seb's planner exactly no longer means matching the field.
+
 # How Seb's planner works
 
 Measured 2026-08-10 off the four tapes we hold, by reconstructing positions out of the recorded

@@ -1,3 +1,11 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** This doc matches the schedule against Seb's recorded
+> tape, which was optimal under the OLD `townCenterSellInterval=12` economy. Seb's own median bank
+> halved ($137,747 -> $77,737) when the town rebalance landed and he has since withdrawn from the
+> ladder (`docs/the_ladder_is_two_scripts.md`, measured from 2,744 ladder seats). That doc says
+> explicitly: "it is not the planner, the watering or the market logic; it is the target." The bugs
+> found and fixed below are real bugs and still stand — read `the_ladder_is_two_scripts.md` before
+> treating "matches the tape" as the goal. The field plants 108-147 WHEAT tiles a season; we plant 24.
+
 # d4 sell shortfall and d9/d10 place 0/4 — measured 2026-08-10
 
 Everything below is measured on `tape seb2988`, seed 11, `weeds 0.0`, module `schedule_agent_1455mh`,

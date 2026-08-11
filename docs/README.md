@@ -1,5 +1,52 @@
 # docs/ — index
 
+**Consolidated 2026-08-11**, on top of the 2026-08-09 consolidation below.
+The trigger: `scripts/episode_index.py` pulled the official episode datasets for 2026-08-09 and
+-08-10 — 1,372 episodes, 2,744 seats — giving this project its first population-scale read of the
+field, alongside a fresh reading of 87 recorded ladder tapes' closing market state. Two things it
+found overturn the working assumption behind most of this week's "matching-the-tape" work: **Seb's
+tape is not the strategic target** (his own median bank halved when the town rebalance landed, and
+he has since withdrawn from the ladder), and **wheat, not melon or strawberry, is the scarcest thing
+on the board** — the field plants 108-147 WHEAT tiles a season; our schedule plants 24.
+
+**Read `the_ladder_is_two_scripts.md` and `what_the_town_will_actually_eat.md` first.** They are the
+current position on strategy and market economics and supersede the *framing* — not the mechanism
+findings — of everything below built around matching Seb's tape.
+
+| File | What it is |
+|---|---|
+| `the_ladder_is_two_scripts.md` | **Current position on strategy.** 2,744 ladder seats: the field is two shared scripts plus one reactive #1 (THUNDER THUNDER, adaptive cow/sheep, worth ~110 rating points over a fixed script). Plants 108-147 WHEAT against our 24. Names Dmitry Belan or Efe Can Celiksoy as the rebase target, not Seb. |
+| `what_the_town_will_actually_eat.md` | **Current position on market economics.** 87 tapes' closing inventory against `town.unlocked_shops`, not simulation: wheat's book never saturates (closing surplus always negative, $40-59 against a $25 base); melon and fertilizer are always oversupplied (closing surplus always positive) — every player over-plants melon, ourselves included, which makes it a shared inefficiency rather than a losing move. |
+
+## What today's finding changes in the docs below
+
+- **The "matching-the-tape" line of work is not wrong, its target is.** `the_ladder_is_two_scripts.md`
+  says this explicitly: *"It is not the planner, the watering or the market logic; it is the target."*
+  Every planner bug found and fixed in `fable_matching_the_tape_2026-08-10.md`,
+  `how_sebs_planner_works_2026-08-10.md`, `how_seb_feeds_the_herd.md`, `the_day_is_a_cash_ledger.md`,
+  `the_market_cadence_over_all_products_2026-08-10.md`, `plan_once_and_the_dawn_blind_spots_2026-08-09.md`,
+  `handoff_plan_once_2026-08-09.md`, `router_tape_repoint_2026-08-09.md` and
+  `the_tape_column_does_not_replay_his_game_2026-08-09.md` is still real. Each is banded at the top:
+  the tape they match against (Seb's) is a known-suboptimal reference now, not a stand-in for "the
+  top of the ladder."
+- **`what_the_leaders_actually_grow_2026-08-09.md`'s central conclusion is contradicted** — it said
+  "we do not need a new day-0-10 tape" and "our schedule already matches Seb's build on the levers
+  that matter most." Banded SUPERSEDED.
+- **`the_top_five_clusters_2026-08-09.md`'s field description (15 replays, 3 per team) is superseded
+  in scale** by the 2,744-seat sample. Its `counter_meta` (Seb, rank #1 at 3,201.1 in that sample) is
+  the same player whose bank has since halved. Banded.
+- **`SHOP_ADAPT_CROPS` (`kagg/search/schedule_agent_1455mh.py`) is OFF.** Three pairs were tried —
+  `WHEAT<->CARROT`, `TOMATO<->STRAWBERRY`, `STRAWBERRY<->MELON` — and all three failed for reasons
+  recorded in the flag's own docstring; read it before proposing a fourth. `REGISTER.md` C-23.
+- **Fertilizer is now priced off the live market quote, not its $100 base, when deciding whether to
+  fertilize a tile.** Shipped, unconditional. `REGISTER.md` C-24.
+- **Two claims were raised and retracted on 2026-08-11 before ever landing in a doc file** (checked:
+  neither phrase appears anywhere in `docs/`, recorded here so a future session does not rediscover
+  them): **"melon should be 7 tiles"** — the headroom model that produced it treats the town's drain
+  as a cliff when the price curve is a slope, so it under-prices every steep-curve, low-drain product;
+  see `the_ladder_is_two_scripts.md`'s "what was tried on the crop dynamic" section. **"Dripping sales
+  is worth +77% on milk"** — wrong on the premise; the shipped agent already drips sales.
+
 Consolidated 2026-08-09, on top of the 2026-08-08 consolidation below.
 The trigger this time: the ladder moved to `kaggle-environments` 1.32.6 on 2026-08-07/08, which made
 a large fraction of this project's dollar figures wrong by up to 4.67x (melon), and the marketplace
@@ -15,8 +62,8 @@ still exists, and does every number in it say which env version produced it?
 | `architecture.md` | **What the agent actually is today**, the flags that ship off with the numbers that turned them off, and the harness caveats. Restamped 2026-08-09: both simulators fail parity on 1.32.6. |
 | `REGISTER.md` | **The live open/closed list.** Check it before opening anything — items here reopen under new names. Restamped 2026-08-09 with a version caveat on its STATE block. |
 | `the_market_2026-08-09.md` | **The marketplace — mechanism, current shipped status, and the open prescription.** New. Merges six 2026-08-08/09 write-ups; see "What was merged" below. This is the main open topic right now. |
-| `the_top_five_clusters_2026-08-09.md` | The current field, from an outside notebook: three opening clusters, and the real gap (we score 1,123.5, the field floor is ~3,117). Read before believing any older "we are close" framing. |
-| `what_the_leaders_actually_grow_2026-08-09.md` | What the top replays actually plant and sell, on 1.32.6. Also documents that 18 of 20 downloaded "leader" episodes are one public script mirroring itself. |
+| `the_top_five_clusters_2026-08-09.md` | **SUPERSEDED IN SCALE 2026-08-11** — the field, from an outside notebook, 15 replays. Superseded by `the_ladder_is_two_scripts.md` (2,744 seats). Read before believing any older "we are close" framing. |
+| `what_the_leaders_actually_grow_2026-08-09.md` | **SUPERSEDED 2026-08-11** — its conclusion ("we already match Seb's build, no new tape needed") is contradicted: the field plants 108-147 WHEAT, we plant 24. Also documents that 18 of 20 downloaded "leader" episodes are one public script mirroring itself, which still holds. |
 | `what_saturates_and_what_does_not_2026-08-09.md` | Corrected per-product and per-head saturation points on 1.32.6, replacing the stage-1 `DRAIN_UNITS` model. Retracts and corrects its own goose-scaling claim same-day. |
 | `fable_the_discard_problem_2026-08-09.md` | The shed-eviction mechanism, tested rather than assumed: a real day-gating bug fixed, the broader "release the reserve" fix measured mixed (not a win), the router's "unreachable room" claim partially confirmed. |
 | `fable_market_shape_2026-08-09.md` | Seb vs us on FILLS, not offers: the price gap is real but is a product-mix story, not an order-shape one. `LATE_SELL_BIAS` (no selling before hour 16) nearly doubles pool win rate (14.6% -> 27.1%) in an 8-seed A/B — the strongest single result of the day, not yet shipped pending a wider seed sweep. `CAP_SELL_OFFER_SIZE` is a verified-live but under-tested null. Also resolves the 94.4%-vs-14.6% pool comparison as not apples-to-apples. |
@@ -29,6 +76,34 @@ still exists, and does every number in it say which env version produced it?
 | `rl_feasibility.md` | The RL track: what it measured, and why it is parked. |
 | `lessons_carried_over.md` | Orbit Wars post-mortem, distilled. Not version-dependent. |
 | `throughput_measurements.md` | Measured env throughput on the training box. Not version-dependent. |
+
+## Added since the table above was written (2026-08-09 and -10), not previously indexed
+
+The table above stopped at 2026-08-09. These landed after and were never folded in. Grouped by
+whether today's finding bands them.
+
+**Banded 2026-08-11 (TARGET SUPERSEDED — mechanism findings stand, the tape they match is stale):**
+
+| File | What it is |
+|---|---|
+| `router_tape_repoint_2026-08-09.md` | Repointed the router's tape fixture from `seb` (1.32.2) to `seb1326` (1.32.6) and re-derived every asserted day. |
+| `the_tape_column_does_not_replay_his_game_2026-08-09.md` | Proved the harness diverges from Seb's own recorded bank by turn 32 on a one-dollar 1.32.2-vs-1.32.6 charge — a real fidelity bug, still open. |
+| `plan_once_and_the_dawn_blind_spots_2026-08-09.md` | Four blind spots in planning the day once, at dawn, against Seb's tape. |
+| `handoff_plan_once_2026-08-09.md` | Session handoff: the day is now planned once; d0/d1 exact against Seb's tape. |
+| `how_sebs_planner_works_2026-08-10.md` | Route-level reconstruction of Seb's opening from four tapes: open-loop through day 3, reactive from day 4. |
+| `how_seb_feeds_the_herd.md` | Seb's day-4 feed routing, read off tape `91422988`. |
+| `the_day_is_a_cash_ledger.md` | Fixed a `short_of_cash` bug that conflated an already-funded purchase with a real shortfall, diagnosed against Seb's day-4 bill. |
+| `the_market_cadence_over_all_products_2026-08-10.md` | Our fills run 4-8 hours earlier than Seb's, on every product, same direction every time. |
+| `fable_matching_the_tape_2026-08-10.md` | d4 sell shortfall and d9/d10 `place 0/4`, measured against tape `seb2988`. |
+
+**Not banded — mechanism-only, not target-dependent, no economy-sensitive numbers:**
+
+| File | What it is |
+|---|---|
+| `the_book_is_shallow_2026-08-09.md` | Corrects its own same-day mistake: weed spawning is agent-dependent (shifts the RNG stream), so absorption cannot be measured PASS-vs-PASS. Price-curve math and the melon-has-no-shop finding survive. |
+| `parity_restored_on_1326_2026-08-09.md` | Both simulators made exact against 1.32.6 again — four behavioural rule changes fixed (locked-tile movement, DROP/PICKUP/PLACE ordering, shed-capacity caps on BUY, shop unlock with replacement). |
+| `arena_state_leak_2026-08-09.md` | `run_arena` was driving one agent object through every match, corrupting closures across seasons. Fixed; `gate_pool.py` and `arena_gate.py` were never affected. |
+| `fable_the_wheat_churn_2026-08-09.md` | The wheat "churn" is a buy-side day-budget defect: we buy 1,099 units against the field's 266-392. Measured on 66 of our own 1.32.6 (`townCenterSellInterval=24`) replays — already the current economy, not banded. |
 
 `CLAUDE.md` at the repo root holds the rules, the kill criteria, and the "lessons learned the hard
 way" list. It is not superseded by anything here.
@@ -57,6 +132,16 @@ way" list. It is not superseded by anything here.
 - **Before believing a measurement about a mechanic, ask what the code could not express.**
   "Animals do not pay" was an artifact of our own code four separate times.
 - **Prefer a replay to an aggregate whenever the aggregate could be a tie.**
+- **The town centre's cadence halved again on 2026-08-08** (`townCenterSellInterval` 12 -> 24, inside
+  the 1.32.6 move) and Seb's own median bank halved with it ($137,747 -> $77,737); he has since
+  withdrawn from the ladder. His tape is still useful as a bug-finding harness, not as the target —
+  see `docs/the_ladder_is_two_scripts.md`.
+- **We plant a fifth of the wheat the field does.** 24 tiles against the field's 108-147, measured
+  from 2,744 ladder seats. This is the largest single measured gap to the field right now, larger
+  than anything the market or planner work has targeted this week.
+- **Match a technique's sample size before trusting it over a bigger one.** The 20-episode and
+  15-replay field descriptions from 2026-08-09 read the field roughly right in shape but wrong on the
+  one number that mattered (our wheat volume); the 2,744-seat sample is what should be quoted now.
 
 ## What was deleted today (2026-08-09), and why
 

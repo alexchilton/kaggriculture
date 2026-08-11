@@ -1,3 +1,8 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** Measured against Seb's tape (`91422988`), optimal under
+> the OLD `townCenterSellInterval=12` economy. His median bank halved and he has since withdrawn from
+> the ladder (`docs/the_ladder_is_two_scripts.md`, 2,744 ladder seats). The hour-cadence mismatch
+> found below is still real — the target it is measured against is now known to be suboptimal.
+
 # The market cadence, over all products
 
 Measured 2026-08-10, seed 11, tape `91422988`, crew planner on d0-d6.

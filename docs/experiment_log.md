@@ -12,6 +12,8 @@ measurement was made and then not written down. **If you measure something, put 
 > absorption by up to 4.67x on melon. Treat every dollar figure here as dated by its own entry, not
 > as a current baseline. `docs/the_market_2026-08-09.md` holds the current, 1.32.6-dated market
 > findings.
+> **2026-08-11 addendum:** `docs/the_ladder_is_two_scripts.md` and `docs/what_the_town_will_actually_eat.md`
+> are newer still — the current position on strategy and market economics.
 
 Rules for reading it: a score is mean final bank, seat-swapped, on held-out seeds never used for
 tuning, against the named opponent. **Seed variance is ~15%** — identical parameters score $11.5k on

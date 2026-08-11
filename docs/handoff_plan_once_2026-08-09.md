@@ -1,3 +1,9 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** "d0 and d1 are exact" means exact against Seb's tape,
+> which was optimal under the OLD `townCenterSellInterval=12` economy. His median bank halved and he
+> has since withdrawn from the ladder (`docs/the_ladder_is_two_scripts.md`, 2,744 ladder seats). The
+> planner architecture change (one plan per day, at dawn) is real and still stands; exact-match-to-Seb
+> is no longer the same thing as exact-match-to-the-field.
+
 # Handoff, 2026-08-09 evening — the day is planned once, d0 and d1 are exact
 
 Branch `shaping-potential`, HEAD `f5b1e3e`, working tree clean apart from two untracked files that

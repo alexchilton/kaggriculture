@@ -12,6 +12,9 @@ point at described an RL pipeline that is not what ships and has been deleted.
 > `schedule_agent.py` -> `router.py`/`cover.py`) is unchanged; do not quote the dollar figures here
 > as current without re-measuring. See `docs/the_market_2026-08-09.md` for the current market
 > picture and `docs/REGISTER.md` for the version caveat that also applies to its STATE block.
+> **2026-08-11 addendum:** `docs/the_ladder_is_two_scripts.md` and `docs/what_the_town_will_actually_eat.md`
+> are the current position on strategy and market economics, measured from 2,744 ladder seats and 87
+> tapes respectively — read them before treating anything below as a target to hit.
 
 ## What ships
 

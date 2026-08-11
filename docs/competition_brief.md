@@ -56,6 +56,9 @@ by the next reading: the daily episode index on 2026-08-08 read `median_avg_scor
 (`docs/the_top_five_clusters_2026-08-09.md`). We are roughly a third of the way up the field, not
 close to it — read that file before treating any older "the gap is just price realised per unit"
 framing as the whole story.
+**2026-08-11 addendum:** the 15-replay sample above is now superseded in scale by
+`docs/the_ladder_is_two_scripts.md`, measured from 2,744 ladder seats: the ladder top is ~3,210, our
+best-ever submission is 1,257.9, and the field plants 108-147 WHEAT tiles a season against our 24.
 
 ## Baselines, measured locally on 1.32.2
 

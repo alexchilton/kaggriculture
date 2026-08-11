@@ -1,3 +1,10 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** `seb1326` (`90976060`) is itself the tape
+> `docs/the_ladder_is_two_scripts.md` identifies as "his interval-12 shape" — the low-wheat build Seb
+> kept running after the town rebalance, which is why his median bank halved and he has since
+> withdrawn from the ladder (measured from 2,744 ladder seats). The re-derivation work below (day-by-day
+> diffs, the repointing mechanics) is still correct; repointing onto this particular tape is not the
+> fix — see that doc's "best tape to rebase on" for Dmitry Belan / Efe Can Celiksoy instead.
+
 # `tests/test_router.py`: repointing the tape fixture from `seb` to `seb1326`, and re-deriving every asserted day
 
 Task #53.

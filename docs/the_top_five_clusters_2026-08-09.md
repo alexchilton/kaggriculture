@@ -1,3 +1,10 @@
+> **SUPERSEDED IN SCALE, added 2026-08-11.** This is a 15-replay sample (3 per team) from one public
+> notebook. `docs/the_ladder_is_two_scripts.md` measures 2,744 ladder seats from the official episode
+> datasets and is the current position on what the field does — read that one first. `counter_meta`
+> here (Seb, rank #1 at 3,201.1 in this sample) is the same player whose median bank halved and who
+> has since withdrawn from the ladder; see that doc's "why our schedule is the wrong target" before
+> treating Seb as the build to imitate.
+
 # The two private bots beating Kaggriculture's public meta
 
 Shared by Alex on 2026-08-09, verbatim from a public notebook ("The Two Private Bots Beating

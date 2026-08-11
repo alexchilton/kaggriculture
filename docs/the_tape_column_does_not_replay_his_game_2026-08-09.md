@@ -1,3 +1,9 @@
+> **TARGET SUPERSEDED, added 2026-08-11.** The harness-fidelity finding below (our replay of his
+> recorded actions diverges from his recorded bank) is a real, version-skew bug and still stands. But
+> the tape itself is now known to be a poor target regardless: it is Seb's, and Seb's median bank
+> halved when the town rebalance landed and he has since withdrawn from the ladder
+> (`docs/the_ladder_is_two_scripts.md`, 2,744 ladder seats).
+
 # The tape column does not reproduce his game — measured 2026-08-09
 
 **Alex's position, which is correct: the tape is the JSON replay of the game he actually played.
