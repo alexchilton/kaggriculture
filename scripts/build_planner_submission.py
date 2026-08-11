@@ -456,7 +456,22 @@ def standalone():
 #: `kaggle_environments`. Every build died at the import probe and never reached this check. Fixing
 #: the probe is what exposed it, which is worth remembering: a gate that cannot run is not a gate
 #: that passes, and this one had been dark long enough for the season to move $2,290 underneath it.
-REFERENCE = {"seed": 11, "ours": 75595}
+#: **RE-MEASURED 2026-08-11: 75595 was stale and had been failing every build, including HEAD's.**
+#: Built from a detached worktree at `9f1f25e` with no working-tree changes at all, this same check
+#: reported `tape season: bundle $17,170 ... reference $75,595` and `BUILD FAILED`. A tripwire that
+#: fires on an unmodified baseline is not detecting a regression, it is detecting its own staleness,
+#: and while it is red it cannot report a real one -- which is the same "a gate that cannot run is
+#: not a gate that passes" failure recorded directly above, one rung further along.
+#:
+#: The number moved because the fixture's economy did: it was measured against a
+#: `townCenterSellInterval` of 12 and the ladder has run 24 since 2026-08-08, so the town drains a
+#: fraction of what the constant assumes and the same play banks far less.
+#:
+#: This is NOT a tolerance added to make a gate pass -- the real check, `ours == repo`, is untouched
+#: and still demands the bundle reproduce the repo modules to the dollar. It passed on both builds.
+#: What is re-anchored is only the absolute figure, to the current tree measured on the current
+#: economy. Re-measure it whenever the environment version moves, and record the version here.
+REFERENCE = {"seed": 11, "ours": 24603, "interval": 24, "measured": "2026-08-11"}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,

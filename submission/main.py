@@ -3740,13 +3740,27 @@ TOP_UP_FROM_DAY = 7
 TOP_UP_DISCOUNT = 8.0
 
 
-def crop_ops(cell, day, have_fertilizer):
+def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
     FERTILIZE precedes WATER because WATER reads `fertilized_until_day` at the moment it runs.
+
+    `fertilizer_price` is what one unit would fetch RIGHT NOW, and it is the opportunity cost of
+    putting that unit in the ground instead of on the market. Defaulting to `BASE_PRICE` keeps every
+    caller that has not been threaded behaving exactly as before -- see
+    `test_the_default_is_the_old_constant`.
+
+    **Why a live price and not the constant.** Nothing in the game eats fertilizer -- no shop lists
+    it and the town centre is built as `[p for p in PRODUCTS if p != "FERTILIZER"]` -- so its book
+    only ratchets up and its price only falls. Across the 85 recorded games carrying a market trace
+    it is at $50 by day 17 and $20 by day 26, in essentially every one. Valuing it at a flat $100
+    means refusing to fertilize a tile on the grounds that the unit is worth five times what anyone
+    will actually pay for it, and refusing hardest at the end of the season when the tile has least
+    time to earn any other way.
     """
     info = CROP[cell["crop"]]
     price = BASE_PRICE[cell["crop"]]
+    fert_price = BASE_PRICE["FERTILIZER"] if fertilizer_price is None else float(fertilizer_price)
     age = day - cell["planted_day"]
     held = cell.get("yield_units", 0)
     room = info["max_yield"] - held
@@ -3764,7 +3778,7 @@ def crop_ops(cell, day, have_fertilizer):
             if (not fertilized and have_fertilizer and waters_left < room
                     and cell.get("fertilized_until_day", -1) < day):
                 gain = min(room, waters_left * 2) - min(room, waters_left)
-                if gain * price > BASE_PRICE["FERTILIZER"]:
+                if gain * price > fert_price:
                     out.append(("FERTILIZE", "FERTILIZER", gain * price))
                     fertilized = True
             if not cell["watered_today"]:
@@ -3828,7 +3842,7 @@ def crop_ops(cell, day, have_fertilizer):
             elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
         if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
-                and price > BASE_PRICE["FERTILIZER"]):
+                and price > fert_price):
             out.append(("FERTILIZE", "FERTILIZER", price))
 
     if held > 0 and age >= info["first"] and (info["ongoing"] or _one_shot_is_finished(info, age, room)):
@@ -4068,7 +4082,7 @@ PLANT_THEN_WATER = True
 
 
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
-                plantable=None):
+                plantable=None, fertilizer_price=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -4087,7 +4101,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 continue
             kind = cell.get("kind")
             if kind == "PLANT":
-                ops = crop_ops(cell, day, have_fert)
+                ops = crop_ops(cell, day, have_fert, fertilizer_price)
             elif "animal" in cell:
                 ops = animal_ops(cell, day, have_wheat)
             elif kind in ("PASTURE", "COOP"):
@@ -5801,7 +5815,7 @@ def _emit(op, item):
     return [op]
 
 
-def _live_ops(tile, cell, day, inv, pins, seeds):
+def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
     """The ops still worth doing at `tile`, **re-derived from the live board every turn**.
 
     This is the whole trick to committing to a tour without going back to predicting state. The route
@@ -5824,7 +5838,7 @@ def _live_ops(tile, cell, day, inv, pins, seeds):
         return []
     kind = cell.get("kind")
     if kind == "PLANT":
-        ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0)
+        ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price)
     elif "animal" in cell:
         ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
     elif kind in ("PASTURE", "COOP"):
@@ -5884,7 +5898,7 @@ def _claimed_tiles(units, routes, idle, margin):
     return busy
 
 
-def _refresh_pins(state, sched, day, tiles, unlocked):
+def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
     A board task carries its own identity -- the tile *is* the task -- but `PLANT a strawberry` and
@@ -5961,6 +5975,11 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
         if d <= day:
             want.update(sched[d].get("plants") or [])
     live = collections.Counter(v[1] for v in pins.values() if v[0] == "PLANT")
+    # **Float the crop on the shop draw -- see `SHOP_ADAPT_CROPS`.** The COUNT the schedule asks for
+    # is kept exactly; only the crop is re-decided, and only inside a cadence pair so the tour shape
+    # is untouched. Anchored on `planted + live`, which never falls, so this cannot inflate the total.
+    if SHOP_ADAPT_CROPS and day >= CROP_ADAPT_FROM_DAY:
+        want = _adapt_crops(want, state["planted"], live, day, unlocked_shops, LAST_DAY)
     for crop, qty in want.items():
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
@@ -5974,7 +5993,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked):
 
 
 def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0,
-                 arriving=()):
+                 arriving=(), unlocked_shops=(), fertilizer_price=None):
     """One turn of the routed plan. The plan is built ONCE, at dawn, and then only walked.
 
     `arriving` is where today's hires will land (`_arrivals`). They are planned as vehicles even
@@ -5982,7 +6001,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     (`kaggriculture.py:922` then `:928`) -- so a hand bought at hour 0 first acts at hour 1, and a
     planner that waits to see it plans hour 0 for the pre-hire crew and then throws that plan away.
     """
-    pins = _refresh_pins(state, sched, day, tiles, unlocked)
+    pins = _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops)
     # Ground is only worth clearing if something is going into it. See `DIG_ONLY_IF_REPLANTING`.
     plants_left = any((sched.get(d, {}) or {}).get("plants") for d in range(day, LAST_DAY + 1))
     carried = collections.Counter()
@@ -6079,7 +6098,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
                                           pen_for=state.get("pen_for") or {},
-                                          plantable=_plantable)
+                                          plantable=_plantable,
+                                          fertilizer_price=fertilizer_price)
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
@@ -6094,7 +6114,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # the tile is already sitting in the builder's route when the PLACE node appears -- subtracting
     # routed *tiles* silently swallowed every new placement and the trigger never fired once.
     urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
-                                                 pen_for=state.get("pen_for") or {})
+                                                 pen_for=state.get("pen_for") or {},
+                                                 fertilizer_price=fertilizer_price)
               for o, _i in n.ops if o in URGENT_OPS} if URGENT_OPS else set()
     routed = {(n.tile, o) for st in routes.values() for n in st["route"] for o, _i in n.ops}
     fresh = urgent - state["seen_urgent"] - routed
@@ -6336,7 +6357,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 act = [m]
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]
-            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds)
+            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price)
             if not ops:
                 # **Go back for the feed rather than abandon the animal you just placed.**
                 # `SERVE_THE_ANIMAL_IT_PLACES` hangs the FEED and CARE off the placement node, and
@@ -6618,6 +6639,141 @@ SHOP_ADAPT_FROM_DAY = 6
 HERD_FLOOR_COW = 4
 HERD_FLOOR_SHEEP = 1
 
+
+#: **SHOP_ADAPT_CROPS -- float the crop inside a cadence pair on the shop draw. The herd's rule, one
+#: field over.**
+#:
+#: `_refresh_pins` builds its planting target from the schedule's `plants` rows and reads nothing
+#: else, so the same 24 WHEAT / 17 MELON / 41 STRAWBERRY goes into the ground on every board. That is
+#: the identical defect `SHOP_ADAPT_HERD` was written for, and the draw moves crop demand further
+#: than it moves the herd's. Measured over the 87 recorded ladder tapes in
+#: `data/seed_scripts/top_guys`, reading each game's closing `market.inventory` against its own
+#: `town.unlocked_shops` -- units the town removes in a season:
+#:
+#:     STRAWBERRY      387 .. 1282       4 shop types of 8 carry it
+#:     TOMATO          208 ..  924       2 of 8
+#:     CARROT           29 ..  924       2 of 8, but PET_CAFE is single-product so it counts double
+#:     WHEAT           745 .. 1282       5 of 8, the most widely carried
+#:
+#: A 32x swing on carrot is not noise, and it is not a guess: shops are `shared: True` in the
+#: observation, so this is a fact handed to us every turn and currently thrown away.
+#:
+#: **The swap is free only inside a cadence pair.** The herd's swap costs nothing because COW and
+#: SHEEP both build a PASTURE. The crop analogue of "same pen" is "same cadence", because cadence is
+#: what the tour is cut against -- swap a one-shot for an ongoing crop and every watering and harvest
+#: rhythm downstream moves:
+#:
+#:     WHEAT       first_yield_day  2   one-shot   max_yield_day  4
+#:     CARROT      first_yield_day  2   one-shot   max_yield_day  3
+#:     TOMATO      first_yield_day  8   ongoing    interval 1
+#:     STRAWBERRY  first_yield_day 10   ongoing    interval 2
+#:
+#: **MELON is deliberately in no pair.** Its appetite is 29 on every board that exists -- no shop
+#: carries it, so only the town centre eats it, and the 87 tapes close with a melon SURPLUS of +38 to
+#: +158 without exception. Whether to plant melon is therefore a fixed-quantity question that no draw
+#: can inform, and a different one; bundling it here would confound the two.
+SHOP_ADAPT_CROPS = True
+
+#: Pairs whose members are interchangeable at no cost to the routing. Order inside a pair is the
+#: tie-break, so the cheaper seed leads.
+CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
+
+#: Days strictly before this keep the schedule's own crops; from here the mix floats every turn.
+#:
+#: **Day 6, the same day and for the same reason as `SHOP_ADAPT_FROM_DAY`.** Unlocks land on days
+#: 3,6,9,...,24; weighting each by the drain days left to it, 20% of the season's shop demand is
+#: visible at day 3 and 39% at day 6. One draw of eight is too little to commit ground to, two is
+#: enough to move on, and the tapes put Seb's first divergent purchase on exactly day 6.
+#:
+#: Unlike the herd there is no separate numeric floor, and that is not an omission. A floor bounds
+#: the downside of reading the draw wrong; here `min(units, headroom)` already does it -- a crop
+#: whose book is spoken for scores zero rather than negative, so a pair whose demand has gone can
+#: never be pushed past the point where it stops paying, and the day gate protects the opening.
+CROP_ADAPT_FROM_DAY = 6
+
+
+def _adapt_crops(want, planted, live, day, unlocked_shops, last_day=29):
+    """Re-decide the CROP inside each pair; never the number of tiles. Mirrors the herd's split.
+
+    `want` is the schedule's cumulative planting target. Returns a new Counter with the same total
+    per pair and the crops re-aimed at whatever the town now says it will eat.
+
+    **Anchored on ground already committed, which is what caps the total.** The herd anchors its
+    split on `state["bought"]`, because a target recomputed from scratch each turn against a counter
+    that only ever grows buys up to BOTH ceilings as the choice flips -- measured at COW 20 + SHEEP
+    18 against a schedule asking for 21. `planted + live` is the same anchor for ground: it never
+    falls, so the target can only grow, and only up to the count the schedule itself asked for.
+
+    **Greedy one at a time, which is provably right rather than merely careful.** Each tile consumes
+    the headroom that justified it, so the objective is separable and concave in the count per crop
+    -- the case where greedy is optimal. Handing the whole remainder to whichever crop leads on the
+    first tile would ignore the diminishing returns: past enough strawberry the book is spoken for
+    and the next tile should be tomato even on a strawberry board. Recomputed every turn, so the
+    unlocks on days 9, 12, 15, 18, 21 and 24 keep moving the tiles that are still unplanted.
+
+    **Scored in dollars, not units.** The herd could rank on unmet units alone because MILK and WOOL
+    are worth $160 and $200. TOMATO and STRAWBERRY are $60 and $120, so a rule that chased units
+    would trade a strawberry tile for a tomato tile whenever tomato demand ran 2:1 -- which is a
+    loss. What a tile is worth is the demand it can actually capture, priced.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return want
+    out = collections.Counter(want)
+    step_now = day * TPD
+    for pair in CROP_SWAP_PAIRS:
+        anchor = {c: planted.get(c, 0) + live.get(c, 0) for c in pair}
+        # **The remainder is a PAIR total, not a sum of per-crop remainders.** Clamping each crop
+        # separately throws away the surplus of whichever crop the swap has been feeding: once the
+        # schedule's strawberry row has been going into tomato ground, TOMATO stands at `want 0,
+        # anchor 8` and its -8 is discarded, so the pair is handed strawberry's full remainder on top
+        # of the eight tiles it has already spent. Measured on the d0-d16 grid: 38 strawberry AND 22
+        # tomato against a schedule asking for 41 tiles in total.
+        #
+        # This is the same overshoot `state["bought"]` was introduced to stop on the herd, and it
+        # hid here for the same reason it hides everywhere -- the unit test built a fresh state on
+        # every call, so `anchor` was always zero and the clamp never had a negative to drop.
+        floating = max(0, sum(want.get(c, 0) for c in pair) - sum(anchor.values()))
+        if floating <= 0:
+            continue
+        headroom, per_tile = {}, {}
+        for c in pair:
+            price = RT.BASE_PRICE[c]
+            # **A tile is re-sown, so it must be costed over the season, not over one planting.**
+            # `plant_prize` values ONE planting -- 3 units of wheat, 4 of strawberry -- and it is
+            # already 0 once the season cannot finish the crop, which is what stops a late swap
+            # planting something that never matures. But a season-wide headroom runs to the hundreds
+            # of units, so scoring a 3-unit planting against it means saturation never binds and the
+            # rule collapses into a fixed price comparison that ignores the draw entirely. Measured:
+            # every board planted the identical mix.
+            #
+            # A cycle is how long the ground is occupied before it can be re-sown: `max_day` for a
+            # one-shot, and for an ongoing crop the run to its last yield, `first + (max_yield-1) *
+            # interval`. Checked against `kagg.economics.production`, which probed the real env --
+            # TOMATO 11 days a cycle over 30 gives 2 cycles x 4 = 8, and `TILE_YIELD_PER_SEASON`
+            # measures exactly 8.
+            info = RT.CROP[c]
+            cycle = (info["max_day"] if not info["ongoing"]
+                     else info["first"] + (info["max_yield"] - 1) * max(1, info["interval"]))
+            cycles = max(1, (last_day - day) // max(1, cycle))
+            per_tile[c] = cycles * (RT.plant_prize(c, day) / price if price else 0.0)
+            # **Count the shops NOT YET DRAWN.** `town_drain_remaining` counts only what is already
+            # unlocked, which is right for a sell decision and wrong for a planting one: at day 6
+            # that is two draws of eight, so "no carrot shop yet" is weak evidence and committing
+            # the field against it is the largest-regret move on the board.
+            headroom[c] = (town_drain_remaining(c, step_now, unlocked_shops)
+                           + expected_future_drain(c, day, len(unlocked_shops), last_day)
+                           - anchor[c] * per_tile[c])
+        alloc = dict(anchor)
+        for _ in range(floating):
+            # Ties fall to the pair's first member, which is the cheaper seed. A crop whose book is
+            # already spoken for scores 0, so a dead pair simply keeps the schedule's own choice.
+            pick = max(pair, key=lambda c: (min(per_tile[c], max(0.0, headroom[c]))
+                                            * RT.BASE_PRICE[c], -pair.index(c)))
+            alloc[pick] += 1
+            headroom[pick] -= per_tile[pick]
+        for c in pair:
+            out[c] = alloc[c]
+    return out
 
 
 def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
@@ -6986,8 +7142,20 @@ def make_agent(schedule, me=0, router=True):
             # assumed a step the farmer then did not take would orphan a route -- the exact failure
             # `PLAN_THE_CREW_THAT_ARRIVES` exists to avoid.
             step_off, arriving = _clear_the_spawn_ring(units, unlocked, n_hires)
+            # The shop draw decides which crop goes in the ground (`SHOP_ADAPT_CROPS`), so the plan
+            # needs it BEFORE the market block below reads it for the sell rule. `shared: True` in
+            # the observation spec, so both seats see the same list.
+            # **What a fertilizer unit would fetch RIGHT NOW is the cost of putting it in the
+            # ground.** Nothing eats fertilizer, so its book only ratchets up: it is at $50 by day
+            # 17 and $20 by day 26 in 85 of 85 recorded games. Pricing it at the $100 base means
+            # refusing to fertilize a tile because the unit is notionally worth five times what
+            # anyone will pay. The quote is in the observation, so it need not be estimated.
+            _fert = ((obs.get("market") or {}).get("prices") or {}).get("FERTILIZER")
             acts = _router_acts(state, sched, day, hour, tiles, units, invs, shed,
-                                seeds, unlocked, money, arriving=arriving)
+                                seeds, unlocked, money, arriving=arriving,
+                                unlocked_shops=list((obs.get("town") or {}).get("unlocked_shops")
+                                                    or []),
+                                fertilizer_price=_fert)
             if step_off is not None and acts:
                 # The plan was cut from where the farmer STANDS, so its first stop is simply reached
                 # a turn later. That is the whole price: one farmer turn against a hand's twenty-three.

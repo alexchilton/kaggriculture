@@ -581,13 +581,27 @@ TOP_UP_FROM_DAY = 7
 TOP_UP_DISCOUNT = 8.0
 
 
-def crop_ops(cell, day, have_fertilizer):
+def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
     FERTILIZE precedes WATER because WATER reads `fertilized_until_day` at the moment it runs.
+
+    `fertilizer_price` is what one unit would fetch RIGHT NOW, and it is the opportunity cost of
+    putting that unit in the ground instead of on the market. Defaulting to `BASE_PRICE` keeps every
+    caller that has not been threaded behaving exactly as before -- see
+    `test_the_default_is_the_old_constant`.
+
+    **Why a live price and not the constant.** Nothing in the game eats fertilizer -- no shop lists
+    it and the town centre is built as `[p for p in PRODUCTS if p != "FERTILIZER"]` -- so its book
+    only ratchets up and its price only falls. Across the 85 recorded games carrying a market trace
+    it is at $50 by day 17 and $20 by day 26, in essentially every one. Valuing it at a flat $100
+    means refusing to fertilize a tile on the grounds that the unit is worth five times what anyone
+    will actually pay for it, and refusing hardest at the end of the season when the tile has least
+    time to earn any other way.
     """
     info = CROP[cell["crop"]]
     price = BASE_PRICE[cell["crop"]]
+    fert_price = BASE_PRICE["FERTILIZER"] if fertilizer_price is None else float(fertilizer_price)
     age = day - cell["planted_day"]
     held = cell.get("yield_units", 0)
     room = info["max_yield"] - held
@@ -605,7 +619,7 @@ def crop_ops(cell, day, have_fertilizer):
             if (not fertilized and have_fertilizer and waters_left < room
                     and cell.get("fertilized_until_day", -1) < day):
                 gain = min(room, waters_left * 2) - min(room, waters_left)
-                if gain * price > BASE_PRICE["FERTILIZER"]:
+                if gain * price > fert_price:
                     out.append(("FERTILIZE", "FERTILIZER", gain * price))
                     fertilized = True
             if not cell["watered_today"]:
@@ -669,7 +683,7 @@ def crop_ops(cell, day, have_fertilizer):
             elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
         if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
-                and price > BASE_PRICE["FERTILIZER"]):
+                and price > fert_price):
             out.append(("FERTILIZE", "FERTILIZER", price))
 
     if held > 0 and age >= info["first"] and (info["ongoing"] or _one_shot_is_finished(info, age, room)):
@@ -909,7 +923,7 @@ PLANT_THEN_WATER = True
 
 
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
-                plantable=None):
+                plantable=None, fertilizer_price=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -928,7 +942,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 continue
             kind = cell.get("kind")
             if kind == "PLANT":
-                ops = crop_ops(cell, day, have_fert)
+                ops = crop_ops(cell, day, have_fert, fertilizer_price)
             elif "animal" in cell:
                 ops = animal_ops(cell, day, have_wheat)
             elif kind in ("PASTURE", "COOP"):

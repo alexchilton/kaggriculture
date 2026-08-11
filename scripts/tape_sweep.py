@@ -117,6 +117,12 @@ def main():
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--interval", type=int, default=24)
     ap.add_argument("--top", type=int, default=20, help="strongest N recorded seats")
+    #: **`--top` ranks by RECORDED BANK, which is not the same as "who beat us".** Every seat in
+    #: `data/seed_scripts/ladder` is a game we actually lost, and they bank $96k-$105k against the
+    #: archive's $106k-$138k -- so the whole ladder set sits at rank 10 and below and `--top 8`
+    #: faces none of it. Point `--root` at a subdirectory to sweep a specific field.
+    ap.add_argument("--root", default="data/seed_scripts",
+                    help="restrict the field to one directory, e.g. data/seed_scripts/ladder")
     ap.add_argument("--allow-us", action="store_true", help="include our own past agents")
     ap.add_argument("--module", default="kagg.search.schedule_agent_1455mh")
     ap.add_argument("--schedule", default=OURS)
@@ -130,10 +136,11 @@ def main():
         importlib.import_module("kagg.search.crew").ACTIVE_UNTIL_DAY = args.active_until
 
     seeds = [args.first_seed + i for i in range(args.seeds)]
-    field = opponents(interval=args.interval, allow_us=args.allow_us)[:args.top]
+    field = opponents(root=args.root, interval=args.interval, allow_us=args.allow_us)[:args.top]
 
     print(f"module   {args.module}")
     print(f"schedule {args.schedule}")
+    print(f"field    {args.root}")
     print(f"days {args.days}   weeds {args.weeds}   interval {args.interval}")
     print(f"seeds {seeds}")
     print(f"field of {len(field)} recorded seats\n", flush=True)
