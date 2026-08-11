@@ -448,6 +448,38 @@ def _hires_this_turn(state, row, day, hour, money):
 #: against the board it had before.
 PLAN_THE_LAND_THAT_ARRIVES = True
 
+#: Whether a hire that would land walled-in is held back on a day that buys the parcel unlocking it.
+#: See the hire block. OFF restores hiring the whole `hands` row at dawn regardless.
+HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS = True
+
+
+def _unwalled_landing_slots(tiles, units, want):
+    """How many of the next `want` hires can be issued THIS TURN before one lands walled.
+
+    A PREFIX, not a total, and the difference is the whole point. `_spawn_hand`
+    (`kaggriculture.py`) takes the least-occupied shed-access tile, ties broken in
+    `shed_access_tiles()` order, occupancy read at the moment each HIRE settles -- and it does NOT
+    skip a bad square. With the farmer on `(4,4)` the ring fills `(5,4) (4,5) (5,5) (4,4)`, so on one
+    quadrant the walled landing is the THIRD. Counting how many of four are fine gives 3 and still
+    hires the stranded one; stopping before it gives 2, and the top-up places the rest on a later
+    turn once the crew has walked off the ring and the occupancy has changed.
+
+    A tile is walled when no orthogonal neighbour is unlocked. `tiles` is the LIVE board here, never
+    `plan_tiles`: the question is where a hand can walk this turn, and the parcel has not settled.
+    """
+    shed_tiles = R.shed_access_tiles()
+    occ = {t: 0 for t in shed_tiles}
+    for pos in units:
+        if tuple(pos) in occ:
+            occ[tuple(pos)] += 1
+    for n in range(int(want or 0)):
+        x, y = min(occ.items(), key=lambda kv: (kv[1], shed_tiles.index(kv[0])))[0]
+        occ[(x, y)] += 1
+        if not any(0 <= b < len(tiles) and 0 <= a < len(tiles[0]) and tiles[b][a] != "LOCKED"
+                   for a, b in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))):
+            return n
+    return int(want or 0)
+
 #: Whether the dawn plan may count the day's own `sells` row toward a parcel it cannot afford out of
 #: the standing bank. The market block already buys on `money + pending`; this makes the plan use the
 #: same test rather than a strictly more pessimistic one. See `_land_this_turn`.
@@ -3568,12 +3600,32 @@ def make_agent(schedule, me=0, router=True):
         # hires land better spread over three hours than all in one, since `_spawn_hand` reads
         # occupancy at the moment each HIRE settles and by hour 1 the dawn pair has walked off.
         if HIRE_FIRST and day in HIRE_PINNED_DAYS and hour == 0:
-            for _ in range(int(row.get("hands", 0) or 0)):
+            want = int(row.get("hands", 0) or 0)
+            # **A hand walled in for the whole day is a loader; one walled in until lunchtime is a
+            # loss.** `_spawn_hand` fills the ring `(4,4) (5,4) (4,5) (5,5)` by occupancy, and while
+            # NW is the only quadrant `(5,5)` has no unlocked neighbour to step out to. On a day that
+            # buys nothing that is permanent and fine -- d0 strands one, the TAPE strands one, and d0
+            # matches op for op. On a day that buys a parcel it is premature: the parcel is NE and NE
+            # is `(5,5)`'s way out. Victor plays it explicitly, HIRE at h0/h0/h0 and the fourth at
+            # h17, one hour after his BUY_LAND at h16.
+            #
+            # So hold back exactly the hires that would land walled, and let the top-up below place
+            # them once the ground exists. Held, never cancelled: `state["hired"]` is not credited,
+            # so the day still reaches its `hands` row.
+            if HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS and int(row.get("land", 0) or 0) > 0:
+                want = min(want, _unwalled_landing_slots(tiles, units, want))
+            for _ in range(want):
                 orders.append(["HIRE"])
                 state["hired"] += 1
         elif HIRE_FIRST:
             target = int(row.get("hands", 0) or 0)
-            if state["hired"] < target and hour < 8:
+            # **The top-up runs all day on a land day.** `hour < 8` is right for the ordinary drip --
+            # a hand hired at dusk buys nothing -- but the square a held hire is waiting for opens
+            # when the parcel settles, and on this schedule that is h13. Gating the top-up at 8 would
+            # hold the hire back and then never place it.
+            deadline = TPD if (HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS
+                               and int(row.get("land", 0) or 0) > 0) else 8
+            if state["hired"] < target and hour < deadline:
                 shed_tiles = R.shed_access_tiles()
                 occ = {t: 0 for t in shed_tiles}
                 for pos in units:
