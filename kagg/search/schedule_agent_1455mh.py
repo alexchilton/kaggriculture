@@ -36,7 +36,6 @@ can produce. `scripts/build_schedule.py` generates it; `scripts/schedule_ladder.
 """
 
 import collections
-import itertools
 
 from . import cover as DP
 from . import router as RT
@@ -2427,184 +2426,6 @@ SHOP_ADAPT_FROM_DAY = 6
 HERD_FLOOR_COW = 4
 HERD_FLOOR_SHEEP = 1
 
-#: **How many of the schedule's animals become GEESE, swapped in place and as early as possible.**
-#:
-#: `SHOP_ADAPT_HERD` re-decides the cow/sheep split from the shop draw and it works -- across eleven
-#: downloaded ladder games it ran SHEEP 8 on a board draining 716 wool and SHEEP 4 on the boards
-#: draining none. It never gets to decide the ones that matter, because `split` is anchored on
-#: `state["bought"]` (which never falls, deliberately) and the reference schedule buys `SHEEP 4` on
-#: **day 0**, when `town["unlocked_shops"]` is still empty. By day 6 `bought["SHEEP"]` is already 4,
-#: so `HERD_FLOOR_SHEEP = 1` can never bind. Four of the five sheep are a blind bet.
-#:
-#: WOOL is carried by `YARN_STORE` alone -- one shop of eight, the least-supported product in the
-#: game bar MELON, which no shop carries at all:
-#:
-#:     WHEAT 5/8  STRAWBERRY 4/8  MILK 3/8  EGG 2/8  TOMATO 2/8  CARROT 2/8  WOOL 1/8  MELON 0/8
-#:
-#: Measured by `kagg.economics.production.probe_animal` -- one animal, fed daily, harvested whenever
-#: it holds units -- against the prices these games actually paid:
-#:
-#:                 cost   season units   by d10        net by d10
-#:     GOOSE       $300        26 EGG    7 = $455        **+$155**
-#:     COW         $400        11 MILK   2 = $430          +$30
-#:     SHEEP       $500         8 WOOL   2 = $350          -$150
-#:
-#: A goose is the cheapest animal, out-produces a sheep 3.25x, has twice the chance of a buyer
-#: existing, yields from day 4 against a sheep's day 6, and is the only one of the three that has
-#: paid for itself by the day-10 land purchase. Under ignorance -- which day 0 is, exactly -- it
-#: dominates a sheep on every axis at once, so no board reading is needed to prefer it.
-#:
-#: The cow's season total is bigger only at list price. Ten cows into a book draining 537 put MILK at
-#: the $1 floor in five of the eleven games and our realised average was **$48**, against EGG's $65
-#: in a book drained in ten of eleven: `26 x 65 = $1,690` against `11 x 48 = $528`.
-#:
-#: **The swap is in place, so the per-day animal COUNT never changes.** The pen build schedule is
-#: paced to that count, and `BUILD_COOP`/`BUILD_PASTURE` are the same operation on an empty tile
-#: (one turn, no money -- `kaggriculture.py:480,486`), so the geometry the day planner was tuned on
-#: is untouched and only the op name differs.
-#:
-#: Geese are drawn alternately SHEEP, COW, SHEEP, COW... from the earliest rows that carry them, so
-#: `HERD_GEESE = 4` is two sheep and two cows. Sheep lead because they are the dominated animal;
-#: earliest-first because a goose yields from day 4 at `interval 1`, so each day of delay costs it a
-#: unit outright.
-#:
-#: **OFF as of 2026-08-11, on a decisive cross-seed measurement. Do not switch it back on without
-#: re-reading this.** `scripts/goose_sweep.py`, 24 seeds, both seatings, weeds at the ladder default,
-#: each arm against a frozen `HERD_GEESE = 0`:
-#:
-#:      geese  games     win   draw   mean ours  mean theirs  mean margin   seed sd
-#:          0     48  27.1% 45.8%     115,485      115,485            0     2,602
-#:          1     48   0.0%  0.0%     103,123      124,419      -21,296    10,477
-#:          2     48   0.0%  0.0%      89,345      128,881      -39,536    19,388
-#:          3     48   0.0%  0.0%      88,095      128,936      -40,841    19,556
-#:
-#: **Zero wins in 48 games at every count**, monotone in the count, negative on all 24 seeds in both
-#: seatings. The `0` arm is the control and behaves exactly as it must -- identical agents bank
-#: identical money, so 45.8% draws and a margin of 0.
-#:
-#: `mean theirs` RISES with our goose count, 115k -> 129k. We do not merely lose our own revenue; we
-#: hand the opponent the milk book by vacating it. That is the part the per-animal arithmetic could
-#: not see, and it is why a shared-market game cannot be reasoned about one animal at a time.
-#:
-#: **The arithmetic above was built on a cherry-picked game.** It priced a cow at `11 x $48 = $528`
-#: using the realised milk average from episode 92081385, where milk floored. In 92077611 our
-#: realised milk was **$223.81 a unit** -- `11 x $224 = $2,464` on a $400 cow, which beats a goose's
-#: `26 x $65 = $1,690` outright. Milk floors when we flood it, and the answer to flooding it is fewer
-#: cows, not a different species.
-#:
-#: The mechanism is kept, tested and correct: `swap_in_geese` moves both the `animals_bought` and
-#: `places` rows together, and `HERD_GEESE_EARLIEST` gates each bird on a zero-walk cell. If a future
-#: board-reading rule wants a goose -- an EGG drain of 895 with neither seat supplying one is a real
-#: thing, seen in episode 92089778 -- the machinery is here and the flag is the only change needed.
-HERD_GEESE = 0
-
-#: The order geese are taken in, cycled. See `HERD_GEESE`.
-HERD_GEESE_FROM = ("SHEEP", "COW")
-
-#: **The earliest day each successive goose may be bought -- one per zero-walk cell.**
-#:
-#: A pen ON a shed-access tile runs its whole daily loop -- draw feed, feed, care, collect, harvest
-#: -- without a single move (`routines.py`, "the ranch cell"). Off those cells the pen pays a walk
-#: every visit, and a GOOSE is the animal that is visited most: `interval 1`, so it produces every
-#: night, against a COW's every second and a SHEEP's every third.
-#:
-#: So the goose is exactly the animal that must have a zero-walk cell, and there are only four --
-#: of which only ONE is owned at the start, because the other three sit in locked quadrants:
-#:
-#:     (4,4)  NW   0 parcels               day 0
-#:     (5,4)  NE   1 parcel   $1,000       the schedule buys NE on day 6
-#:     (4,5)  SW   2 parcels  $3,000       ~day 10
-#:     (5,5)  SE   3 parcels  $7,000       late, if ever
-#:
-#: Buying a fourth goose does not buy a fourth ranch cell; it buys a nightly-serviced animal on
-#: ordinary ground, which is the worst combination on the board. Measured with four geese all taken
-#: from the earliest rows -- three of them off-cell -- `feed` fell to 4/12 by d8, two birds escaped
-#: on `consecutive_unfed >= 2`, weeds went 2 -> 8 and d16 money halved.
-#:
-#: Pen spots are already allocated shed-access-first (`_pens`), and `swap_in_geese` rewrites the
-#: `places` row in order, so a goose whose row is late enough takes its cell by construction. This
-#: table is what stops one being bought before its cell exists.
-HERD_GEESE_EARLIEST = (0, 6, 10, 21)
-
-
-def swap_in_geese(schedule, geese=None):
-    """A COPY of `schedule` with `geese` of its animals turned into GOOSE, in place and earliest first.
-
-    A copy, because the schedule handed in is Victor's recording and every other reader of that dict
-    would otherwise see the swap too.
-
-    "In place" means the row keeps its animal count: a day that bought two animals still buys two.
-    That matters because the pen build schedule is paced to those counts, so changing them strands
-    an animal in the shed or leaves a pen empty -- and `PLACE` on a missing structure silently
-    no-ops.
-    """
-    geese = HERD_GEESE if geese is None else geese
-    out = {int(d): dict(row) for d, row in schedule.items()}
-    for d in out:
-        out[d]["animals_bought"] = dict(out[d].get("animals_bought") or {})
-        if out[d].get("places"):
-            out[d]["places"] = list(out[d]["places"])
-    days = sorted(out)
-
-    def _take_bought(species, not_before):
-        """Turn one `species` into a GOOSE in the earliest `animals_bought` row at or after `not_before`."""
-        for d in days:
-            if d < not_before:
-                continue
-            row = out[d]["animals_bought"]
-            if int(row.get(species, 0)) > 0:
-                row[species] = int(row[species]) - 1
-                if not row[species]:
-                    del row[species]
-                row["GOOSE"] = int(row.get("GOOSE", 0)) + 1
-                return True
-        return False
-
-    def _take_place(species, not_before):
-        """The same, in the `places` row.
-
-        **`places` is a SECOND statement of the species and both must move together.** The pen
-        planner reads `places`, not `animals_bought` (`schedule_agent:_pens`, `wanted = [a for d ...
-        for a in sched[d]["places"]]`), and pins `("BUILD", a, ...)` from it -- so swapping only the
-        purchase buys a goose and builds it a PASTURE. `PLACE` is a silent no-op on the wrong
-        structure, so the bird sits in the shed for the rest of the season. Measured: five pastures
-        and zero coops on d0, `place 2/5`, `feed 2/5` for a week, season idle 595 -> 1067.
-        """
-        for d in days:
-            if d < not_before:
-                continue
-            for i, a in enumerate(out[d].get("places") or ()):
-                if a == species:
-                    out[d]["places"][i] = "GOOSE"
-                    return True
-        return False
-
-    taken = 0
-    for k in range(max(geese, 0)):
-        # **One goose per zero-walk cell, and not before that cell exists.** See `HERD_GEESE_EARLIEST`.
-        floor = HERD_GEESE_EARLIEST[k] if k < len(HERD_GEESE_EARLIEST) else HERD_GEESE_EARLIEST[-1]
-        for species in itertools.islice(itertools.cycle(HERD_GEESE_FROM), k, k + len(HERD_GEESE_FROM)):
-            # **Both rows or neither.** Checked BEFORE either is touched, because a swap that moves
-            # the purchase and not the pen is exactly the failure this guards: the pen planner reads
-            # `places`, so a half-applied swap buys a goose and builds it a PASTURE, and `PLACE` is a
-            # silent no-op on the wrong structure.
-            has_buy = any(int(out[d]["animals_bought"].get(species, 0)) > 0
-                          for d in days if d >= floor)
-            has_place = any(species in (out[d].get("places") or ())
-                            for d in days if d >= floor)
-            if not (has_buy and has_place):
-                continue
-            _take_bought(species, floor)
-            _take_place(species, floor)
-            taken += 1
-            break
-        else:
-            # No species has both rows available this late. Another goose would have no cell and no
-            # row, so stop rather than pushing one onto ordinary ground.
-            break
-    return out
-
-
 #: **SHOP_ADAPT_CROPS -- float the crop inside a cadence pair on the shop draw. The herd's rule, one
 #: field over.**
 #:
@@ -3082,8 +2903,7 @@ def make_agent(schedule, me=0, router=True):
     pinned, tours are committed, and each stop's ops are re-derived from the live board. `router=False`
     is the earlier per-turn greedy, kept only so the two can be measured on one seed list.
     """
-    # **The species is ours; the count and the cadence are the schedule's.** See `HERD_GEESE`.
-    sched = swap_in_geese(schedule) if HERD_GEESE else {int(k): v for k, v in schedule.items()}
+    sched = {int(k): v for k, v in schedule.items()}
     state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter(),
                  pins={}, routes={}, crew=-1, seen_urgent=set(),
                  planted=collections.Counter(), pen_for={},

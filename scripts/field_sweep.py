@@ -90,8 +90,9 @@ def _play(job):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--flag", default="HERD_GEESE", help="module-level name on schedule_agent_1455mh")
-    ap.add_argument("--values", default="0,2")
+    ap.add_argument("--flag", required=True,
+                    help="module-level name on schedule_agent_1455mh to sweep, e.g. CARROT_LATE")
+    ap.add_argument("--values", required=True, help="comma-separated, e.g. 0,1")
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--first-seed", type=int, default=1300)
     ap.add_argument("--opponents", type=int, default=24)
