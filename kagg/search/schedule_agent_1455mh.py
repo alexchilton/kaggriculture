@@ -2895,6 +2895,12 @@ SELL_CARRY_DAYS = 3
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
 
+#: How many days ahead the FERTILIZER sell reserve looks. 0 restores the old one-day rule.
+#: Three, because `FERTILIZE` sets `fertilized_until_day = day + 2` (`kaggriculture.py:468`) and so
+#: covers a three-day window; the stock has to survive from the day it is collected to the day the
+#: field asks for it. See the note at the reserve itself.
+FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
+
 
 def make_agent(schedule, me=0, router=True):
     """`agent(obs, config) -> action`.
@@ -3405,10 +3411,25 @@ def make_agent(schedule, me=0, router=True):
             # is not what binds: `have` reads `shed[FERTILIZER]`, and on d1 the shed holds ZERO
             # fertilizer on all 24 turns. We collect 4, exactly as he does, and it sits in a hand.
             # The two sales that do happen are on the turns straight after a DROP. See the router.
+            # **The reserve is one day deep and the demand is not.** `crop_ops` offers FERTILIZE only
+            # while a tile is near its producing stretch, so the day's want arrives in a lump:
+            # offered 0 on d11, 2 on d12, 4 on d14, **12 on d16**. A reserve that asks only about
+            # today therefore sells the whole stock into d11's `FERTILIZER: 24` row and leaves d16's
+            # twelve tiles nothing. Measured, dawn shed fertilizer ours/tape:
+            #
+            #     d10 15/15  d11 10/12  d12 4/9  d13 4/12  d14 1/12  d15 4/12  d16 10/12
+            #
+            # We track him exactly to d10 and never recover, on identical production -- `collect_fert`
+            # is 12/12 every one of those days. d16 then routes 12 FERTILIZE stops and fires 6,
+            # because `_inv_take` returns silently on an empty hand (`kaggriculture.py:465`) and the
+            # walk is spent for nothing. Ask the same question over the window a fertilize actually
+            # covers -- `fertilized_until_day = day + 2`, so three days -- instead of only today.
             if prod == "FERTILIZER":
-                want = sum(1 for r in tiles for c in r
-                           if isinstance(c, dict) and c.get("kind") == "PLANT"
-                           and "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(c, day, True)])
+                want = max(
+                    sum(1 for r in tiles for c in r
+                        if isinstance(c, dict) and c.get("kind") == "PLANT"
+                        and "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(c, day + k, True)])
+                    for k in range(FERTILIZER_RESERVE_LOOKAHEAD_DAYS + 1))
                 have = max(0, have - want)
             # **Never sell the herd's feed.** WHEAT is both a crop we grow and the feed we buy, and the
             # sell list dumps whatever the shed holds. Measured per turn on day 13 with eleven animals:
