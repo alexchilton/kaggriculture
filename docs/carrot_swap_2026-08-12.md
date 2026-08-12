@@ -1,5 +1,25 @@
 # The carrot swap, measured on Victor's tape — CLOSED, and it is not the town
 
+> **RETRACTED 2026-08-12, same day. Every arm in this file is invalid.**
+>
+> The schedule's `sells` rows never mention CARROT, so nothing below ever SOLD any carrot it grew.
+> Measured directly: 2 carrot tiles put 6 units (seed 13) and 3 units (seed 14) into the shed and
+> **0 units out of it** for the whole season. Every arm therefore paid the $20 seed, spent the tile
+> and the turns, and banked nothing — a loss by construction, on any crop, whatever the market says.
+>
+> That applies to ALL of it: the tape arms, the 384-game `CARROT_SWAP` pool sweep, the
+> `CARROT_TILES` sweep, and the 2-for-2 substitution. None of them measured carrot's economics.
+>
+> A second, independent defect compounds it: carrot is `max_yield_day 3` against wheat's `4`, and
+> the schedule's harvest cadence is built for wheat, so the tile is visited a day late and does not
+> deliver its 4 units either (6 and 3 units from 2 tiles, against 8 expected).
+>
+> **Carrot is UNTESTED, not disproven.** A real test needs CARROT in the sells row and a harvest on
+> carrot's own clock. The market analysis below (the pocket ledger, the price curves) is still
+> correct as arithmetic and is still the right way to size the prize — it is just not what decided
+> any of these arms.
+
+
 Alex's method call, 2026-08-12: test the crop change on **Victor's tape**, not on our agent.
 Sweeping a crop flag on our agent conflates "is carrot worth planting" with "does our planner cope
 with a different job mix", and our planner's behaviour shifts unpredictably when the job mix changes.
