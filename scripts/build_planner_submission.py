@@ -52,6 +52,10 @@ sys.path.insert(0, ".")
 MODULES = (
     ("kagg.economics.production", "kagg/economics/production.py"),
     ("kagg.search.routines", "kagg/search/routines.py"),
+    # **Before `cover`, which imports it at module scope.** The solved days are data, not code: the
+    # offline visit orders `cover._apply_precomputed` seats. Without them the bundle imports fine and
+    # then plays every day on the greedy, which is a silent 8-day regression rather than a crash.
+    ("kagg.search.solved_days", "kagg/search/solved_days.py"),
     ("kagg.search.cover", "kagg/search/cover.py"),
     # **After `cover`, and it is not optional.** `cover.plan` does `from . import crew as CREW` on
     # every call to pick the assignment routine, so a bundle without it imports fine, passes the

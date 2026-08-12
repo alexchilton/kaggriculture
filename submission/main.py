@@ -11,7 +11,7 @@ import json
 import sys
 import types
 
-_ORDER = ['kagg.economics.production', 'kagg.search.routines', 'kagg.search.cover', 'kagg.search.crew', 'kagg.search.router', 'kagg.search.schedule_agent']
+_ORDER = ['kagg.economics.production', 'kagg.search.routines', 'kagg.search.solved_days', 'kagg.search.cover', 'kagg.search.crew', 'kagg.search.router', 'kagg.search.schedule_agent']
 _PACKAGES = ['kagg', 'kagg.economics', 'kagg.search']
 _SOURCES = {}
 _SOURCES['kagg.economics.production'] = r'''"""What a single tile actually produces over a season.
@@ -1292,6 +1292,143 @@ def build_turn(script, unit):
     ts = np.flatnonzero((ops == OP["BUILD_PASTURE"]) | (ops == OP["BUILD_COOP"]))
     return int(ts[0]) if len(ts) else None
 '''
+_SOURCES['kagg.search.solved_days'] = r'''"""Days solved offline, as visit orders. Generated -- do not hand-edit.
+
+Each day is `{unit_index: [[tile, [op, ...]], ...]}`, the exact assignment and order
+`scripts/solve_day.py` found against `cover.py`'s own cost model. `cover._apply_precomputed`
+seats them; a stop whose job today's board does not have is skipped and the rest still apply.
+
+Solved on seed 11 against tape victor, whose schedule the agent plays. The board has no
+random terrain, so geometry is identical in every game and these matched 100% on seed 14 too.
+
+Coverage against the shipped greedy, jobs seated:
+
+    d12  45/50 -> 50/50      d23  64/74 -> 74/74      d26  49/60 -> 60/60
+    d16  61/61 -> 61/61      d24  49/58 -> 58/58      d27  50/61 -> 61/61
+    d18  69/69 -> 69/69      d25  54/59 -> 59/59
+
+Regenerate with `scripts/solve_day.py` IN DAY ORDER: each solved day changes the next day's
+board, so a fixture must be dumped with every earlier route already installed.
+"""
+
+SOLVED_DAYS = {
+    12: {
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        2: [],
+        3: [],
+        4: [((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 1), ('FERTILIZE', 'WATER'))],
+        5: [((8, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((3, 8), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',))],
+        7: [((5, 3), ('WATER',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('WATER',)), ((1, 2), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER',)), ((1, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',))],
+        10: [((3, 6), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((1, 8), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',))],
+    },
+    16: {
+        0: [((4, 6), ('WATER',)), ((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',))],
+        1: [((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((3, 8), ('WATER',)), ((3, 9), ('WATER',)), ((4, 9), ('WATER',))],
+        2: [((1, 5), ('WATER',)), ((0, 5), ('WATER',)), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',)), ((0, 0), ('WATER',))],
+        3: [((5, 3), ('HARVEST',)), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((8, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((7, 1), ('FERTILIZE', 'WATER'))],
+        4: [((3, 1), ('WATER',)), ((2, 1), ('FERTILIZE', 'WATER')), ((2, 2), ('WATER',)), ((1, 2), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER',)), ((1, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        5: [((6, 1), ('FERTILIZE', 'WATER')), ((6, 0), ('FERTILIZE', 'WATER')), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((9, 4), ('FERTILIZE', 'WATER')), ((9, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        7: [((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((0, 6), ('WATER',)), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((1, 7), ('WATER',))],
+        8: [((5, 1), ('FERTILIZE', 'WATER')), ((5, 0), ('FERTILIZE', 'WATER')), ((4, 0), ('WATER',)), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('FERTILIZE', 'WATER')), ((9, 3), ('FERTILIZE', 'WATER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        10: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('WATER',)), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        11: [],
+        12: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        13: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+    },
+    18: {
+        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('WATER',)), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        1: [],
+        2: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        3: [((4, 6), ('WATER',)), ((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((3, 8), ('WATER',))],
+        4: [((2, 3), ('WATER',)), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((1, 1), ('HARVEST',)), ((1, 0), ('WATER',)), ((0, 0), ('FERTILIZE', 'WATER')), ((0, 1), ('HARVEST',)), ((0, 2), ('WATER',))],
+        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('HARVEST',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER',))],
+        6: [((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',))],
+        7: [],
+        8: [((4, 2), ('WATER',)), ((3, 2), ('WATER',)), ((3, 1), ('FERTILIZE', 'WATER')), ((2, 1), ('WATER',)), ((2, 0), ('WATER',)), ((3, 0), ('WATER',)), ((4, 0), ('FERTILIZE', 'WATER')), ((4, 1), ('WATER',))],
+        9: [((5, 1), ('WATER',)), ((5, 0), ('WATER',)), ((6, 0), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER',)), ((8, 1), ('WATER',)), ((9, 1), ('WATER',)), ((9, 0), ('WATER',)), ((8, 0), ('WATER',)), ((7, 0), ('WATER',))],
+        10: [((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 7), ('WATER',))],
+        11: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+    },
+    23: {
+        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        1: [((3, 5), ('FERTILIZE', 'WATER')), ((2, 5), ('FERTILIZE', 'WATER')), ((2, 7), ('FERTILIZE', 'WATER')), ((2, 8), ('FERTILIZE', 'WATER')), ((1, 8), ('FERTILIZE', 'WATER')), ((1, 9), ('FERTILIZE', 'WATER', 'HARVEST'))],
+        2: [((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('FERTILIZE', 'WATER')), ((0, 0), ('FERTILIZE', 'WATER'))],
+        3: [((8, 4), ('HARVEST',)), ((8, 3), ('HARVEST', 'DIG')), ((8, 2), ('HARVEST', 'DIG')), ((7, 2), ('HARVEST', 'DIG')), ((7, 1), ('HARVEST', 'DIG'))],
+        4: [((4, 6), ('FERTILIZE', 'WATER')), ((3, 6), ('FERTILIZE', 'WATER')), ((3, 7), ('FERTILIZE', 'WATER')), ((3, 8), ('FERTILIZE', 'WATER'))],
+        5: [((5, 2), ('HARVEST',)), ((3, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 2), ('FERTILIZE', 'WATER'))],
+        6: [((2, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((1, 1), ('WATER',)), ((0, 1), ('WATER', 'HARVEST'))],
+        7: [((9, 4), ('HARVEST', 'DIG')), ((9, 3), ('HARVEST', 'DIG')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 1), ('FERTILIZE', 'WATER')), ((9, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        8: [((4, 2), ('FERTILIZE', 'WATER')), ((4, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((4, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('HARVEST', 'DIG')), ((6, 0), ('HARVEST', 'DIG'))],
+        9: [((4, 5), ('HARVEST',)), ((4, 7), ('FERTILIZE', 'WATER')), ((4, 8), ('FERTILIZE', 'WATER')), ((4, 9), ('FERTILIZE', 'WATER', 'HARVEST')), ((3, 9), ('FERTILIZE', 'WATER', 'HARVEST')), ((2, 9), ('FERTILIZE', 'WATER', 'HARVEST'))],
+        10: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        11: [((5, 1), ('HARVEST', 'DIG')), ((6, 1), ('HARVEST', 'DIG')), ((7, 0), ('FERTILIZE', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 1), ('FERTILIZE', 'WATER'))],
+        12: [((1, 4), ('FERTILIZE', 'WATER')), ((1, 3), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('FERTILIZE', 'WATER')), ((0, 6), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER'))],
+        13: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('HARVEST',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 2), ('HARVEST',))],
+        14: [((2, 6), ('FERTILIZE', 'WATER')), ((1, 7), ('FERTILIZE', 'WATER')), ((0, 7), ('FERTILIZE', 'WATER')), ((0, 8), ('FERTILIZE', 'WATER', 'HARVEST')), ((0, 9), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+    },
+    24: {
+        0: [((3, 1), ('WATER',)), ((2, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 0), ('WATER',)), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((5, 3), ('FERTILIZE', 'WATER')), ((5, 2), ('FERTILIZE', 'WATER')), ((6, 2), ('FERTILIZE', 'WATER')), ((7, 1), ('BUILD',)), ((8, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        2: [((4, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 8), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 9), ('HARVEST',)), ((3, 9), ('HARVEST',)), ((2, 9), ('HARVEST',)), ((1, 9), ('HARVEST',))],
+        3: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        4: [((1, 4), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER')), ((0, 6), ('HARVEST',)), ((0, 7), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((1, 8), ('HARVEST',)), ((1, 7), ('HARVEST',))],
+        5: [((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((9, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        6: [((4, 6), ('WATER',)), ((3, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 8), ('HARVEST',)), ((2, 8), ('HARVEST',))],
+        7: [((3, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 6), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 7), ('WATER',))],
+        8: [((4, 2), ('WATER',)), ((2, 2), ('WATER',)), ((1, 1), ('HARVEST', 'DIG')), ((1, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 0), ('WATER',)), ((0, 1), ('HARVEST', 'DIG'))],
+        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('FERTILIZE', 'WATER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('FERTILIZE', 'WATER'))],
+        10: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        11: [((4, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('FERTILIZE', 'WATER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('FERTILIZE', 'WATER'))],
+    },
+    25: {
+        0: [((2, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 7), ('FERTILIZE', 'WATER', 'HARVEST')), ((1, 8), ('WATER',)), ((0, 8), ('FERTILIZE', 'WATER')), ((0, 7), ('FERTILIZE', 'WATER'))],
+        1: [((5, 1), ('FERTILIZE', 'WATER')), ((4, 1), ('FERTILIZE', 'WATER')), ((3, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 0), ('FERTILIZE', 'WATER'))],
+        2: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        3: [((4, 5), ('HARVEST',)), ((4, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 6), ('FERTILIZE', 'WATER'))],
+        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        5: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('HARVEST',)), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        6: [((4, 9), ('FERTILIZE', 'WATER')), ((3, 9), ('FERTILIZE', 'WATER')), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('FERTILIZE', 'WATER')), ((1, 9), ('WATER',)), ((0, 9), ('FERTILIZE', 'WATER'))],
+        7: [((8, 4), ('HARVEST',)), ((8, 3), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 3), ('FERTILIZE', 'WATER')), ((9, 4), ('FERTILIZE', 'WATER'))],
+        8: [((3, 2), ('FERTILIZE', 'WATER')), ((2, 1), ('FERTILIZE', 'WATER')), ((0, 1), ('FERTILIZE', 'WATER', 'DIG')), ((0, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [((5, 3), ('WATER',)), ((5, 2), ('HARVEST',)), ((6, 2), ('HARVEST',)), ((6, 1), ('FERTILIZE', 'WATER')), ((6, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('FERTILIZE', 'WATER')), ((4, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        10: [((2, 3), ('FERTILIZE', 'WATER')), ((1, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((1, 2), ('FERTILIZE', 'WATER')), ((2, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        11: [((1, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        12: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+    },
+    26: {
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('WATER', 'HARVEST', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((6, 1), ('FERTILIZE', 'WATER')), ((5, 1), ('WATER',)), ((4, 1), ('WATER',))],
+        2: [((2, 5), ('FERTILIZE', 'WATER')), ((2, 3), ('FERTILIZE', 'WATER')), ((2, 1), ('FERTILIZE', 'WATER')), ((1, 1), ('FERTILIZE', 'WATER')), ((1, 2), ('FERTILIZE', 'WATER')), ((0, 2), ('FERTILIZE', 'WATER'))],
+        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((7, 2), ('WATER',)), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        4: [((4, 7), ('FERTILIZE', 'WATER')), ((3, 7), ('FERTILIZE', 'WATER')), ((3, 8), ('HARVEST', 'DIG')), ((2, 8), ('HARVEST', 'DIG')), ((1, 8), ('HARVEST', 'DIG')), ((1, 7), ('HARVEST', 'DIG'))],
+        5: [((4, 5), ('WATER',)), ((4, 8), ('FERTILIZE', 'WATER')), ((4, 9), ('HARVEST', 'DIG')), ((3, 9), ('HARVEST', 'DIG')), ((2, 9), ('HARVEST', 'DIG')), ((1, 9), ('HARVEST', 'DIG'))],
+        6: [((3, 5), ('FERTILIZE', 'WATER')), ((3, 6), ('FERTILIZE', 'WATER')), ((2, 6), ('FERTILIZE', 'WATER')), ((0, 6), ('HARVEST', 'DIG')), ((0, 7), ('HARVEST', 'DIG')), ((0, 8), ('HARVEST', 'DIG')), ((0, 9), ('WATER',))],
+        7: [((8, 4), ('WATER',)), ((8, 3), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((9, 3), ('WATER',)), ((9, 4), ('FERTILIZE', 'WATER'))],
+        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('FERTILIZE', 'WATER')), ((3, 0), ('WATER',)), ((2, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('FERTILIZE', 'WATER'))],
+        9: [((5, 2), ('WATER',)), ((5, 0), ('FERTILIZE', 'WATER')), ((6, 0), ('FERTILIZE', 'WATER')), ((7, 0), ('FERTILIZE', 'WATER')), ((8, 1), ('FERTILIZE', 'WATER')), ((9, 1), ('FERTILIZE', 'WATER'))],
+        10: [],
+    },
+    27: {
+        0: [((4, 1), ('WATER', 'HARVEST', 'HARVEST')), ((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('WATER', 'HARVEST', 'HARVEST')), ((4, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('WATER', 'HARVEST')), ((5, 1), ('WATER', 'HARVEST', 'HARVEST'))],
+        1: [((4, 6), ('FERTILIZE', 'WATER')), ((3, 6), ('FERTILIZE', 'WATER')), ((2, 7), ('FERTILIZE', 'WATER')), ((3, 7), ('FERTILIZE', 'WATER')), ((4, 7), ('FERTILIZE', 'WATER')), ((4, 8), ('FERTILIZE', 'WATER'))],
+        2: [((4, 5), ('HARVEST',)), ((3, 5), ('FERTILIZE', 'WATER')), ((2, 5), ('WATER',)), ((2, 6), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER')), ((0, 9), ('WATER', 'HARVEST', 'HARVEST'))],
+        3: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('HARVEST',)), ((9, 4), ('WATER', 'HARVEST', 'HARVEST'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER', 'HARVEST', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        5: [((4, 2), ('FERTILIZE', 'WATER')), ((3, 2), ('WATER', 'HARVEST', 'HARVEST')), ((2, 2), ('FERTILIZE', 'WATER')), ((2, 1), ('WATER', 'HARVEST', 'HARVEST')), ((2, 0), ('WATER',)), ((1, 0), ('FERTILIZE', 'WATER'))],
+        6: [((1, 4), ('FERTILIZE', 'WATER')), ((1, 3), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER', 'HARVEST', 'HARVEST')), ((0, 2), ('FERTILIZE', 'WATER')), ((0, 1), ('FERTILIZE', 'WATER')), ((0, 0), ('FERTILIZE', 'WATER'))],
+        7: [((5, 2), ('HARVEST',)), ((6, 2), ('HARVEST',)), ((7, 2), ('WATER', 'HARVEST', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST')), ((8, 1), ('FERTILIZE', 'WATER')), ((9, 1), ('FERTILIZE', 'WATER'))],
+        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('HARVEST',)), ((8, 3), ('WATER', 'HARVEST')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 3), ('WATER', 'HARVEST', 'HARVEST'))],
+        9: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST', 'HARVEST')), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('FERTILIZE', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        10: [((1, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('FERTILIZE', 'WATER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 1), ('WATER',))],
+    },
+}
+'''
 _SOURCES['kagg.search.cover'] = r'''"""One day as what it actually is: a scheduling problem with constraints. Cover the job list.
 
     resources     k hands, each with `budget` turns (`TURNS_PER_DAY - hour`)
@@ -1484,6 +1621,23 @@ SUPPLY_LIMITS_EVERY_DRAW = False
 #: job can be planned. PLACE and BUILD are deliberately absent: their `needs` carry feed wheat that
 #: the op does not consume, and constraining on it refused animal placements outright.
 SUPPLY_CHECKED_OPS = ("FEED", "FERTILIZE")
+
+#: Days on which a job whose tile dies tonight is kept OFF the tail of a tour.
+#:
+#: `at_risk` already decides which jobs get COVERED -- the greedy passes run at-risk jobs early --
+#: but it never touched WHERE in the tour they land, and `slot` takes the cheapest position, which
+#: for an outlying tile is the end. That is the position that evaporates when a hand wakes one or two
+#: turns from where its tour was priced. Every tile lost in a season dies that way.
+#:
+#: Scoped rather than global BY MEASUREMENT. Global is a loss (weeds 3 -> 5, two NEW weeds at d10):
+#: on a genuinely full tour reordering does not save a stop, it only changes which stop is lost.
+#: These are the days where an earlier slot exists inside the same budget. Measured, seed 11:
+#: weeds one fewer EVERY day from d11, `strawb` d11 36/36 exact, `wheat` d13-d17 13/13 exact.
+#:
+#: A hard-coded day list, tuned on one seed, and expected to dissolve once the packer chooses
+#: positions properly. Empty restores prior behaviour. NOT ladder-tested.
+AT_RISK_NOT_LAST_DAYS = (11, 12, 13, 18, 19)
+AT_RISK_TAIL_PENALTY = 2
 
 #: Sentinel for "not in the cache", so a genuine `None` from `slot` -- which means "this job does
 #: not fit this unit at all", the single most common answer -- is cached instead of recomputed.
@@ -2182,6 +2336,124 @@ RANK_HOME_DAYS = frozenset({4})
 TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
 
 
+#: **Routes solved OFFLINE and replayed, keyed by day.** `{day: {unit: [(tile, (ops...)), ...]}}`
+#:
+#: The board has no random terrain -- `_initial_tile` is a pure function of coordinates and the only
+#: RNG in `kaggriculture.py` (line 858) drives the shop draw and weed spawns -- so geometry, depots
+#: and every walking distance are identical in every game. A day solved once is reusable, and the
+#: 1s/turn `actTimeout` stops being a limit on route QUALITY: solve it offline with as long as it
+#: takes (`scripts/solve_day.py`), ship the answer. See
+#: `docs/the_route_is_precomputable_2026-08-12.md`.
+#:
+#: Measured on d12, seed 11: the greedy seats 45 of 47 and leaves `(9,0)` and `(9,1)` while 51 turns
+#: of slack sit across the crew. The offline solve seats 47/47 in 169 turns with TWO hands never
+#: leaving the shed.
+#:
+#: **Never silently.** Every stop a day could not fill is recorded in `PRECOMPUTED_MISSES`, so a
+#: route that did nothing is distinguishable from a route that ran -- a silent no-op reads exactly
+#: like a measured null, which this project has been bitten by.
+#:
+#: Loaded from `solved_days.py`, which is generated by `scripts/solve_day.py`. Set to `{}` to switch
+#: the whole mechanism off and run the greedy everywhere.
+from .solved_days import SOLVED_DAYS                                          # noqa: E402
+
+PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
+                          for u, seq in units.items()}
+                      for d, units in SOLVED_DAYS.items()}
+
+#: Days where a precomputed route was offered and did not fit today's jobs. Read it after a run --
+#: if the day under test is in here, the route never ran and the numbers mean nothing.
+PRECOMPUTED_MISSES = []
+
+
+def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver, rush, due):
+    """Seat `jobs` per `PRECOMPUTED_ROUTES[day]`. Partial matches are kept, not thrown away.
+
+    **This used to be all-or-nothing and that made the routes useless off their own tape.** A solved
+    day names each stop by `(tile, ops)`. Seeds do not move that list -- the board has no random
+    terrain, so d12 and d16 matched exactly on seed 11 and seed 14 alike -- but an OPPONENT does,
+    because our shed depends on what the market gave us and `build_nodes` gates animal work on
+    having wheat. Measured against three other tapes, d12 and d16 each missed by exactly ONE job:
+
+        tape victor seed 11   MISSES: []          tape seb        (12, "no job (6,4) FEED/CARE/...")
+        tape victor seed 14   MISSES: []          tape seb1326    identical
+                                                  tape oldleader  identical
+
+    One job in sixty, and the whole solved day was discarded for it. Now a stop the day cannot fill
+    is skipped and everything else is still seated; the jobs left over go through the same cheapest
+    feasible insertion the greedy uses, so they are routed rather than dropped.
+
+    A crew SMALLER than the plan expects is not a bail either: unit indices are positional, so a tour
+    written for a hand that does not exist cannot be seated on someone else, but its jobs are simply
+    left for the insertion below rather than thrown away with the rest of the day.
+
+    The one remaining fallback is a plan that matches NOTHING, which means it describes a board this
+    game never reached. There the greedy is the known-good path and this has no information to add.
+    """
+    plan = PRECOMPUTED_ROUTES.get(day)
+    if not plan:
+        return None
+    pool = {}
+    for j in jobs:
+        pool.setdefault((tuple(j.tile), tuple(o[0] for o in j.ops)), []).append(j)
+    routes = {u: [] for u in range(len(units))}
+    missed, no_unit = [], 0
+    for u_str, work in plan.items():
+        u = int(u_str)
+        for tile, ops in work:
+            key = (tuple(tile), tuple(ops))
+            if not pool.get(key):
+                missed.append(key)
+                continue
+            if u >= len(units):
+                no_unit += 1          # the hand never arrived; its work goes through insertion
+                continue
+            routes[u].append(pool[key].pop())
+    if no_unit:
+        PRECOMPUTED_MISSES.append((day, "crew is %d units, plan wants more; %d stop(s) re-homed"
+                                   % (len(units), no_unit)))
+    if missed:
+        PRECOMPUTED_MISSES.append((day, "skipped %d stop(s) the board does not have: %s"
+                                   % (len(missed), missed[:4])))
+
+    seated = {id(j) for work in routes.values() for j in work}
+    left = [j for j in jobs if id(j) not in seated]
+    if left:
+        left = _insert_leftovers(routes, left, units, budget, depots, carry, wanted, deliver, rush,
+                                 due)
+    return routes, left
+
+
+def _insert_leftovers(routes, left, units, budget, depots, carry, wanted, deliver, rush, due):
+    """Cheapest feasible insertion for jobs a partial route did not seat. Returns what would not fit.
+
+    Priced through `materialise`/`turns` like everything else here, so an insertion that claims to
+    fit really does fit the same cost model the tour was solved under.
+    """
+    def cost(u, seq):
+        tour = materialise(units[u], list(seq), (carry or {}).get(u), depots, wanted, deliver, rush,
+                           due=due)
+        return None if tour is None else turns(units[u], tour)
+
+    over = []
+    for j in sorted(left, key=lambda j: (-int(bool(j.at_risk)), -int(bool(j.required)))):
+        best = None
+        for u, seq in routes.items():
+            base = cost(u, seq) or 0
+            for pos in range(len(seq) + 1):
+                c = cost(u, seq[:pos] + [j] + seq[pos:])
+                if c is None or c > budget[u]:
+                    continue
+                if best is None or c - base < best[0]:
+                    best = (c - base, u, pos)
+        if best is None:
+            over.append(j)
+            continue
+        _d, u, pos = best
+        routes[u] = routes[u][:pos] + [j] + routes[u][pos:]
+    return over
+
+
 def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
           day=None,
           rush=False, due=None):
@@ -2193,6 +2465,9 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     """
     depots = tuple(depots) or SHED
     carry = carry or {}
+    pre = _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver, rush, due)
+    if pre is not None:
+        return pre
     routes = {u: [] for u in range(len(units))}
     left = list(jobs)
     stock = collections.Counter(supply) if supply is not None else None
@@ -2292,6 +2567,9 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
             if rank_home:
                 rank = turns(units[u], materialise(units[u], seq, load(u), depots, wanted, True,
                                                    rush, wanted_only=True, due=due))
+            if (day in AT_RISK_NOT_LAST_DAYS and j.at_risk
+                    and i == len(base) and len(base) > 0):
+                rank += AT_RISK_TAIL_PENALTY
             if best is None or rank < best[0]:
                 best = (rank, i)
         return (cost(u, base[:best[1]] + [j] + base[best[1]:]), best[1]) if best else None
@@ -4044,6 +4322,18 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
         produces_tomorrow = (day + 1 < R.SEASON_DAYS
                              and age + 1 >= info["first"]
                              and (age + 1 - info["first"]) % info["interval"] == 0)
+        # **Decided BEFORE the water is priced, and appended first, exactly as the one-shot branch
+        # above does it.** The water clause below reads `fertilized`, so testing it first meant a
+        # tile the plan had already decided to fertilize was priced as though it had not been: the
+        # stop shipped as `('FERTILIZE',)` and `_live_ops`, re-reading the cell after the FERTILIZE
+        # had run, found the water it unlocks and spent a turn nobody budgeted. On seed 11 day 16
+        # that was three turns off u9 and three off u13, and the tiles their tours could no longer
+        # reach -- (8,0) and (9,0) -- weeded. Order in `out` matters for the same reason it does
+        # above: WATER reads `fertilized_until_day` at the moment it runs.
+        if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
+                and price > fert_price):
+            out.append(("FERTILIZE", "FERTILIZER", price))
+            fertilized = True
         if not cell["watered_today"]:
             if cell["consecutive_unwatered"] >= 1:
                 out.append(("WATER", None, _crop_remaining(cell, day)))
@@ -4051,9 +4341,6 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
                 out.append(("WATER", None, price))
             elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
-        if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
-                and price > fert_price):
-            out.append(("FERTILIZE", "FERTILIZER", price))
 
     if held > 0 and age >= info["first"] and (info["ongoing"] or _one_shot_is_finished(info, age, room)):
         out.append(("HARVEST", None, held * price))
@@ -4357,6 +4644,21 @@ DIG_A_SPENT_ONGOING_CROP = True
 REPLANT_A_CLEARED_TILE = True
 
 
+def _freshly_planted(crop, day):
+    """The cell the environment will create for `crop` planted today (`kaggriculture.py:205-211`).
+
+    Priced through `crop_ops` like any other tile, so the survival rule and the fertilizer decision
+    stay in one place -- but only if the cell is the one the game actually makes. It was not: this
+    carried `consecutive_unwatered: 0` where `:209` starts a fresh plant at **1** ("planting day
+    counts as unwatered"), and `yield_units: 0` where `:210` gives a one-shot **1**. At 0 the
+    survival-water clause cannot fire, so the planting-day water was free in the plan and cost a
+    turn at the stop.
+    """
+    return {"kind": "PLANT", "crop": crop, "planted_day": day, "watered_today": False,
+            "consecutive_unwatered": 1, "yield_units": 0 if CROP[crop]["ongoing"] else 1,
+            "fertilized_until_day": -1}
+
+
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
                 plantable=None, fertilizer_price=None, replant=None):
     """Every tile worth visiting today, as routing nodes.
@@ -4392,10 +4694,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         replant[crop] -= 1
                         ops = list(ops) + [("PLANT", crop, plant_prize(crop, day))]
                         if PLANT_THEN_WATER:
-                            ops.extend(crop_ops({"kind": "PLANT", "crop": crop, "planted_day": day,
-                                                 "watered_today": False, "consecutive_unwatered": 0,
-                                                 "yield_units": 0, "fertilized_until_day": -1},
-                                                day, have_fert))
+                            ops.extend(crop_ops(_freshly_planted(crop, day), day, have_fert))
             elif "animal" in cell:
                 ops = animal_ops(cell, day, have_wheat)
             elif kind in ("PASTURE", "COOP"):
@@ -4553,10 +4852,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
         # re-deriving a price here, so the survival rule, the yield window and the fertilizer
         # decision stay in exactly one place.
         elif PLANT_THEN_WATER and op == "PLANT" and item in CROP:
-            ops.extend(crop_ops({"kind": "PLANT", "crop": item, "planted_day": day,
-                                 "watered_today": False, "consecutive_unwatered": 0,
-                                 "yield_units": 0, "fertilized_until_day": -1},
-                                day, have_fert))
+            ops.extend(crop_ops(_freshly_planted(item, day), day, have_fert))
         nodes.append(Node(tile, ops))
         # **A SEPARATE node on the same tile, not extra ops on the build.** Merging them was tried
         # and is wrong: `Node.prize` sums its ops and `Node.service` counts them, so a four-op build
@@ -6450,6 +6746,21 @@ def _claimed_tiles(units, routes, idle, margin):
 PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 
 
+#: **Dig a weed when the day's own planting row cannot find ground.**
+#:
+#: OFF is the behaviour before 2026-08-12: `router.crop_ops` gates a weed's DIG on
+#: `tile in plantable`, and `_plantable` is built from PLANT pins, which are only ever sited on
+#: EMPTY squares -- so a weed is never plantable, never dug, and its square is dead for the season.
+#: Measured on seed 11 / tape victor: (7,1) is LOCKED until d6, spawns a weed the moment the
+#: quadrant unlocks (`weedSpawnChance`, the env default on the ladder), and is still a weed on the
+#: final day. Ground we paid $1,000-$2,000 for and never used.
+#:
+#: Gated on `_replant` being non-empty -- the row wanting ground it could not find -- because the
+#: `plantable` rule is otherwise correct and was itself a fix: ungated, digs measured `dig 5/0` on
+#: d5 against a tape that digs nothing all season, plus strays on d12-d14.
+DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -6682,6 +6993,26 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 _replant.update(sched[d].get("plants") or [])
         _replant -= collections.Counter(state["planted"])
         _replant -= _pinned_plants
+
+    # **A weed on ground the day actually needs is dug; one on spare ground is furniture.**
+    #
+    # `router.crop_ops` offers a DIG on a WEED only where `tile in plantable`, and `_plantable`
+    # above is built from PLANT pins -- which `_refresh_pins` only ever sites on EMPTY squares.
+    # A weed is therefore never plantable, so never dug, so the square is dead for the season. The
+    # tile does not have to be a crop we lost: (7,1) on seed 11 was LOCKED until d6 and spawned a
+    # weed the moment the quadrant unlocked (`weedSpawnChance`, the env default on the ladder), so
+    # it is ground we paid $1,000-$2,000 for and can never use.
+    #
+    # The `plantable` gate is right in general and must stay -- without it we measured `dig 5/0` on
+    # d5 against a tape that digs nothing all season, plus stray digs on d12-d14. So the opening is
+    # the narrow one: `_replant` is exactly "what the cumulative plants row still wants and could
+    # find no dawn ground for". When that is non-empty the day is SHORT OF GROUND by its own
+    # accounting, and a weed square is the cheapest ground there is -- one turn, no seed, no walk
+    # beyond the tile itself. When it is empty we are not short and the weed stays furniture.
+    if DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND and sum(_replant.values()) > 0:
+        _plantable = set(_plantable) | {
+            t for t, c in ((t, tiles[t[1]][t[0]]) for t in RT.field_order(unlocked))
+            if isinstance(c, dict) and c.get("kind") == "WEED"}
 
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
@@ -7323,7 +7654,6 @@ SHOP_ADAPT_FROM_DAY = 6
 HERD_FLOOR_COW = 4
 HERD_FLOOR_SHEEP = 1
 
-
 #: **SHOP_ADAPT_CROPS -- float the crop inside a cadence pair on the shop draw. The herd's rule, one
 #: field over.**
 #:
@@ -7792,6 +8122,12 @@ SELL_CARRY_DAYS = 3
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
+
+#: How many days ahead the FERTILIZER sell reserve looks. 0 restores the old one-day rule.
+#: Three, because `FERTILIZE` sets `fertilized_until_day = day + 2` (`kaggriculture.py:468`) and so
+#: covers a three-day window; the stock has to survive from the day it is collected to the day the
+#: field asks for it. See the note at the reserve itself.
+FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 
 
 def make_agent(schedule, me=0, router=True):
@@ -8303,10 +8639,25 @@ def make_agent(schedule, me=0, router=True):
             # is not what binds: `have` reads `shed[FERTILIZER]`, and on d1 the shed holds ZERO
             # fertilizer on all 24 turns. We collect 4, exactly as he does, and it sits in a hand.
             # The two sales that do happen are on the turns straight after a DROP. See the router.
+            # **The reserve is one day deep and the demand is not.** `crop_ops` offers FERTILIZE only
+            # while a tile is near its producing stretch, so the day's want arrives in a lump:
+            # offered 0 on d11, 2 on d12, 4 on d14, **12 on d16**. A reserve that asks only about
+            # today therefore sells the whole stock into d11's `FERTILIZER: 24` row and leaves d16's
+            # twelve tiles nothing. Measured, dawn shed fertilizer ours/tape:
+            #
+            #     d10 15/15  d11 10/12  d12 4/9  d13 4/12  d14 1/12  d15 4/12  d16 10/12
+            #
+            # We track him exactly to d10 and never recover, on identical production -- `collect_fert`
+            # is 12/12 every one of those days. d16 then routes 12 FERTILIZE stops and fires 6,
+            # because `_inv_take` returns silently on an empty hand (`kaggriculture.py:465`) and the
+            # walk is spent for nothing. Ask the same question over the window a fertilize actually
+            # covers -- `fertilized_until_day = day + 2`, so three days -- instead of only today.
             if prod == "FERTILIZER":
-                want = sum(1 for r in tiles for c in r
-                           if isinstance(c, dict) and c.get("kind") == "PLANT"
-                           and "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(c, day, True)])
+                want = max(
+                    sum(1 for r in tiles for c in r
+                        if isinstance(c, dict) and c.get("kind") == "PLANT"
+                        and "FERTILIZE" in [o for o, _i, _p in RT.crop_ops(c, day + k, True)])
+                    for k in range(FERTILIZER_RESERVE_LOOKAHEAD_DAYS + 1))
                 have = max(0, have - want)
             # **Never sell the herd's feed.** WHEAT is both a crop we grow and the feed we buy, and the
             # sell list dumps whatever the shed holds. Measured per turn on day 13 with eleven animals:
