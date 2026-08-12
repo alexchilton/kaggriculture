@@ -682,6 +682,18 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
         produces_tomorrow = (day + 1 < R.SEASON_DAYS
                              and age + 1 >= info["first"]
                              and (age + 1 - info["first"]) % info["interval"] == 0)
+        # **Decided BEFORE the water is priced, and appended first, exactly as the one-shot branch
+        # above does it.** The water clause below reads `fertilized`, so testing it first meant a
+        # tile the plan had already decided to fertilize was priced as though it had not been: the
+        # stop shipped as `('FERTILIZE',)` and `_live_ops`, re-reading the cell after the FERTILIZE
+        # had run, found the water it unlocks and spent a turn nobody budgeted. On seed 11 day 16
+        # that was three turns off u9 and three off u13, and the tiles their tours could no longer
+        # reach -- (8,0) and (9,0) -- weeded. Order in `out` matters for the same reason it does
+        # above: WATER reads `fertilized_until_day` at the moment it runs.
+        if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
+                and price > fert_price):
+            out.append(("FERTILIZE", "FERTILIZER", price))
+            fertilized = True
         if not cell["watered_today"]:
             if cell["consecutive_unwatered"] >= 1:
                 out.append(("WATER", None, _crop_remaining(cell, day)))
@@ -689,9 +701,6 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
                 out.append(("WATER", None, price))
             elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
-        if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
-                and price > fert_price):
-            out.append(("FERTILIZE", "FERTILIZER", price))
 
     if held > 0 and age >= info["first"] and (info["ongoing"] or _one_shot_is_finished(info, age, room)):
         out.append(("HARVEST", None, held * price))
@@ -995,6 +1004,21 @@ DIG_A_SPENT_ONGOING_CROP = True
 REPLANT_A_CLEARED_TILE = True
 
 
+def _freshly_planted(crop, day):
+    """The cell the environment will create for `crop` planted today (`kaggriculture.py:205-211`).
+
+    Priced through `crop_ops` like any other tile, so the survival rule and the fertilizer decision
+    stay in one place -- but only if the cell is the one the game actually makes. It was not: this
+    carried `consecutive_unwatered: 0` where `:209` starts a fresh plant at **1** ("planting day
+    counts as unwatered"), and `yield_units: 0` where `:210` gives a one-shot **1**. At 0 the
+    survival-water clause cannot fire, so the planting-day water was free in the plan and cost a
+    turn at the stop.
+    """
+    return {"kind": "PLANT", "crop": crop, "planted_day": day, "watered_today": False,
+            "consecutive_unwatered": 1, "yield_units": 0 if CROP[crop]["ongoing"] else 1,
+            "fertilized_until_day": -1}
+
+
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
                 plantable=None, fertilizer_price=None, replant=None):
     """Every tile worth visiting today, as routing nodes.
@@ -1030,10 +1054,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         replant[crop] -= 1
                         ops = list(ops) + [("PLANT", crop, plant_prize(crop, day))]
                         if PLANT_THEN_WATER:
-                            ops.extend(crop_ops({"kind": "PLANT", "crop": crop, "planted_day": day,
-                                                 "watered_today": False, "consecutive_unwatered": 0,
-                                                 "yield_units": 0, "fertilized_until_day": -1},
-                                                day, have_fert))
+                            ops.extend(crop_ops(_freshly_planted(crop, day), day, have_fert))
             elif "animal" in cell:
                 ops = animal_ops(cell, day, have_wheat)
             elif kind in ("PASTURE", "COOP"):
@@ -1191,10 +1212,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
         # re-deriving a price here, so the survival rule, the yield window and the fertilizer
         # decision stay in exactly one place.
         elif PLANT_THEN_WATER and op == "PLANT" and item in CROP:
-            ops.extend(crop_ops({"kind": "PLANT", "crop": item, "planted_day": day,
-                                 "watered_today": False, "consecutive_unwatered": 0,
-                                 "yield_units": 0, "fertilized_until_day": -1},
-                                day, have_fert))
+            ops.extend(crop_ops(_freshly_planted(item, day), day, have_fert))
         nodes.append(Node(tile, ops))
         # **A SEPARATE node on the same tile, not extra ops on the build.** Merging them was tried
         # and is wrong: `Node.prize` sums its ops and `Node.service` counts them, so a four-op build
