@@ -2467,7 +2467,36 @@ HERD_FLOOR_SHEEP = 1
 #: `HERD_GEESE = 4` is two sheep and two cows. Sheep lead because they are the dominated animal;
 #: earliest-first because a goose yields from day 4 at `interval 1`, so each day of delay costs it a
 #: unit outright.
-HERD_GEESE = 4
+#:
+#: **OFF as of 2026-08-11, on a decisive cross-seed measurement. Do not switch it back on without
+#: re-reading this.** `scripts/goose_sweep.py`, 24 seeds, both seatings, weeds at the ladder default,
+#: each arm against a frozen `HERD_GEESE = 0`:
+#:
+#:      geese  games     win   draw   mean ours  mean theirs  mean margin   seed sd
+#:          0     48  27.1% 45.8%     115,485      115,485            0     2,602
+#:          1     48   0.0%  0.0%     103,123      124,419      -21,296    10,477
+#:          2     48   0.0%  0.0%      89,345      128,881      -39,536    19,388
+#:          3     48   0.0%  0.0%      88,095      128,936      -40,841    19,556
+#:
+#: **Zero wins in 48 games at every count**, monotone in the count, negative on all 24 seeds in both
+#: seatings. The `0` arm is the control and behaves exactly as it must -- identical agents bank
+#: identical money, so 45.8% draws and a margin of 0.
+#:
+#: `mean theirs` RISES with our goose count, 115k -> 129k. We do not merely lose our own revenue; we
+#: hand the opponent the milk book by vacating it. That is the part the per-animal arithmetic could
+#: not see, and it is why a shared-market game cannot be reasoned about one animal at a time.
+#:
+#: **The arithmetic above was built on a cherry-picked game.** It priced a cow at `11 x $48 = $528`
+#: using the realised milk average from episode 92081385, where milk floored. In 92077611 our
+#: realised milk was **$223.81 a unit** -- `11 x $224 = $2,464` on a $400 cow, which beats a goose's
+#: `26 x $65 = $1,690` outright. Milk floors when we flood it, and the answer to flooding it is fewer
+#: cows, not a different species.
+#:
+#: The mechanism is kept, tested and correct: `swap_in_geese` moves both the `animals_bought` and
+#: `places` rows together, and `HERD_GEESE_EARLIEST` gates each bird on a zero-walk cell. If a future
+#: board-reading rule wants a goose -- an EGG drain of 895 with neither seat supplying one is a real
+#: thing, seen in episode 92089778 -- the machinery is here and the flag is the only change needed.
+HERD_GEESE = 0
 
 #: The order geese are taken in, cycled. See `HERD_GEESE`.
 HERD_GEESE_FROM = ("SHEEP", "COW")
