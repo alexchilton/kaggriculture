@@ -152,6 +152,11 @@ def snap(obs, seat):
                 n["pen"] += 1
             if t.get("animal"):
                 n["an_" + str(t["animal"])] += 1
+                # **The herd, not the species mix.** COW and SHEEP are interchangeable head-count
+                # here and the two sides drift by one in opposite directions -- `cow 10/9` beside
+                # `sheep 4/5` reads as two faults where the herd is identical at 14/14. Two false
+                # signals from one true equality. `--species` splits them again.
+                n["animals"] += 1
     shed = (obs.get("private") or {}).get("shed") or {}
     for p in PRODUCTS:
         n["shed_" + p] = int(shed.get(p, 0) or 0)
@@ -291,6 +296,15 @@ def main():
     ap.add_argument("--moves", action="store_true",
                     help="show the NORTH/SOUTH/EAST/WEST rows and the mv/wk ratio (tour shape, "
                          "not a defect -- off by default)")
+    ap.add_argument("--species", action="store_true",
+                    help="split the herd back into COW/SHEEP/... rows. Off by default: the species "
+                         "mix drifts by one in opposite directions and reads as two faults where "
+                         "the herd is identical.")
+    ap.add_argument("--cum", action="store_true",
+                    help="after the op table, print the same flow rows CUMULATIVELY. A day-by-day "
+                         "count cannot show cadence: harvest read 11/14 on d18 and 46/46 cumulative "
+                         "over d16-d18, because the tape picked on d18 what we picked on d17. Use "
+                         "this before calling any flow cell a defect.")
     ap.add_argument("--shed", action="store_true",
                     help="show the sh:* dawn shed levels. They are a snapshot of a flow and lie; "
                          "use fills instead. Off by default.")
@@ -347,7 +361,8 @@ def main():
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]
               + [("crop_" + c, c.lower()[:6]) for c in CROPS]
-              + [("an_" + x, x.lower()[:6]) for x in ANIMALS]
+              + ([("an_" + x, x.lower()[:6]) for x in ANIMALS] if args.species
+                 else [("animals", "animals")])
               + ([("shed_" + p, "sh:" + p.lower()[:5]) for p in PRODUCTS] if args.shed else []))
     live = [(k, lab) for k, lab in fields
             if any(d[k] for d in ours[:args.days + 1]) or any(d[k] for d in his[:args.days + 1])]
@@ -445,6 +460,25 @@ def main():
         cells = "".join(f"{str(our_ops[d][o]) + '/' + str(his_ops[d][o]):>13}"
                         for d in range(args.days))
         print(f"  {o.lower()[:12]:<12}{cells}")
+
+    # **Cumulative, because a day-by-day flow count cannot show cadence.** Two sides doing identical
+    # work on alternate days read as a fault on every single column. Day 18 harvest read `11/14` and
+    # was nothing at all: the tape picked on d18 the strawberries we had picked on d17, and the
+    # running total over d16-d18 is 46/46. That cell cost most of a session and three wrong
+    # diagnoses. A flow row only means something once its running total stops reconciling -- for
+    # harvest that is d24, where the gap goes -3 -> -17 and never comes back.
+    if args.cum:
+        print("\n  CUMULATIVE from d0 -- ours/tape. A gap that oscillates is cadence; "
+              "a gap that grows is lost work.\n")
+        print(f"  {'':<12}" + "".join(f"{('d' + str(d)):>13}" for d in range(args.days)))
+        for o in seen:
+            co = ct = 0
+            cells = []
+            for d in range(args.days):
+                co += our_ops[d][o]
+                ct += his_ops[d][o]
+                cells.append(f"{str(co) + '/' + str(ct):>13}")
+            print(f"  {o.lower()[:12]:<12}" + "".join(cells))
 
     # Where the day's unit-turns went. `move` on its own is not a verdict: walking to do more work is
     # not the same failure as walking further to do the same work. `mv/wk` separates them -- it is the
