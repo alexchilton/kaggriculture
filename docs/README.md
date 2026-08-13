@@ -1,5 +1,36 @@
 # docs/ — index
 
+**Consolidated 2026-08-13**, on top of the 2026-08-11 consolidation below, as part of a wider
+codebase cleanup (dead flags, superseded `schedule_agent` variants, dead tests).
+
+**Three corrections to carry forward, all from 2026-08-13:**
+
+- **`kagg/search/schedule_agent_1455mh.py` is now `kagg/search/schedule_agent.py`.** The
+  pre-2026-08-09 file of that name (which many docs below and most of `tests/` used to import
+  without knowing it was stale) is deleted. Any doc or code citation of `schedule_agent_1455mh.py`
+  now means `schedule_agent.py`.
+- **`SELLABLE` excluded CARROT, TOMATO and EGG until commit `c99a8a5`.** Every "carrot loses",
+  "tomato loses" or "geese lose" verdict measured through our own agent before that commit was
+  measuring an agent that could not sell those products under any flag or schedule row, not their
+  economics. See `docs/REGISTER.md` C-23's correction note and OPEN-12/OPEN-13.
+- **The 60 games in `data/seed_scripts/ours_ladder/` are SELECTED, not sampled** — Alex downloads
+  the ladder games we *lose*, so no win rate can be computed from them. See
+  `docs/the_ladder_is_lost_by_a_nose_2026-08-13.md`.
+
+**Not yet folded into the table below** (added between 2026-08-11 and -13, live and un-superseded):
+
+| File | What it is |
+|---|---|
+| `the_ladder_is_lost_by_a_nose_2026-08-13.md` | 60 downloaded (loss-selected) ladder games: given that we lose, the loss is usually small (median -$8,900); carries the win-rate-sample correction above. |
+| `kawashigi_one_board_2026-08-13.md` | 16 games of the current #1: the ladder board is a single fixed map (only the shop draw and the opponent vary), and he is reactive from d3, not open-loop — retires the "seed variance ~15%" framing as a statement about the *ladder* specifically. 15-1 record. |
+| `the_market_is_the_late_season_2026-08-13.md` | We flood our own milk book (159 units at $1-5 while realised elsewhere is $223/unit) because `SHOP_ADAPT_HERD` floats the herd on shop presence, not price; cow count is the causal lever. Includes the geese-verdict correction above. |
+| `the_late_season_is_one_defect_in_two_halves_2026-08-12.md` | From d24 a DIG clears ground nothing replants (chained to HARVEST, not DIG) AND `plant_prize` prices d26+ plantings at zero — neither half pays alone, both together are unfixed. |
+| `the_route_is_precomputable_2026-08-12.md` | The board is identical in every game (one RNG stream, used only for the shop draw and weeds), so a day's route can be solved offline with a real deadline instead of the in-game 0.25s budget. d12 proven fixable (48/49 -> 49/49); capacity is not the binding late-season constraint (we work/move MORE than the field and still bank less). |
+| `d16_fertilizer_starvation_2026-08-12.md` | `fertilize 6/13` on d16 traces back to a d11-d14 selling decision: FERTILIZER sell rows are filled from the same stock the day's own FERTILIZE stops need. |
+| `d18_harvest_and_sells_2026-08-12.md` | d18's harvest/sell gaps are cadence (reconcile within 1-2 days), not real deficits, except a genuine FERTILIZER reserve-formula bug that never recovers. |
+| `carrot_swap_2026-08-12.md` | Three layers of retraction on one question (does carrot pay as a wheat substitute); ends with the `SELLABLE` root cause above and a still-open "carrot as a LATE addition, not a substitute" question, resolved in principle by `LATE_TRUNCATED_PLANT_DAY`. |
+| `ladder_losses_2026-08-11.md` | Ten downloaded losses: melon is a zero-drain fixed pot (race to sell first, not a yield crop), we never plant CARROT/TOMATO despite both closing above base, spending (not earning) is the untested lead. Superseded in scale by the 2026-08-13 docs above but its melon-as-a-race framing still stands. |
+
 **Consolidated 2026-08-11**, on top of the 2026-08-09 consolidation below.
 The trigger: `scripts/episode_index.py` pulled the official episode datasets for 2026-08-09 and
 -08-10 — 1,372 episodes, 2,744 seats — giving this project its first population-scale read of the

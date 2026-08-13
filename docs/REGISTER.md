@@ -1,6 +1,7 @@
-is cl# Register — what is open, what is closed, and what keeps reopening
+# Register — what is open, what is closed, and what keeps reopening
 
-Last updated 2026-08-08, on `shaping-potential`.
+Last updated 2026-08-08, on `shaping-potential`. STATE block and most dollar figures are that old;
+read the version caveats below before trusting any number in this file.
 
 > **Version caveat, added 2026-08-09.** The ladder moved to `kaggle-environments` 1.32.6 on
 > 2026-08-07/08. The `STATE at last update` block below, and most dollar figures elsewhere in this
@@ -22,6 +23,20 @@ Last updated 2026-08-08, on `shaping-potential`.
 > tiles a season; our schedule plants 24. See `docs/the_ladder_is_two_scripts.md` for the rebase
 > recommendation (Dmitry Belan or Efe Can Celiksoy) and `docs/what_the_town_will_actually_eat.md` for
 > the current market-appetite picture.
+>
+> **Third version caveat, added 2026-08-13.** `schedule_agent_1455mh.py` was collapsed into
+> `kagg/search/schedule_agent.py` (the pre-2026-08-09 file of that name is deleted); every path in
+> this file naming `schedule_agent_1455mh.py` now means `schedule_agent.py`. Separately, commit
+> `c99a8a5` fixed `SELLABLE` to include CARROT, TOMATO and EGG — see the correction note under C-23
+> and OPEN-12/OPEN-13 for the blast radius (every carrot/tomato/goose verdict measured before that
+> commit needs re-running). `docs/the_ladder_is_lost_by_a_nose_2026-08-13.md` also corrects an
+> in-project error worth naming here so it is not repeated: the 60 downloaded games in
+> `data/seed_scripts/ours_ladder/` were downloaded BECAUSE they were losses, so no win rate can be
+> computed from that sample — only "given that we lost, by how much" is unbiased. Several
+> 2026-08-12/13 docs (`d16_fertilizer_starvation`, `d18_harvest_and_sells`,
+> `the_late_season_is_one_defect_in_two_halves`, `the_market_is_the_late_season`,
+> `the_route_is_precomputable`, `kawashigi_one_board`) are not yet indexed below; see
+> `docs/README.md`.
 
 This file exists because items in this project get closed under one name and reopen under another.
 Melon has been opened and closed at least four times.
@@ -322,6 +337,30 @@ producing that aggregate was found under `data/logs/` or `scripts/` as of 2026-0
 figure above is confirmed, the 44-of-64 aggregate is not. Per this file's own ground rule, treat the
 aggregate as UNVERIFIED until a script that reproduces it is committed and named here.
 
+### OPEN-12 — Re-measure carrot and tomato now that `SELLABLE` includes them
+
+Owner: nobody. Opened 2026-08-13 by the `SELLABLE` fix, commit `c99a8a5`. See the correction note
+under C-23 above and `docs/carrot_swap_2026-08-12.md`'s second retraction.
+
+Every "carrot loses" and "tomato loses" number in this project's history was measured while
+`SELLABLE` made those two products unsellable by our own agent regardless of what the schedule or
+any flag asked for. The pocket-ledger economics in `docs/carrot_swap_2026-08-12.md` (carrot's book
+is worth at most ~$3,502 on the best of sixteen towns, planner-independently) are unaffected — they
+never depended on our agent's sell loop — but every arm that ran `CARROT_SWAP`, `CARROT_TILES`, or
+`SHOP_ADAPT_CROPS`'s `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` pairs through our own agent needs a
+fresh run before its verdict is trusted again.
+
+### OPEN-13 — Re-measure geese now that `SELLABLE` includes EGG
+
+Owner: nobody. Opened 2026-08-13, same fix and same reasoning as OPEN-12.
+
+`c9c1c18` and `7a88d30` (geese lose, geese deleted) both measured a herd whose only product, EGG,
+could not be sold under any circumstance — see the correction in
+`docs/the_market_is_the_late_season_2026-08-13.md`, "The geese verdict was measuring our own bug."
+`HERD_GEESE` is currently off. Do not re-derive "geese lose" from the old sweeps; re-run them with
+`SELLABLE` fixed and `SOLVED_DAYS` re-solved on a goose-inclusive pool before drawing any
+conclusion, positive or negative.
+
 ---
 
 ### OPEN-CLI — carried over from the CLI task list, 2026-08-09
@@ -389,8 +428,31 @@ Do not reopen without new evidence that contradicts the named artifact.
 | C-20 | Dropping the harvest earlier is free money | FALSE. Four arms; the one that worked mechanically moved the first DROP h19 → h5 and still lost $8,292, because `DROP 116 → 137` bought `HARVEST 300 → 294`. A late harvest is already priced. | `experiment_log.md` §20 |
 | C-21 | Pen geometry is a lever | FALSE. His exact tiles buy 2 cells of 150, and the Manhattan sum from (4,4) is 22 for both day-0 blocks. `DEPOT_RING_FIRST` ships off; its money sign reversed on a held-out draw. | `experiment_log.md` §21 |
 | C-22 | `Node.service` under-counting is a bug to fix | It is the packing calibration that matches the tape. Correct prices, worse reproduction, every arm. Both constants ship at 0 and will not move. | `experiment_log.md` §22 |
-| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. | `kagg/search/schedule_agent_1455mh.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
+| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | **HALF UNVERIFIED as of 2026-08-13 — see the note below the table.** Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. | `kagg/search/schedule_agent_1455mh.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
 | C-24 | Fertilizer priced at its $100 base when deciding whether to fertilize | Fixed. The live market quote (`obs["market"]["prices"]["FERTILIZER"]`) is read every turn and threaded into `_router_acts` as `fertilizer_price` — nothing eats fertilizer, so its book only ratchets up ($50 by day 17, $20 by day 26 in 85/85 recorded games), and pricing at base meant refusing to fertilize a tile for a price nobody would pay. Shipped, unconditional (no flag to disable). | `kagg/search/schedule_agent_1455mh.py:2602-2612` |
+
+> **Correction, 2026-08-13, commit `c99a8a5`, affects C-23 and every carrot/goose verdict recorded
+> before it.** `SELLABLE` — the only loop that ever emits a SELL — held six of the env's nine
+> product names and never included CARROT, TOMATO or EGG. A schedule row or an agent decision
+> asking to sell any of the three was not deprioritised or outbid, it was never read, by any flag,
+> on any day. Traced end to end: 55 carrot seeds bought, 38 planted, harvested on schedule, 92
+> units standing unsold in the shed on d29, $0 banked — "carrot loses $5,727" was measuring the
+> missing wheat those 55 tiles would otherwise have grown, not carrot's own economics. With the fix
+> the same arm sells 111 carrot for $4,454.
+>
+> **C-23's `WHEAT<->CARROT` half and `TOMATO<->STRAWBERRY` half were both measured on 2026-08-11**,
+> two days before this fix, so both used a board on which the swapped-to crop could never be sold.
+> The 0.806-vs-0.871 verdict is unverified for that reason and must not be read as "carrot/tomato
+> lose as a crop" until re-measured with `SELLABLE` fixed. `STRAWBERRY<->MELON`'s verdict is
+> unaffected — neither crop was on the excluded list.
+>
+> **The goose verdicts (`c9c1c18`, `7a88d30`, and the "geese lose" framing anywhere in `docs/`) are
+> under the same cloud.** EGG was excluded from the same tuple, so "not one egg is ever sold"
+> (`docs/the_market_is_the_late_season_2026-08-13.md`) is now explained exactly rather than
+> attributed to routing or play quality. Geese have not been re-measured with EGG sellable. Do not
+> treat "geese lose" as settled.
+>
+> Re-measuring both is now OPEN-12 and OPEN-13 below.
 
 ---
 

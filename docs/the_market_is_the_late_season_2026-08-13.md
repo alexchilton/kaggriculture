@@ -145,6 +145,15 @@ and money against zero revenue; it says nothing about whether a goose is worth o
 The stale baked routes cost part of that $23k -- `SOLVED_DAYS` was solved on a goose-free pool -- but
 stale routing cannot produce zero egg sales.
 
+**Root cause found, same day, commit `c99a8a5`: `SELLABLE` held six of the env's nine product names.**
+CARROT, TOMATO and EGG were absent from the tuple that is the *only* loop emitting a SELL, so an EGG
+row was not deprioritised or outbid -- it was never looked at, by construction. Every goose verdict
+in this project (`c9c1c18`, `7a88d30`, and this section above before this note) was measured while
+EGG could not be sold under any flag or schedule row. `c99a8a5` fixed `SELLABLE`; the "not one egg is
+ever sold" finding above is explained exactly, not just correlated, and the fifth-time-artefact verdict
+holds for a sixth reason nobody had named yet. **Geese have not been re-measured with EGG sellable.**
+Do not treat "geese lose" as settled until that run exists.
+
 This is the fifth time an animal verdict here has turned out to be an artefact. The rule in CLAUDE.md
 already covers it: ask what the code could not express before trusting a mechanic-level negative.
 The addition this time is narrower and mechanical: **an outcome-only sweep is not a test of a

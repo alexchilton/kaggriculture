@@ -7,6 +7,16 @@
 > **0 units out of it** for the whole season. Every arm therefore paid the $20 seed, spent the tile
 > and the turns, and banked nothing — a loss by construction, on any crop, whatever the market says.
 >
+> **Root cause named 2026-08-13, commit `c99a8a5`: this was not (only) a schedule-row omission.**
+> `SELLABLE`, `kagg/search/schedule_agent.py`'s only SELL-emitting loop's iteration domain, held six
+> of the env's nine product names and never included CARROT (also TOMATO, EGG) at all. A schedule row
+> asking to sell carrot would have been ignored too -- not deprioritised, not outbid, never read. The
+> fix landed the same day: the shipped schedule's own money is unchanged ($71,814, nothing in it
+> grows the three newly-reachable products), but `docs/the_ladder_is_lost_by_a_nose_2026-08-13.md`
+> and `docs/REGISTER.md` should be read before trusting any pre-`c99a8a5` "carrot loses" number,
+> including the ones further down this file that ran through our OWN agent (the `CARROT_SWAP`/
+> `CARROT_TILES` pool sweeps) rather than a rewritten tape.
+>
 > That applies to ALL of it: the tape arms, the 384-game `CARROT_SWAP` pool sweep, the
 > `CARROT_TILES` sweep, and the 2-for-2 substitution. None of them measured carrot's economics.
 >
