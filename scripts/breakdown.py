@@ -27,7 +27,6 @@ This prints the raw pair `ours/tape` for:
 
 import argparse
 import collections
-import importlib
 import json
 import pathlib
 import sys
@@ -39,53 +38,58 @@ sys.path.insert(0, ".")
 #: decision in the project was about `schedule_agent_1455*`.
 schedule_agent = None
 
+#: **The module the work is actually going into.** `--module` defaulted to `schedule_agent`, last
+#: touched 2026-08-09 (`ea72a1e`), while every commit since has gone into this one. Four days of
+#: grids therefore measured an agent nobody was changing, and produced at least one finding -- a
+#: "missing cow since d6" -- that evaporated the moment the right module was loaded.
+DEFAULT_MODULE = "schedule_agent_1455mh"
+
+#: Products the agent must be ABLE to sell, checked on every load. `c99a8a5` found that CARROT,
+#: TOMATO and EGG were missing from `SELLABLE`, so no carrot the farm grew could be turned into
+#: money at all -- it invalidated four carrot arms and the entire goose verdict. Four of the five
+#: `schedule_agent*` files in this tree are still on the wrong side of it.
+#:
+#: A CAPABILITY rather than a version string, deliberately. A version string goes stale exactly as
+#: quietly as the module did; "can it sell a carrot" is a fact about the object in front of you.
+REQUIRED_SELLABLE = ("CARROT", "TOMATO", "EGG")
+
+
+def load_agent_module(name):
+    """Import `kagg.search.<name>` and refuse it if it predates the fixes the grid assumes.
+
+    Exits rather than warns. A warning above a table is read after the table, and the whole point
+    is that a stale module produces numbers indistinguishable from real ones.
+    """
+    import importlib
+
+    module = importlib.import_module("kagg.search." + name)
+    sellable = getattr(module, "SELLABLE", ())
+    missing = [p for p in REQUIRED_SELLABLE if p not in sellable]
+    if missing:
+        raise SystemExit(
+            f"kagg.search.{name} is stale: its SELLABLE is missing {', '.join(missing)}, so the "
+            f"agent cannot sell them at all (fixed in c99a8a5). Every number a grid prints for it "
+            f"would be about an agent nobody is working on.\n"
+            f"  SELLABLE = {tuple(sellable)}\n"
+            f"  use --module {DEFAULT_MODULE}")
+    for attribute in ("make_agent", "CUMULATIVE_SELLS", "SELL_CARRY_DAYS", "HIRE_FIRST"):
+        if not hasattr(module, attribute):
+            raise SystemExit(f"kagg.search.{name} has no {attribute}; it is not a schedule agent "
+                             f"this grid can drive.")
+    return module
+
 TAPES = {
-    # Downloaded 2026-08-07 21:16. Seb WINS this one 143,772 to Leon Christians' 127,114 and holds all
-    # four quadrants to Leon's three. A materially more aggressive plan than `seb` below: land on days
-    # 4, 6 and 10 against 5, 9 and 11, and 23 pens against ~15.
-    # Its `configuration` records `townCenterSellInterval = 12`, i.e. it was played on the PRE-rebalance
-    # economy -- same as the ladder, which had not picked up 1.32.6 as of that evening. Check that field
-    # on any future download before trusting a comparison against it.
-    "seb2": ("data/seed_scripts/top_guys/90751101.json",
-             "data/seed_scripts/top_guys/90751101/schedule.json", "Seb (allegedly)"),
-    # Seb on the REBALANCED economy (townCenterSellInterval 24), banking $128,518 against
-    # kakuteki's $70,886. The first tape we have of a top player on the game now being played.
-    # Against `seb` below he moves the second parcel to day 6, builds 21 pens instead of 19,
-    # and re-cuts the herd from wool to milk: MILK 179 -> 303, WOOL 230 -> 104, MELON 132 -> 96.
-    "seb1326": ("data/seed_scripts/top_guys/90976060.json",
-                "data/seed_scripts/top_guys/90976060/schedule.json", "Seb (allegedly)"),
-    # Downloaded 2026-08-09 by Alex, straight off Kaggle. Seb banks $104,699 against Valmorlee's
-    # $94,320, seated SECOND (`TeamNames` is ['Valmorlee', 'Seb (allegedly)']) -- the only tape here
-    # where he is not seat 0, so anything reading seat 0 by hand gets the opponent.
-    # `townCenterSellInterval = 24`: the REBALANCED economy, i.e. the game we actually play.
-    # d0-d3 are identical to `seb` below; it diverges from d4, with 21 builds against 19, six of them
-    # on d7, the third parcel on d6 rather than d8, and the crew dipping to 6 on d6.
-    "seb2988": ("data/seed_scripts/top_guys/91422988.json",
-                "data/seed_scripts/top_guys/91422988/schedule.json", "Seb (allegedly)"),
-    # **`townCenterSellInterval = 12` -- the PRE-rebalance economy.** The town drains at half the rate
-    # of the game we play, so prices move differently and his recorded bank is NOT reproducible here:
-    # replaying both seats' own actions on seed 11 diverges at turn 32 (d1 h8) by one dollar on a
-    # single BUY_PRODUCT and ends at $10,264 against his recorded $110,820.
-    # It is still a valid target for the SCHEDULE and for the op sequence, which is what we generate.
-    # It is not a target for money, fills, or any state row.
-    # See `docs/the_tape_column_does_not_replay_his_game_2026-08-09.md`.
-    "seb": ("data/seed_scripts/top_guys/90494364.json",
-            "data/seed_scripts/top_guys/90494364/schedule.json", "Seb (allegedly)"),
-    "oldleader": ("data/seed_scripts/new_leader/90016067.json",
-                  "data/seed_scripts/new_leader/schedule.json", "somewhere after"),
-    # **The rebase target, 2026-08-11.** Victor @ Tufa Labs is #2 on the ladder at 3,149.8 and is a
-    # fixed script -- 97-99% of turns identical across seven games on both seats, with byte-identical
-    # season SELL totals -- so the plan reads off one tape without averaging. This is his best of the
-    # ten downloaded, $119,407 against Efe Can Celiksoy's $108,925, seated SECOND.
-    # `townCenterSellInterval = 24`, i.e. the economy we actually play, unlike `seb`/`seb2`.
-    # Why not Seb: his tape is the interval-12 shape (WHEAT 24 / STRAWBERRY 41), his own bank halved
-    # when the economy changed and he withdrew. See `docs/the_ladder_is_two_scripts.md`.
+    # **The rebase target, 2026-08-11, and the plan we ship.** Victor @ Tufa Labs is #2 on the
+    # ladder at 3,149.8 and is a fixed script -- 97-99% of turns identical across seven games on
+    # both seats, with byte-identical season SELL totals -- so the plan reads off one tape without
+    # averaging. This is his best of the ten downloaded, $119,407 against Efe Can Celiksoy's
+    # $108,925, seated SECOND. `townCenterSellInterval = 24`, the economy actually being played.
     "victor": ("data/seed_scripts/top2/91854176.json",
                "data/seed_scripts/victor/schedule.json", "Victor @ Tufa Labs"),
     # **The current #1, and the highest bank in anything downloaded.** カワシギ takes $149,998 off
     # Yusuke Hayashi's $143,436 -- against Victor's best of $119,407 -- seated FIRST, which is the
-    # opposite of `victor` and `seb2988` and worth checking before reading any seat by hand.
-    # `townCenterSellInterval = 24`, i.e. the economy actually being played, same as `victor`.
+    # opposite of `victor` and worth checking before reading any seat by hand.
+    # `townCenterSellInterval = 24`.
     # The middle element drives OUR agent, never the tape column: `main()` feeds it to
     # `schedule_agent.make_agent` while the tape column comes from `tape_policy(replay, team, 0)`.
     # Nothing has been extracted from his games yet, so it reuses Victor's plan and the comparison
@@ -95,18 +99,35 @@ TAPES = {
                   "data/seed_scripts/victor/schedule.json", "\u30ab\u30ef\u30b7\u30ae"),
 }
 
-#: **The tape the grid compares against unless told otherwise, and it is not a preference.**
-#: This defaulted to `seb` from the day `--tape` was added on 2026-08-07. The project rebased onto
-#: Victor on 2026-08-11 and has worked against Victor since, so every run without an explicit
-#: `--tape victor` was comparing against the wrong leader for two days. The two disagree in kind,
-#: not in degree: the `animals` row totals -4 over six days against Seb, oscillating, which reads
-#: as timing jitter -- and -14 over fourteen days against Victor, one-directional, which is a
-#: defect. It was invisible the whole time.
+#: **Removed on 2026-08-13, on Alex's instruction: "no seb - only vic or the new nr 1".**
+#: Deleted rather than left un-defaulted, and the reason is not housekeeping.
 #:
-#: The deeper reason is the economy. `env_config` takes `townCenterSellInterval` off the recording
-#: so both columns run the same one, and Seb's tape records **12** -- the PRE-rebalance economy,
-#: retired on 2026-08-08. Defaulting to it replays every comparison at a town that drains at half
-#: the rate of the game being played. Victor's and Kawashigi's record 24.
+#: 1. **The tape key also selects OUR OWN schedule.** `TAPES[tape]`'s middle element goes straight
+#:    to `make_agent`. Choosing Seb therefore did not compare us against Seb -- it made our agent
+#:    play SEB'S four-quadrant plan while we ship a three-quadrant one. That is a different agent,
+#:    not a different baseline, and nothing measured that way means anything.
+#: 2. Except where noted, the Seb tapes are on `townCenterSellInterval = 12`, the pre-rebalance
+#:    economy retired on 2026-08-08. His own bank halved when it changed and he withdrew.
+#: 3. A wrong option one flag away gets chosen by accident, and was: `--tape` defaulted to `seb`
+#:    for six days after the project had rebased onto Victor.
+#:
+#: The replay FILES are still on disk and a script that wants one as raw data can name the path.
+#: What is gone is the ability to select one as a comparison target.
+RETIRED_TAPES = {
+    "seb": "90494364, townCenterSellInterval 12 -- pre-rebalance, and its bank does not replay",
+    "seb2": "90751101, townCenterSellInterval 12 -- pre-rebalance",
+    "seb1326": "90976060 -- rebalanced, but superseded by victor as the rebase target",
+    "seb2988": "91422988 -- rebalanced, and never reproduced its own board (open at removal)",
+    "oldleader": "90016067 -- an earlier leader, overtaken twice since",
+}
+
+
+#: **The tape the grid compares against unless told otherwise.** `--tape` defaulted to `seb` from
+#: the day it was added on 2026-08-07; the project rebased onto Victor on 2026-08-11 and worked
+#: against Victor for two days while every grid run without an explicit flag compared against
+#: someone else. The two disagree in kind, not degree: the `animals` row totals -4 over six days
+#: against Seb, oscillating, which reads as timing jitter -- and -14 over fourteen days against
+#: Victor, one-directional, which is a defect. It was invisible the whole time.
 DEFAULT_TAPE = "victor"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 CROPS = ("WHEAT", "STRAWBERRY", "MELON", "TOMATO", "CARROT")
@@ -151,6 +172,39 @@ def env_config(replay):
     """
     cfg = json.loads(pathlib.Path(replay).read_text()).get("configuration") or {}
     return {k: cfg[k] for k in ECONOMY_KEYS if cfg.get(k) is not None}
+
+
+def recorded_shops(replay):
+    """`turn -> the town's shop list as it stood at that turn`, read off the recording.
+
+    **The shop draw is part of the economy and it was not being replayed.** `env_config` already
+    takes `townCenterSellInterval` from the recording, for exactly the reason this exists: a tape
+    replayed on a different economy is fiction. The draw is the other half of that economy -- which
+    shops unlocked, and therefore what the town wants and how hard it holds each price up -- and
+    `run` was building it from a fixed `seed` instead.
+
+    Driving both seats of four real games from their own recordings and comparing against the banks
+    Kaggle recorded:
+
+        92588301   recorded  92,884 /  93,254   on seed 11:  93,236 /  84,442
+        92550780   recorded  69,881 /  77,275   on seed 11:  41,899 / 128,253
+        92562037   recorded 129,161 / 133,724   on seed 11:  85,979 /  88,297
+        92498144   recorded 149,998 / 143,436   on seed 11:  68,080 /  69,880
+
+    First divergence is turn 75 -- day 3 hour 3, one dollar, on the day the first shop unlocks.
+    With the recorded list injected, all four reproduce the bank, the market inventory and both
+    sheds exactly on every one of 719 turns. Pinned by
+    `tests/test_the_harness_reproduces_a_recorded_game.py`.
+
+    It has to be READ, not derived: `_end_of_day` spends the same generator on `_spawn_weeds`
+    first, once per empty tile per player, so where the draw lands in the stream depends on how the
+    board was played. Every recorded observation carries `town.unlocked_shops`, so reading it is
+    both exact and free.
+    """
+    steps = json.loads(pathlib.Path(replay).read_text())["steps"]
+    lists = [list((step[0] or {}).get("observation", {}).get("town", {}).get("unlocked_shops")
+                  or []) for step in steps]
+    return lambda t: lists[t] if t < len(lists) else (lists[-1] if lists else [])
 
 
 def tape_policy(replay, team, seat_wanted):
@@ -227,7 +281,7 @@ SHED_MARKET_OPS = ("SELL", "BUY_PRODUCT", "BUY_ANIMAL")
 MARKET_FILL_OPS = ("SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL", "HIRE", "BUY_LAND")
 
 
-def run(make0, opp, seed, weeds, stop_day=None, economy=None):
+def run(make0, opp, seed, weeds, stop_day=None, economy=None, shops=None):
     from kaggle_environments import make
 
     from kagg.analysis.fills import record_fills
@@ -251,10 +305,22 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
     # `stop_day` plays only days 0..stop_day-1. The d0-d6 gate is a unit test and must
     # not pay for 30 days of season to answer a question about 7.
     last = 719 if stop_day is None else min(719, 24 * stop_day)
+    #: The largest crew that stood on the board during each day. `snap` samples at DAWN, and
+    #: `_end_of_day` empties `farm["hands"]` and resets `hires_today`, so the `hands` row read 0 for
+    #: every day of every grid ever printed and 9 on the last one (the final snapshot is taken
+    #: mid-day, not at a dawn). Both columns were wrong identically, which is why it never looked
+    #: wrong. `hands` is the ONLY state row with this problem -- money, tiles, pens, weeds, crops
+    #: and the herd all survive the rollover untouched, and the `sh:*` shed levels are a real
+    #: post-rollover level, already documented as a snapshot of a flow.
+    crew = collections.Counter()
     for t in range(last):
         o0, o1 = env.state[0].observation, env.state[1].observation
+        if shops is not None:
+            # Before the step, so `_town_consume` sees the list the recording had at this turn.
+            env.state[0].observation.town["unlocked_shops"] = list(shops(t))
         if t % 24 == 0:
             days.append(snap(o0, 0))
+        crew[t // 24] = max(crew[t // 24], len(o0["farms"][0].get("hands") or []))
         a0, a1 = p0(o0, t), p1(o1, t)
         n0 = len(o0["farms"][0].get("hands") or [])
         n1 = len(o0["farms"][1].get("hands") or [])
@@ -308,6 +374,11 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
         if bad:
             raise RuntimeError(f"seat status {bad}")
     days.append(snap(env.state[0].observation, 0))
+    # `days[d + 1]` is the board at the END of day d, and `run` returns `days[1:]`, so index d there
+    # is day d. Overwrite the dawn `hands` reading with the crew that actually worked that day.
+    for day, size in crew.items():
+        if day + 1 < len(days):
+            days[day + 1]["hands"] = size
     # **Day N is the state at the END of day N, not its dawn.** `days` is collected at each dawn plus
     # one final snapshot, so `days[N + 1]` is the board after day N's actions -- which is what lines
     # up with the op counts, which are that day's actions. Reading a dawn snapshot beside the same
@@ -412,10 +483,9 @@ def write_csv(path, ours, tape, days):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES),
-                    help="which recorded season the tape column replays. Defaults to "
-                         "%(default)s, the leader the project rebased onto -- `seb` is on the "
-                         "pre-rebalance townCenterSellInterval 12 economy and comparing against "
-                         "him replays the whole grid at a town nobody plays any more.")
+                    help="which recorded season the tape column replays, and -- because the same "
+                         "entry carries the schedule OUR agent plays -- which plan we bring to it. "
+                         "%(choices)s only; see RETIRED_TAPES for what was removed and why.")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=11)
@@ -460,12 +530,16 @@ def main():
                          "field, with an ours/tape/diff triplet for each. Every header is prefixed "
                          "board./offered./fill./cash./budget. so a cell's kind travels with it. "
                          "The terminal output is unchanged.")
-    ap.add_argument("--module", default="schedule_agent",
-                    help="which agent to compare against the tape, e.g. schedule_agent_1455mh")
+    ap.add_argument("--module", default=DEFAULT_MODULE,
+                    help="which agent to compare against the tape. Defaults to %(default)s, the "
+                         "module the work is going into; anything loaded here is checked against "
+                         "REQUIRED_SELLABLE and refused if it predates the fix.")
     args = ap.parse_args()
+    if args.tape in RETIRED_TAPES:                      # unreachable via `choices`, kept for clarity
+        ap.error(f"--tape {args.tape} was removed: {RETIRED_TAPES[args.tape]}")
 
     global schedule_agent
-    schedule_agent = importlib.import_module("kagg.search." + args.module)
+    schedule_agent = load_agent_module(args.module)
 
     replay, schedule, team = TAPES[args.tape]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
@@ -477,8 +551,13 @@ def main():
     # beyond the last printed column, because column d is the board at the END of day d.
     horizon = args.days + 1 if args.handover is None else None
     economy = env_config(replay)
+    # **Both columns get the tape's own shop draw.** Not just the tape's: a grid whose two columns
+    # faced different towns compares nothing, which is the same argument `env_config` already makes
+    # about the sell interval.
+    shops = recorded_shops(replay)
     his, his_ops, his_cash, his_dawn = run(lambda: tape_policy(replay, team, 0), opp, args.seed,
-                                           args.weeds, stop_day=horizon, economy=economy)
+                                           args.weeds, stop_day=horizon, economy=economy,
+                                           shops=shops)
 
     def mine():
         # `start_day` only exists on HEAD's agent, and only --handover needs it. Passing it
@@ -497,7 +576,7 @@ def main():
         return f
 
     ours, our_ops, our_cash, our_dawn = run(mine, opp, args.seed, args.weeds, stop_day=horizon,
-                                            economy=economy)
+                                            economy=economy, shops=shops)
 
     if args.csv:
         # Before the terminal blocks, and before `--diff`'s early return: a flag that silently does

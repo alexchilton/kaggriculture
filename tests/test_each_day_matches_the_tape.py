@@ -10,6 +10,8 @@ Driven by `scripts/breakdown.run`, the same function behind
 `scripts/breakdown.py --module schedule_agent_1455mh --days 7`, so this file and that table cannot
 disagree about what was measured. Market rows there are EXACT FILLS read per unit from
 `_commit_unit` via `kagg/analysis/fills.py` -- never offers, which the agent re-posts every turn.
+Both columns are replayed on the tape's own recorded shop draw as well as its own sell interval;
+without that the tape column diverges on day 3, the day the first shop unlocks.
 
 Exempt rows, and why each is exempt rather than merely inconvenient:
 
@@ -36,7 +38,13 @@ SEED = 11
 WEEDS = 0.0
 DAYS = 7
 MODULE = "kagg.search.schedule_agent_1455mh"
-PLAN = "90494364"
+
+#: **The tape this gate compares against, and it moved on 2026-08-13.** It was Seb's `90494364`,
+#: which was wrong twice over: the `TAPES` entry also supplies the schedule OUR agent plays, so the
+#: gate was driving our agent on SEB'S four-quadrant plan while we ship a three-quadrant one -- a
+#: different agent, not a different baseline -- and his recording is on `townCenterSellInterval 12`,
+#: the pre-rebalance economy retired on 2026-08-08. Alex: "no seb - only vic or the new nr 1".
+TAPE = "victor"
 
 #: Tour shape, not work. See the module docstring.
 EXEMPT = ("PICKUP", "DROP", "PASS")
@@ -59,7 +67,7 @@ def measured():
 
     import breakdown as B
 
-    replay, schedule, team = B.TAPES["seb"]
+    replay, schedule, team = B.TAPES[TAPE]
     raw = json.loads((REPO / schedule).read_text())
     sched = {int(k): {kk: vv for kk, vv in r.items() if kk not in B.TAPE_ONLY}
              for k, r in raw.items()}
@@ -73,9 +81,13 @@ def measured():
         a = SA.make_agent(sched, 0, router=True)
         return lambda o, t: a(o)
 
-    a_days, a_ops, _a_cash, _a_dawn = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
+    economy = B.env_config(str(REPO / replay))
+    shops = B.recorded_shops(str(REPO / replay))
+    a_days, a_ops, _a_cash, _a_dawn = B.run(ours, opp, SEED, WEEDS, stop_day=horizon,
+                                            economy=economy, shops=shops)
     b_days, b_ops, _b_cash, _b_dawn = B.run(
-        lambda: B.tape_policy(str(REPO / replay), team, 0), opp, SEED, WEEDS, stop_day=horizon)
+        lambda: B.tape_policy(str(REPO / replay), team, 0), opp, SEED, WEEDS, stop_day=horizon,
+        economy=economy, shops=shops)
     return (a_days, a_ops), (b_days, b_ops)
 
 

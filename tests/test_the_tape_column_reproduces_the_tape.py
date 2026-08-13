@@ -26,21 +26,16 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 SEED, WEEDS, TPD, DAYS = 11, 0.0, 24, 7
 
-#: Every tape the grid can be pointed at.  A new download with a different economy has to be
-#: caught here, not discovered three false leads later.
+#: Every tape the grid can be pointed at. A new download with a different economy has to be caught
+#: here, not discovered three false leads later.
 #:
-#: `seb2988` is xfail STRICT, not skipped: it was recorded at `townCenterSellInterval` 24, the same
-#: economy that is installed, and still does not reproduce -- money is out by $52 at d4 growing to
-#: $362 by d6, with one melon missing at d5 and d6.  Neither the sell interval nor the weed rate
-#: explains it (replayed at 0.005 as recorded, the same days fail identically), so the cause is
-#: still open and is NOT the bug this file fixed.  Strict, so that whatever closes it fails here
-#: and gets the marker removed rather than leaving a passing test marked broken.
-TAPES = (
-    "seb",
-    pytest.param("seb2988", marks=pytest.mark.xfail(
-        strict=True, reason="open: money drifts $52 -> $362 over d4-d6 and one melon is missing; "
-                            "not the sell interval (24, as installed) and not the weed rate")),
-)
+#: `seb` and `seb2988` were the two entries here until 2026-08-13 and are gone with the rest of the
+#: Seb tapes -- selecting one also selected HIS schedule for our own agent, so it was never a
+#: comparison. `seb2988`'s xfail is gone with it: it never reproduced its own board (money out by
+#: $52 at d4 growing to $362 by d6, one melon missing at d5-d6) and the cause was open at removal.
+#: The shop-draw fix landed the same day and is the first thing to try if it is ever restored --
+#: that is exactly the shape of failure an unreplayed shop draw produces.
+TAPES = tuple(sorted(__import__("breakdown").TAPES))
 
 
 def _board(farm):
@@ -78,9 +73,14 @@ def test_replaying_the_tape_lands_on_the_board_the_tape_recorded(tape):
     env.reset(2)
     p0 = B.tape_policy(str(REPO / replay), team, 0)
     p1 = B.tape_policy(str(REPO / replay), team, 1)
+    # The other half of "replay it on the economy it was played on": WHICH SHOPS unlocked. Built
+    # from a fixed seed, the tape's actions meet a town that wants different things, and the first
+    # divergence lands on day 3 -- the day the first shop opens. See `recorded_shops`.
+    shops = B.recorded_shops(str(REPO / replay))
 
     bad = []
     for t in range(TPD * DAYS):
+        env.state[0].observation.town["unlocked_shops"] = list(shops(t))
         o0, o1 = env.state[0].observation, env.state[1].observation
         a0, a1 = p0(o0, t), p1(o1, t)
         n0 = len(o0["farms"][0].get("hands") or [])
