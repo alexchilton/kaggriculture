@@ -113,18 +113,17 @@ def test_attribution_is_exact_when_only_one_side_trades_that_product():
     assert not +got.shared_sold, f"nothing should be ambiguous here: {got.shared_sold}"
 
 
-def greedy_seed_buyer(inner, crop="MELON", units=50):
-    """`inner`, plus a standing order for far more seed than the bank can ever cover.
+def re_offering(inner, *orders):
+    """`inner`, plus a standing order re-posted on every single turn.
 
     The point is a recording where the offer total and the fill total are wildly apart, which is
     what our own agent's re-posting produces on the ladder and what NO well-behaved sparring agent
-    in this repo produces -- `heuristic` asks for seed once, so a game between the stock agents
-    cannot tell a correct seed count from a wrong one.
+    in this repo produces -- `heuristic` asks for seed once and `rancher` asks for each cow once,
+    so a game between the stock agents cannot tell a correct count from one that sums the orders.
     """
     def agent(obs, config=None):
-        out = inner(obs, config) if config is not None else inner(obs)
-        out = dict(out)
-        out["market"] = list(out.get("market") or []) + [["BUY_SEED", crop, units]]
+        out = dict(inner(obs, config) if config is not None else inner(obs))
+        out["market"] = list(out.get("market") or []) + [list(o) for o in orders]
         return out
     return agent
 
@@ -136,14 +135,32 @@ def test_a_seed_purchase_is_exact_because_seeds_have_a_closed_ledger():
     from kagg.agents import heuristic
     from kagg.analysis.replay_fills import offered, seed_fills
 
-    replay, truth = play(greedy_seed_buyer(heuristic.make_agent()),
-                         greedy_seed_buyer(heuristic.make_agent()))
+    replay, truth = play(re_offering(heuristic.make_agent(), ["BUY_SEED", "MELON", 50]),
+                         re_offering(heuristic.make_agent(), ["BUY_SEED", "MELON", 50]))
     for seat in (0, 1):
         got = seed_fills(replay, seat)
         for crop in ("WHEAT", "MELON", "STRAWBERRY", "CARROT", "TOMATO"):
             assert got[crop] == truth.units(seat, "BUY_SEED", crop), crop
         # and the discrimination is real: the offer total is an order of magnitude out
         assert offered(replay, seat)["BUY_SEED"]["MELON"] > 10 * max(1, got["MELON"])
+
+
+def test_an_animal_bought_is_read_off_the_shed_because_the_market_never_sees_it():
+    """`BUY_ANIMAL` lands the beast in `private["shed"]`, but COW and SHEEP are not in `PRODUCTS`
+    so `market["inventory"]` never moves for one. The shed is the only witness there is."""
+    from kagg.agents import heuristic, rancher
+    from kagg.analysis.replay_fills import offered
+
+    replay, truth = play(re_offering(heuristic.make_agent(), ["BUY_ANIMAL", "COW", 4]),
+                         re_offering(rancher.agent, ["BUY_ANIMAL", "SHEEP", 4]))
+    got = trade_fills(replay)
+    for seat in (0, 1):
+        for animal in ("COW", "SHEEP", "GOOSE", "CHICKEN", "PIG"):
+            assert got.animals_bought[seat][animal] == truth.units(seat, "BUY_ANIMAL", animal), (
+                f"seat {seat} {animal}")
+    assert sum(got.animals_bought[0].values()), "seat 0 bought no animals; this proved nothing"
+    assert (offered(replay, 0)["BUY_ANIMAL"]["COW"]
+            > 10 * max(1, got.animals_bought[0]["COW"])), "the order stream is not discriminated"
 
 
 def test_hire_and_buy_land_are_fills_too_because_the_env_can_refuse_them():

@@ -39,8 +39,10 @@ independent ledgers:
 
 1. **The seat's own shed.** `_commit_unit` is the only market path that touches `private["shed"]`.
    `DROP`, `PICKUP` and `PLACE` are the only unit ops that touch the same field, and the end-of-day
-   rollover empties every inventory into it. On a turn with none of those, a shed delta IS that
-   seat's fill -- exact, and it still works when the price is on the floor.
+   rollover empties every inventory into it. Where none of those reached a given item, that item's
+   shed delta IS that seat's fill -- exact, and it still works when the price is on the floor.
+   Readability is per ITEM, not per turn: `PICKUP` and `PLACE` name the one thing they move, so a
+   `PICKUP WHEAT` says nothing about the cow bought on the same turn.
 2. **The market inventory.** `inv(t) - inv(t-1) + town_drain(t) = sold - bought` summed over both
    seats, with `town_drain` exact from the shop list and `step % townShopSellInterval` /
    `step % townCenterSellInterval`. This covers the turns the shed cannot, and has one blind spot
@@ -310,6 +312,15 @@ class TradeFills:
     def __init__(self):
         self.sold = [collections.Counter(), collections.Counter()]
         self.bought = [collections.Counter(), collections.Counter()]
+        #: seat -> day -> product -> units, so a closing-week table does not have to fall back on
+        #: order counts to say what moved on a given day
+        self.sold_by_day = [collections.defaultdict(collections.Counter),
+                            collections.defaultdict(collections.Counter)]
+        self.bought_by_day = [collections.defaultdict(collections.Counter),
+                              collections.defaultdict(collections.Counter)]
+        #: `BUY_ANIMAL` lands the beast in the shed like any other purchase, but COW and SHEEP are
+        #: not in `PRODUCTS` so the market-inventory ledger never sees them; only the shed does.
+        self.animals_bought = [collections.Counter(), collections.Counter()]
         self.shared_sold = collections.Counter()
         self.unresolved_sold = collections.Counter()
         #: products that touched $1 at some point, where the market ledger is blind
@@ -336,13 +347,29 @@ def _shed(replay, t, seat):
     return private.get("shed") or {}
 
 
-def _shed_is_readable(replay, t, seat, turns_per_day):
-    """True when nothing but the market moved this seat's shed across the step starting at `t`."""
+def _shed_readable_items(replay, t, seat, turns_per_day):
+    """Which items' shed levels are readable across the step starting at `t`, as a predicate.
+
+    Per ITEM rather than per turn, because the three tainting ops are not equally destructive.
+    `PICKUP` and `PLACE` name the one item they move, so they cost that item and nothing else.
+    `DROP` dumps the acting unit's WHOLE inventory and the action does not say what was in it, so
+    it costs every item. `_end_of_day` does the same to every unit, so the last turn of a day is
+    unreadable outright. Blanket-tainting a turn on a single `PICKUP WHEAT` was throwing away
+    every cow purchase that happened to share a turn with one.
+    """
     if (t + 1) % turns_per_day == 0:          # `_end_of_day` empties every inventory into the shed
-        return False
+        return lambda _item: False
     action = _action(replay, t, seat)
     units = [action.get("farmer")] + list(action.get("hands") or [])
-    return not any(u and u[0] in SHED_TAINTING_OPS for u in units)
+    tainted = set()
+    for unit in units:
+        if not unit:
+            continue
+        if unit[0] == "DROP":
+            return lambda _item: False
+        if unit[0] in ("PICKUP", "PLACE") and len(unit) > 1:
+            tainted.add(unit[1])
+    return lambda item: item not in tainted
 
 
 def trade_fills(replay, team=None):
@@ -377,9 +404,9 @@ def trade_fills(replay, team=None):
         shops = (before.get("town") or {}).get("unlocked_shops") or []
         drain = town_drain(t - 1, shops, shop_interval, center_interval)
 
-        readable = [_shed_is_readable(replay, t - 1, seat, turns_per_day) for seat in (0, 1)]
+        readable = [_shed_readable_items(replay, t - 1, seat, turns_per_day) for seat in (0, 1)]
         for seat in (0, 1):
-            out.shed_clean[seat] += 1 if readable[seat] else 0
+            out.shed_clean[seat] += 1 if readable[seat]("") else 0
         shed_before = [_shed(replay, t - 1, seat) for seat in (0, 1)]
         shed_after = [_shed(replay, t, seat) for seat in (0, 1)]
 
@@ -388,6 +415,16 @@ def trade_fills(replay, team=None):
             for order in (_action(replay, t - 1, seat).get("market") or []):
                 if order and order[0] in ("SELL", "BUY_PRODUCT") and len(order) > 1:
                     wants[seat][order[1]].add(order[0])
+
+        # Animals never enter `market["inventory"]`, so the shed is the only witness. On a turn
+        # nothing else moved that seat's shed, a rise in COW is a cow that was paid for.
+        for seat in (0, 1):
+            for animal in ("COW", "SHEEP", "CHICKEN", "GOOSE", "PIG"):
+                if not readable[seat](animal):
+                    continue
+                gained = shed_after[seat].get(animal, 0) - shed_before[seat].get(animal, 0)
+                if gained > 0:
+                    out.animals_bought[seat][animal] += gained
 
         for product in PRODUCTS:
             at_floor = (prices_before.get(product, 99) <= PRICE_FLOOR
@@ -406,7 +443,7 @@ def trade_fills(replay, team=None):
             # product on the same turn net out inside one delta.
             net = [None, None]
             for seat in (0, 1):
-                if not readable[seat] or len(wants[seat].get(product) or ()) > 1:
+                if not readable[seat](product) or len(wants[seat].get(product) or ()) > 1:
                     continue
                 net[seat] = (shed_before[seat].get(product, 0)
                              - shed_after[seat].get(product, 0))   # sold minus bought
@@ -428,13 +465,16 @@ def trade_fills(replay, team=None):
                     out.shared_sold[product] += abs(moved)
                 continue
 
+            day = (t - 1) // turns_per_day
             for seat in (0, 1):
                 if net[seat] is None:
                     continue
                 if net[seat] > 0:
                     out.sold[seat][product] += net[seat]
+                    out.sold_by_day[seat][day][product] += net[seat]
                 elif net[seat] < 0:
                     out.bought[seat][product] += -net[seat]
+                    out.bought_by_day[seat][day][product] += -net[seat]
             if len(known) == 1 and at_floor:
                 # What the ledger saw and the one readable shed did not claim is real volume of
                 # unknown ownership -- but at the floor the ledger itself is short, so this is the
