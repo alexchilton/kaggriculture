@@ -27,7 +27,6 @@ This prints the raw pair `ours/tape` for:
 
 import argparse
 import collections
-import importlib
 import json
 import pathlib
 import sys
@@ -39,50 +38,97 @@ sys.path.insert(0, ".")
 #: decision in the project was about `schedule_agent_1455*`.
 schedule_agent = None
 
+#: **The module the work is actually going into.** `--module` defaulted to `schedule_agent`, last
+#: touched 2026-08-09 (`ea72a1e`), while every commit since has gone into this one. Four days of
+#: grids therefore measured an agent nobody was changing, and produced at least one finding -- a
+#: "missing cow since d6" -- that evaporated the moment the right module was loaded.
+DEFAULT_MODULE = "schedule_agent_1455mh"
+
+#: Products the agent must be ABLE to sell, checked on every load. `c99a8a5` found that CARROT,
+#: TOMATO and EGG were missing from `SELLABLE`, so no carrot the farm grew could be turned into
+#: money at all -- it invalidated four carrot arms and the entire goose verdict. Four of the five
+#: `schedule_agent*` files in this tree are still on the wrong side of it.
+#:
+#: A CAPABILITY rather than a version string, deliberately. A version string goes stale exactly as
+#: quietly as the module did; "can it sell a carrot" is a fact about the object in front of you.
+REQUIRED_SELLABLE = ("CARROT", "TOMATO", "EGG")
+
+
+def load_agent_module(name):
+    """Import `kagg.search.<name>` and refuse it if it predates the fixes the grid assumes.
+
+    Exits rather than warns. A warning above a table is read after the table, and the whole point
+    is that a stale module produces numbers indistinguishable from real ones.
+    """
+    import importlib
+
+    module = importlib.import_module("kagg.search." + name)
+    sellable = getattr(module, "SELLABLE", ())
+    missing = [p for p in REQUIRED_SELLABLE if p not in sellable]
+    if missing:
+        raise SystemExit(
+            f"kagg.search.{name} is stale: its SELLABLE is missing {', '.join(missing)}, so the "
+            f"agent cannot sell them at all (fixed in c99a8a5). Every number a grid prints for it "
+            f"would be about an agent nobody is working on.\n"
+            f"  SELLABLE = {tuple(sellable)}\n"
+            f"  use --module {DEFAULT_MODULE}")
+    for attribute in ("make_agent", "CUMULATIVE_SELLS", "SELL_CARRY_DAYS", "HIRE_FIRST"):
+        if not hasattr(module, attribute):
+            raise SystemExit(f"kagg.search.{name} has no {attribute}; it is not a schedule agent "
+                             f"this grid can drive.")
+    return module
+
 TAPES = {
-    # Downloaded 2026-08-07 21:16. Seb WINS this one 143,772 to Leon Christians' 127,114 and holds all
-    # four quadrants to Leon's three. A materially more aggressive plan than `seb` below: land on days
-    # 4, 6 and 10 against 5, 9 and 11, and 23 pens against ~15.
-    # Its `configuration` records `townCenterSellInterval = 12`, i.e. it was played on the PRE-rebalance
-    # economy -- same as the ladder, which had not picked up 1.32.6 as of that evening. Check that field
-    # on any future download before trusting a comparison against it.
-    "seb2": ("data/seed_scripts/top_guys/90751101.json",
-             "data/seed_scripts/top_guys/90751101/schedule.json", "Seb (allegedly)"),
-    # Seb on the REBALANCED economy (townCenterSellInterval 24), banking $128,518 against
-    # kakuteki's $70,886. The first tape we have of a top player on the game now being played.
-    # Against `seb` below he moves the second parcel to day 6, builds 21 pens instead of 19,
-    # and re-cuts the herd from wool to milk: MILK 179 -> 303, WOOL 230 -> 104, MELON 132 -> 96.
-    "seb1326": ("data/seed_scripts/top_guys/90976060.json",
-                "data/seed_scripts/top_guys/90976060/schedule.json", "Seb (allegedly)"),
-    # Downloaded 2026-08-09 by Alex, straight off Kaggle. Seb banks $104,699 against Valmorlee's
-    # $94,320, seated SECOND (`TeamNames` is ['Valmorlee', 'Seb (allegedly)']) -- the only tape here
-    # where he is not seat 0, so anything reading seat 0 by hand gets the opponent.
-    # `townCenterSellInterval = 24`: the REBALANCED economy, i.e. the game we actually play.
-    # d0-d3 are identical to `seb` below; it diverges from d4, with 21 builds against 19, six of them
-    # on d7, the third parcel on d6 rather than d8, and the crew dipping to 6 on d6.
-    "seb2988": ("data/seed_scripts/top_guys/91422988.json",
-                "data/seed_scripts/top_guys/91422988/schedule.json", "Seb (allegedly)"),
-    # **`townCenterSellInterval = 12` -- the PRE-rebalance economy.** The town drains at half the rate
-    # of the game we play, so prices move differently and his recorded bank is NOT reproducible here:
-    # replaying both seats' own actions on seed 11 diverges at turn 32 (d1 h8) by one dollar on a
-    # single BUY_PRODUCT and ends at $10,264 against his recorded $110,820.
-    # It is still a valid target for the SCHEDULE and for the op sequence, which is what we generate.
-    # It is not a target for money, fills, or any state row.
-    # See `docs/the_tape_column_does_not_replay_his_game_2026-08-09.md`.
-    "seb": ("data/seed_scripts/top_guys/90494364.json",
-            "data/seed_scripts/top_guys/90494364/schedule.json", "Seb (allegedly)"),
-    "oldleader": ("data/seed_scripts/new_leader/90016067.json",
-                  "data/seed_scripts/new_leader/schedule.json", "somewhere after"),
-    # **The rebase target, 2026-08-11.** Victor @ Tufa Labs is #2 on the ladder at 3,149.8 and is a
-    # fixed script -- 97-99% of turns identical across seven games on both seats, with byte-identical
-    # season SELL totals -- so the plan reads off one tape without averaging. This is his best of the
-    # ten downloaded, $119,407 against Efe Can Celiksoy's $108,925, seated SECOND.
-    # `townCenterSellInterval = 24`, i.e. the economy we actually play, unlike `seb`/`seb2`.
-    # Why not Seb: his tape is the interval-12 shape (WHEAT 24 / STRAWBERRY 41), his own bank halved
-    # when the economy changed and he withdrew. See `docs/the_ladder_is_two_scripts.md`.
+    # **The rebase target, 2026-08-11, and the plan we ship.** Victor @ Tufa Labs is #2 on the
+    # ladder at 3,149.8 and is a fixed script -- 97-99% of turns identical across seven games on
+    # both seats, with byte-identical season SELL totals -- so the plan reads off one tape without
+    # averaging. This is his best of the ten downloaded, $119,407 against Efe Can Celiksoy's
+    # $108,925, seated SECOND. `townCenterSellInterval = 24`, the economy actually being played.
     "victor": ("data/seed_scripts/top2/91854176.json",
                "data/seed_scripts/victor/schedule.json", "Victor @ Tufa Labs"),
+    # **The current #1, and the highest bank in anything downloaded.** カワシギ takes $149,998 off
+    # Yusuke Hayashi's $143,436 -- against Victor's best of $119,407 -- seated FIRST, which is the
+    # opposite of `victor` and worth checking before reading any seat by hand.
+    # `townCenterSellInterval = 24`.
+    # The middle element drives OUR agent, never the tape column: `main()` feeds it to
+    # `schedule_agent.make_agent` while the tape column comes from `tape_policy(replay, team, 0)`.
+    # Nothing has been extracted from his games yet, so it reuses Victor's plan and the comparison
+    # is "our Victor-derived plan against Kawashigi's recorded season". Pinned by
+    # `tests/test_the_grid_compares_against_the_leader_we_rebased_on.py`.
+    "kawashigi": ("data/seed_scripts/kawashigi/92498144.json",
+                  "data/seed_scripts/kawashigi/schedule.json", "\u30ab\u30ef\u30b7\u30ae"),
 }
+
+#: **Removed on 2026-08-13, on Alex's instruction: "no seb - only vic or the new nr 1".**
+#: Deleted rather than left un-defaulted, and the reason is not housekeeping.
+#:
+#: 1. **The tape key also selects OUR OWN schedule.** `TAPES[tape]`'s middle element goes straight
+#:    to `make_agent`. Choosing Seb therefore did not compare us against Seb -- it made our agent
+#:    play SEB'S four-quadrant plan while we ship a three-quadrant one. That is a different agent,
+#:    not a different baseline, and nothing measured that way means anything.
+#: 2. Except where noted, the Seb tapes are on `townCenterSellInterval = 12`, the pre-rebalance
+#:    economy retired on 2026-08-08. His own bank halved when it changed and he withdrew.
+#: 3. A wrong option one flag away gets chosen by accident, and was: `--tape` defaulted to `seb`
+#:    for six days after the project had rebased onto Victor.
+#:
+#: The replay FILES are still on disk and a script that wants one as raw data can name the path.
+#: What is gone is the ability to select one as a comparison target.
+RETIRED_TAPES = {
+    "seb": "90494364, townCenterSellInterval 12 -- pre-rebalance, and its bank does not replay",
+    "seb2": "90751101, townCenterSellInterval 12 -- pre-rebalance",
+    "seb1326": "90976060 -- rebalanced, but superseded by victor as the rebase target",
+    "seb2988": "91422988 -- rebalanced, and never reproduced its own board (open at removal)",
+    "oldleader": "90016067 -- an earlier leader, overtaken twice since",
+}
+
+
+#: **The tape the grid compares against unless told otherwise.** `--tape` defaulted to `seb` from
+#: the day it was added on 2026-08-07; the project rebased onto Victor on 2026-08-11 and worked
+#: against Victor for two days while every grid run without an explicit flag compared against
+#: someone else. The two disagree in kind, not degree: the `animals` row totals -4 over six days
+#: against Seb, oscillating, which reads as timing jitter -- and -14 over fourteen days against
+#: Victor, one-directional, which is a defect. It was invisible the whole time.
+DEFAULT_TAPE = "victor"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 CROPS = ("WHEAT", "STRAWBERRY", "MELON", "TOMATO", "CARROT")
 ANIMALS = ("COW", "SHEEP", "CHICKEN", "GOOSE", "PIG")
@@ -96,6 +142,13 @@ MOVES = ("NORTH", "SOUTH", "EAST", "WEST")
 WORK = ("PLANT", "WATER", "HARVEST", "FERTILIZE", "FEED", "CARE", "COLLECT_FERTILIZER",
         "DIG", "BUILD_COOP", "BUILD_PASTURE", "PLACE", "PICKUP", "DROP")
 OPS = WORK + ("PASS",) + MOVES
+
+#: The turn-budget block, and the reason it is a module constant rather than a list built inside
+#: `main()` behind an `if args.moves`. `work + move + idle == unit-turns` is an identity, and a
+#: block that prints three of its four terms is a table a reader cannot add up -- which is exactly
+#: the complaint this file was reworked to answer. `--moves` hides the four COMPASS rows, which are
+#: tour shape and not a defect; it must never again hide a term of this sum.
+BUDGET_ROWS = (("_turns", "unit-turns"), ("_work", "work"), ("_move", "move"), ("_pass", "idle"))
 
 
 #: Configuration keys a recording carries that CHANGE THE GAME, and so must be taken from the
@@ -119,6 +172,39 @@ def env_config(replay):
     """
     cfg = json.loads(pathlib.Path(replay).read_text()).get("configuration") or {}
     return {k: cfg[k] for k in ECONOMY_KEYS if cfg.get(k) is not None}
+
+
+def recorded_shops(replay):
+    """`turn -> the town's shop list as it stood at that turn`, read off the recording.
+
+    **The shop draw is part of the economy and it was not being replayed.** `env_config` already
+    takes `townCenterSellInterval` from the recording, for exactly the reason this exists: a tape
+    replayed on a different economy is fiction. The draw is the other half of that economy -- which
+    shops unlocked, and therefore what the town wants and how hard it holds each price up -- and
+    `run` was building it from a fixed `seed` instead.
+
+    Driving both seats of four real games from their own recordings and comparing against the banks
+    Kaggle recorded:
+
+        92588301   recorded  92,884 /  93,254   on seed 11:  93,236 /  84,442
+        92550780   recorded  69,881 /  77,275   on seed 11:  41,899 / 128,253
+        92562037   recorded 129,161 / 133,724   on seed 11:  85,979 /  88,297
+        92498144   recorded 149,998 / 143,436   on seed 11:  68,080 /  69,880
+
+    First divergence is turn 75 -- day 3 hour 3, one dollar, on the day the first shop unlocks.
+    With the recorded list injected, all four reproduce the bank, the market inventory and both
+    sheds exactly on every one of 719 turns. Pinned by
+    `tests/test_the_harness_reproduces_a_recorded_game.py`.
+
+    It has to be READ, not derived: `_end_of_day` spends the same generator on `_spawn_weeds`
+    first, once per empty tile per player, so where the draw lands in the stream depends on how the
+    board was played. Every recorded observation carries `town.unlocked_shops`, so reading it is
+    both exact and free.
+    """
+    steps = json.loads(pathlib.Path(replay).read_text())["steps"]
+    lists = [list((step[0] or {}).get("observation", {}).get("town", {}).get("unlocked_shops")
+                  or []) for step in steps]
+    return lambda t: lists[t] if t < len(lists) else (lists[-1] if lists else [])
 
 
 def tape_policy(replay, team, seat_wanted):
@@ -187,10 +273,15 @@ SHED_MARKET_OPS = ("SELL", "BUY_PRODUCT", "BUY_ANIMAL")
 
 
 #: The four ops `_commit_unit` settles one unit at a time. Read from `fills`, never from the shed.
-MARKET_FILL_OPS = ("SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL")
+#: The six ops the market settles, all of them read from `fills`, none of them from the action
+#: stream. `HIRE` and `BUY_LAND` joined the list once `kagg/analysis/fills.py` learned to wrap
+#: `_do_hire` and `_do_buy_land`: both are refused silently when the bank is short, so an emitted
+#: one is an offer exactly like a SELL, and they had been sitting in the same table as the fills
+#: under a heading that called everything in it "emitted".
+MARKET_FILL_OPS = ("SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL", "HIRE", "BUY_LAND")
 
 
-def run(make0, opp, seed, weeds, stop_day=None, economy=None):
+def run(make0, opp, seed, weeds, stop_day=None, economy=None, shops=None):
     from kaggle_environments import make
 
     from kagg.analysis.fills import record_fills
@@ -202,7 +293,11 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
     env.reset(2)
     p0, p1 = make0(), opp()
     days, ops = [], collections.defaultdict(collections.Counter)
+    #: day -> op -> dollars that op actually moved. The units row says what happened; this says
+    #: what it cost, and the two together are what closes the day's cash against its money row.
+    cash = collections.defaultdict(collections.Counter)
     filled = {op: 0 for op in MARKET_FILL_OPS}
+    spent = {op: 0.0 for op in MARKET_FILL_OPS}
     # Entered/exited by hand rather than with a `with`, purely so the loop body below keeps its
     # indentation and this change stays a readable diff.
     _cm = record_fills(env)
@@ -210,10 +305,22 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
     # `stop_day` plays only days 0..stop_day-1. The d0-d6 gate is a unit test and must
     # not pay for 30 days of season to answer a question about 7.
     last = 719 if stop_day is None else min(719, 24 * stop_day)
+    #: The largest crew that stood on the board during each day. `snap` samples at DAWN, and
+    #: `_end_of_day` empties `farm["hands"]` and resets `hires_today`, so the `hands` row read 0 for
+    #: every day of every grid ever printed and 9 on the last one (the final snapshot is taken
+    #: mid-day, not at a dawn). Both columns were wrong identically, which is why it never looked
+    #: wrong. `hands` is the ONLY state row with this problem -- money, tiles, pens, weeds, crops
+    #: and the herd all survive the rollover untouched, and the `sh:*` shed levels are a real
+    #: post-rollover level, already documented as a snapshot of a flow.
+    crew = collections.Counter()
     for t in range(last):
         o0, o1 = env.state[0].observation, env.state[1].observation
+        if shops is not None:
+            # Before the step, so `_town_consume` sees the list the recording had at this turn.
+            env.state[0].observation.town["unlocked_shops"] = list(shops(t))
         if t % 24 == 0:
             days.append(snap(o0, 0))
+        crew[t // 24] = max(crew[t // 24], len(o0["farms"][0].get("hands") or []))
         a0, a1 = p0(o0, t), p1(o1, t)
         n0 = len(o0["farms"][0].get("hands") or [])
         n1 = len(o0["farms"][1].get("hands") or [])
@@ -256,6 +363,9 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
             now = fills.units(0, op)
             ops[t // 24][op] += now - filled[op]
             filled[op] = now
+            value = fills.spent(0, op)
+            cash[t // 24][op] += value - spent[op]
+            spent[op] = value
         if env.state[0].status == "DONE":
             break
     # Only a run that was meant to reach the end must be DONE. A `stop_day` run is cut deliberately.
@@ -264,6 +374,11 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
         if bad:
             raise RuntimeError(f"seat status {bad}")
     days.append(snap(env.state[0].observation, 0))
+    # `days[d + 1]` is the board at the END of day d, and `run` returns `days[1:]`, so index d there
+    # is day d. Overwrite the dawn `hands` reading with the crew that actually worked that day.
+    for day, size in crew.items():
+        if day + 1 < len(days):
+            days[day + 1]["hands"] = size
     # **Day N is the state at the END of day N, not its dawn.** `days` is collected at each dawn plus
     # one final snapshot, so `days[N + 1]` is the board after day N's actions -- which is what lines
     # up with the op counts, which are that day's actions. Reading a dawn snapshot beside the same
@@ -275,12 +390,102 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
     # count here means the seat map is broken and every market row is understated. It must be zero.
     if fills.unattributed:
         raise RuntimeError(f"{fills.unattributed} fills could not be attributed to a seat")
-    return days[1:], ops
+    return days[1:], ops, dict(cash), days[0]
+
+
+#: Board rows the CSV carries. Fixed and full, unlike the terminal grid's `live` filter: a column
+#: of zeros is information in a spreadsheet (it sorts, it charts, it subtracts) and a column that
+#: appears and disappears between runs cannot be pasted beside another run's.
+CSV_BOARD = (("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
+             ("weed", "weeds"), ("animals", "animals"))
+
+
+def write_csv(path, ours, tape, days):
+    """The whole grid as one spreadsheet: **a row per day, a column per field**.
+
+    Alex, on the terminal version: "can you do it so it is not interweaved or is as a csv i can
+    open in excel". The terminal grid is transposed -- days across, fields down -- because that is
+    what fits in eighty columns, and that transposition is exactly what makes it unreadable. A
+    spreadsheet wants the opposite: a day is an observation and a field is a variable, so days go
+    down and fields go across, and then sorting, charting and filtering all work.
+
+    **One file with a column triplet per field**, `<field>.ours`, `<field>.tape`, `<field>.diff`,
+    rather than three files. Three files means three sheets and a VLOOKUP before you can see a gap;
+    the triplet puts ours, the tape and the difference side by side in the one place a reader is
+    already looking, and `.diff` is `ours - tape` so its sign reads the same way as the terminal
+    `--diff` block.
+
+    **Every column header says what KIND of number the cell holds**, because a spreadsheet strips
+    away the surrounding prose that a terminal table can carry above it:
+
+        board.*    a count or level of real board state at the END of that day
+        offered.*  unit ops EMITTED that day -- the env silently ignores an illegal one
+        fill.*     UNITS that committed, from `_commit_unit` / `_do_hire` / `_do_buy_land`
+        cash.*     DOLLARS that actually moved, at the price each unit fetched
+        budget.*   the turn budget; work + move + idle == unit-turns
+
+    No market op appears under `offered.` -- all six the market settles are fills.
+    """
+    import csv
+
+    our_days, our_ops, our_cash, our_dawn = ours
+    his_days, his_ops, his_cash, his_dawn = tape
+
+    columns = []                                   # (header base, ours-getter, tape-getter)
+    for key, label in CSV_BOARD:
+        columns.append((f"board.{label}",
+                        lambda d, k=key: our_days[d][k], lambda d, k=key: his_days[d][k]))
+    for crop in CROPS:
+        columns.append((f"board.crop_{crop.lower()}",
+                        lambda d, c=crop: our_days[d]["crop_" + c],
+                        lambda d, c=crop: his_days[d]["crop_" + c]))
+    for animal in ANIMALS:
+        columns.append((f"board.herd_{animal.lower()}",
+                        lambda d, a=animal: our_days[d]["an_" + a],
+                        lambda d, a=animal: his_days[d]["an_" + a]))
+    for product in PRODUCTS:
+        columns.append((f"board.shed_{product.lower()}",
+                        lambda d, p=product: our_days[d]["shed_" + p],
+                        lambda d, p=product: his_days[d]["shed_" + p]))
+    for op in OPS + ("OTHER",):
+        columns.append((f"offered.{op.lower()}",
+                        lambda d, o=op: our_ops[d][o], lambda d, o=op: his_ops[d][o]))
+    for op in MARKET_FILL_OPS:
+        columns.append((f"fill.{op.lower()}",
+                        lambda d, o=op: our_ops[d][o], lambda d, o=op: his_ops[d][o]))
+    for op, label in (("SELL", "sold"), ("BUY_PRODUCT", "product"), ("BUY_SEED", "seed"),
+                      ("BUY_ANIMAL", "animal"), ("HIRE", "hire"), ("BUY_LAND", "land")):
+        columns.append((f"cash.{label}",
+                        lambda d, o=op: round(our_cash.get(d, {}).get(o, 0)),
+                        lambda d, o=op: round(his_cash.get(d, {}).get(o, 0))))
+    columns.append(("cash.open",
+                    lambda d: our_dawn["money"] if d == 0 else our_days[d - 1]["money"],
+                    lambda d: his_dawn["money"] if d == 0 else his_days[d - 1]["money"]))
+    columns.append(("cash.close", lambda d: our_days[d]["money"], lambda d: his_days[d]["money"]))
+    for key, label in BUDGET_ROWS:
+        columns.append((f"budget.{label.replace('-', '_')}",
+                        lambda d, k=key: our_ops[d][k], lambda d, k=key: his_ops[d][k]))
+
+    header = ["day"]
+    for base, _o, _t in columns:
+        header += [f"{base}.ours", f"{base}.tape", f"{base}.diff"]
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(header)
+        for day in range(days):
+            row = [day]
+            for _base, get_ours, get_tape in columns:
+                a, b = get_ours(day), get_tape(day)
+                row += [a, b, a - b]
+            writer.writerow(row)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="seb", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES),
+                    help="which recorded season the tape column replays, and -- because the same "
+                         "entry carries the schedule OUR agent plays -- which plan we bring to it. "
+                         "%(choices)s only; see RETIRED_TAPES for what was removed and why.")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=11)
@@ -320,12 +525,21 @@ def main():
     # reports the same run as eight scalars plus the shed-discard count.
     ap.add_argument("--handover", type=int, default=None, metavar="DAY",
                     help="tape plays days 0..DAY-1, our agent plays DAY onwards")
-    ap.add_argument("--module", default="schedule_agent",
-                    help="which agent to compare against the tape, e.g. schedule_agent_1455mh")
+    ap.add_argument("--csv", metavar="PATH",
+                    help="also write the whole grid to a spreadsheet: a ROW PER DAY, a column per "
+                         "field, with an ours/tape/diff triplet for each. Every header is prefixed "
+                         "board./offered./fill./cash./budget. so a cell's kind travels with it. "
+                         "The terminal output is unchanged.")
+    ap.add_argument("--module", default=DEFAULT_MODULE,
+                    help="which agent to compare against the tape. Defaults to %(default)s, the "
+                         "module the work is going into; anything loaded here is checked against "
+                         "REQUIRED_SELLABLE and refused if it predates the fix.")
     args = ap.parse_args()
+    if args.tape in RETIRED_TAPES:                      # unreachable via `choices`, kept for clarity
+        ap.error(f"--tape {args.tape} was removed: {RETIRED_TAPES[args.tape]}")
 
     global schedule_agent
-    schedule_agent = importlib.import_module("kagg.search." + args.module)
+    schedule_agent = load_agent_module(args.module)
 
     replay, schedule, team = TAPES[args.tape]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
@@ -337,8 +551,13 @@ def main():
     # beyond the last printed column, because column d is the board at the END of day d.
     horizon = args.days + 1 if args.handover is None else None
     economy = env_config(replay)
-    his, his_ops = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds,
-                       stop_day=horizon, economy=economy)
+    # **Both columns get the tape's own shop draw.** Not just the tape's: a grid whose two columns
+    # faced different towns compares nothing, which is the same argument `env_config` already makes
+    # about the sell interval.
+    shops = recorded_shops(replay)
+    his, his_ops, his_cash, his_dawn = run(lambda: tape_policy(replay, team, 0), opp, args.seed,
+                                           args.weeds, stop_day=horizon, economy=economy,
+                                           shops=shops)
 
     def mine():
         # `start_day` only exists on HEAD's agent, and only --handover needs it. Passing it
@@ -356,7 +575,15 @@ def main():
             return a(o)
         return f
 
-    ours, our_ops = run(mine, opp, args.seed, args.weeds, stop_day=horizon, economy=economy)
+    ours, our_ops, our_cash, our_dawn = run(mine, opp, args.seed, args.weeds, stop_day=horizon,
+                                            economy=economy, shops=shops)
+
+    if args.csv:
+        # Before the terminal blocks, and before `--diff`'s early return: a flag that silently does
+        # nothing in combination with another flag is the kind of thing this pass exists to stop.
+        write_csv(args.csv, (ours, our_ops, our_cash, our_dawn),
+                  (his, his_ops, his_cash, his_dawn), args.days)
+        print(f"  wrote {args.days} day-rows to {args.csv}")
 
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]
@@ -364,31 +591,33 @@ def main():
               + ([("an_" + x, x.lower()[:6]) for x in ANIMALS] if args.species
                  else [("animals", "animals")])
               + ([("shed_" + p, "sh:" + p.lower()[:5]) for p in PRODUCTS] if args.shed else []))
+    # **Crop rows are never hidden, even when both sides read zero all week.** An absent row is
+    # indistinguishable from a row nobody thought to add, and "you don't show carrot" is a fair
+    # complaint about a table that silently drops a crop the schedule plants on d21-d26. A zero
+    # carrot on d0-d8 is a FACT about the plan; a missing carrot row is a hole in the instrument.
+    _always = {"crop_" + c for c in CROPS}
     live = [(k, lab) for k, lab in fields
-            if any(d[k] for d in ours[:args.days + 1]) or any(d[k] for d in his[:args.days + 1])]
+            if k in _always
+            or any(d[k] for d in ours[:args.days + 1]) or any(d[k] for d in his[:args.days + 1])]
 
     print(f"tape {args.tape}   seed {args.seed}   weeds {args.weeds}   "
           + "".join(f"{k} {v}   " for k, v in economy.items())
           + f"CUMULATIVE_SELLS={schedule_agent.CUMULATIVE_SELLS} "
           f"SELL_CARRY_DAYS={schedule_agent.SELL_CARRY_DAYS} "
           f"HIRE_FIRST={schedule_agent.HIRE_FIRST}")
-    print("  state rows (money, tiles, pens, crops, herd) are the board at the END of that day; "
-          "op rows are that day's actions.")
-    print("  compass rows and dawn shed levels are HIDDEN -- --moves and --shed bring them back. "
-          "A shed level is one sample of a flow and lies about it; read fills.")
-    print("  sell/buy_product/buy_seed/buy_animal are EXACT FILLS, read per unit from _commit_unit "
-          "via kagg/analysis/fills.py -- not inferred, no coverage caveat, no lower bound.")
-    print("  every other op row, including hire and buy_land, is an OFFER (what was emitted, "
-          "whether or not the env accepted it).")
+    print("  state rows are the board at the END of that day; flow rows are that day's actions.")
+    print("  the four blocks below are: a board COUNT, unit ops OFFERED, market FILLS, and a "
+          "turn budget that sums to unit-turns. Every cell is ours/tape of the SAME quantity.")
+    print("  the compass rows are HIDDEN -- --moves brings them back; dawn shed levels too, but a "
+          "shed level is one sample of a flow and lies about it. Read the fills.")
 
 
     if args.diff:
         # Every field that is not identical, per day. The wide tables above are for reading what
         # happened; this is for answering "is it exact yet", where a single unrecorded row is the
         # whole answer and eyeballing a 20x11 grid is how a mismatch gets called a match.
-        ops_all = sorted(set(OPS) | {"OTHER", "SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL",
-                                     "BUY_LAND", "HIRE"})
-        budget = (("_turns", "unit-turns"), ("_work", "work"), ("_move", "move"), ("_pass", "idle"))
+        ops_all = sorted(set(OPS) | {"OTHER"} | set(MARKET_FILL_OPS))
+        budget = BUDGET_ROWS
         compass = {"NORTH", "SOUTH", "EAST", "WEST"}
         rows = ([("state", lab, [(ours[d][k], his[d][k]) for d in range(args.days)])
                  for k, lab in fields]
@@ -449,17 +678,32 @@ def main():
                         if d < len(ours) and d < len(his))
         print(f"  {lab:<12}{cells}")
 
-    print("\n  ops emitted that day -- ours/tape\n")
+    print("\n  unit ops OFFERED that day, one per unit that acted -- ours/tape\n")
     print(f"  {'':<12}" + "".join(f"{('d' + str(d)):>13}" for d in range(args.days)))
     compass = {"NORTH", "SOUTH", "EAST", "WEST"}
-    seen = [o for o in OPS + ("OTHER", "SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL",
-                              "BUY_LAND", "HIRE")
-            if (args.moves or o not in compass)
-            and any(our_ops[d][o] or his_ops[d][o] for d in range(args.days))]
-    for o in seen:
-        cells = "".join(f"{str(our_ops[d][o]) + '/' + str(his_ops[d][o]):>13}"
-                        for d in range(args.days))
-        print(f"  {o.lower()[:12]:<12}{cells}")
+    def live_ops(names):
+        return [o for o in names if (args.moves or o not in compass)
+                and any(our_ops[d][o] or his_ops[d][o] for d in range(args.days))]
+
+    def op_rows(names):
+        for o in names:
+            cells = "".join(f"{str(our_ops[d][o]) + '/' + str(his_ops[d][o]):>13}"
+                            for d in range(args.days))
+            print(f"  {o.lower()[:12]:<12}{cells}")
+
+    unit_ops = live_ops(OPS + ("OTHER",))
+    fill_ops = live_ops(MARKET_FILL_OPS)
+    op_rows(unit_ops)
+
+    # **The market block is separated because it is a different KIND of number.** A unit op row is
+    # what the unit was told to do; the env silently ignores an illegal one, so it is an offer. A
+    # market row here is a unit that committed, read from `_commit_unit` (and `_do_hire` /
+    # `_do_buy_land`) via `kagg/analysis/fills.py`. Both were printed in one table under the single
+    # heading "ops emitted that day", which was true of half the rows.
+    print("\n  market FILLS that day, UNITS that committed -- ours/tape\n")
+    print(f"  {'':<12}" + "".join(f"{('d' + str(d)):>13}" for d in range(args.days)))
+    op_rows(fill_ops)
+    seen = unit_ops + fill_ops
 
     # **Cumulative, because a day-by-day flow count cannot show cadence.** Two sides doing identical
     # work on alternate days read as a fault on every single column. Day 18 harvest read `11/14` and
@@ -483,15 +727,21 @@ def main():
     # Where the day's unit-turns went. `move` on its own is not a verdict: walking to do more work is
     # not the same failure as walking further to do the same work. `mv/wk` separates them -- it is the
     # movement each side paid per unit of work done, so a higher number is strictly worse routing.
-    print("\n  turn budget -- ours/tape\n")
+    # **`move` is always shown here, whatever `--moves` says.** `--moves` hides the four COMPASS
+    # rows, which are tour shape and not a defect. Hiding `move` from the BUDGET is a different
+    # thing: it leaves three rows that cannot be added up, and a table a reader cannot add up is
+    # the complaint this pass exists to answer. work + move + idle == unit-turns, always, and the
+    # line under the block says so out loud.
+    print("\n  turn budget -- ours/tape.  work + move + idle == unit-turns\n")
     print(f"  {'':<12}" + "".join(f"{('d' + str(d)):>13}" for d in range(args.days)))
-    budget = ([("_turns", "unit-turns"), ("_work", "work"), ("_move", "move"), ("_pass", "idle")]
-              if args.moves else
-              [("_turns", "unit-turns"), ("_work", "work"), ("_pass", "idle")])
-    for key, lab in budget:
+    for key, lab in BUDGET_ROWS:
         cells = "".join(f"{str(our_ops[d][key]) + '/' + str(his_ops[d][key]):>13}"
                         for d in range(args.days))
         print(f"  {lab:<12}{cells}")
+    broken = [(d, side) for d in range(args.days) for side, c in (("ours", our_ops), ("tape", his_ops))
+              if c[d]["_work"] + c[d]["_move"] + c[d]["_pass"] != c[d]["_turns"]]
+    if broken:
+        raise RuntimeError(f"turn budget does not sum on {broken}; the op vocabulary is incomplete")
     if args.moves:
         for lab, src in (("mv/wk", None),):
             cells = ""
@@ -500,6 +750,48 @@ def main():
                 h = his_ops[d]["_move"] / max(1, his_ops[d]["_work"])
                 cells += f"{f'{o:.2f}/{h:.2f}':>13}"
             print(f"  {lab:<12}{cells}")
+    # **The one block that has to close to the dollar.** Every term is a fill with the price that
+    # unit actually fetched, so `open + sold - bought - seed - animal - hire - land` IS the money
+    # row, and a reader can add the column up and land on it. That is the whole point: until this
+    # existed, the grid's numbers reconciled only if you knew which three caveats to apply to which
+    # rows. If a row here does not tie, the instrument is wrong and says so rather than printing a
+    # plausible number.
+    print("\n  cash, ours/tape -- FILLS at the price each unit actually fetched. "
+          "the column adds up.\n")
+    print(f"  {'':<12}" + "".join(f"{('d' + str(d)):>13}" for d in range(args.days)))
+    ledger = [("open", None), ("+ sold", "SELL"), ("- product", "BUY_PRODUCT"),
+              ("- seed", "BUY_SEED"), ("- animal", "BUY_ANIMAL"), ("- hire", "HIRE"),
+              ("- land", "BUY_LAND"), ("= close", None)]
+    opens = ([our_dawn["money"]] + [ours[d]["money"] for d in range(args.days)],
+             [his_dawn["money"]] + [his[d]["money"] for d in range(args.days)])
+    mismatch = []
+    for lab, op in ledger:
+        cells = []
+        for d in range(args.days):
+            if lab == "open":
+                pair = (opens[0][d], opens[1][d])
+            elif lab == "= close":
+                pair = (ours[d]["money"], his[d]["money"])
+            else:
+                pair = (round(our_cash.get(d, {}).get(op, 0)),
+                        round(his_cash.get(d, {}).get(op, 0)))
+            cells.append(f"{str(pair[0]) + '/' + str(pair[1]):>13}")
+        print(f"  {lab:<12}" + "".join(cells))
+    for d in range(args.days):
+        for side, cash, col in (("ours", our_cash, ours), ("tape", his_cash, his)):
+            flow = (cash.get(d, {}).get("SELL", 0)
+                    - sum(cash.get(d, {}).get(o, 0) for o in MARKET_FILL_OPS if o != "SELL"))
+            opened = (our_dawn if side == "ours" else his_dawn)["money"] if d == 0 \
+                else (ours if side == "ours" else his)[d - 1]["money"]
+            if round(opened + flow) != col[d]["money"]:
+                mismatch.append((side, d, round(opened + flow), col[d]["money"]))
+    if mismatch:
+        raise RuntimeError(
+            "the cash ledger does not close: %s. Every dollar a farm gains or loses passes through "
+            "_commit_unit, _do_hire or _do_buy_land, so a gap here means a path is unwrapped."
+            % mismatch)
+    print("  every column closes: open + sold - the five costs == close, to the dollar.")
+
     tot = lambda c: (sum(c[d]["_move"] for d in range(args.days)),
                      sum(c[d]["_work"] for d in range(args.days)),
                      sum(c[d]["_pass"] for d in range(args.days)))
