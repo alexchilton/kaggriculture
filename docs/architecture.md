@@ -51,8 +51,9 @@ counts.
 
 ## Why closed-loop, when the winners are open-loop
 
-The winners submit fixed 720-turn tapes (see `the_field.md`), and this project built an emitter to
-do the same. It measured **48% of emitted ops landing**, against the tape's ~100%:
+The winners submit fixed 720-turn tapes (see `docs/experiment_log.md` §27, "what the opponents
+actually do"), and this project built an emitter to do the same. It measured **48% of emitted ops
+landing**, against the tape's ~100%:
 
 ```
                     ours emit/land    tape emit/land
@@ -872,4 +873,4 @@ signal).
 |---|---|---|
 | Economics | heuristic clears **$20k** final bank | **cleared at v4** ($43,540) |
 | Sim | parity exact over 1000 random action sequences | **passing on 1.32.2** (300/300); **restored to passing on 1.32.6** as of 2026-08-09 (four rule fixes — see PARITY CORRECTION above); one search-layer regression left open (`test_two_different_far_tiles_are_not_the_same_farm`) |
-| RL | explained variance passes **0.5** early | see `rl_feasibility.md`; the RL track is parked |
+| RL | explained variance passes **0.5** early | see `docs/experiment_log.md` §32; the RL track is parked |

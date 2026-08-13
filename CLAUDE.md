@@ -2,15 +2,25 @@
 
 ## Read these first
 
-Before doing anything substantive, read in this order:
+`docs/` holds four files as of the 2026-08-13 severe consolidation (down from 45, then 17, then 4 —
+see `docs/REGISTER.md`'s "What is in which file" section for the full record of what moved where).
+Read in this order:
 
-0. `docs/README.md` — the index, and what was deleted in the 2026-08-08 consolidation.
-1. `docs/competition_brief.md` — what the competition is, measured facts, deadlines, env rules.
-2. `docs/architecture.md` — **what the agent actually is**, and the flags that ship off.
-3. `docs/REGISTER.md` — the live open/closed list. Check it before opening anything.
-4. `docs/rl_feasibility.md` — the agreed position on RL vs planning, and why. The RL track is parked.
-5. `docs/lessons_carried_over.md` — what went wrong in Orbit Wars and which lessons transfer.
-6. `docs/economics_q5_findings.md` — the measured economics. Overrides the day-1 analysis.
+1. `docs/competition_brief.md` — the game: rules, measured facts, deadlines, env rules, and the
+   full measured economics (yields, drain, allocation, storage, the price curve) in its Economics
+   section — this absorbed the old `docs/economics_q5_findings.md`.
+2. `docs/architecture.md` — **what the agent actually is**, the flags that ship off, and every
+   planner-mechanism finding (tape-diffing, spawn ring, fertilizer/wheat supply, herd sizing).
+3. `docs/REGISTER.md` — the live open/closed list, and the index of what is in each of the four
+   files. Check it before opening anything.
+4. `docs/experiment_log.md` — everything measured, in date order (§1-26), plus population-scale and
+   mechanism studies folded in whole (§27 on): what real opponents do, the ladder-population study,
+   market findings, two real-loss depth analyses, the RL track's full argument and ruling (§32 — the
+   agreed position on RL vs planning, why the track is parked, and the terminal-reward ruling that
+   overruled it; this absorbed the old `docs/rl_feasibility.md`, **read the warning at the top of
+   §32 before treating anything in it as a live argument to reopen**), the Orbit Wars lessons (§31,
+   absorbed the old `docs/lessons_carried_over.md`), the problem-framing note (§33), and throughput
+   measurements (§34).
 
 `reference/` holds the competition docs and the full environment source (`kaggriculture.py`).
 The env source is the ground truth for every rule question.
@@ -90,8 +100,8 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
   failed plants. The 719-step gate failed 40/40. A short parity check is a *different* test from a
   long one, not a weaker one -- slow drift is invisible until it accumulates.
 - **Check whether a doc already answers the question.** The Elo scoring rule was already recorded
-  in `competition_brief.md` while `rl_feasibility.md` contradicted it. Two hours of "discovery"
-  was really an unresolved internal inconsistency.
+  in `competition_brief.md` while the RL-feasibility argument (now `experiment_log.md` §32)
+  contradicted it. Two hours of "discovery" was really an unresolved internal inconsistency.
 - **Evaluate a technique against the problem it was BUILT for, not the problem in front of you.**
   Ender's autoregressive micro-steps were assessed here by asking "will this fix the spawn
   deadlock?" -- correctly answered *no*, twice, and the technique was struck off. But he built it
@@ -214,7 +224,8 @@ These were agreed before any code was written, specifically so they cannot be ra
 - **SUPERSEDED 2026-08-01 for the per-turn policy too — Alex's call, made explicitly.**
   **The reward is terminal: win 1, loss 0, gamma 1.0. Never per step.** This now applies to
   *every* policy in the project, so the per-step bullet below no longer governs anything and is
-  kept only so a future session does not "restore" it from `docs/rl_feasibility.md`.
+  kept only so a future session does not "restore" it from `docs/experiment_log.md` §32 (formerly
+  `docs/rl_feasibility.md`, folded in on 2026-08-13).
 
   It is also what the evidence says. Of the top finishers whose write-ups we have, four used a
   terminal signal — Felix Neumann terminal -1/+1, simjeg terminal with gamma 0.995, Isaiah Pressman
@@ -225,9 +236,11 @@ These were agreed before any code was written, specifically so they cannot be ra
   If credit assignment over 720 steps stalls, the agreed next move is a **per-game-day** signal,
   not a per-step one, and only after `explained_variance` has been checked first.
 - **~~Per-step bank delta is the reward, with gamma ≈ 1.0.~~ NO LONGER IN FORCE.** Superseded by
-  the bullet above for every policy. Left in place because `docs/rl_feasibility.md` still argues
-  for it at length, and a future session reading that doc alone would otherwise reintroduce it.
-  The argument there is not wrong about credit assignment; it was simply overruled.
+  the bullet above for every policy. Left in place because `docs/experiment_log.md` §32 still
+  argues for it at length, and a future session reading that section alone would otherwise
+  reintroduce it — §32 itself now carries the same warning at its top, so this bullet and that one
+  cross-check each other. The argument there is not wrong about credit assignment; it was simply
+  overruled.
 - **Legality masking is fine and expected.** MaskablePPO is the intended trainer.
   The Orbit Wars warning was about masking no-op to *force* action, which is a quality judgment.
   Masking illegal ops is a legality fact and is explicitly blessed by our own post-mortem.
@@ -247,7 +260,7 @@ These were agreed before any code was written, specifically so they cannot be ra
 - **Do NOT train inside the vLLM venv on that box.** Its torch 2.11.0+cu126 is ABI-linked to the
   vLLM 0.23.0 compiled extension and must not be upgraded. Create a separate venv for this project.
 - Make sure vLLM is not running during training runs or it will hold the VRAM.
-- VRAM is not the bottleneck (see `docs/rl_feasibility.md`). Env throughput is.
+- VRAM is not the bottleneck (see `docs/experiment_log.md` §32). Env throughput is.
 - **Measured 2026-07-31:** 16 CPU cores and 13 GB RAM visible to WSL2 (the RAM figure is WSL2's
   default cap, raisable via `.wslconfig` if the host has more).
   Direct WSL2 SSH on port 2222 was timing out; the PowerShell fallback with `wsl bash -c "..."`
