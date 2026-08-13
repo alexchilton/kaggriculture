@@ -1243,10 +1243,6 @@ STEAL_FROM_DAY_MARGIN = 4
 #: wide enough to cover a late harvest.
 SELL_CARRY_DAYS = 3
 
-#: The products the sell block actually offers, in its long-standing order. Named so the
-#: make-room release below can rank the same set by holding size without duplicating the tuple.
-SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
-
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
 
@@ -2570,25 +2566,47 @@ CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
 CROP_ADAPT_FROM_DAY = 6
 
 
-#: **WOOL_SHOP_SETS_THE_HERD -- a YARN_STORE on the board makes the herd sheep-heavy.**
+#: **WOOL_SHOP_SETS_THE_HERD -- an EARLY YARN_STORE makes the herd sheep-heavy.**
 #:
-#: Read off 16 downloaded games of the #1 player, 15-1
-#: (`docs/kawashigi_one_board_2026-08-13.md`). His split separates on exactly one variable:
+#: Read off **66** downloaded games of the #1 player, 61-0-5
+#: (`docs/kawashigi_one_board_2026-08-13.md`). Shops unlock every third day, so draw #N lands on day
+#: 3N and that is verified 66/66. Against the position of the FIRST yarn store his herd is a step
+#: function with no exceptions at all:
 #:
-#:     0 YARN_STORE in the first 3 draws : COW 10, SHEEP 4  (9 of 10 games; one at 6)
-#:     1 YARN_STORE                      : COW  6, SHEEP 8-12
-#:     2 YARN_STORE                      : COW  6, SHEEP 12
+#:     yarn first at draw #1 (d3)  : COW  6, SHEEP 12, total 18    n=10
+#:     yarn first at draw #2 (d6)  : COW  6, SHEEP 12, total 18    n=11
+#:     yarn first at draw #3 (d9)  : COW  6, SHEEP  8, total 14    n= 3
+#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP  4, total 14  n=16
+#:     no yarn store at all        : COW 10, SHEEP  4, total 14    n=22 (+4 at COW 8/SHEEP 6)
 #:
-#: Milk-shop count predicts nothing -- COW 6 occurs at one milk shop and at two. The headroom greedy
-#: below ties to COW on the reasoning that "MILK is carried by three shops against WOOL's one", which
-#: is a true statement about the shop table and the wrong way round as a conclusion: three shops
-#: sharing milk is what floors the milk price. Measured on our own fills, wool went out at
+#: So `COW == 6` iff a yarn store is among the FIRST THREE draws: 24/24 yes, 0/42 no. A perfect
+#: classifier over 66 games, and the reason this flag now carries a draw limit. **The 16 games at
+#: draw #4 or later are what the first version of this rule got wrong** -- it fired on a yarn store
+#: appearing at any point in the season, and would have cut the herd to 6 cows on a d12 unlock where
+#: he keeps 10. Wool arriving at d12 has only six production cycles left; that is the whole content
+#: of the cutoff.
+#:
+#: Milk-shop count predicts nothing that yarn does not already explain -- COW 6 occurs at one milk
+#: shop and at two, and at 0 milk shops the mean cow count is still 6.57. The headroom greedy below
+#: ties to COW on the reasoning that "MILK is carried by three shops against WOOL's one", which is a
+#: true statement about the shop table and the wrong way round as a conclusion: three shops sharing
+#: milk is what floors the milk price. Measured on our own fills, wool went out at
 #: $160/$109/$181/$146 on d24-d28 while milk took $1-$5 all season.
+#:
+#: **NOT built in, and it needs pens before it can be: the herd TOTAL moves too.** A yarn store by
+#: d6 takes him to 18 animals, not 18 split differently -- four extra SHEEP at $500 plus four pens
+#: plus their feed. That is 21 of the 24 yarn games, so it is the dominant branch, and this flag
+#: reaches none of it: `_herd_split` may only redistribute `want_total`, which the schedule fixes at
+#: 14. Raising it is a schedule change with a build and turn cost, not a split rule.
 WOOL_SHOP_SETS_THE_HERD = True
 
-#: What the leader holds cows to once any wool shop is on the board. Every one of his six
-#: yarn-store games ran exactly 6 cows and put the entire remaining budget into sheep.
+#: What the leader holds cows to once an early wool shop is on the board. 24 of 24 such games ran
+#: exactly 6 cows and put the entire remaining budget into sheep; no yarn game ran any other number.
 WOOL_SHOP_COW_CAP = 6
+
+#: How many of the town's draws count as "early" for the rule above. Three, because draw #3 lands on
+#: d9 and is the last one he responds to -- see the table: #3 still gives COW 6, #4 does not.
+WOOL_SHOP_DRAW_LIMIT = 3
 
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
@@ -2608,7 +2626,12 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # **The wool shop decides it, and it decides it outright.** Cows are held at the cap and every
     # animal still unbought goes to sheep, which is what reproduces his 6/8 at a herd of 14 and his
     # 6/12 at 18. `bought` still floors the cows, so this can never unbuy one that exists.
-    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in (unlocked_shops or ()):
+    #
+    # **Only the first three draws count.** `unlocked_shops` is in unlock order and a draw lands
+    # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
+    # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
+    # would have cut those to 6.
+    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]:
         if split["COW"] <= WOOL_SHOP_COW_CAP:
             split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], WOOL_SHOP_COW_CAP))
             split["COW"] = max(split["COW"], min(WOOL_SHOP_COW_CAP, total - split["SHEEP"]))
@@ -2995,7 +3018,26 @@ SELL_CARRY_DAYS = 3
 
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
-SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
+#:
+#: **This is the iteration domain of the ONLY loop that emits a SELL**, and for most of this
+#: project's life it held six of the env's nine names. CARROT, TOMATO and EGG were absent, so a
+#: schedule row saying `sells {CARROT: 55}` was read by nothing at all -- not deprioritised, not
+#: outbid, simply never looked at. The same tuple governs the shed-eviction ranking and
+#: `LIQUIDATE_LAST_DAY`, so there was no day and no flag that could reach them.
+#:
+#: Traced end to end on seed 11 (`tests/test_a_product_the_schedule_asks_to_sell_can_be_sold.py`):
+#: 55 carrot seeds bought, 38 planted, harvested on schedule, **92 units standing in the shed on
+#: d29**, zero SELL orders emitted, $0 banked. All four carrot arms in
+#: `docs/carrot_swap_2026-08-12.md` were therefore comparing 55 tiles of wheat against 55 tiles of
+#: nothing, and "carrot loses $5,727" measured the missing wheat. EGG was unreachable on exactly the
+#: same line, which puts the goose verdict in the same position.
+#:
+#: The three are appended rather than merged into the order: the existing six keep their precedence
+#: for the ten order slots, so a board that grows none of the new three is byte-identical.
+#:
+#: Derived from `R.PRODUCTS` so a product added to the env cannot go missing here again.
+SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT") + tuple(
+    p for p in R.PRODUCTS if p not in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"))
 
 #: How many days ahead the FERTILIZER sell reserve looks. 0 restores the old one-day rule.
 #: Three, because `FERTILIZE` sets `fertilized_until_day = day + 2` (`kaggriculture.py:468`) and so
