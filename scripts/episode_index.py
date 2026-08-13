@@ -42,6 +42,7 @@ import argparse
 import collections
 import hashlib
 import json
+import logging
 import multiprocessing
 import pathlib
 import sys
@@ -54,7 +55,11 @@ from kagg.logs import get_logger
 
 TPD = 24
 
-log = get_logger(__name__)
+#: **Named at import, handled in `main()` only.** This module is re-imported inside every
+#: multiprocessing worker, and attaching a `FileHandler` there gives N processes an open handle on
+#: one file and prints "logging to ..." N times. `get_logger` returns `logging.getLogger(name)`, so
+#: this is the same object the parent later attaches handlers to -- a worker just gets a quiet one.
+log = logging.getLogger(__name__)
 
 
 def one(path):
@@ -134,6 +139,7 @@ def one(path):
 
 
 def main():
+    get_logger(__name__)
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)

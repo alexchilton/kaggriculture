@@ -35,6 +35,10 @@ sys.path.insert(0, "scripts")
 import breakdown as B
 from kaggle_environments import make
 
+from kagg.logs import get_logger
+
+log = get_logger(__name__)
+
 TPD = 24
 #: The plan we intend to ship, and the one `build_planner_submission.py` embeds.
 OURS = "data/seed_scripts/top_guys/90976060/schedule.json"
@@ -143,32 +147,33 @@ def main():
     print(f"field    {args.root}")
     print(f"days {args.days}   weeds {args.weeds}   interval {args.interval}")
     print(f"seeds {seeds}")
-    print(f"field of {len(field)} recorded seats\n", flush=True)
+    log.info("field of %d recorded seats", len(field))
 
     rows, wins_all, t_start = collections.defaultdict(list), [], time.time()
     for label, replay, team, banked in field:
-        print(f"=== {label}   recorded ${banked:,.0f} ===", flush=True)
+        log.info("=== %s   recorded $%,.0f ===".replace("%,", "%"), label, banked)
         for s in seeds:
             t0 = time.time()
             try:
                 ours, theirs = play(replay, team, s, args.days, args.weeds,
                                     args.module, args.schedule)
             except Exception as exc:                                    # noqa: BLE001
-                print(f"  seed {s:>3}  ERROR  {type(exc).__name__}: {exc}", flush=True)
+                log.warning("seed %3d  ERROR  %s: %s", s, type(exc).__name__, exc)
                 continue
             res = "WIN" if ours > theirs else ("LOSS" if ours < theirs else "DRAW")
             rows[label].append((ours, theirs, res))
             wins_all.append(res)
-            print(f"  seed {s:>3}  ours ${ours:>9,.0f}   them ${theirs:>9,.0f}   {res:<4}"
-                  f"  {time.time()-t0:>5.0f}s", flush=True)
+            log.info("seed %3d  ours $%9s   them $%9s   %-4s  %5.0fs",
+                     s, f"{ours:,.0f}", f"{theirs:,.0f}", res, time.time() - t0)
         got = rows[label]
         if got:
             mine = [r[0] for r in got]
             w = sum(1 for r in got if r[2] == "WIN")
-            print(f"  -> median ${statistics.median(mine):,.0f}  "
-                  f"range ${min(mine):,.0f}-${max(mine):,.0f}  WIN {w}/{len(got)}\n", flush=True)
+            log.info("-> median $%s  range $%s-$%s  WIN %d/%d",
+                     f"{statistics.median(mine):,.0f}", f"{min(mine):,.0f}",
+                     f"{max(mine):,.0f}", w, len(got))
 
-    print("=== summary ===", flush=True)
+    print("=== summary ===")
     print(f"{'opponent':<44} {'n':>3} {'ourMedian':>11} {'theirMedian':>12} {'wins':>8}")
     for label, _r, _t, _b in field:
         got = rows[label]

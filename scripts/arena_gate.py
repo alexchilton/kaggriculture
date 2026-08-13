@@ -23,6 +23,10 @@ import sys
 
 import numpy as np
 
+from kagg.logs import get_logger
+
+log = get_logger(__name__)
+
 
 # Module level, and rebuilt from `_GENOME` on first use in each worker, because `run_arena` fans out
 # over processes and a closure cannot be pickled.
@@ -132,6 +136,8 @@ def main():
     _GENOME = (args.genome, args.slots)
     genome = np.asarray(np.load(args.genome)["genome"], dtype=np.int64)
     _script, used, skipped = C.decode(genome, args.slots)
+    log.info("genome %s  slots=%s  seeds=%d  workers=%d  chains skipped=%d",
+             args.genome, args.slots, args.seeds, args.workers, skipped)
     print(f"genome {args.genome}  slots={args.slots}  chains skipped={skipped}")
     for u in used:
         print(f"    {u}")
@@ -142,14 +148,17 @@ def main():
     rows = []
     for name in args.opponents.split(","):
         name = name.strip()
+        log.info("playing %s over %d seeds", name, args.seeds)
         try:
             rep = run_arena(AgentFactory(build_agent, args.genome, args.slots),
                             _opponent(name), seeds=range(args.seeds),
                             workers=args.workers)
         except Exception as exc:                  # noqa: BLE001 - report, do not abort the sweep
-            print(f"{name:>12}  FAILED: {type(exc).__name__}: {exc}", flush=True)
+            log.warning("%12s  FAILED: %s: %s", name, type(exc).__name__, exc)
             continue
         flag = "   <-- DID NOTHING" if abs(rep.mean_money[0] - 3000) < 1 else ""
+        # A TABLE row, so it stays on stdout and keeps flushing: the gate emits one per
+        # opponent over minutes and the table is the product, not the progress.
         print(f"{name:>12} {rep.games:>7} {rep.win_rate:>9.3f} {rep.draw_rate:>7.3f} "
               f"{rep.mean_money[0]:>12,.0f} {rep.mean_money[1]:>13,.0f} "
               f"{rep.mean_delta:>+11,.0f}{flag}", flush=True)

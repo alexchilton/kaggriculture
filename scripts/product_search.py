@@ -61,6 +61,7 @@ import argparse
 import collections
 import itertools
 import json
+import logging
 import pathlib
 import random
 import statistics
@@ -71,6 +72,14 @@ from concurrent.futures import ProcessPoolExecutor
 sys.path.insert(0, ".")
 
 from reference.kaggriculture import SHOPS
+
+from kagg.logs import get_logger
+
+#: **Named at import, handled in `main()` only.** These modules are re-imported inside every
+#: multiprocessing worker, and attaching a `FileHandler` there gives N processes an open handle on
+#: one file and prints "logging to ..." N times. `get_logger` returns `logging.getLogger(name)`, so
+#: this is the same object the parent later attaches handlers to -- a worker just gets a quiet one.
+log = logging.getLogger(__name__)
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PLAN = REPO / "data/seed_scripts/victor/schedule.json"
@@ -299,7 +308,7 @@ def run(arms, seeds, opps, workers):
         for k, r in enumerate(ex.map(_play, jobs, chunksize=1), 1):
             out.append(r)
             if k % 50 == 0:
-                print("    %5d/%d games  %.0fs" % (k, len(jobs), time.time() - t0), flush=True)
+                log.info("%5d/%d games  %.0fs", k, len(jobs), time.time() - t0)
     return out
 
 
@@ -470,6 +479,7 @@ def analyse(path, product="STRAWBERRY"):
 
 
 def main():
+    get_logger(__name__)
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyse", metavar="JSONL",
                     help="slice a previous run's dump instead of playing anything")
@@ -518,11 +528,15 @@ def main():
     hold_seeds = list(range(args.first_seed + 500, args.first_seed + 500 + args.holdout))
     opps = opponents(args.opponents, args.min_money)
 
+    log.info("arms %d   search seeds %s   holdout %s   opponents %d   workers %d   dump %s",
+             len(arms), search_seeds, hold_seeds, len(opps), args.workers, args.dump)
     print("arms %d   search seeds %s   holdout %s   opponents %d   workers %d"
           % (len(arms), search_seeds, hold_seeds, len(opps), args.workers))
     print("scoring on WIN RATE; mean bank is a liveness check only\n")
 
     print("SEARCH")
+    log.info("search: %d arms x %d seeds x %d opponents x 2 seatings",
+             len(arms), len(search_seeds), len(opps))
     res = run(arms, search_seeds, opps, args.workers)
     dump(args.dump, arms, res, "search")
     table = sorted(((score(res, a["id"]), a) for a in arms), key=lambda z: -z[0][0])

@@ -32,6 +32,10 @@ import pathlib
 import statistics
 import sys
 
+from kagg.logs import get_logger
+
+log = get_logger(__name__)
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 #: The plan the CURRENT `schedule_agent` is calibrated for. It is not a property of the harness --
 #: see `--plan` below.
@@ -166,17 +170,17 @@ def main():
             for s in seeds for seat in (0, 1)]
     label = "SELFTEST (no change)" if args.selftest else (overrides or "no overrides")
     vs = args.base_module or args.module
-    print(f"mirror gate: candidate {args.module} vs baseline {vs}  {len(jobs)} seasons  "
-          f"candidate = {label}", flush=True)
-    print(f"  candidate plan {pathlib.Path(args.plan).parent.name}   "
-          f"baseline plan {pathlib.Path(base_plan).parent.name}", flush=True)
+    log.info("mirror gate: candidate %s vs baseline %s  %d seasons  candidate = %s",
+             args.module, vs, len(jobs), label)
+    log.info("candidate plan %s   baseline plan %s",
+             pathlib.Path(args.plan).parent.name, pathlib.Path(base_plan).parent.name)
 
     rows = []
     with cf.ProcessPoolExecutor(max_workers=args.workers) as ex:
         for i, r in enumerate(ex.map(one, jobs), 1):
             rows.append(r)
             if i % 6 == 0:
-                print(f"  {i}/{len(jobs)}", flush=True)
+                log.info("%d/%d", i, len(jobs))
 
     w = sum(1 for r in rows if r["cand"] > r["base"])
     d = sum(1 for r in rows if r["cand"] == r["base"])
