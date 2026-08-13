@@ -1066,7 +1066,7 @@ def _freshly_planted(crop, day):
             "fertilized_until_day": -1}
 
 
-def _best_replant_crop(replant, day):
+def _best_replant_crop(replant, day, dated=None):
     """Which crop to put in ground the day has just cleared, or None if nothing can finish.
 
     **The budget's iteration order is not a ranking.** This was `next((c for c in replant if ...))`,
@@ -1077,7 +1077,35 @@ def _best_replant_crop(replant, day):
     (`docs/kawashigi_one_board_2026-08-13.md`).
 
     Ties fall to the crop already earlier in the budget, so the pre-crossover behaviour is unchanged.
+
+    **`dated` is what the schedule asked for TODAY, and it outranks the prize.** `replant` is
+    cumulative, so on any late day it carries a large standing WHEAT figure beside whatever small
+    request today's row actually made. Ranking the two against each other on price is a category
+    error: the standing budget is never exhausted, so it wins every cleared tile forever. Wheat
+    prices $75 against carrot's $70 from d21 to d25, which is exactly the window the leader plants
+    carrot in, and the result on seed 11 was that none of the six scheduled carrots landed inside
+    its window -- one on d26, five on d27, all of them past the day they could still yield. The arm
+    read -$837 and that number is six wasted seeds, not carrot.
+
+    He plants 1-2 carrot BESIDE 4-11 wheat on the same days in all 66 games. The dated ask is one
+    tile; once it is met the rest of the day's cleared ground falls straight back to the standing
+    budget below, which is that same shape.
+
+    The window still governs: a dated crop whose `plant_prize` is 0 cannot finish and is refused
+    exactly as an undated one is. Urgency reorders the eligible; it never adds to them.
+
+    **Within `dated`, the SCARCEST request goes first, and that is the whole rule.** Today's row is
+    not one crop -- d21 asks for `{WHEAT: 9, CARROT: 1}` -- so serving it in dict order just hands
+    the tile back to wheat and changes nothing. It was byte-identical when written that way. The
+    day's cleared ground is allocated greedily one tile at a time, so a nine-tile ask absorbs
+    everything before a one-tile ask is ever considered, whatever the prize says. Ordering by
+    ascending remaining count is what stops the small request being starved by the large one, and it
+    self-limits: once carrot's single tile is spent, `dated[CARROT]` is 0 and wheat takes the rest of
+    the day -- which is exactly the 1-2 carrot beside 4-11 wheat that all 66 games show.
     """
+    for crop, qty in sorted((dated or {}).items(), key=lambda kv: kv[1]):
+        if qty > 0 and replant.get(crop, 0) > 0 and plant_prize(crop, day) > 0:
+            return crop
     best, best_prize = None, 0
     for crop, qty in replant.items():
         if qty <= 0:
@@ -1089,12 +1117,16 @@ def _best_replant_crop(replant, day):
 
 
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
-                plantable=None, fertilizer_price=None, replant=None):
+                plantable=None, fertilizer_price=None, replant=None, dated=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
     shed nor in a hand is never queued at all -- the deadlock that cost $45,623 was a unit holding
     the board's highest-priority job while standing on an empty shed.
+
+    `replant` is the CUMULATIVE plants budget; `dated` is only what today's own row asked for, and
+    it is consumed alongside it so a one-tile request is met once and not on every cleared tile.
+    See `_best_replant_crop`.
     """
     have_wheat = shed.get("WHEAT", 0) > 0 or carried.get("WHEAT", 0) > 0
     have_fert = shed.get("FERTILIZER", 0) > 0 or carried.get("FERTILIZER", 0) > 0
@@ -1124,9 +1156,11 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                              # ground was already worth planting, and paid a turn for the privilege.
                              or (day >= LATE_TRUNCATED_PLANT_DAY
                                  and any(o == "DIG" for o, _i, _p in ops)))):
-                    crop = _best_replant_crop(replant, day)
+                    crop = _best_replant_crop(replant, day, dated)
                     if crop is not None:
                         replant[crop] -= 1
+                        if dated and dated.get(crop, 0) > 0:
+                            dated[crop] -= 1
                         ops = list(ops) + [("PLANT", crop, plant_prize(crop, day))]
                         if PLANT_THEN_WATER:
                             ops.extend(crop_ops(_freshly_planted(crop, day), day, have_fert))

@@ -1817,12 +1817,23 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             t for t, c in ((t, tiles[t[1]][t[0]]) for t in RT.field_order(unlocked))
             if isinstance(c, dict) and c.get("kind") == "WEED"}
 
+    #: **What TODAY's row asked for, as distinct from the cumulative budget.**
+    #: `_replant` carries every unmet planting since day 0, so by the late season it holds a large
+    #: standing WHEAT figure that outbids any small dated request on `plant_prize` forever. This is
+    #: today's row alone, less what is already pinned, and `_best_replant_crop` serves it first.
+    #: One tile, once -- `build_nodes` decrements it, so the day's remaining cleared ground falls
+    #: straight back to the standing budget. See `router._best_replant_crop`.
+    _dated = collections.Counter(sched.get(day, {}).get("plants") or [])
+    _dated -= collections.Counter(p[1] for p in (pins or {}).values()
+                                  if p and p[0] == "PLANT")
+
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
                                           pen_for=state.get("pen_for") or {},
                                           plantable=_plantable,
                                           fertilizer_price=fertilizer_price,
-                                          replant=collections.Counter(_replant))
+                                          replant=collections.Counter(_replant),
+                                          dated=collections.Counter(_dated))
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
