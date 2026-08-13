@@ -82,7 +82,32 @@ TAPES = {
     # when the economy changed and he withdrew. See `docs/the_ladder_is_two_scripts.md`.
     "victor": ("data/seed_scripts/top2/91854176.json",
                "data/seed_scripts/victor/schedule.json", "Victor @ Tufa Labs"),
+    # **The current #1, and the highest bank in anything downloaded.** カワシギ takes $149,998 off
+    # Yusuke Hayashi's $143,436 -- against Victor's best of $119,407 -- seated FIRST, which is the
+    # opposite of `victor` and `seb2988` and worth checking before reading any seat by hand.
+    # `townCenterSellInterval = 24`, i.e. the economy actually being played, same as `victor`.
+    # The middle element drives OUR agent, never the tape column: `main()` feeds it to
+    # `schedule_agent.make_agent` while the tape column comes from `tape_policy(replay, team, 0)`.
+    # Nothing has been extracted from his games yet, so it reuses Victor's plan and the comparison
+    # is "our Victor-derived plan against Kawashigi's recorded season". Pinned by
+    # `tests/test_the_grid_compares_against_the_leader_we_rebased_on.py`.
+    "kawashigi": ("data/seed_scripts/kawashigi/92498144.json",
+                  "data/seed_scripts/victor/schedule.json", "\u30ab\u30ef\u30b7\u30ae"),
 }
+
+#: **The tape the grid compares against unless told otherwise, and it is not a preference.**
+#: This defaulted to `seb` from the day `--tape` was added on 2026-08-07. The project rebased onto
+#: Victor on 2026-08-11 and has worked against Victor since, so every run without an explicit
+#: `--tape victor` was comparing against the wrong leader for two days. The two disagree in kind,
+#: not in degree: the `animals` row totals -4 over six days against Seb, oscillating, which reads
+#: as timing jitter -- and -14 over fourteen days against Victor, one-directional, which is a
+#: defect. It was invisible the whole time.
+#:
+#: The deeper reason is the economy. `env_config` takes `townCenterSellInterval` off the recording
+#: so both columns run the same one, and Seb's tape records **12** -- the PRE-rebalance economy,
+#: retired on 2026-08-08. Defaulting to it replays every comparison at a town that drains at half
+#: the rate of the game being played. Victor's and Kawashigi's record 24.
+DEFAULT_TAPE = "victor"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 CROPS = ("WHEAT", "STRAWBERRY", "MELON", "TOMATO", "CARROT")
 ANIMALS = ("COW", "SHEEP", "CHICKEN", "GOOSE", "PIG")
@@ -297,9 +322,100 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None):
     return days[1:], ops, dict(cash), days[0]
 
 
+#: Board rows the CSV carries. Fixed and full, unlike the terminal grid's `live` filter: a column
+#: of zeros is information in a spreadsheet (it sorts, it charts, it subtracts) and a column that
+#: appears and disappears between runs cannot be pasted beside another run's.
+CSV_BOARD = (("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
+             ("weed", "weeds"), ("animals", "animals"))
+
+
+def write_csv(path, ours, tape, days):
+    """The whole grid as one spreadsheet: **a row per day, a column per field**.
+
+    Alex, on the terminal version: "can you do it so it is not interweaved or is as a csv i can
+    open in excel". The terminal grid is transposed -- days across, fields down -- because that is
+    what fits in eighty columns, and that transposition is exactly what makes it unreadable. A
+    spreadsheet wants the opposite: a day is an observation and a field is a variable, so days go
+    down and fields go across, and then sorting, charting and filtering all work.
+
+    **One file with a column triplet per field**, `<field>.ours`, `<field>.tape`, `<field>.diff`,
+    rather than three files. Three files means three sheets and a VLOOKUP before you can see a gap;
+    the triplet puts ours, the tape and the difference side by side in the one place a reader is
+    already looking, and `.diff` is `ours - tape` so its sign reads the same way as the terminal
+    `--diff` block.
+
+    **Every column header says what KIND of number the cell holds**, because a spreadsheet strips
+    away the surrounding prose that a terminal table can carry above it:
+
+        board.*    a count or level of real board state at the END of that day
+        offered.*  unit ops EMITTED that day -- the env silently ignores an illegal one
+        fill.*     UNITS that committed, from `_commit_unit` / `_do_hire` / `_do_buy_land`
+        cash.*     DOLLARS that actually moved, at the price each unit fetched
+        budget.*   the turn budget; work + move + idle == unit-turns
+
+    No market op appears under `offered.` -- all six the market settles are fills.
+    """
+    import csv
+
+    our_days, our_ops, our_cash, our_dawn = ours
+    his_days, his_ops, his_cash, his_dawn = tape
+
+    columns = []                                   # (header base, ours-getter, tape-getter)
+    for key, label in CSV_BOARD:
+        columns.append((f"board.{label}",
+                        lambda d, k=key: our_days[d][k], lambda d, k=key: his_days[d][k]))
+    for crop in CROPS:
+        columns.append((f"board.crop_{crop.lower()}",
+                        lambda d, c=crop: our_days[d]["crop_" + c],
+                        lambda d, c=crop: his_days[d]["crop_" + c]))
+    for animal in ANIMALS:
+        columns.append((f"board.herd_{animal.lower()}",
+                        lambda d, a=animal: our_days[d]["an_" + a],
+                        lambda d, a=animal: his_days[d]["an_" + a]))
+    for product in PRODUCTS:
+        columns.append((f"board.shed_{product.lower()}",
+                        lambda d, p=product: our_days[d]["shed_" + p],
+                        lambda d, p=product: his_days[d]["shed_" + p]))
+    for op in OPS + ("OTHER",):
+        columns.append((f"offered.{op.lower()}",
+                        lambda d, o=op: our_ops[d][o], lambda d, o=op: his_ops[d][o]))
+    for op in MARKET_FILL_OPS:
+        columns.append((f"fill.{op.lower()}",
+                        lambda d, o=op: our_ops[d][o], lambda d, o=op: his_ops[d][o]))
+    for op, label in (("SELL", "sold"), ("BUY_PRODUCT", "product"), ("BUY_SEED", "seed"),
+                      ("BUY_ANIMAL", "animal"), ("HIRE", "hire"), ("BUY_LAND", "land")):
+        columns.append((f"cash.{label}",
+                        lambda d, o=op: round(our_cash.get(d, {}).get(o, 0)),
+                        lambda d, o=op: round(his_cash.get(d, {}).get(o, 0))))
+    columns.append(("cash.open",
+                    lambda d: our_dawn["money"] if d == 0 else our_days[d - 1]["money"],
+                    lambda d: his_dawn["money"] if d == 0 else his_days[d - 1]["money"]))
+    columns.append(("cash.close", lambda d: our_days[d]["money"], lambda d: his_days[d]["money"]))
+    for key, label in BUDGET_ROWS:
+        columns.append((f"budget.{label.replace('-', '_')}",
+                        lambda d, k=key: our_ops[d][k], lambda d, k=key: his_ops[d][k]))
+
+    header = ["day"]
+    for base, _o, _t in columns:
+        header += [f"{base}.ours", f"{base}.tape", f"{base}.diff"]
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(header)
+        for day in range(days):
+            row = [day]
+            for _base, get_ours, get_tape in columns:
+                a, b = get_ours(day), get_tape(day)
+                row += [a, b, a - b]
+            writer.writerow(row)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="seb", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES),
+                    help="which recorded season the tape column replays. Defaults to "
+                         "%(default)s, the leader the project rebased onto -- `seb` is on the "
+                         "pre-rebalance townCenterSellInterval 12 economy and comparing against "
+                         "him replays the whole grid at a town nobody plays any more.")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=11)
@@ -339,6 +455,11 @@ def main():
     # reports the same run as eight scalars plus the shed-discard count.
     ap.add_argument("--handover", type=int, default=None, metavar="DAY",
                     help="tape plays days 0..DAY-1, our agent plays DAY onwards")
+    ap.add_argument("--csv", metavar="PATH",
+                    help="also write the whole grid to a spreadsheet: a ROW PER DAY, a column per "
+                         "field, with an ours/tape/diff triplet for each. Every header is prefixed "
+                         "board./offered./fill./cash./budget. so a cell's kind travels with it. "
+                         "The terminal output is unchanged.")
     ap.add_argument("--module", default="schedule_agent",
                     help="which agent to compare against the tape, e.g. schedule_agent_1455mh")
     args = ap.parse_args()
@@ -377,6 +498,13 @@ def main():
 
     ours, our_ops, our_cash, our_dawn = run(mine, opp, args.seed, args.weeds, stop_day=horizon,
                                             economy=economy)
+
+    if args.csv:
+        # Before the terminal blocks, and before `--diff`'s early return: a flag that silently does
+        # nothing in combination with another flag is the kind of thing this pass exists to stop.
+        write_csv(args.csv, (ours, our_ops, our_cash, our_dawn),
+                  (his, his_ops, his_cash, his_dawn), args.days)
+        print(f"  wrote {args.days} day-rows to {args.csv}")
 
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]
