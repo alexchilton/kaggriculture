@@ -1832,23 +1832,12 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             t for t, c in ((t, tiles[t[1]][t[0]]) for t in RT.field_order(unlocked))
             if isinstance(c, dict) and c.get("kind") == "WEED"}
 
-    #: **What TODAY's row asked for, as distinct from the cumulative budget.**
-    #: `_replant` carries every unmet planting since day 0, so by the late season it holds a large
-    #: standing WHEAT figure that outbids any small dated request on `plant_prize` forever. This is
-    #: today's row alone, less what is already pinned, and `_best_replant_crop` serves it first.
-    #: One tile, once -- `build_nodes` decrements it, so the day's remaining cleared ground falls
-    #: straight back to the standing budget. See `router._best_replant_crop`.
-    _dated = collections.Counter(sched.get(day, {}).get("plants") or [])
-    _dated -= collections.Counter(p[1] for p in (pins or {}).values()
-                                  if p and p[0] == "PLANT")
-
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
                                           pen_for=state.get("pen_for") or {},
                                           plantable=_plantable,
                                           fertilizer_price=fertilizer_price,
-                                          replant=collections.Counter(_replant),
-                                          dated=collections.Counter(_dated))
+                                          replant=collections.Counter(_replant))
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
@@ -2942,65 +2931,6 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
 
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
-
-
-
-
-#: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
-#: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
-#: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
-#:
-#: Measured on Seb's tape, seed 11, by `scripts/when_the_crew_arrives.py`. He issues every HIRE at
-#: hour 0; we dribble two an hour across hours 0-3 and append them LAST, after SELL, LAND, ANIMAL,
-#: SEED and FEED have already spent the bank. Two costs, and they are independent:
-#:
-#:     ordering   day 6 we open on $711, want 8 hands, and go (0,$711) (0,$711) (1,$10) (1,$10)
-#:                (2,$5) (2,$5) (3,$0) (3,$0) -- the bank is gone by hour 1, spent on seed and feed
-#:                between our second hire and our third, so six of eight HIREs fail and the day is
-#:                worked by five hands. `_hire_cost` is `mult * fib(hires_today)` and `hires_today`
-#:                is a per-DAY counter, so the crew costs the same whenever it is bought. Dribbling
-#:                saves nothing and lets a later order empty the bank first.
-#:     the cap    two-a-turn is a proxy for a real trap: with the farmer on `(4,4)` the third hire of
-#:                a turn lands on `(5,5)`, whose only neighbours `(4,5)` and `(5,4)` are LOCKED while
-#:                we own NW alone, so it cannot move all day. But `LAND_ORDER = ["NE", "SW", "SE"]`
-#:                unlocks `(5,4)` -- that hand's escape square -- with the FIRST parcel, and the cap
-#:                then costs 12, 73, 12, 35 and 26 hand-turns on days 5-8 and 10 for nothing.
-#:
-#: A hand hired at hour 0 works 23 turns; the same hand at hour 4 works 19. Nothing downstream
-#: recovers a turn that was never available, which is why this sits ahead of every routing question.
-HIRE_FIRST = True
-
-#: Ops whose VALUE decays with the hour they are served, so the work appearing is itself a reason to
-#: replan. Empty disables the trigger and restores the old crew-change-or-idle rule exactly.
-#:
-#: PLACE is the whole list because what follows it is time-critical: an animal must be fed and cared
-#: for on the day it lands, and a FEED costs a shed round trip of about eight turns against a budget
-#: of `24 - hour - 1`. Placed at hour 18 it simply cannot be served. Nothing else on the board works
-#: that way -- a melon watered at hour 3 or hour 20 yields the same melon.
-#
-# **Re-enabled 2026-08-07, and the reason it was off has expired.** It measured NET NEGATIVE once
-# hiring was fixed -- 42 cells against 39 -- back when `build_nodes` offered a full-prize PLACE at
-# every empty pen regardless of how many animals were in the shed. An urgent replan on a phantom node
-# is an urgent replan onto nothing, so of course forcing more of them lost. `RT.SUPPLY_LEDGER` now
-# retires the duplicates the moment one unit claims the animal, so the trigger fires on real work.
-#
-# Measured on Seb's tape, seed 11, day 4: the cow reaches the shed at hour 2 and `plan_routes` is not
-# called again until a unit falls idle at hour 10, by which point the budget is 13 and the far pen at
-# (0,3) plus the walk home no longer fits. It sits in the shed to hour 23. The tape picks it up at
-# hour 2 and places at hour 15.
-URGENT_OPS = ()
-
-#: Whether an animal purchase may take the slot of the day's last HIRE when the turn's ten market
-#: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
-ANIMAL_OVER_HIRE = True
-
-#: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
-#: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
-SEED_BEFORE_LIVESTOCK = True
-
-#: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
-#: already is. See the note above the seed bill for the day-6 measurement.
-SELLS_FUND_THE_TURN = True
 
 
 #: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
