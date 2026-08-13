@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, ".")
 
 from kagg.search import schedule_agent
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import DEFAULT_TAPE, TAPES, TAPE_ONLY, tape_policy
 
 WORK = ("PLANT", "WATER", "HARVEST", "FERTILIZE", "FEED", "CARE", "COLLECT_FERTILIZER",
         "DIG", "BUILD_COOP", "BUILD_PASTURE", "PLACE", "PICKUP", "DROP")
@@ -79,7 +79,7 @@ def render(rows, label, width=8):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="seb", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES))
     ap.add_argument("--day", type=int, default=0)
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)

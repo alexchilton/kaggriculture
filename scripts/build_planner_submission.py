@@ -97,7 +97,7 @@ PACKAGES = ("kagg", "kagg.economics", "kagg.search")
 #:
 #: **It also ends a measurement inconsistency worth naming.** Every fixture in the repo --
 #: `scripts/handover.py`, `scripts/mirror`-style arms, `tests/test_the_shed_does_not_destroy_the_
-#: harvest.py`, the reservation and price-aware measurements -- loads `TAPES["seb1326"]`, i.e.
+#: harvest.py`, the reservation and price-aware measurements -- loads `TAPES[DEFAULT_TAPE]`, i.e.
 #: 90976060, while this line shipped 90494364. So the local fixtures and the submission were
 #: different agents, and their disagreement (mirror +2.9%, tape season -19%) was never about the sell
 #: rule at all. One plan now, everywhere.
@@ -526,9 +526,9 @@ def _season(policy, days=30, seed=None):
 
     from kaggle_environments import make
 
-    from scripts.breakdown import TAPES, tape_policy
+    from scripts.breakdown import DEFAULT_TAPE, TAPES, tape_policy
 
-    replay, _schedule, team = TAPES["seb"]
+    replay, _schedule, team = TAPES[DEFAULT_TAPE]
     env = make("kaggriculture",
                configuration={"seed": seed or REFERENCE["seed"], "weedSpawnChance": 0.0})
     env.reset(2)
@@ -666,7 +666,7 @@ def reproduce(days=30, replay_days=0, verbose=True):
 
     # **`PLAN`, not a tape name.** This must be the SAME schedule the bundle embeds or the equality
     # check below compares two different agents and can never pass -- which is exactly what a
-    # hard-coded `TAPES["seb"]` did the moment `PLAN` moved to 90976060.
+    # hard-coded `TAPES[DEFAULT_TAPE]` did the moment `PLAN` moved to 90976060.
     sched = {int(k): v for k, v in _json.loads(PLAN.read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     # **The repo side must be given the SAME opening as the bundle**, or a replay build compares two

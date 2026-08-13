@@ -15,11 +15,11 @@ so a re-offer that never lands is visible as a repeated order with a flat seed c
 import json, pathlib, sys, collections
 sys.path.insert(0, ".")
 from kagg.search import schedule_agent as SA
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import DEFAULT_TAPE, TAPES, TAPE_ONLY, tape_policy
 from kaggle_environments import make
 
 DAY = 6
-replay, schedule, team = TAPES["seb"]
+replay, schedule, team = TAPES[DEFAULT_TAPE]
 sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
 thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 

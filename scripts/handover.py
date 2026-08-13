@@ -50,7 +50,7 @@ import sys
 sys.path.insert(0, ".")
 
 from kagg.search import schedule_agent as SA
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import DEFAULT_TAPE, TAPES, TAPE_ONLY, tape_policy
 
 DAYS = 30
 FIELDS = ("money", "hands", "owned", "plant", "weed", "pen", "animal", "shed")
@@ -141,7 +141,7 @@ def play(tape, seed, handover, weeds, capacity, quiet):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="seb1326", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES))
     ap.add_argument("--handover", type=int, default=11, help="first day OUR agent drives")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--seeds", default=None, help="comma-separated; one summary line each")

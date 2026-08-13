@@ -69,22 +69,45 @@ def test_every_tape_names_a_team_that_is_actually_in_its_own_recording(name):
     assert team in names, f"{name}: {team!r} is not in {names}"
 
 
-def test_the_registry_records_which_economy_each_tape_was_played_on():
+def test_every_registered_tape_is_on_the_economy_we_actually_play():
     """`env_config` reads `townCenterSellInterval` off the recording so both columns run the same
-    economy. Kawashigi and Victor must be on 24, the rebalanced one; Seb is on 12 and that is the
-    whole reason he is no longer the default."""
+    economy. Every tape still reachable must be on 24, the rebalanced one -- a tape on 12 replays
+    the whole grid at a town draining at half the rate of the game being played."""
     import json
 
-    def interval(name):
+    for name in B.TAPES:
         path = REPO / B.TAPES[name][0]
         if not path.exists():
             pytest.skip(f"{B.TAPES[name][0]} not downloaded")
-        return (json.loads(path.read_text()).get("configuration") or {}
-                ).get("townCenterSellInterval")
+        interval = (json.loads(path.read_text()).get("configuration") or {}
+                    ).get("townCenterSellInterval")
+        assert interval == 24, f"{name} was recorded on townCenterSellInterval {interval}"
 
-    assert interval("kawashigi") == 24
-    assert interval("victor") == 24
-    assert interval("seb") == 12
+
+def test_seb_is_gone_and_says_why_if_asked_for():
+    """Alex: "no seb - only vic or the new nr 1 not seb forget seb".
+
+    Not merely un-defaulted. **The tape key also selects OUR OWN schedule** -- `TAPES[tape]`'s
+    middle element goes straight to `make_agent` -- so choosing Seb did not compare us against Seb,
+    it made our agent play Seb's four-quadrant plan while we ship a three-quadrant one. That is a
+    different agent, not a different baseline, and the comparison is unusable. A wrong option one
+    flag away gets chosen by accident, and did.
+    """
+    assert set(B.TAPES) == {"victor", "kawashigi"}, sorted(B.TAPES)
+    for retired in ("seb", "seb2", "seb1326", "seb2988", "oldleader"):
+        assert retired in B.RETIRED_TAPES, f"{retired} vanished without a reason recorded"
+        assert B.RETIRED_TAPES[retired], f"{retired} has an empty reason"
+
+
+def test_no_script_still_asks_the_registry_for_a_retired_tape():
+    """A `KeyError` deep inside a diagnostic is how a removed option comes back."""
+    offenders = []
+    for path in sorted((REPO / "scripts").glob("*.py")):
+        source = path.read_text()
+        for retired in B.RETIRED_TAPES:
+            if f'TAPES["{retired}"]' in source or f"default=\"{retired}\"" in source:
+                offenders.append(f"{path.name} -> {retired}")
+    assert not offenders, offenders
 
 
 def test_the_csv_is_one_row_per_day_and_names_the_kind_of_every_column(tmp_path):

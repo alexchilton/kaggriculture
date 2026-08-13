@@ -21,7 +21,7 @@ import sys
 sys.path.insert(0, ".")
 
 from kagg.search import schedule_agent
-from scripts.breakdown import CROPS, ANIMALS, PRODUCTS, TAPES, TAPE_ONLY, run, tape_policy
+from scripts.breakdown import DEFAULT_TAPE, CROPS, ANIMALS, PRODUCTS, TAPES, TAPE_ONLY, run, tape_policy
 
 
 def shed_dusk(replay, team, days):
@@ -47,7 +47,7 @@ def shed_dusk(replay, team, days):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="seb", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES))
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=30)

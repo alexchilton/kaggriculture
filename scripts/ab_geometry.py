@@ -23,7 +23,7 @@ sys.path.insert(0, ".")
 
 from kagg.search import router as RT
 from kagg.search import schedule_agent as SA
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import DEFAULT_TAPE, TAPES, TAPE_ONLY, tape_policy
 
 SEEDS = [11, 7, 23, 3, 42, 101]
 TAPE_FLOOR = 10_000
@@ -58,7 +58,7 @@ def main():
     ap.add_argument("--flag", default="DEPOT_RING_FIRST")
     ap.add_argument("--values", default="None,1",
                     help="comma-separated arm values, eval'd; first is the baseline")
-    ap.add_argument("--tape", default="seb", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES))
     ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS))
     args = ap.parse_args()
 
