@@ -13,12 +13,9 @@ Every number here came from a measurement, and each one names what produced it.
 > which changed in 1.32.6. **§2 (town drain) and the market-ceiling table in §4 were measured before
 > the 1.32.6 town rebalance and are now wrong by up to 4.67x (melon)** — `townCenterSellInterval`
 > doubled from 12 to 24 and the late-season demand ramp was deleted. Use
-> `docs/the_market_2026-08-09.md` §2 for the corrected 1.32.6 drain table, and
-> `docs/what_saturates_and_what_does_not_2026-08-09.md` for the corrected per-head animal
-> saturation and the melon-planning bug the old §2/§4 numbers caused.
->
-> **2026-08-11 addendum.** `docs/what_the_town_will_actually_eat.md` supersedes §2/§4 again, this
-> time with a direct measurement off 87 tapes' closing inventory rather than a computed table.
+> `docs/the_market.md` §2 for a direct measurement off 87 tapes' closing inventory (supersedes the
+> computed table below) and §3 for the corrected per-head animal saturation and the melon-planning
+> bug the old §2/§4 numbers caused.
 
 ---
 
