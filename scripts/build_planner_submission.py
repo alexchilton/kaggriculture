@@ -481,7 +481,17 @@ def standalone():
 #: economy. Re-measure it whenever the environment version moves, and record the version here.
 #: Re-anchored 2026-08-11 (evening) after twelve commits and the swap of PLAN to Victor.
 #: The previous $24,603 was measured on the 90976060 plan and is not comparable.
-REFERENCE = {"seed": 11, "ours": 89054, "interval": 24, "measured": "2026-08-11"}
+#: **Rebaselined 2026-08-13: 89,054 -> 87,927, a DELIBERATE -$1,127.** `LATE_SEASON_PAIR` and the
+#: re-solved d26-d29 routes (`67d639d`) change the late season on purpose: fertilize stops at d26,
+#: a truncated one-shot becomes plantable and harvestable, and eleven wheat go into d26's ground.
+#: On the victor grid that is -$370; here it is -$1,127. Both are inside the ~15% seed variance and
+#: NEITHER is a win on money -- the case for shipping is the row match (plant d26 off by 11 -> 1,
+#: fertilize off by 25 -> 2, water d28 off by 13 -> 1, weeds d28/d29 now exactly 1/1) plus the Elo
+#: argument that margin does not score. Recorded rather than waved through, and this line is the
+#: first thing to look at if the rating falls.
+#:
+#: The real check, `ours == repo`, passed to the dollar on this build: $87,927 both sides.
+REFERENCE = {"seed": 11, "ours": 87927, "interval": 24, "measured": "2026-08-13"}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,
