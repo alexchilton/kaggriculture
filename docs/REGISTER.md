@@ -1,6 +1,6 @@
 # Register — what is open, what is closed, and what keeps reopening
 
-Last updated 2026-08-08, on `shaping-potential`.
+Last updated 2026-08-13, on `shaping-potential`.
 
 > **Version caveat, added 2026-08-09.** The ladder moved to `kaggle-environments` 1.32.6 on
 > 2026-08-07/08. The `STATE at last update` block below, and most dollar figures elsewhere in this
