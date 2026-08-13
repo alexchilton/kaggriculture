@@ -6,9 +6,13 @@ was OFFERED, not what filled, and re-offering the same quota on every one of 24 
 24x). Two philosophies, not two settings of one dial: ours is a standing offer re-posted on every
 turn, sized by a stack of caps; Seb's tape is few, small, deliberate orders, late in the day.
 
-`CAP_SELL_OFFER_SIZE` and `LATE_SELL_BIAS` are the smallest levers toward his shape. Both ship OFF;
-this file is the RED-before-GREEN for the wiring, plus the byte-identical-when-off rail every flag
-in this module carries. The win-rate verdict lives in the doc, from `kagg.arena.run_arena` --
+`CAP_SELL_OFFER_SIZE` and `LATE_SELL_BIAS` were the two smallest levers toward his shape. Both
+shipped OFF originally; `LATE_SELL_BIAS` has since shipped ON (`kagg/search/schedule_agent.py`).
+`CAP_SELL_OFFER_SIZE` never made it from the pre-2026-08-09 `schedule_agent.py` into
+`schedule_agent_1455mh.py` (now the sole `kagg.search.schedule_agent`) and no longer exists;
+its tests were removed in the 2026-08-13 cleanup that collapsed the two files into one -- see
+`docs/REGISTER.md` and the commit that did it. The `LATE_SELL_BIAS` tests below still exercise a
+real, live, shipped flag. The win-rate verdict lives in the doc, from `kagg.arena.run_arena` --
 not here, because a unit test cannot answer an Elo question.
 """
 
@@ -79,12 +83,6 @@ def _play(flag_name, flag_value, turns=719, seed=11, opponent="pass", weeds=0.00
         setattr(SA, flag_name, was)
 
 
-# ---------------------------------------------------------------------------- 1. both flags OFF
-def test_the_flags_ship_off():
-    assert SA.CAP_SELL_OFFER_SIZE is False
-    assert SA.LATE_SELL_BIAS is False
-
-
 # ---------------------------------------------------------------------------- 2. the motivating fact
 def test_the_historical_loss_actually_shows_the_78_unit_offer():
     """Pins the STATIC, historical fact this file's candidate is a response to. `data/ladder/
@@ -121,38 +119,6 @@ def test_without_the_bias_orders_fire_before_hour_sixteen():
 
 
 # ---------------------------------------------------------------------------- 3. RED before GREEN
-def test_the_cap_reproduces_and_then_fixes_an_over_thirty_offer():
-    """One test, both halves of the theory, on the one live scenario known to trigger it.
-
-    RED (recorded, not re-asserted, since re-running the flag-off case on every CI pass is the
-    expensive half of this test and the finding is already logged): seed 2 against `contrarian`,
-    `CAP_SELL_OFFER_SIZE` off, today's tree still emits `SELL WHEAT 43` on day 29 hour 0
-    (`data/logs/market_shape_offer_sweep_2026-08-09.log`, and reproduced directly while writing
-    this test). That is the flag declared with no enforcement wired to it -- the RED state.
-
-    GREEN: the same seed and opponent, flag on, caps that same order to exactly `SELL_OFFER_CAP`
-    and produces no order above it anywhere in the season.
-    """
-    off = _play("CAP_SELL_OFFER_SIZE", False, turns=719, seed=2, opponent="contrarian")
-    off_over = [(d, h, p, q) for d, h, p, q in off if q > SA.SELL_OFFER_CAP]
-    assert off_over, "expected the known RED scenario (seed 2 vs contrarian) to still show an " \
-        "over-cap offer with the flag off -- if this now fails, the scenario has drifted and " \
-        "needs re-finding, not the assertion loosened"
-
-    on = _play("CAP_SELL_OFFER_SIZE", True, turns=719, seed=2, opponent="contrarian")
-    on_over = [(d, h, p, q) for d, h, p, q in on if q > SA.SELL_OFFER_CAP]
-    assert not on_over, f"orders over the cap with CAP_SELL_OFFER_SIZE on: {on_over[:10]}"
-
-
-def test_cap_sell_offer_size_never_exceeds_the_cap_on_a_broader_sweep():
-    """The narrower, cheaper rail: across the schedule's default seed/opponent, no offer should
-    ever exceed the cap once it is on -- regardless of whether this particular pairing reaches it."""
-    sells = _play("CAP_SELL_OFFER_SIZE", True, turns=719)
-    assert sells, "expected at least some SELL orders in a 719-turn run"
-    over = [(d, h, p, q) for d, h, p, q in sells if q > SA.SELL_OFFER_CAP]
-    assert not over, f"orders over the cap with CAP_SELL_OFFER_SIZE on: {over[:10]}"
-
-
 def test_late_sell_bias_actually_suppresses_early_offers():
     """RED before wiring: the flag existed but every early-hour offer still fired. GREEN once the
     order construction is gated on `hour >= LATE_SELL_FROM_HOUR`, with the last-day liquidation
@@ -171,27 +137,20 @@ def test_late_sell_bias_actually_suppresses_early_offers():
 
 
 # ---------------------------------------------------------------------------- 4. the wiring rail
-def test_turning_the_cap_on_actually_changes_what_is_ordered():
-    """**The trap this test exists for** (see `test_reservation_sell_cap.py`'s version of the same
-    rail): a flag that can only ever be a no-op on the seed it is checked against is worse than no
-    flag. The default seed/opponent (11, dummy) never reaches the cap at all, so THAT pairing would
-    pass this assertion whether or not the enforcement line was ever written. Use the pairing that
-    is actually known to bind."""
-    off = _play("CAP_SELL_OFFER_SIZE", False, turns=719, seed=2, opponent="contrarian")
-    on = _play("CAP_SELL_OFFER_SIZE", True, turns=719, seed=2, opponent="contrarian")
-    assert off != on
-
-
 def test_turning_the_late_bias_on_actually_changes_what_is_ordered():
     off = _play("LATE_SELL_BIAS", False, turns=400)
     on = _play("LATE_SELL_BIAS", True, turns=400)
     assert off != on
 
 
-# ---------------------------------------------------------------------------- 5. off is a no-op
-def test_both_flags_off_is_byte_identical_to_the_shipped_agent():
-    """The rail every flag in this module carries: OFF must reproduce current behaviour exactly, so
-    a measurement of ON is a measurement of ON and nothing else."""
+# ---------------------------------------------------------------------------- 5. determinism
+def test_the_shipped_agent_is_deterministic_on_a_fixed_seed():
+    """Two runs at the shipped defaults, no flags touched, must produce byte-identical action
+    streams. This used to also pin 'both CAP_SELL_OFFER_SIZE and LATE_SELL_BIAS off reproduces
+    shipped behaviour exactly' -- CAP_SELL_OFFER_SIZE no longer exists (it never made it from the
+    pre-2026-08-09 schedule_agent.py into schedule_agent_1455mh.py, now the sole
+    kagg.search.schedule_agent) and LATE_SELL_BIAS ships ON, not OFF, so that premise no longer
+    holds. What survives is the determinism claim itself."""
     from kaggle_environments import make
 
     thin = _thin_schedule()
@@ -208,11 +167,4 @@ def test_both_flags_off_is_byte_identical_to_the_shipped_agent():
             env.step([a, {}])
         return acts
 
-    before_cap, before_bias = SA.CAP_SELL_OFFER_SIZE, SA.LATE_SELL_BIAS
-    SA.CAP_SELL_OFFER_SIZE, SA.LATE_SELL_BIAS = False, False
-    try:
-        a = run()
-        b = run()
-    finally:
-        SA.CAP_SELL_OFFER_SIZE, SA.LATE_SELL_BIAS = before_cap, before_bias
-    assert a == b
+    assert run() == run()
