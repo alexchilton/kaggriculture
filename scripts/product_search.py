@@ -24,6 +24,29 @@ conditioned on the outcome. Read every number here as "does this arm beat these 
 than that arm does", which is a valid RELATIVE comparison. It is not a rating and cannot be
 converted into one.
 
+## What each game records, and which of it is a fill
+
+The dump's first seven keys -- `tag, seed, opponent, seat, ours, theirs, win` -- plus the six axis
+values are FROZEN. A sweep appending to `data/logs/product_search.jsonl` writes exactly that shape,
+so `--analyse` reads every later field with `.get` and reports rows that lack one rather than
+dropping them.
+
+The later fields are all fills or board counts, never order quantities:
+
+- **`planted`** -- tiles that really carry a crop, from `buy_seed fills - seeds left in hand`.
+  `private["seeds"]` has two writers and only two, so this is exact. It is NOT the arm's `carrot`
+  value: that is a number of rows added to a schedule, and the schedule already had some.
+- **`sold_units`** -- units that committed through `_commit_unit`, per product.
+- **`seed_units`** -- `BUY_SEED` units that committed.
+- **`shops`** -- the town's actual draw, `[[name, instances], ...]`.
+
+**The shop draw is recorded, not derived, and that is a correction.** It looks like a pure function
+of the seed: `random.Random((seed * 1_000_003) ^ day)`, one `rng.choice` per unlock. It is not.
+`_end_of_day` spends that same generator on `_spawn_weeds` first, once per EMPTY tile per player, so
+where the draw lands in the stream depends on how much of the board each side had built on. Measured
+across three seeds with weeds off: the first unlock matches between two different agent pairings and
+every later one diverges. A derived draw would be right for day 3 and wrong for the other seven.
+
 ## Held-out seeds
 
 `--seeds` are the search seeds and `--holdout` a disjoint set the search never sees. The winner is
@@ -47,6 +70,8 @@ from concurrent.futures import ProcessPoolExecutor
 
 sys.path.insert(0, ".")
 
+from reference.kaggriculture import SHOPS
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PLAN = REPO / "data/seed_scripts/victor/schedule.json"
 FIELD = REPO / "data/seed_scripts/field"
@@ -65,6 +90,9 @@ CARROT_SEED_DAY = 6
 #: A strict binary for him, decided at d5 h2 on a single BUY_SEED. For us it is just a ratio in the
 #: plants row, so it is swept continuously across and beyond his two points.
 MELON_BASE = 19
+
+#: Crops an arm can move, so a per-game plant count has somewhere to go.
+CROP_AXES = ("WHEAT", "MELON", "STRAWBERRY", "CARROT", "TOMATO")
 
 
 def base_schedule():
@@ -146,6 +174,7 @@ def _play(job):
     field = pathlib.Path(field)
     from kaggle_environments import make
 
+    from kagg.analysis.fills import record_fills
     from kagg.search import schedule_agent_1455mh as SA
 
     # Module flags. Set per worker process, which is why the pool is `ProcessPoolExecutor` -- a
@@ -171,11 +200,37 @@ def _play(job):
 
     pair = (them, me) if swapped else (me, them)
     env = make("kaggriculture", configuration={"seed": seed}, debug=False)
-    env.run(list(pair))
+    # **Additive, and deliberately outside the scored quantities.** `record_fills` wraps the env's
+    # own `_commit_unit`; it observes and changes nothing. `mine`/`theirs` below are read from the
+    # rewards exactly as before, so the win rate this search selects on cannot move.
+    with record_fills(env) as fills:
+        env.run(list(pair))
     final = env.steps[-1]
     mine = float(final[me_seat]["reward"] or 0)
     theirs = float(final[1 - me_seat]["reward"] or 0)
-    return arm["id"], seed, opp_file, swapped, mine, theirs
+
+    # The shop draw the town actually made. RECORDED, not derived: it looks like a pure function of
+    # the seed and is not -- `_end_of_day` runs `_spawn_weeds` on the same generator first, once per
+    # empty tile per player, so where the draw lands in the stream depends on how the board was
+    # played. Measured on three seeds with weeds off: the FIRST unlock matches between two different
+    # agent pairings and every later one diverges.
+    shops = sorted(collections.Counter(
+        env.steps[-1][0]["observation"]["town"].get("unlocked_shops") or []).items())
+
+    # Fills, not offers. The arm's `carrot` axis is a number of rows in a SCHEDULE; whether a carrot
+    # was planted, and whether a planted one ever sold, are different questions and the action
+    # stream answers neither -- the agent re-posts a standing order on every turn until it fills.
+    seeds_left = env.state[me_seat].observation.private.get("seeds") or {}
+    sold_units = {p: fills.sold(me_seat, p)[0] for p in fills.products()
+                  if fills.sold(me_seat, p)[0]}
+    seed_units = {c: fills.units(me_seat, "BUY_SEED", c) for c in CROP_AXES
+                  if fills.units(me_seat, "BUY_SEED", c)}
+    # `private["seeds"]` has two writers and only two: BUY_SEED adds one, PLANT removes one.
+    planted = {c: n - int(seeds_left.get(c, 0) or 0) for c, n in seed_units.items()
+               if n - int(seeds_left.get(c, 0) or 0) > 0}
+    return (arm["id"], seed, opp_file, swapped, mine, theirs,
+            {"shops": shops, "sold_units": sold_units, "seed_units": seed_units,
+             "planted": planted})
 
 
 def opponents(limit, min_money):
@@ -257,20 +312,43 @@ def dump(path, arms, rows, tag):
     """
     by_id = {a["id"]: a for a in arms}
     with open(path, "a") as fh:
-        for aid, seed, opp, swapped, mine, theirs in rows:
+        for aid, seed, opp, swapped, mine, theirs, extra in rows:
             a = by_id[aid]
+            # **The original seven keys plus the six axes come first and their shape never
+            # changes.** A sweep landing on the remote box appends rows in exactly that form and
+            # `--analyse` has to keep reading them, so everything below is additive and every
+            # reader of it uses `.get`.
             fh.write(json.dumps({
                 "tag": tag, "seed": seed, "opponent": opp, "seat": 1 if swapped else 0,
                 "ours": mine, "theirs": theirs, "win": 1 if mine > theirs else (
                     0.5 if mine == theirs else 0),
-                **{k: v for k, v in a.items() if k != "id"}}) + "\n")
+                **{k: v for k, v in a.items() if k != "id"},
+                **(extra or {})}) + "\n")
 
 
 AXES = ("carrot", "carrot_start", "melon_shift", "melon_day", "cow_cap", "geese")
 
 
-def analyse(path):
-    """Slice a dumped run: best combination per seed, per opponent, and per timing."""
+def carriers(row, product):
+    """Unlocked shop INSTANCES that sell `product` in this game, or None if the row predates the
+    field. Instances, not names: two `YARN_STORE` drain WOOL twice as hard as one, and a
+    `FARMERS_MARKET` carries four products at once, so a slice keyed on a shop NAME means nothing.
+    """
+    shops = row.get("shops")
+    if shops is None:
+        return None
+    return sum(int(n) for name, n in shops if product in (SHOPS.get(name) or []))
+
+
+def analyse(path, product="STRAWBERRY"):
+    """Slice a dumped run: best combination per seed, per opponent, per timing, per shop draw.
+
+    **Reads rows written before any of the extra fields existed.** The dump's original shape is
+    `tag, seed, opponent, seat, ours, theirs, win` plus the six axes, and a sweep is appending rows
+    in exactly that shape right now. Everything added since is read with `.get`, and a row missing
+    one is counted and reported rather than dropped -- a slice that quietly discards half a run and
+    prints a win rate for the rest is worse than one that refuses.
+    """
     rows = [json.loads(l) for l in open(path) if l.strip()]
     print("%d games in %s\n" % (len(rows), path))
 
@@ -333,11 +411,73 @@ def analyse(path):
     print("  looks alike, the DAY does not matter to us and his d5 branch is about something the")
     print("  schedule does not express.")
 
+    print("\n" + "=" * 92)
+    print("CONDITIONED ON THE SHOP DRAW: %s carriers against each axis, win rate" % product)
+    print("=" * 92)
+    unconditioned = [r for r in rows if carriers(r, product) is None]
+    conditioned = [r for r in rows if carriers(r, product) is not None]
+    if unconditioned:
+        print("  %d of %d rows have NO SHOP DRAW RECORDED and are excluded from this block only."
+              % (len(unconditioned), len(rows)))
+        print("  They are rows from a run that predates the field. The draw is NOT recoverable")
+        print("  from the seed -- `_end_of_day` spends the same generator on `_spawn_weeds` first,")
+        print("  once per empty tile per player, so it depends on how the board was played. Only")
+        print("  the first unlock is stable. Re-run those arms to condition them.")
+    if not conditioned:
+        print("  nothing to slice.")
+        return
+    print("\n  Why this block exists: a global marginal averages two opposite regimes into a wash.")
+    print("  STRAWBERRY drained 179 units in one downloaded game and closed at the $1-3 floor, and")
+    print("  1,074 in another and closed at $187, above its base -- and the number of unlocked shop")
+    print("  instances carrying it runs 1 to 5 between games. 'this knob does nothing' and 'this")
+    print("  knob does opposite things in two regimes' are the same global number.\n")
+    buckets = sorted({carriers(r, product) for r in conditioned})
+    print("  %-13s %s" % ("carriers", "  ".join("%d=%s" % (
+        b, "n%d" % len([r for r in conditioned if carriers(r, product) == b]))
+        for b in buckets)))
+    for axis in AXES:
+        cells = []
+        for b in buckets:
+            rs = [r for r in conditioned if carriers(r, product) == b]
+            by = collections.defaultdict(list)
+            for r in rs:
+                by[r[axis]].append(r)
+            cells.append("%d:[%s]" % (b, " ".join(
+                "%s=%.3f" % (k, wr(v)) for k, v in sorted(by.items()))))
+        print("  %-13s %s" % (axis, "  ".join(cells)))
+
+    print("\n" + "=" * 92)
+    print("WHAT THE ARMS ACTUALLY DID  (fills and board counts -- never an order quantity)")
+    print("=" * 92)
+    with_fills = [r for r in rows if r.get("planted") is not None]
+    if not with_fills:
+        print("  no row carries a fill record; those rows predate it. Nothing to say here that")
+        print("  is not an offer count, so nothing is printed.")
+    else:
+        print("  the `carrot` axis is a number of rows added to a SCHEDULE. These are the tiles")
+        print("  that were really planted and the units that really sold, per game, averaged.\n")
+        print("  %-8s %6s %10s %12s %12s" % ("carrot", "games", "planted", "sold u", "win"))
+        by = collections.defaultdict(list)
+        for r in with_fills:
+            by[r["carrot"]].append(r)
+        for n, rs in sorted(by.items()):
+            planted = statistics.mean((r.get("planted") or {}).get("CARROT", 0) for r in rs)
+            sold = statistics.mean((r.get("sold_units") or {}).get("CARROT", 0) for r in rs)
+            print("  %-8d %6d %10.1f %12.1f %12.3f" % (n, len(rs), planted, sold, wr(rs)))
+        if len(with_fills) < len(rows):
+            print("\n  %d of %d rows carry no fill record and are excluded from this block only."
+                  % (len(rows) - len(with_fills), len(rows)))
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyse", metavar="JSONL",
                     help="slice a previous run's dump instead of playing anything")
+    ap.add_argument("--condition-on", default="STRAWBERRY", metavar="PRODUCT",
+                    help="product whose SHOP CARRIER COUNT the --analyse slice conditions on. "
+                         "Whether melon or strawberry pays depends on how many unlocked shop "
+                         "instances carry it, which runs 1 to 5 between games; a marginal averaged "
+                         "over both regimes reads as a wash.")
     ap.add_argument("--dump", default="data/logs/product_search.jsonl",
                     help="where every game is recorded, append-only")
     ap.add_argument("--arms", type=int, default=24)
@@ -359,7 +499,7 @@ def main():
     args = ap.parse_args()
 
     if args.analyse:
-        return analyse(args.analyse)
+        return analyse(args.analyse, product=args.condition_on)
 
     global FIELD
     FIELD = REPO / args.field if not pathlib.Path(args.field).is_absolute() else pathlib.Path(args.field)
