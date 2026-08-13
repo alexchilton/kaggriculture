@@ -63,9 +63,9 @@ def main():
                 thin[d]["shed_dusk"] = shed
     opp = lambda: tape_policy(replay, team, 1)
 
-    his, _ = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds)
+    his, _ops, _cash, _dawn = run(lambda: tape_policy(replay, team, 0), opp, args.seed, args.weeds)
     a = schedule_agent.make_agent(thin, 0, router=True)
-    ours, _ = run(lambda: (lambda o, t: a(o)), opp, args.seed, args.weeds)
+    ours, _ops, _cash, _dawn = run(lambda: (lambda o, t: a(o)), opp, args.seed, args.weeds)
 
     fields = ([("money", "money"), ("hands", "hands"), ("owned", "tiles"), ("pen", "pens"),
                ("weed", "weeds")]

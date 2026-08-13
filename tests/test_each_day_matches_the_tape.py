@@ -73,9 +73,9 @@ def measured():
         a = SA.make_agent(sched, 0, router=True)
         return lambda o, t: a(o)
 
-    a_days, a_ops = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
-    b_days, b_ops = B.run(lambda: B.tape_policy(str(REPO / replay), team, 0), opp,
-                          SEED, WEEDS, stop_day=horizon)
+    a_days, a_ops, _a_cash, _a_dawn = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
+    b_days, b_ops, _b_cash, _b_dawn = B.run(
+        lambda: B.tape_policy(str(REPO / replay), team, 0), opp, SEED, WEEDS, stop_day=horizon)
     return (a_days, a_ops), (b_days, b_ops)
 
 
