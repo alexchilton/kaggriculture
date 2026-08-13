@@ -1662,7 +1662,22 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     plant_order = order
     if PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED and have >= want_pens:
         plant_order = list(order) + [c for c in R.shed_access_tiles() if _owned(c, unlocked)]
-    for crop, qty in want.items():
+    # **Smallest outstanding ask first.** `want` is CUMULATIVE and a Counter iterates in insertion
+    # order, so WHEAT -- first seen on d0, and standing at 139 for the season -- claimed every empty
+    # square before any other crop was reached. A crop the schedule wants one of is then never
+    # planted at all while a crop it wants a hundred of is outstanding, which is not a priority
+    # decision, just dict order.
+    #
+    # Measured: the six CARROT the schedule asks for on d21-d26 landed one on d26 and five on d27,
+    # all past the day they could still yield, because wheat took the ground every time. Ordering by
+    # ascending outstanding count self-limits -- once carrot's single tile is placed its remainder is
+    # 0 and wheat takes the whole rest of the day, which is the 1-2 carrot beside 4-11 wheat that all
+    # 66 downloaded games of the leader show.
+    def _outstanding(crop):
+        return want[crop] - state["planted"][crop] - live[crop]
+
+    for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
+        qty = want[crop]
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
         for _ in range(qty - state["planted"][crop] - live[crop]):

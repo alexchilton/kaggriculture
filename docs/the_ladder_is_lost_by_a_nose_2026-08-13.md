@@ -1,52 +1,49 @@
-# We are not losing badly. We are losing narrowly, 54 times.
+# The losses are narrow. (NOT a win rate -- the sample is selected on the outcome.)
+
+> **CORRECTION, same day, from Alex: "our win rate is nothing like what you say -- i only download
+> the losses".** The 60 games in `data/seed_scripts/ours_ladder/` were downloaded BECAUSE they were
+> losses. Every win-rate number that was in this file -- "5-54", "win rate 0.085", and the whole
+> "+$6,000 takes us to 0.475" table -- was computed on a sample conditioned on the thing being
+> measured, and is worthless. They have been removed rather than annotated, so nobody re-derives
+> them.
+>
+> This is the `farm:0.445` lesson in CLAUDE.md a second time: a number correct per row and
+> meaningless in aggregate, because of what defines the rows.
+>
+> **What survives the correction** is the only thing the sample can legitimately show: *given that
+> we lost, by how much did we lose.* That is unbiased within the set of losses, and it is the useful
+> part.
 
 Measured on **60 downloaded ladder games** of our own agent (`data/seed_scripts/ours_ladder/`),
-2026-08-13.
+2026-08-13. **These were downloaded because they were losses.** Nothing here is a win rate and
+nothing here supports one.
 
-    59 scored games      5 wins, 54 losses      win rate 0.085
-     1 further game      TIMEOUT / TIMEOUT at step 531 of 720 (91304798, self-play, seed 0)
+## How big are the losses, given that we lost
 
-The margin distribution is the whole story, and it is not what a 0.085 win rate suggests.
+    54 losses          median  -$8,900        mean  -$11,600
+    inside  $600        6
+    inside $2,100      11
+    inside $6,000      23
+    inside $10,000     31
 
-## What a dollar buys, in wins
+Two are inside $150 -- `-$70` against TrebolNoir_ and `-$135` against Mirza Yasir Abdullah Baig.
+Twenty-three of the 54 are inside $6,000.
 
-    gain per game    losses flipped    wins    win rate
-             $0                  0       5       0.085
-           $500                  3       8       0.136
-         $1,000                  5      10       0.169
-         $2,000                  9      14       0.237
-         $3,000                 13      18       0.305
-         $4,000                 16      21       0.356
-         $5,000                 18      23       0.390
-         $6,000                 23      28       0.475
-         $8,000                 28      33       0.559
-        $10,000                 31      36       0.610
-        $15,000                 42      47       0.797
+**What that does and does not license.** It says that when we lose, we frequently lose by an amount
+a single good day would cover. It says nothing about how often we lose, and any claim of the form
+"+$X a game buys Y% win rate" needs an unbiased sample -- a full ladder pull, or an arena run over a
+fixed seed set. That measurement has not been made.
 
-**+$6,000 a game is the difference between 8.5% and 47.5%.** Eleven of the 54 losses are inside
-$2,100, six inside $600, and two inside $150 -- `-$70` against TrebolNoir_ and `-$135` against Mirza
-Yasir Abdullah Baig.
+It remains true, independently of this sample, that the ladder is an Elo rating and a $70 loss
+costs what a $39,200 loss costs (`CLAUDE.md`). So a change worth $2,000 is not a rounding error
+against a $71k season. The sample cannot tell us how many games that flips.
 
-This is the concrete form of the standing rule in `CLAUDE.md` that the ladder is an Elo rating and
-money is the wrong selection criterion. A $70 loss and a $39,200 loss cost the same rating, and we
-have far more of the first kind than anyone reading a season total would guess. The five wins are
-by $13.9k, $13.5k, $78.4k, $91.0k and $65.2k -- we win big and lose small, which is precisely the
-shape that scores worst on an Elo ladder.
+## The five wins in the set are not evidence either
 
-## What this changes about prioritisation
-
-A change worth $2,000 a game is not a rounding error to be dismissed against a $71k season. It is
-+15 points of win rate. Every arm in `docs/carrot_swap_2026-08-12.md` was judged against a season
-total and called a loss; the right question was always how many of the 54 it would have flipped.
-
-It also means the search should stop optimising the mean and start optimising the count. Two
-candidate framings, neither measured yet:
-
-- **The near-miss set.** Eleven games are inside $2,100. Their seeds are known. A sweep that scores
-  on those eleven alone answers "does this flip a game" directly, instead of inferring it from a
-  mean that a single $91k win dominates.
-- **Margin-aware selection.** Selecting on `sum(money)` across a seed set rewards the $91k win that
-  was already won. Selecting on `count(margin > 0)` is the actual objective.
+The set does contain five wins -- by $13.9k, $13.5k, $78.4k, $91.0k and $65.2k -- but they are
+whatever happened to be downloaded alongside, not a sample of our wins. The only thing worth noting
+is that they are all large, which is consistent with "win big, lose small" but does not establish
+it.
 
 ## What is NOT the cause
 
