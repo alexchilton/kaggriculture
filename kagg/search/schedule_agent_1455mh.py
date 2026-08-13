@@ -2464,7 +2464,16 @@ SHOP_ADAPT_HERD = True
 #: `d4:COW`; the first differing purchase is day 6 (`90997714` d6:COW) or day 7 (`91267247` d7:SHEEP).
 #: Day 6 is also the SECOND unlock, so he treats one shop as not enough and two as enough -- which
 #: matches the arithmetic: after one draw, P(YARN_STORE still to come) is 1 - (7/8)**7 = 61%.
-SHOP_ADAPT_FROM_DAY = 3
+#: **Zero, not three.** Day 0 buys COW 1 + SHEEP 4 before the first shop draw exists (draws land
+#: every third day, so #1 is d3) -- five animals, the single largest uninformed commitment of the
+#: season, taken on the tape's mix. In `92565805` the town drew NO yarn store at all, wool drained
+#: 0 units and closed at the $1 floor, and we had bought four sheep on day 0 regardless.
+#:
+#: `_herd_split` already gets this right when it is asked: the floors alone turn `COW 1 + SHEEP 4`
+#: into `COW 4 + SHEEP 1`, which is the direction the expectation wants -- MILK is carried by three
+#: of the eight shops and WOOL by one, so blind, milk is the better bet. The defect was purely that
+#: the caller did not ask.
+SHOP_ADAPT_FROM_DAY = 0
 
 #: The floor: animals bought regardless of what the town turns out to want. Everything the schedule
 #: asks for ABOVE this floats on the shop draw from `SHOP_ADAPT_FROM_DAY`.
@@ -2635,6 +2644,35 @@ WOOL_SHOP_COW_CAP = 6
 #: d9 and is the last one he responds to -- see the table: #3 still gives COW 6, #4 does not.
 WOOL_SHOP_DRAW_LIMIT = 3
 
+#: **HERD_GROWS_WITH_THE_DRAIN -- the schedule's animal count is a floor, not a ceiling.**
+#:
+#: Everything above this only ever redistributed `want_total`. Measured on the five ladder games of
+#: 2026-08-13: `92550780` drew YARN_STORE three times, the town absorbed 1,074 wool, eight sheep
+#: made about 100, and wool closed at $252 against a $200 base -- above base means supply never
+#: caught the drain, so every extra unit that season was worth roughly $250 and there was room for
+#: it. We finished with $69,881 and a bare pasture.
+#:
+#: The leader's tapes say the same thing: a yarn store by d6 takes him to EIGHTEEN animals, not
+#: eighteen split differently, in 21 of his 24 yarn games.
+HERD_GROWS_WITH_THE_DRAIN = True
+
+#: Most animals to add beyond what the schedule asked for. **Four**, which takes the schedule's 14
+#: to the leader's own observed ceiling of 18 and no further.
+#:
+#: The headroom test alone does not bound this: at a herd of 16 sheep on day 9, even a ONE-instance
+#: yarn town still shows 252 units of remaining wool drain against 64 units of production, so the
+#: greedy would keep buying. The binding constraint is not demand, it is the **feed bill** -- every
+#: animal eats one WHEAT a day and escapes after two missed (`kaggriculture.py:804`). `92566708` is
+#: what that looks like: the shed held zero wheat from d8 to d12, twelve of fourteen animals walked,
+#: and the game ended $56,006 to $109,034. Growing the herd raises that exposure linearly, so the
+#: cap is set by what we can reliably feed, not by what the town would absorb.
+HERD_GROWTH_CAP = 4
+
+#: Yields an extra animal must still be able to reach before it is worth buying. Two, so the
+#: purchase price and its pen are covered by production rather than by optimism. A SHEEP bought on
+#: day 27 first yields on day 33 and is a pure loss.
+HERD_GROWTH_MIN_YIELDS = 2
+
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     """Re-decide the cow/sheep species mix, keeping the schedule's COUNT exactly.
@@ -2658,11 +2696,25 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
     # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
     # would have cut those to 6.
-    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]:
+    #
+    # **It no longer RETURNS here.** The branch used to end the function, which meant the headroom
+    # greedy below -- the only allocator that counts shop INSTANCES rather than shop presence -- was
+    # skipped in exactly the games where the drain is extreme. `92550780` drew YARN_STORE three
+    # times, so the town absorbed 1,074 wool against the ~100 that eight sheep make, and wool closed
+    # at $252 on a $200 base: undersupplied every day of the season. One yarn store and three of
+    # them are different towns and must not produce the same herd.
+    wool_town = (WOOL_SHOP_SETS_THE_HERD
+                 and "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT])
+    if wool_town:
         if split["COW"] <= WOOL_SHOP_COW_CAP:
             split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], WOOL_SHOP_COW_CAP))
             split["COW"] = max(split["COW"], min(WOOL_SHOP_COW_CAP, total - split["SHEEP"]))
-            return split
+        else:
+            # **Cows already past the cap, which is the normal case.** The schedule buys eight cows
+            # by day 8 and draw #3 lands on day 9, so the guard above can never pass for a #3 yarn
+            # store -- `WOOL_SHOP_DRAW_LIMIT = 3` is dead as written. A bought cow can never be
+            # un-bought, but every animal still unbought belongs to the wool.
+            split["SHEEP"] = max(split["SHEEP"], total - split["COW"])
 
     step_now = day * TPD + hour
     days_left = max(0, last_day - day)
@@ -2684,6 +2736,29 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
         pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
         split[pick] += 1
         headroom[pick] -= per_animal[pick]
+
+    # **The COUNT moves too, not only the split.** Everything above redistributes `want_total`,
+    # which the schedule fixes at 14 -- so a town draining 1,074 wool got the same herd as one
+    # draining 228. The leader's own tapes say a yarn store by d6 takes him to EIGHTEEN animals, not
+    # eighteen split differently, and that is 21 of his 24 yarn games.
+    #
+    # The same headroom that chose the species sizes the growth: keep adding while the town will
+    # still absorb what the animal produces, and stop the moment it will not. A pen is not a
+    # prerequisite -- `PLACE` emits its own `BUILD_PASTURE`/`BUILD_COOP` (line ~1404), which is why
+    # the ladder games show 15 pens for 14 animals rather than a fixed pen budget.
+    if HERD_GROWS_WITH_THE_DRAIN:
+        for _ in range(HERD_GROWTH_CAP):
+            pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
+            if wool_town and pick == "COW" and split["COW"] >= WOOL_SHOP_COW_CAP:
+                pick = "SHEEP"
+            # **An animal that cannot reach its own first yield is a pure loss** -- purchase price,
+            # a pen, and a daily FEED that competes with the animals already earning. A SHEEP bought
+            # on day 27 first yields on day 33. `per_animal` is already "yields left if bought now",
+            # so this is the same guard the species choice uses, applied to the decision to buy.
+            if per_animal[pick] < HERD_GROWTH_MIN_YIELDS or headroom[pick] <= 0:
+                break
+            split[pick] += 1
+            headroom[pick] -= per_animal[pick]
     return split
 
 
