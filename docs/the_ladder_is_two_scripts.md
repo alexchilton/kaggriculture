@@ -1,5 +1,26 @@
 # The top of the ladder is two shared scripts, and we are not playing either
 
+> **Addendum 2026-08-13: the ladder is one fixed board, and the current #1 is not open-loop.**
+> 16 downloaded games of the ladder's then-current #1 (カワシギ, 15-1, bank range $44.9k-$150.0k)
+> plus 4 of our own games are hash-identical on world/market/tiles observation across all 20 games
+> and both seats — terrain, land parcels, town positions and opening prices are constants of the
+> ladder itself, not a per-seed draw. **The "seed variance ~15%" figure describes `kagg.arena`'s
+> randomly drawn boards and does not apply to the ladder.** カワシギ is also, contrary to the general
+> open-loop finding below, reactive from day 3: all 16 of its games are byte-identical for exactly
+> the first 74 turns (through the moment before the first shop-unlock draw,
+> `townShopUnlockInterval=3`), then pairwise action-vector identity drops to 26%-82% and divergence
+> tracks the shop draw, not the opponent. Hour 1 stays identical across all 16 games through d23;
+> hour 0 is the most divergent hour from d14 on. `SHOP_ADAPT_HERD` is our nearest analog but starts
+> later (day 6) and reads only shop presence for a cow/sheep split; カワシギ's response reaches the
+> whole plan from day 3. Diffing its fixed 74-turn opening op-for-op against ours is cheap and
+> unexplored. Full detail: `docs/REGISTER.md` OPEN-14.
+>
+> **Two smaller, older field-description docs were folded in here and deleted, both explicitly
+> superseded in scale by the 2,744-seat sample above but each carrying one detail not otherwise
+> recorded** (see "Prior, smaller-scale field evidence" below): a 15-replay opening-cluster read
+> (`the_top_five_clusters_2026-08-09.md`) and a 20-episode leader/op-census read
+> (`what_the_leaders_actually_grow_2026-08-09.md`).
+
 Measured 2026-08-11 from the official episode datasets, `kaggle/kaggriculture-episodes-2026-08-09`
 and `-08-10`: 1,372 episodes, 2,744 seats, 40 GB of replays.
 Extracted by `scripts/episode_index.py` (parallel, one JSONL row per seat) into
@@ -139,3 +160,58 @@ plan to extract — it is a sparring opponent and the evidence that adaptive cow
   a slope.** A melon past its drain still fetches $229 at +50 and $166 at +100. Any rule scoring on
   "units the town will eat" under-plants every steep-curve, low-drain product. The fix is to price
   the marginal unit off `market_price`, and it is unbuilt.
+- **Correction, 2026-08-13: the `WHEAT<->CARROT` 0.806 figure above was measured before the
+  SELLABLE fix (`c99a8a5`) — our own agent could not sell CARROT at all at measurement time, so the
+  swap's carrot side banked $0 by construction.** Treat as UNVERIFIED, not re-affirmed. See
+  `docs/REGISTER.md` C-23 and `docs/the_market.md` §7 for the carrot pool-verdict-void flag more
+  generally.
+
+## Prior, smaller-scale field evidence (superseded in scale, not fully redundant)
+
+**A public Kaggle notebook** (shared 2026-08-09, 3 replays per top-5 team, opening-cluster analysis)
+found three day-0 signatures: `v23_fork` (3 teams, 3,117-3,131, a byte-identical clone of the public
+`kaitofukami v23` reference), `sheep_first_hybrid` (HealthStone, 3,132.9, front-loads to $14 cash
+held days 1-4 on sheep CARE compounding), and `counter_meta` (Seb, 3,201.1, keeps a $500+ cushion
+days 1-5, funds 4 land quadrants and 20 animals by season end). Seb banked the least money of the
+three sampled builds (~$57k vs ~$100k for the other two) yet ranked 1 — an early external
+confirmation that money is not the selection criterion.
+
+**20 real leader episodes** from `data/ladder/leaders_0808` (2026-08-08, the day of the
+`townCenterSellInterval` switch — treat dollar figures as possibly-old-economy) plus our two losses
+showed **18 of 20 episodes are one public reference script (`kaitofukami`-shaped) mirroring itself**,
+identical signature WHEAT~103-109/STRAW42/MELON24/COW8/SHEEP6, identical hire ramp — reconfirming
+that most of the visible "field" is one script. Only Seb (2 rows) diverged, running sheep-heavy
+(SHEEP15/COW7 and SHEEP10/COW9). Two op-census findings not carried elsewhere: our PASS share is
+21.6% against the leader average 15.0%, and our WATER share is 7.7% against 13.2% — idle capacity,
+not a crop-mix problem. Neither of our two actual losses (Shivam_2212, an exact mirror-baseline
+signature, 34% margin; As Wasti, a CARROT/TOMATO five-crop build appearing in zero of the 40 leader
+rows, 9% margin) resembled Seb, so beating Seb's tape never implied beating the field.
+
+## Loss forensics: given a loss, why, and how big
+
+**MELON is a fixed pot won by whoever sells first, not a per-tile yield.** 10 downloaded ladder
+losses (2026-08-11, `kaggle_environments 1.32.6`, `weedSpawnChance=0.005`) found MELON is drained by
+zero of the 8 town shops (closes $4-$25 against a $250 base in 10/10 games). On episode `92077611`
+(lost by $1,386) our second melon wave (9 tiles, d10-d20, 66 units for $4,758, ~$72/unit) denied the
+opponent's later wave but they still out-volumed us 138 units to 96 and the game was lost anyway —
+the fix is ripening earlier (plant d8, not d10), not planting less. We plant MELON 69 on every one of
+6 sampled seeds regardless of town composition, because `router.py`'s crop list is copied off one
+leader's schedule rather than being town-responsive. **We never plant CARROT or TOMATO despite both
+closing above base in 10/10 games** (CARROT $40-42/base $35, TOMATO $77-118/base $60) — this
+recommendation predates the 2026-08-13 SELLABLE fix (`c99a8a5`) which had been blocking
+CARROT/TOMATO/EGG sales entirely; the price observation is sound, the recommendation was not
+actionable when written and should be re-evaluated now that SELLABLE is fixed. On `92077611` we
+spent $4,424 more than the opponent despite outselling them by $3,038 in revenue, in a game lost by
+only $1,386 — an unmeasured lead (closing-week buy counts run 15-67/day for the opponent against our
+fixed 4).
+
+**Given a loss, how big is it — and don't compute a win rate from a losses-only sample.** 60
+downloaded games of our own ladder agent (`data/seed_scripts/ours_ladder/`, 2026-08-13) were
+downloaded *because* they were losses; an earlier pass computed a win rate from them ("0.085",
+"5-54") and that figure was removed as worthless selection bias, per the project's `farm:0.445`
+lesson (`CLAUDE.md`). What's unbiased **within** the loss-only sample: 54 losses have median -$8,900,
+mean -$11,600, with 6 inside $600, 11 inside $2,100, 23 inside $6,000, 31 inside $10,000 — two losses
+were inside $150 (-$70 and -$135). Ruled out as causes: stranded unsold stock (shed empty at season
+end) and a single bad matchup (54 distinct opponents, no repeats). Separately, one self-play
+validation episode (`91304798`, seed 0) timed out at step 531/720 — flagged as an unquantified
+failure mode with no current per-turn latency measurement.

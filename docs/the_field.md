@@ -7,10 +7,8 @@ This file exists because "the leaders" get described from memory and the descrip
 > 2026-08-07/08 move to `kaggle-environments` 1.32.6, so absolute dollar figures (bank totals,
 > revenue splits) are not directly comparable to a 1.32.6 game. The structural finding — winners
 > submit fixed 720-turn open-loop scripts — is a claim about *behaviour*, not price level, and is
-> independently reconfirmed on 1.32.6 by `docs/what_the_leaders_actually_grow_2026-08-09.md` and
-> `docs/the_top_five_clusters_2026-08-09.md`, which also show our own ladder position (1,123.5)
-> against the current field floor (~3,117) — read those two before treating this file's field as
-> "close."
+> independently reconfirmed on 1.32.6, at population scale, by `docs/the_ladder_is_two_scripts.md`
+> — read it before treating this file's field as "close."
 >
 > **2026-08-11 addendum.** `docs/the_ladder_is_two_scripts.md` measures 2,744 ladder seats directly
 > and reconfirms the open-loop finding at population scale: most of the field is scripted, two shared
