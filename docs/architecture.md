@@ -4,17 +4,30 @@ Current as of 2026-08-08, branch `shaping-potential`.
 `CLAUDE.md`'s "read these first" list points here for the design; the 2026-07-31 spec it used to
 point at described an RL pipeline that is not what ships and has been deleted.
 
-> **Version caveat, added 2026-08-09.** The ladder runs `kaggle-environments` 1.32.6. The parity
-> and economics figures below (the emitter 48%/100% table, the $ figures in "the flags that ship
-> OFF") were measured on 1.32.2 or an early 1.32.6 fixture that has since moved. **"The simulators"
-> section's "300/300 exact, 16/16 fields" is a 1.32.2 statement — both `kagg/sim/` simulators now
-> fail parity on 1.32.6 (8 failures), not just the JAX one.** The architecture (schedule ->
-> `schedule_agent.py` -> `router.py`/`cover.py`) is unchanged; do not quote the dollar figures here
-> as current without re-measuring. See `docs/the_market_2026-08-09.md` for the current market
+> **Version caveat, added 2026-08-09.** The ladder runs `kaggle-environments` 1.32.6. The
+> economics figures below (the emitter 48%/100% table, the $ figures in "the flags that ship
+> OFF") were measured on 1.32.2 or an early 1.32.6 fixture that has since moved. The architecture
+> (schedule -> `schedule_agent.py` -> `router.py`/`cover.py`) is unchanged; do not quote the dollar
+> figures here as current without re-measuring. See `docs/the_market.md` for the current market
 > picture and `docs/REGISTER.md` for the version caveat that also applies to its STATE block.
-> **2026-08-11 addendum:** `docs/the_ladder_is_two_scripts.md` and `docs/what_the_town_will_actually_eat.md`
-> are the current position on strategy and market economics, measured from 2,744 ladder seats and 87
-> tapes respectively — read them before treating anything below as a target to hit.
+> **2026-08-11 addendum:** `docs/the_ladder_is_two_scripts.md` is the current position on strategy
+> and market economics, measured from 2,744 ladder seats — read it before treating anything below as
+> a target to hit.
+> **PARITY CORRECTION, same day 2026-08-09.** The "8 failures on 1.32.6" statement below was true
+> only briefly: **both simulators were made exact against 1.32.6 again the same day**, four
+> behavioural rule changes fixed (locked-tile movement now allowed; DROP/PICKUP/PLACE resolve before
+> the LOCKED guard; `BUY_PRODUCT`/`BUY_ANIMAL` now fail once the shed is full; shop unlock draws
+> **with replacement**, capped at `MAX_SHOP_INSTANCES` — a duplicate-free draw of 8 from 8 shops has
+> probability 0.24%, so duplicates are the norm and every parity seed hit one). The stale tape
+> fixture (`tests/test_tape_parity.py`) was also found to be comparing against a recorded 1.32.3
+> constant ($147,178) rather than the live env; replaying the identical tape into installed 1.32.6
+> banks $92,313, and the fixture now compares against the live env at test time. One regression
+> surfaced and was left open: `test_locked_chain_relocates::test_two_different_far_tiles_are_not_the_same_farm`
+> — an unreachable chain now silently "builds nowhere" instead of relocating, which weakens the
+> beam's ability to distinguish candidates. **`tests/test_shop_unlocks.py`'s price-literal table
+> still quotes 1.32.2 numbers and needs re-checking against the corrected 1.32.6 table** (frozen-town
+> vs test-pinned, reference-schedule vs test-pinned, for WHEAT/TOMATO/EGG/MILK/STRAWBERRY) — flagged,
+> not yet done as of 2026-08-09.
 
 ## What ships
 
@@ -251,9 +264,12 @@ constants must not be inherited as design.
 `kagg/sim/` holds a numpy-batched simulator and a JAX port, both parity-gated against
 `reference/kaggriculture.py`.
 
-**2026-08-09: both simulators FAIL parity on the installed 1.32.6 env — 8 failures, not just the
-JAX one.** The figures immediately below are the 1.32.2 result and are kept for the method, not as
-a current status claim.
+**2026-08-09: both simulators were restored to exact parity on the installed 1.32.6 env** — see the
+PARITY CORRECTION at the top of this file. The 8-failure state existed only briefly earlier the same
+day. The figures immediately below are the 1.32.2 result and are kept for the method, not as
+a current status claim; the fix commit did not re-measure the 300/300 figure on 1.32.6 explicitly,
+but the parity suite (`tests/test_parity_1326_rules.py`, `test_full_length_episode_against_a_full_shed_is_exact`)
+passes on the current tree.
 
 - **300/300 full-length episodes exact** (on 1.32.2), five configurations from one unit to
   twelve-unit crews with land buying; JAX matches numpy field for field, 16/16 (on 1.32.2).
@@ -267,10 +283,34 @@ in the same commit**, or it is untested by construction and the suite will say s
 `parity.py` built its random scripts from `SCRIPT_OPS`, so a harness that could not emit `FEED`
 could not fail on `FEED`, and "300/300 exact" was a true statement about a subset.
 
+## What the shipped agent actually scores against the pool
+
+`scripts/gate_pool.py`, 9-member `COMPETITIVE` pool, seeds 700-705, both seatings, weeds ON, 108
+games (2026-08-09): **win 94.4%, draw 0%, mean $108,180.** Per-opponent: mirror 50%/$59,271;
+wheat_only, melon_heavy, cow_heavy, carrot_25, small_farm, straw_small, contrarian all 100%;
+strawberry 100%/$86,213. This confirms the shipped artifact (`submission/main.py`, `gate_pool.py`)
+was never on the `run_arena` state-leak path described below — it reads `obs["player"]` rather than
+baking in a seat, and its pool opponents are freshly constructed per match. **There is no
+pool-composition gap left to explain from that harness**; `docs/REGISTER.md`'s OPEN-CLI notes on
+`LATE_SELL_BIAS` come from a *different*, separately-diagnosed contaminated harness (see below), not
+this one.
+
+**A state-leak bug, found and fixed 2026-08-09**: `run_arena` was passing the *same* agent object
+into every match while `kagg.search.schedule_agent.make_agent` builds its `state` dict once in a
+closure, so a finished season's state carried into the next match and killed the agent — one
+`make_agent` object through 3 matches vs `pass` (seed 40) scored $114,028 / $0 / $0. `gate_pool.py`
+(the submission gate, via `kagg.arena.pool.evaluate`) and `scripts/arena_gate.py` were never
+affected; `docs/fable_market_shape_2026-08-09.md`'s original `LATE_SELL_BIAS` §4 figures
+($16,146/14.6%) **were** measured on the contaminated path and are superseded by the honest
+re-measurement in `docs/the_market.md` §4 ($24,535/27.1%, later reconfirmed as $102,886/100% when
+Fable's exact §4 configuration was re-run on the fixed harness — 17.8x on money, 6.2%→100% on win
+rate). `run_arena` now requires an `AgentFactory` and refuses a bare callable. A second, unrelated
+seat-swap defect for agents with a baked-in seat is tracked as `docs/REGISTER.md` OPEN-13.
+
 ## Kill criteria, as they stand
 
 | Gate | Criterion | Status |
 |---|---|---|
 | Economics | heuristic clears **$20k** final bank | **cleared at v4** ($43,540) |
-| Sim | parity exact over 1000 random action sequences | **passing on 1.32.2** (300/300); **failing on 1.32.6**, 8 failures, unfixed as of 2026-08-09 |
+| Sim | parity exact over 1000 random action sequences | **passing on 1.32.2** (300/300); **restored to passing on 1.32.6** as of 2026-08-09 (four rule fixes — see PARITY CORRECTION above); one search-layer regression left open (`test_two_different_far_tiles_are_not_the_same_farm`) |
 | RL | explained variance passes **0.5** early | see `rl_feasibility.md`; the RL track is parked |
