@@ -5,11 +5,24 @@ hundred bytes, so this extracts once and writes JSONL that the actual analysis c
 
 What each row carries, and why:
 
-- **`plants`, `animals`, `seed`, `buy`, `sell`** -- unit actions are exact (a PLANT is emitted once),
-  but market orders are only exact for agents that do NOT re-post. `order_turns` and `orders` let a
-  reader check: an agent whose `orders` far exceeds `order_turns` is re-posting a standing quota and
-  its `sell` totals are offers, not units. Ours re-posts on all 24 turns of a day; Victor does not.
-  See `feedback_offers_are_not_fills` -- this is the mistake this project has made three times.
+- **Everything ending `_offered`** -- `sell_offered`, `buy_offered`, `seed_offered`,
+  `animals_offered`, `plant_ops` -- is what the seat ASKED FOR, summed over turns. An agent that
+  re-posts a standing quota until it fills contributes the same intention up to 24 times a day, and
+  ours does exactly that. These fields used to be called `sell`, `buy`, `seed`, `animals` and
+  `plants`, with the warning in this docstring and nowhere else; the name is what travels into a
+  table, so the name now says what the number is. `plant_ops` is in the list because a PLANT is
+  dropped wholesale when the atomic rule bites, so even a unit op is a request.
+
+- **`plants_real`, `seed_fills`, `sold`, `bought`, `hires`, `land`, `herd`** -- what actually
+  happened, from `kagg/analysis/replay_fills.py`. Plants are tile transitions, seed purchases come
+  off the closed `private["seeds"]` ledger, hires off `hires_today` and parcels off
+  `unlocked_quadrants`; all four are exact. `sold` and `bought` reconcile the shed against the
+  market inventory and are LOWER BOUNDS, with `shared_sold` holding volume both sides traded on the
+  same turn. See that module for what each bound is made of.
+
+- **`orders` / `order_turns`** -- the re-posting tell, kept as corroboration. An agent whose
+  `orders` far exceeds `order_turns` is holding a standing quota open. Ours re-posts on all 24 turns
+  of a day; Victor does not.
 
 - **`sell_turns` / `buy_turns`** -- the turn index of every market order, so cadence and TIMING can
   be read off without re-parsing 26 MB.
@@ -35,7 +48,13 @@ import sys
 
 sys.path.insert(0, ".")
 
+from kagg.analysis.replay_fills import (animals_alive, hires, land, real_plants,
+                                        seed_fills, trade_fills)
+from kagg.logs import get_logger
+
 TPD = 24
+
+log = get_logger(__name__)
 
 
 def one(path):
@@ -53,9 +72,11 @@ def one(path):
     last = (steps[-1][0] or {}).get("observation") or {}
     shops = sorted(collections.Counter((last.get("town") or {})
                                        .get("unlocked_shops") or []).items())
+    # One reconciliation for the whole file rather than one per seat: it walks every step once.
+    fills = trade_fills(d)
     out = []
     for seat in (0, 1):
-        plants, seed, buy, sell, animals = (collections.Counter() for _ in range(5))
+        plant_ops, seed, buy, sell, animals = (collections.Counter() for _ in range(5))
         sell_turns, buy_turns, animal_turns, plant_turns = [], [], [], []
         orders = 0
         order_turns = set()
@@ -67,7 +88,7 @@ def one(path):
             per_day[t // TPD].append(json.dumps(a, sort_keys=True))
             for u in [a.get("farmer")] + list(a.get("hands") or []):
                 if u and u[0] == "PLANT" and len(u) > 1:
-                    plants[u[1]] += 1
+                    plant_ops[u[1]] += 1
                     plant_turns.append(t)
             for o in (a.get("market") or []):
                 if not o:
@@ -92,8 +113,16 @@ def one(path):
             reward=float(rewards[seat] or 0), shops=shops,
             weeds=float(cfg.get("weedSpawnChance", 0) or 0),
             interval=cfg.get("townCenterSellInterval"),
-            plants=dict(plants), seed=dict(seed), animals=dict(animals),
-            buy=dict(buy), sell=dict(sell),
+            plant_ops=dict(plant_ops), seed_offered=dict(seed),
+            animals_offered=dict(animals), buy_offered=dict(buy), sell_offered=dict(sell),
+            plants_real=dict(real_plants(d, seat)), seed_fills=dict(seed_fills(d, seat)),
+            sold=dict(fills.sold[seat]), bought=dict(fills.bought[seat]),
+            shared_sold=dict(fills.shared_sold), shared_bought=dict(fills.shared_bought),
+            unresolved_sold=dict(fills.unresolved_sold),
+            unresolved_bought=dict(fills.unresolved_bought),
+            floored=sorted(fills.floored),
+            hires=hires(d, seat), land=land(d, seat), herd=dict(animals_alive(d, seat)),
+            shed_readable=round(fills.coverage(seat), 3),
             orders=orders, order_turns=len(order_turns),
             sell_turns=sell_turns, buy_turns=buy_turns, animal_turns=animal_turns,
             first_plant=min(plant_turns) if plant_turns else None,
@@ -115,7 +144,7 @@ def main():
     files = sorted(pathlib.Path(args.src).rglob("*.json"))
     if args.limit:
         files = files[:args.limit]
-    print(f"{len(files)} replays -> {args.out} on {args.workers} workers", flush=True)
+    log.info("%d replays -> %s on %d workers", len(files), args.out, args.workers)
     n = 0
     with open(args.out, "w") as fh, multiprocessing.Pool(args.workers) as pool:
         for i, rows in enumerate(pool.imap_unordered(one, map(str, files), chunksize=2)):
@@ -123,8 +152,8 @@ def main():
                 fh.write(json.dumps(r) + "\n")
                 n += 1
             if (i + 1) % 50 == 0:
-                print(f"  {i+1}/{len(files)} replays, {n} seats", flush=True)
-    print(f"done: {n} seat rows from {len(files)} replays", flush=True)
+                log.info("%d/%d replays, %d seats", i + 1, len(files), n)
+    log.info("done: %d seat rows from %d replays", n, len(files))
 
 
 if __name__ == "__main__":

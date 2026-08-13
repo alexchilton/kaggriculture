@@ -94,9 +94,8 @@ def test_nothing_is_invented_and_nothing_silently_vanishes():
     for product in products - got.floored:
         real = sum(truth.sold(seat, product)[0] for seat in (0, 1))
         net = real - sum(truth.bought(seat, product)[0] for seat in (0, 1))
-        seen = (got.sold[0][product] + got.sold[1][product] + got.shared_sold[product]
-                - got.bought[0][product] - got.bought[1][product])
-        assert seen == net, f"{product}: accounted net {seen} against {net} committed"
+        assert got.net_accounted(product) == net, (
+            f"{product}: accounted net {got.net_accounted(product)} against {net} committed")
         checked += 1
     assert checked, "the game traded nothing off the floor; this test proved nothing"
 
@@ -176,3 +175,78 @@ def test_hire_and_buy_land_are_fills_too_because_the_env_can_refuse_them():
             > len(replay["steps"][t - 1][0]["observation"]["farms"][seat].get("hands") or []))
         assert got.hired[seat] >= hands_hired
         assert got.hired[seat] == truth.units(seat, "HIRE")
+
+
+LADDER = "data/seed_scripts/ours_ladder_new"
+
+
+def _ladder_games(n=4):
+    import pathlib
+    paths = sorted(pathlib.Path(LADDER).glob("*.json"))[:n]
+    if not paths:
+        pytest.skip(f"{LADDER} not downloaded")
+    return paths
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_no_seat_is_credited_with_selling_more_than_it_ever_offered(index):
+    """The cheapest check there is, and it works on any recording, simulated or downloaded.
+
+    An order is a ceiling: a seat cannot possibly have sold more units than it asked to sell, even
+    counting every re-post as a fresh request. So `sold <= offered` is a hard bound in the one
+    direction that matters, and it needs no ground truth at all.
+
+    It is here because it caught a real off-by-one that three tests on simulated games did not.
+    `steps[t][seat]["action"]` is the action that PRODUCED `steps[t][seat]["observation"]` -- the
+    framework appends the post-interpreter state and the action rides along on it -- so the shed
+    delta from `t-1` to `t` belongs to the action at `t`, not at `t-1`. Reading the wrong turn's
+    orders credited seat 0 of 92566708 with selling 474 wheat against 297 ever offered.
+
+    Why the simulated tests missed it: attribution is only consulted when the two seats disagree,
+    conservation holds by construction whichever seat the volume is assigned to, and the disjoint
+    pair sells the same product on so many consecutive turns that a one-turn shift still names the
+    right seat. None of them could reach the defect.
+    """
+    import json
+
+    from kagg.analysis.replay_fills import offered
+
+    path = _ladder_games()[index]
+    replay = json.loads(path.read_text())
+    got = trade_fills(replay)
+    for seat in (0, 1):
+        asked = offered(replay, seat).get("SELL") or {}
+        for product, units in got.sold[seat].items():
+            assert units <= asked.get(product, 0), (
+                f"{path.name} seat {seat} {product}: credited with {units} sold against "
+                f"{asked.get(product, 0)} ever offered")
+        bought = offered(replay, seat).get("BUY_PRODUCT") or {}
+        for product, units in got.bought[seat].items():
+            assert units <= bought.get(product, 0), (
+                f"{path.name} seat {seat} {product}: credited with {units} bought against "
+                f"{bought.get(product, 0)} ever offered")
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_the_market_ledger_closes_over_a_whole_downloaded_season(index):
+    """`inv(end) - inv(start) = sold - bought - drained`, over the season, for every product that
+    never touched the floor. This is the identity the recovery is built on, checked on the real
+    thing rather than on a 15-day game between two of our own agents."""
+    import json
+
+    from kagg.analysis.replay_fills import season_drain
+
+    path = _ladder_games()[index]
+    replay = json.loads(path.read_text())
+    got = trade_fills(replay)
+    drained = season_drain(replay)
+    first = replay["steps"][0][0]["observation"]["market"]["inventory"]
+    last = replay["steps"][-1][0]["observation"]["market"]["inventory"]
+    checked = 0
+    for product in set(first) - got.floored:
+        moved = got.net_accounted(product)
+        assert last[product] - first[product] == moved - drained[product], (
+            f"{path.name} {product}: inventory moved {last[product] - first[product]} against "
+            f"{moved - drained[product]} accounted")
+        checked += 1
+    assert checked, "every product touched the floor; this proved nothing"

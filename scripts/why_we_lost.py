@@ -99,20 +99,24 @@ def analyse(path, me="alex chilton"):
 
     # 3. what changed hands, and what it fetched
     print("\n  UNITS THAT CHANGED HANDS -- fills recovered from the shed and the market ledger.")
-    print("  `shared` moved for certain but both sides traded it that turn; `unres` was hidden by")
-    print("  the $1 floor, where a sale does not add to supply. Neither is folded into a seat.")
+    print("  `shSold`/`shBought` moved for certain but both sides traded that product on the turn,")
+    print("  so the owner is unknown; `unres` was hidden by the $1 floor, where a sale does not add")
+    print("  to supply. Neither is folded into a seat. A `*` marks a product that traded at the")
+    print("  floor, where our own totals are a lower bound.")
     print(f"  shed readable on {fills.coverage(us):.0%} of our turns, "
           f"{fills.coverage(them):.0%} of theirs")
     print(f"\n  {'product':<12}{'our sold':>10}{'our bought':>12} | {'their sold':>11}"
-          f"{'their bought':>14} | {'shared':>8}{'unres':>7}{'drained':>9}")
+          f"{'their bought':>14} | {'shSold':>8}{'shBought':>10}{'unres':>7}{'drained':>9}")
     for product in PRODUCTS:
         row = (fills.sold[us][product], fills.bought[us][product],
                fills.sold[them][product], fills.bought[them][product],
-               fills.shared_sold[product], fills.unresolved_sold[product])
+               fills.shared_sold[product], fills.shared_bought[product],
+               fills.unresolved_sold[product] + fills.unresolved_bought[product])
         if not any(row) and not dem.get(product):
             continue
-        print(f"  {product:<12}{row[0]:>10,}{row[1]:>12,} | {row[2]:>11,}{row[3]:>14,} | "
-              f"{row[4]:>8,}{row[5]:>7,}{dem.get(product, 0):>9,}")
+        mark = "*" if product in fills.floored else " "
+        print(f"  {product + mark:<12}{row[0]:>10,}{row[1]:>12,} | {row[2]:>11,}{row[3]:>14,} | "
+              f"{row[4]:>8,}{row[5]:>10,}{row[6]:>7,}{dem.get(product, 0):>9,}")
 
     market = (steps[-1][0] or {}).get("observation", {}).get("market") or {}
     inventory = market.get("inventory") or {}

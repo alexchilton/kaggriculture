@@ -51,9 +51,10 @@ independent ledgers:
 
 Where one seat's shed is clean, the other seat's volume follows from the ledger, so both are exact.
 Where neither is clean and both had an order for that product, the TOTAL is still exact but the
-split is not, and those units are reported in `shared` rather than divided by a guess. Units the
-floor hid land in `unresolved`. **`sold`/`bought` are lower bounds; `sold + shared + unresolved` is
-the accounting.** Callers must print `shared` and `unresolved` beside the split, never fold them in.
+split is not, and those units are reported in `shared_sold` / `shared_bought` rather than divided by
+a guess. Units the floor hid land in `unresolved_*`. **`sold`/`bought` are lower bounds;
+`net_accounted` is the accounting and equals the market's own inventory delta for any product that
+never traded at $1.** Callers must print the shared and unresolved columns beside the split.
 """
 
 import collections
@@ -61,7 +62,7 @@ import json
 import pathlib
 
 from reference.kaggriculture import (PRICE_FLOOR, PRODUCTS, SHOPS,
-                                     TOWN_CENTER_PRODUCTS)
+                                     TOWN_CENTER_PRODUCTS, market_price)
 
 #: Unit ops that move product across the same `private["shed"]` boundary `_commit_unit` settles
 #: against, so a shed delta on a turn where one of these fired cannot be read as a fill.
@@ -349,8 +350,16 @@ class TradeFills:
         #: `BUY_ANIMAL` lands the beast in the shed like any other purchase, but COW and SHEEP are
         #: not in `PRODUCTS` so the market-inventory ledger never sees them; only the shed does.
         self.animals_bought = [collections.Counter(), collections.Counter()]
+        #: Volume that certainly moved on a turn where BOTH seats had an order for that product
+        #: and neither shed was readable. Split by DIRECTION, not folded into one magnitude: a turn
+        #: where the market net-BOUGHT is a negative `moved`, and adding its absolute value to a
+        #: "shared sold" bucket adds where it should subtract. That sign bug over-attributed 82
+        #: units of wheat in one downloaded game -- wheat is the one product both sides buy AND
+        #: sell, so it is the only place it could show.
         self.shared_sold = collections.Counter()
+        self.shared_bought = collections.Counter()
         self.unresolved_sold = collections.Counter()
+        self.unresolved_bought = collections.Counter()
         #: products that touched $1 at some point, where the market ledger is blind
         self.floored = set()
         self.hired = [0, 0]
@@ -363,11 +372,18 @@ class TradeFills:
         return self.shed_clean[seat] / self.turns if self.turns else 0.0
 
     def as_rows(self, seat):
-        """`[(product, sold, bought, shared, unresolved)]`, products with any movement only."""
+        """`[(product, sold, bought, shared_sold, shared_bought)]`, products that moved."""
         products = (set(self.sold[seat]) | set(self.bought[seat])
-                    | set(self.shared_sold) | set(self.unresolved_sold))
+                    | set(self.shared_sold) | set(self.shared_bought))
         return sorted((p, self.sold[seat][p], self.bought[seat][p],
-                       self.shared_sold[p], self.unresolved_sold[p]) for p in products)
+                       self.shared_sold[p], self.shared_bought[p]) for p in products)
+
+    def net_accounted(self, product):
+        """Units the market absorbed on net, as this reconciliation accounts for them. Equals
+        `inv(end) - inv(start) + drain` exactly, for any product that never traded at the floor."""
+        return (self.sold[0][product] + self.sold[1][product] + self.shared_sold[product]
+                - self.bought[0][product] - self.bought[1][product]
+                - self.shared_bought[product])
 
 
 def _shed(replay, t, seat):
@@ -376,7 +392,15 @@ def _shed(replay, t, seat):
 
 
 def _shed_readable_items(replay, t, seat, turns_per_day):
-    """Which items' shed levels are readable across the step starting at `t`, as a predicate.
+    """Which items' shed levels are readable across the transition INTO index `t`, as a predicate.
+
+    **The action at index `t` is the one that produced the observation at index `t`.** The framework
+    appends the post-interpreter state and the action it was given rides along on it, so the shed
+    delta from `t - 1` to `t` belongs to `steps[t][seat]["action"]`. Reading `t - 1` credited seat 0
+    of 92566708 with selling 474 wheat against 297 it ever offered, and three tests on simulated
+    games could not see it -- attribution is only consulted when the seats disagree, conservation
+    holds whichever seat the volume lands on, and a pair selling the same product on consecutive
+    turns still names the right seat under a one-turn shift.
 
     Per ITEM rather than per turn, because the three tainting ops are not equally destructive.
     `PICKUP` and `PLACE` name the one item they move, so they cost that item and nothing else.
@@ -385,7 +409,9 @@ def _shed_readable_items(replay, t, seat, turns_per_day):
     unreadable outright. Blanket-tainting a turn on a single `PICKUP WHEAT` was throwing away
     every cow purchase that happened to share a turn with one.
     """
-    if (t + 1) % turns_per_day == 0:          # `_end_of_day` empties every inventory into the shed
+    # `_end_of_day` empties every inventory into the shed. It runs at the tail of the interpreter
+    # call that produced `steps[t]`, which ran on step `t - 1`, so it fires when `t % 24 == 0`.
+    if turns_per_day and t % turns_per_day == 0:
         return lambda _item: False
     action = _action(replay, t, seat)
     units = [action.get("farmer")] + list(action.get("hands") or [])
@@ -427,12 +453,11 @@ def trade_fills(replay, team=None):
         before, after = _obs(replay, t - 1), _obs(replay, t)
         market_before = (before.get("market") or {}).get("inventory") or {}
         market_after = (after.get("market") or {}).get("inventory") or {}
-        prices_before = (before.get("market") or {}).get("prices") or {}
-        prices_after = (after.get("market") or {}).get("prices") or {}
+        params = (before.get("market") or {}).get("params")
         shops = (before.get("town") or {}).get("unlocked_shops") or []
         drain = town_drain(t - 1, shops, shop_interval, center_interval)
 
-        readable = [_shed_readable_items(replay, t - 1, seat, turns_per_day) for seat in (0, 1)]
+        readable = [_shed_readable_items(replay, t, seat, turns_per_day) for seat in (0, 1)]
         for seat in (0, 1):
             out.shed_clean[seat] += 1 if readable[seat]("") else 0
         shed_before = [_shed(replay, t - 1, seat) for seat in (0, 1)]
@@ -440,7 +465,9 @@ def trade_fills(replay, team=None):
 
         wants = [collections.defaultdict(set), collections.defaultdict(set)]
         for seat in (0, 1):
-            for order in (_action(replay, t - 1, seat).get("market") or []):
+            # Index `t`, not `t - 1`: see `_shed_readable_items`. The orders that moved this shed
+            # are the ones recorded alongside the observation they produced.
+            for order in (_action(replay, t, seat).get("market") or []):
                 if order and order[0] in ("SELL", "BUY_PRODUCT") and len(order) > 1:
                     wants[seat][order[1]].add(order[0])
 
@@ -455,8 +482,17 @@ def trade_fills(replay, team=None):
                     out.animals_bought[seat][animal] += gained
 
         for product in PRODUCTS:
-            at_floor = (prices_before.get(product, 99) <= PRICE_FLOOR
-                        or prices_after.get(product, 99) <= PRICE_FLOOR)
+            # **The floor has to be tested DURING the market phase, not against the recorded
+            # price.** `_town_consume` runs after the market and takes inventory back out, which
+            # lifts the price again, so a product can sit at $1 for every unit sold in a turn and
+            # be recorded at $40. Selling only ever raises inventory and lowers the price, so the
+            # turn's minimum is at the post-market inventory -- which is the recorded inventory
+            # plus back the drain. Checking the recorded price instead left WHEAT and MILK out of
+            # `floored` while over-attributing 82 units of wheat in one game.
+            post_market = market_after.get(product, 0) + drain.get(product, 0)
+            at_floor = (market_price(product, post_market, params) <= PRICE_FLOOR
+                        or market_price(product, market_before.get(product, 0),
+                                        params) <= PRICE_FLOOR)
             if at_floor:
                 out.floored.add(product)
             # Net units the market absorbed: positive means more was sold into it than bought out.
@@ -489,8 +525,10 @@ def trade_fills(replay, team=None):
             elif len(known) == 1:
                 pass                                    # floored: trust only what was read
             else:
-                if moved:
-                    out.shared_sold[product] += abs(moved)
+                if moved > 0:
+                    out.shared_sold[product] += moved
+                elif moved < 0:
+                    out.shared_bought[product] += -moved
                 continue
 
             day = (t - 1) // turns_per_day
@@ -508,7 +546,9 @@ def trade_fills(replay, team=None):
                 # unknown ownership -- but at the floor the ledger itself is short, so this is the
                 # part that is simply not recoverable from the recording.
                 rest = moved - (net[known[0]] or 0)
-                if rest:
-                    out.unresolved_sold[product] += abs(rest)
+                if rest > 0:
+                    out.unresolved_sold[product] += rest
+                elif rest < 0:
+                    out.unresolved_bought[product] += -rest
 
     return out
