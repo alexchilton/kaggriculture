@@ -28,7 +28,7 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 SEED, WEEDS, TPD, DAYS = 11, 0.0, 24, 7
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 TAPE = "seb"
 
 #: The acquisitions, and the schedule key that caps each.  `builds` is counted from the emitted

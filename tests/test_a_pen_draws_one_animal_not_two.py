@@ -35,7 +35,7 @@ from kaggle_environments import make
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 9
 TPD = 24

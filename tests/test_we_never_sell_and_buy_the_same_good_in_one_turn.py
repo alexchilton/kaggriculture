@@ -5,7 +5,7 @@ quantity -- `feed_days(day) * alive`, which is 7 on day 4 -- and they compute th
 different stock:
 
     sell guard   `have -= max(0, feed_days(day) * alive - carried_wheat - drawn - will_buy)`
-                 (`schedule_agent_1455mh.py:2932`) -- nets off the 28 wheat in hands, so the
+                 (`schedule_agent.py:2932`) -- nets off the 28 wheat in hands, so the
                  reserve is 0 and the whole shed is offered
     top-up       `gap = (alive + arriving) - shed["WHEAT"]` (`:3628`) -- shed only, so an empty
                  shed reads as a 7-unit shortfall and buys the cap
@@ -39,7 +39,7 @@ TEAM = "Seb (allegedly)"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 SEED = 11
 DAYS = 17
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 
 
 def _thin():

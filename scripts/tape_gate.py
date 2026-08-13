@@ -35,6 +35,8 @@ import pathlib
 import statistics
 import sys
 
+from kagg.logs import get_logger
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PLAN = REPO / "data/seed_scripts/top_guys/90976060/schedule.json"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
@@ -107,7 +109,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="candidate")
     ap.add_argument("--module", default="schedule_agent",
-                    help="which agent module to play, e.g. schedule_agent_1455mh")
+                    help="which agent module to play, e.g. schedule_agent")
     ap.add_argument("--limit", type=int, default=None, help="cap the number of tape seats")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--seed", type=int, default=101)
@@ -129,8 +131,9 @@ def main():
         for our_seat in (0, 1):      # both seatings, so a seat advantage cannot masquerade as skill
             jobs.append((path, rec_seat, name, our_seat, args.seed + i, flags))
 
-    print(f"{args.label}: {len(opps)} tape seats x 2 seatings = {len(jobs)} games, "
-          f"flags={flags or 'none'}", flush=True)
+    log = get_logger(__name__, filename="tape_gate")
+    log.info("%s: %d tape seats x 2 seatings = %d games, flags=%s",
+              args.label, len(opps), len(jobs), flags or "none")
 
     w = d = l = 0
     banks = []
@@ -148,7 +151,7 @@ def main():
             else:
                 l += 1
             if done % 20 == 0:
-                print(f"  {done}/{len(jobs)}  W{w} D{d} L{l}", flush=True)
+                log.info("%d/%d  W%d D%d L%d", done, len(jobs), w, d, l)
 
     n = max(1, w + d + l)
     print(f"\n{args.label}: W{w} D{d} L{l}  win rate {100.0 * (w + 0.5 * d) / n:.1f}%  "

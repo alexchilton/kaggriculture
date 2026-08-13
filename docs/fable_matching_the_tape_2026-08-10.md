@@ -8,7 +8,7 @@
 
 # d4 sell shortfall and d9/d10 place 0/4 — measured 2026-08-10
 
-Everything below is measured on `tape seb2988`, seed 11, `weeds 0.0`, module `schedule_agent_1455mh`,
+Everything below is measured on `tape seb2988`, seed 11, `weeds 0.0`, module `schedule_agent`,
 against `data/seed_scripts/top_guys/91422988.json` / `.../schedule.json`, on branch
 `shaping-potential` at the tree as handed to me (uncommitted `docs/REGISTER.md` diff, plus
 `scripts/diagnose_season.py` and `submission/main_replay11.py` untracked — neither touched).
@@ -22,13 +22,13 @@ not independently executed).
 
 **Caveat, load-bearing: the working tree was being edited by someone else while I worked, read-only,
 in the same directory.** `git status` at the end of my session shows uncommitted changes to
-`kagg/search/cover.py`, `kagg/search/router.py`, `kagg/search/schedule_agent_1455mh.py`,
+`kagg/search/cover.py`, `kagg/search/router.py`, `kagg/search/schedule_agent.py`,
 `scripts/breakdown.py`, `tests/test_the_first_seven_days_match_the_plan.py` and `docs/REGISTER.md`
 that I did not make (I only ever used `Write`/`Edit` on this report and on scratchpad files under
 `/private/tmp/...`). File mtimes: `cover.py`, `router.py`, `breakdown.py`, `docs/REGISTER.md` and
 the test file all predate my first tool call (Aug 9 22:27-Aug 10 08:06, my session started ~09:27),
 so everything I quote from those files is stable and was not moving under me.
-**`kagg/search/schedule_agent_1455mh.py` changed at 09:55:30, inside my session window**, and the
+**`kagg/search/schedule_agent.py` changed at 09:55:30, inside my session window**, and the
 diff (`FEED_DAYS 2->1`, a new `WALK_THE_LOAD_HOME` flag, `CARE_WHAT_YOU_STAND_ON` False->True, a new
 `day` parameter threaded into `_solve`) is squarely in the same territory as Q1/Q2 below — someone
 else appears to have been actively working the d4 late-delivery/sell question at the same time I was
@@ -47,7 +47,7 @@ numbers below will drift again; the constant names and the quoted code will not.
 
 ### The baseline numbers
 
-`python -u scripts/breakdown.py --module schedule_agent_1455mh --tape seb2988 --days 7`
+`python -u scripts/breakdown.py --module schedule_agent --tape seb2988 --days 7`
 (full table in the session; the d4 column):
 
 ```
@@ -78,7 +78,7 @@ d4h23  shed WHEAT=7        orders=[SELL WHEAT 20, SELL FERTILIZER 1]  -> FILLED 
 WHEAT sold: 5+12+12+20 = 49. FERTILIZER: 5+1 = 6. Total 55, exact match to the schedule row.
 **No BUY_PRODUCT after h2.** He sells everything from h18 on and does not rebuy that day.
 
-**OURS d4** (`schedule_agent_1455mh` seat 0 vs the same tape opponent, same log):
+**OURS d4** (`schedule_agent` seat 0 vs the same tape opponent, same log):
 
 ```
 d4h14  SELL WHEAT 8                      -> FILLED SELL 8
@@ -98,7 +98,7 @@ exactly. BUY_PRODUCT WHEAT total: 1(h1)+6+1+6+1+6 = **21** — also matches the 
 
 From hour 18 on, every turn we both sell wheat AND buy it straight back, in that order, inside the
 *same* turn. That is not a coincidence of two independent blocks firing near each other — it is
-`DUSK_FEED_TOPUP` (`kagg/search/schedule_agent_1455mh.py:3606-3634`), re-evaluated every turn:
+`DUSK_FEED_TOPUP` (`kagg/search/schedule_agent.py:3606-3634`), re-evaluated every turn:
 
 ```python
 if (DUSK_FEED_TOPUP and day >= DUSK_FROM_DAY and hour >= DUSK_FEED_HOUR
@@ -219,7 +219,7 @@ typed as the SHEEP that will actually be available.**
 
 ### Layer 2 — the animals the model expects were never bought
 
-`plan_supply` (`schedule_agent_1455mh.py:1562-1568`) credits `sched[day]["animals_bought"]` — the
+`plan_supply` (`schedule_agent.py:1562-1568`) credits `sched[day]["animals_bought"]` — the
 **schedule's** row, `{COW:2, SHEEP:2}` on d9 — into the dawn plan's supply, under
 `PLAN_TODAYS_PURCHASES = True` (`:260`). But the actual `BUY_ANIMAL` orders our agent emits are
 decided by a separate, later block, `SHOP_ADAPT_HERD` (`:2067`, on from `SHOP_ADAPT_FROM_DAY = 6`,

@@ -82,7 +82,7 @@ def show(title, seq, days, min_ops):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tape", default="victor", choices=sorted(B.TAPES))
-    ap.add_argument("--module", default="schedule_agent_1455mh")
+    ap.add_argument("--module", default="schedule_agent")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=9)

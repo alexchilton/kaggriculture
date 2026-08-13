@@ -321,7 +321,7 @@ def main():
     ap.add_argument("--handover", type=int, default=None, metavar="DAY",
                     help="tape plays days 0..DAY-1, our agent plays DAY onwards")
     ap.add_argument("--module", default="schedule_agent",
-                    help="which agent to compare against the tape, e.g. schedule_agent_1455mh")
+                    help="which agent to compare against the tape, e.g. schedule_agent")
     args = ap.parse_args()
 
     global schedule_agent

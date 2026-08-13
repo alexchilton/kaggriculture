@@ -27,6 +27,8 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+from kagg.logs import get_logger
+
 sys.path.insert(0, ".")
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -61,7 +63,7 @@ def _play(job):
     flag, value, seed, opp_file, swapped = job
     from kaggle_environments import make
 
-    from kagg.search import schedule_agent_1455mh as SA
+    from kagg.search import schedule_agent as SA
 
     setattr(SA, flag, value)
     me_seat = 1 if swapped else 0
@@ -91,7 +93,7 @@ def _play(job):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--flag", required=True,
-                    help="module-level name on schedule_agent_1455mh to sweep, e.g. CARROT_LATE")
+                    help="module-level name on schedule_agent to sweep, e.g. CARROT_LATE")
     ap.add_argument("--values", required=True, help="comma-separated, e.g. 0,1")
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--first-seed", type=int, default=1300)
@@ -108,10 +110,12 @@ def main():
     jobs = [(args.flag, v, s, f, sw)
             for v in values for s in seeds for f, _t, _m in field for sw in (False, True)]
 
-    print(f"{args.flag} {values} against {len(field)} recorded ladder opponents")
-    print(f"seeds {seeds[0]}-{seeds[-1]}, both seatings, weeds at the env default = {len(jobs)} games")
-    print(f"field: {', '.join(t for _f, t, _m in field[:8])}"
-          f"{' ...' if len(field) > 8 else ''}\n")
+    log = get_logger(__name__, filename="field_sweep")
+    log.info("%s %s against %d recorded ladder opponents", args.flag, values, len(field))
+    log.info("seeds %d-%d, both seatings, weeds at the env default = %d games",
+             seeds[0], seeds[-1], len(jobs))
+    log.info("field: %s%s", ", ".join(t for _f, t, _m in field[:8]),
+             " ..." if len(field) > 8 else "")
 
     clock = time.perf_counter()
     with ProcessPoolExecutor(max_workers=args.workers) as pool:

@@ -29,7 +29,7 @@ and `_best_replant_crop` already handle -- offering both crops in the budget yie
 
 WHY THIS COULD NOT BE MEASURED BEFORE
 ------------------------------------
-`SELLABLE` in `schedule_agent_1455mh` listed six of the env's nine products and CARROT was not one
+`SELLABLE` in `schedule_agent` listed six of the env's nine products and CARROT was not one
 of them. It is the iteration domain of the only loop that emits a SELL, so a `sells` row naming
 carrot was read by nothing. Traced on seed 11: 55 seeds bought, 38 planted, harvested on schedule,
 **92 units standing in the shed on d29**, zero orders, $0 banked. Fixed, with

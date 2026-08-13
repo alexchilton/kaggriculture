@@ -23,7 +23,7 @@ a passing rule.
 """
 import pytest
 
-from kagg.search import schedule_agent_1455mh as S
+from kagg.search import schedule_agent as S
 
 
 WANT = {"COW": 10, "SHEEP": 4}

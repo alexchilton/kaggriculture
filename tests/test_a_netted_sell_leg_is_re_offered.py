@@ -42,7 +42,7 @@ def _sold_on_day(day):
     from kaggle_environments import make
 
     from kagg.analysis.fills import record_fills
-    import kagg.search.schedule_agent_1455mh as sa
+    import kagg.search.schedule_agent as sa
 
     replay, schedule, team = B.TAPES["victor"]
     sched = {int(k): v for k, v in json.loads((REPO / schedule).read_text()).items()}

@@ -46,7 +46,7 @@ def _offered_and_unpinned(day):
     import breakdown as B
     from kagg.search import routines as R
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     RT = importlib.import_module("kagg.search.router")
     replay, schedule, team = B.TAPES["victor"]
     raw = json.loads(pathlib.Path(schedule).read_text())

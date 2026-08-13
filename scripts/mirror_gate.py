@@ -32,6 +32,8 @@ import pathlib
 import statistics
 import sys
 
+from kagg.logs import get_logger
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 #: The plan the CURRENT `schedule_agent` is calibrated for. It is not a property of the harness --
 #: see `--plan` below.
@@ -138,7 +140,7 @@ def main():
                     help="the CANDIDATE seat's agent module")
     ap.add_argument("--base-module", default=None,
                     help="the BASELINE seat's module, if comparing two agents rather than two "
-                         "flag settings of one (e.g. schedule_agent_1455mh)")
+                         "flag settings of one (e.g. schedule_agent)")
     ap.add_argument("--set", action="append", default=[],
                     help="NAME=VALUE flag override applied to the CANDIDATE seat only")
     ap.add_argument("--plan", default=str(PLAN),
@@ -166,17 +168,18 @@ def main():
             for s in seeds for seat in (0, 1)]
     label = "SELFTEST (no change)" if args.selftest else (overrides or "no overrides")
     vs = args.base_module or args.module
-    print(f"mirror gate: candidate {args.module} vs baseline {vs}  {len(jobs)} seasons  "
-          f"candidate = {label}", flush=True)
-    print(f"  candidate plan {pathlib.Path(args.plan).parent.name}   "
-          f"baseline plan {pathlib.Path(base_plan).parent.name}", flush=True)
+    log = get_logger(__name__, filename="mirror_gate")
+    log.info("candidate %s vs baseline %s  %d seasons  candidate = %s",
+             args.module, vs, len(jobs), label)
+    log.info("candidate plan %s   baseline plan %s",
+             pathlib.Path(args.plan).parent.name, pathlib.Path(base_plan).parent.name)
 
     rows = []
     with cf.ProcessPoolExecutor(max_workers=args.workers) as ex:
         for i, r in enumerate(ex.map(one, jobs), 1):
             rows.append(r)
             if i % 6 == 0:
-                print(f"  {i}/{len(jobs)}", flush=True)
+                log.info("%d/%d", i, len(jobs))
 
     w = sum(1 for r in rows if r["cand"] > r["base"])
     d = sum(1 for r in rows if r["cand"] == r["base"])

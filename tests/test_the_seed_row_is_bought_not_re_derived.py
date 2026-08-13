@@ -7,7 +7,7 @@ in hand). Pre-stocking is load-bearing, and seeds live in `private["seeds"]`, no
 surplus carries with no capacity cost.
 
 Under `router` the agent sets `want_seed` from the remaining PLANT pins instead
-(`schedule_agent_1455mh.py:3500`). On d6 the board has one free tile, so exactly one pin exists and
+(`schedule_agent.py:3500`). On d6 the board has one free tile, so exactly one pin exists and
 exactly one seed is bought: `buy_seed 1/4`. The row is ignored. d7 then over-buys on the day,
 `buy_seed 14/12`, paying for at dawn what should already have been in hand.
 
@@ -29,7 +29,7 @@ REPLAY = REPO / "data/seed_scripts/top2/91854176.json"
 SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
 TEAM = "Victor @ Tufa Labs"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 12
 TPD = 24

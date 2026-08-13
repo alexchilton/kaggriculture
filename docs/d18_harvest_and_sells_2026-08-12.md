@@ -49,7 +49,7 @@ Exact fills from `_commit_unit` via `kagg/analysis/fills.py`, seat 0, ours/tape:
 The d18 deficit of -26 is the mirror of the d17 surplus of +51.
 
 The mechanism is our own late-sell bias (`LATE_SELL_FROM_HOUR = 16`,
-`kagg/search/schedule_agent_1455mh.py:2278/2282`). The tape posts the row at h0 against a dawn shed
+`kagg/search/schedule_agent.py:2278/2282`). The tape posts the row at h0 against a dawn shed
 still holding yesterday's production; we sell late on the same day and sweep our own production as it
 lands. So our dawn-d18 shed holds only STRAW 20 and MILK 3, which is exactly what we offer — and
 **every unit we offered on d18 filled**. WOOL 12/0 is `CUMULATIVE_SELLS` retrying the d16 row; wool

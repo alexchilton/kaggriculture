@@ -57,7 +57,7 @@ LAND_DAY = 10
 @pytest.fixture(scope="module")
 def dawn():
     """`{day: (plants_planned, plants_uncovered, locked_row_tiles)}` for each day's h0 plan."""
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     DP = importlib.import_module("kagg.search.cover")
     CREW = importlib.import_module("kagg.search.crew")
 

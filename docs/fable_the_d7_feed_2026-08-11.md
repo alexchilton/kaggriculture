@@ -1,8 +1,8 @@
 # The d7 tenth feed: the dawn wheat block is dropped for a full order queue
 
 Fable, 2026-08-11.
-Worktree `agent-a3a2da1c905101655`, branch reset to `9bc5a6d` ("Do not queue the day's ration behind the parcel"), plus the one uncommitted fix described below in `kagg/search/schedule_agent_1455mh.py`.
-Everything measured on seed 11, Victor tape, via `python -u scripts/breakdown.py --module schedule_agent_1455mh --tape victor --days 12`.
+Worktree `agent-a3a2da1c905101655`, branch reset to `9bc5a6d` ("Do not queue the day's ration behind the parcel"), plus the one uncommitted fix described below in `kagg/search/schedule_agent.py`.
+Everything measured on seed 11, Victor tape, via `python -u scripts/breakdown.py --module schedule_agent --tape victor --days 12`.
 
 ## Verdict in one paragraph
 
@@ -68,7 +68,7 @@ by construction, and the measured d8-d11 movement is toward the tape (below).
 
 ## 3. The fix
 
-`kagg/search/schedule_agent_1455mh.py`, two lines of logic plus the daily reset:
+`kagg/search/schedule_agent.py`, two lines of logic plus the daily reset:
 
 - The `BUY_THE_ROW_AT_DAWN` boost condition `hour == 0` becomes
   `not state.get("dawn_row_sent", False)` — the boost stays live until the block is queued.
@@ -196,7 +196,7 @@ this fix, so something else is also owed there.
 
 ## Artifacts
 
-- Fix: `kagg/search/schedule_agent_1455mh.py` (uncommitted; the `dawn_row_sent` flag, three
+- Fix: `kagg/search/schedule_agent.py` (uncommitted; the `dawn_row_sent` flag, three
   edit sites, comment block at the boost).
 - Test: `tests/test_the_dawn_row_survives_a_full_queue.py` (red at `9bc5a6d`, green with the
   fix, red again on revert — verified in both directions).

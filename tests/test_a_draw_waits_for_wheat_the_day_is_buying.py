@@ -52,7 +52,7 @@ TPD = 24
 @pytest.fixture(scope="module")
 def played():
     """`{day: (feeds_planned_at_dawn, feeds_emitted)}` for our seat."""
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     DP = importlib.import_module("kagg.search.cover")
     CREW = importlib.import_module("kagg.search.crew")
 

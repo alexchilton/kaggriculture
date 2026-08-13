@@ -1,7 +1,7 @@
 """Three of the nine products cannot be sold by this agent at all, under any flag.
 
 `SELLABLE` is the tuple the whole market loop iterates -- `for prod in SELLABLE` at
-`schedule_agent_1455mh:3495`, the shed-eviction ranking at `:3452`, and `LIQUIDATE_LAST_DAY` at
+`schedule_agent:3495`, the shed-eviction ranking at `:3452`, and `LIQUIDATE_LAST_DAY` at
 `:3820`, which is nested inside that same loop. It reads:
 
     SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
@@ -37,7 +37,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO))
 
-import kagg.search.schedule_agent_1455mh as sa            # noqa: E402
+import kagg.search.schedule_agent as sa            # noqa: E402
 import kagg.search.routines as R                          # noqa: E402
 
 SEED = 11
@@ -62,7 +62,7 @@ def test_the_two_definitions_of_sellable_agree():
     A fix applied to the first one is a no-op, which is exactly the kind of edit that reads as
     correct in a diff and changes nothing at runtime.
     """
-    src = (REPO / "kagg/search/schedule_agent_1455mh.py").read_text().splitlines()
+    src = (REPO / "kagg/search/schedule_agent.py").read_text().splitlines()
     defs = [ln for ln in src if ln.startswith("SELLABLE = ")]
     assert len(defs) == 1, (
         "SELLABLE is defined %d times; the last one silently wins and the earlier edits are dead: %r"

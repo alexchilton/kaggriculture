@@ -66,7 +66,7 @@ def test_day_eight_emits_every_planting_its_plan_committed_to():
 
     import breakdown as B
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay = REPO / "data/seed_scripts/top2/91854176.json"
     team = "Victor @ Tufa Labs"
     seed, tpd, day = 11, 24, 8
