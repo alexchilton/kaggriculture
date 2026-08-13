@@ -83,10 +83,17 @@ class Fills:
 
     def units(self, player, op, product=None):
         """Units of `op` that actually committed. `_commit_unit` handles SELL, BUY_PRODUCT,
-        BUY_SEED and BUY_ANIMAL, so all four are exact here -- there is no reason for any caller
-        to infer one of them from a shed delta, which is mistake (2) and (3) in this docstring.
+        BUY_SEED and BUY_ANIMAL, and `_do_hire` / `_do_buy_land` are wrapped alongside it, so all
+        SIX market ops are exact here -- there is no reason for any caller to infer one of them
+        from a shed delta, which is mistake (2) and (3) in this docstring, nor to count HIRE and
+        BUY_LAND off the action stream, which is mistake (1).
         """
         return self._agg(player, op, product)[0]
+
+    def spent(self, player, op, product=None):
+        """What `op` actually cost, in dollars. For HIRE that is the fibonacci ladder the farm
+        really climbed, which no count of emitted orders can give."""
+        return self._agg(player, op, product)[1]
 
     def sold(self, player, product=None):
         """(units, revenue) actually sold. Never an offer."""
@@ -111,15 +118,25 @@ def record_fills(env=None):
     bank is short or the shed is full, and those are attempts rather than trades. That distinction
     is the whole point -- an offer that fills nothing must contribute nothing.
 
-    Two patches, because one is the ground truth and the other is the only place a seat is known.
-    `env` is accepted and ignored; it is no longer needed, and the parameter stays so existing call
-    sites keep working.
+    Four patches, because one is the ground truth, one is the only place a seat is known, and two
+    more ops never reach `_commit_unit` at all. `env` is accepted and ignored; it is no longer
+    needed, and the parameter stays so existing call sites keep working.
+
+    **HIRE and BUY_LAND are fills too.** `_process_market` handles them as "atomic orders" before
+    the per-unit loop, so they go through `_do_hire` and `_do_buy_land` instead, and BOTH return
+    silently when the bank is short. An emitted HIRE is therefore an offer exactly like a SELL, and
+    counting them off the action stream is the mistake this module exists to end -- it was simply
+    the one place the module did not reach. Neither returns a status, so success is read off the
+    state each one moves: a hand appended, a quadrant unlocked. The price is the money the farm
+    actually parted with, which for HIRE is the fibonacci ladder and is not knowable from the order.
     """
     import kaggle_environments.envs.kaggriculture.kaggriculture as kg
 
     fills = Fills()
     original_commit = kg._commit_unit
     original_market = kg._process_market
+    original_hire = kg._do_hire
+    original_land = kg._do_buy_land
 
     def commit(op, item, price, farm, private, market, *a, **kw):
         ok = original_commit(op, item, price, farm, private, market, *a, **kw)
@@ -127,15 +144,33 @@ def record_fills(env=None):
             fills.record(op, item, price, farm)
         return ok
 
+    def do_hire(farm, private, board_size, *a, **kw):
+        before_hands, before_money = len(farm["hands"]), farm["money"]
+        out = original_hire(farm, private, board_size, *a, **kw)
+        if len(farm["hands"]) > before_hands:
+            fills.record("HIRE", "HAND", before_money - farm["money"], farm)
+        return out
+
+    def do_buy_land(farm, board_size, *a, **kw):
+        before_quads, before_money = len(farm["unlocked_quadrants"]), farm["money"]
+        out = original_land(farm, board_size, *a, **kw)
+        if len(farm["unlocked_quadrants"]) > before_quads:
+            fills.record("BUY_LAND", "QUADRANT", before_money - farm["money"], farm)
+        return out
+
     def process_market(state, env_):
         # The live list, re-read exactly as `_process_market` itself re-reads it.
         fills.bind_farms(state[0].observation.farms)
         return original_market(state, env_)
 
     kg._commit_unit = commit
+    kg._do_hire = do_hire
+    kg._do_buy_land = do_buy_land
     kg._process_market = process_market
     try:
         yield fills
     finally:
         kg._commit_unit = original_commit
+        kg._do_hire = original_hire
+        kg._do_buy_land = original_land
         kg._process_market = original_market
