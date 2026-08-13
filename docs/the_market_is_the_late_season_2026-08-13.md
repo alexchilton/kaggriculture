@@ -77,6 +77,23 @@ this grid. Note the grid CANNOT see the thing that matters: `breakdown.py` runs 
 tape as separate seat-0 runs against their own recorded adversaries, so our sells never move the
 tape column and a change that starves an opponent looks identical to one that does not.
 
+## CORRECTION, same day: the milk floor is a HARNESS artefact
+
+Three ladder episodes downloaded 2026-08-13 (92450417, 92443929, 92442061) carry the market price at
+each day's close. MILK never floors on the ladder:
+
+    92450417   169 -> 279 over the season
+    92443929   169 -> 258
+    92442061   169 -> 154   (and WOOL dips to 82 on d10, then recovers to 245)
+
+`breakdown.py` seats our agent against a REPLAYED tape, and both sell into one book. A tape that
+sold 303 milk in its own game sells it again next to us, so the harness gluts a book no real game
+gluts. That is the identical failure `7a88d30` warned about for the mirror sweep.
+
+The section below is therefore true OF THE HARNESS and unproven on the ladder. Re-measure it from a
+ladder replay before acting on it. `SHOP_ADAPT_HERD` reading shops rather than prices is still a
+real gap, but the evidence that it is COSTING anything is now withdrawn.
+
 ## Where the money actually is: we flood our own book
 
 `scripts/sell_when.py` prints exact per-product SELL fills per day, per unit price, via
