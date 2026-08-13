@@ -258,6 +258,9 @@ PLAN_TODAYS_PURCHASES = True
 #: Whether a hand standing at an empty shed at hour 0 WAITS one turn for goods the day's row has
 #: already ordered, instead of discarding the draw. See the block in the tour walker.
 WAIT_FOR_THE_MORNING_DELIVERY = True
+#: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
+#: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
+HARVEST_WHAT_YOU_STAND_ON = True
 
 #: Whether a hand standing beside an animal it just placed, with no wheat in hand, walks back to the
 #: shed for one and returns. See the block in the tour walker for the trace and for what the tape
@@ -414,7 +417,7 @@ def _clear_the_spawn_ring(units, unlocked, n):
     return best if best else (None, stay)
 
 
-def _hires_this_turn(state, row, day, hour, money):
+def _hires_this_turn(state, row, day, hour, money, shed=None, prices=None):
     """How many hands the market block below is about to buy. Read by the DAWN PLAN, which has to
     route them, so it must not diverge from what that block actually orders.
 
@@ -434,7 +437,37 @@ def _hires_this_turn(state, row, day, hour, money):
     # restarts at **`_fib(0) = 1`, not 0** (`kaggriculture.py:677`). Seven hires cost `1 1 2 3 5 8 13`
     # = 33. Starting at 0 charged `0 1 1 2 3 5 8` = 20, one position short the whole way up, so on any
     # bank between the two totals this predicted a hand the market phase could not pay for.
-    bank, a, b, n = float(money), 1, 1, 0
+    # **The bank this turn's HIRE sees is the dawn bank PLUS what this turn's SELLs raise.**
+    #
+    # `_process_market` walks a turn's orders in slot order, so the sells queued alongside the hires
+    # settle into the bank the hires then spend from. Sizing the crew off `money` alone models the
+    # cost of the ladder and not the revenue that pays for it, and the two are in the same turn.
+    #
+    # Measured on カワシギ's plan, seed 11, d4. The day OPENS on $3 and his row asks for 5 hands.
+    # The ladder is 1, 1, 2, 3, 5: against $3 it affords two and stops, so the dawn plan built
+    # phantoms for TWO -- `budget [24, 23, 23]` in the day-4 fixture -- while five hands actually
+    # landed, funded by that day's $384 of sells. Three real hands then stood with no route, and
+    # every op on the day came up short in the same proportion: harvest 3/7, care 3/5, feed 3/5,
+    # collect_fert 3/5, and the pen 0/1. A 400-restart seating search reported "no ordering beat
+    # the shipped planner" because it was solving for three people.
+    #
+    # He opens d4 on $1 and hires the same five.
+    #
+    # Deliberately capped at what the shed can actually deliver: the row is a day TOTAL and
+    # `n = min(have, row["sells"][p])` at the emission, so a row asking to sell stock we do not
+    # hold raises nothing. Priced at the live quote where one is available, falling back to base --
+    # under-estimating here only costs a hand, while over-estimating orphans a route, which is the
+    # asymmetry `_do_hire`'s silent failure creates.
+    proceeds = 0.0
+    for product, qty in (row.get("sells") or {}).items():
+        held = int((shed or {}).get(product, 0) or 0)
+        n_sell = min(held, int(qty or 0))
+        if n_sell <= 0:
+            continue
+        quote = (prices or {}).get(product) or RT.BASE_PRICE.get(product, 0)
+        proceeds += n_sell * float(quote)
+
+    bank, a, b, n = float(money) + proceeds, 1, 1, 0
     for _ in range(want):
         if bank < a:
             break
@@ -1432,7 +1465,8 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         return []
     kind = cell.get("kind")
     if kind == "PLANT":
-        ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price)
+        ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
+                          tile=tile)
     elif "animal" in cell:
         ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
     elif kind in ("PASTURE", "COOP"):
@@ -1983,6 +2017,31 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 return None
             here = tiles[pos[1]][pos[0]]
             if not (isinstance(here, dict) and "animal" in here):
+                # **A ripe crop underfoot is the same defect as a hungry pen underfoot**, and this
+                # function has always returned None on it -- the docstring above says "a tile a hand
+                # merely crosses is never looked at" and then only ever implemented the animal case.
+                #
+                # Measured on d4, seed 11, the tape's `harvest 7` against our 6. The missing tile is
+                # (1,4), a ripe wheat tile worth 3 units. Its owner is the last stop of the longest
+                # tour (`cost 23` against a 23-turn budget) and reaches it at h23 with no turn left
+                # to work it -- while THREE other hands cross it earlier and walk on:
+                #
+                #     h16  u4@(1,4) -> EAST      h19  u2@(1,4) -> WEST
+                #     h23  u0@(1,4) -> EAST      h23  u2@(1,4) -> EAST
+                #
+                # HARVEST only, never WATER: a harvest is a turn for a whole yield and it clears the
+                # tile for a replant, whereas watering a tile someone else is routed to merely moves
+                # the turn around. `working_tiles` keeps it off a tile another hand is working THIS
+                # turn, so two hands cannot harvest the same crop.
+                if (not HARVEST_WHAT_YOU_STAND_ON
+                        or not isinstance(here, dict) or "crop" not in here
+                        or tuple(pos) in working_tiles or tuple(pos) in cared_this_turn):
+                    return None
+                ops = RT.crop_ops(here, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
+                                  tile=tuple(pos))
+                if any(o == "HARVEST" for o, _a, _v in ops):
+                    cared_this_turn.add(tuple(pos))
+                    return ["HARVEST"]
                 return None
             if not here.get("fed_today") and inv.get("WHEAT", 0) > 0:
                 owed = sum(1 for nd in st["route"]
@@ -2073,6 +2132,22 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # waits one turn for a delivery that is already ordered, and every other
                         # shortfall keeps the old behaviour, which is what the day-4 land purchase
                         # and the day-5 sell ordering were tuned against.
+                        # **Waiting past hour 0 was tried here twice, on 2026-08-13, and BOTH are
+                        # losses. Do not restore either without a grid.** The measured cause of the
+                        # short feed days is real -- `feed` equals whatever the shed held at dawn,
+                        # d3 2/4 on a shed of 2, d7 4/9 on a shed of 4, d8 0/10 on a shed of 0 --
+                        # but making the hand stand and wait is not the fix.
+                        #
+                        #   wait on ANY shortfall while the row is still buying
+                        #       d6 `tiles 25/50` -- the land purchase slips to d7 and takes
+                        #       `plant 9/9 -> 0/9` with it. The hands standing at the shed are the
+                        #       hands whose sales fund the parcel.
+                        #   wait only on a CRITICAL draw (`Depot.critical`, which `cover` sets from
+                        #   `at_risk`, and which this walker has never read)
+                        #       same `tiles 25/50` land slip, for `feed 3/10` on d8.
+                        #
+                        # Hour 0 stays, because it is the one turn where an empty shed is certain to
+                        # be a delivery not yet landed rather than a shortfall.
                         if WAIT_FOR_THE_MORNING_DELIVERY and hour == 0 and item in _bought_today:
                             break
                         del node.pick[item]
@@ -2635,6 +2710,29 @@ WOOL_SHOP_COW_CAP = 6
 #: d9 and is the last one he responds to -- see the table: #3 still gives COW 6, #4 does not.
 WOOL_SHOP_DRAW_LIMIT = 3
 
+#: **What he runs when NO yarn store lands early -- the other half of the same step function.**
+#:
+#: Measured 2026-08-13 over all 67 recorded カワシギ seats, by the draw his first yarn store lands on:
+#:
+#:     first yarn at draw #1 (d3)   n=10   COW  6.00   SHEEP 9.10
+#:     first yarn at draw #2 (d6)   n=11   COW  6.00   SHEEP 9.27
+#:     first yarn at draw #3 (d9)   n= 3   COW  6.00   SHEEP 6.00
+#:     first yarn at draw #4+       n=16   COW 10.00   SHEEP 4.00
+#:     no yarn store at all         n=27   COW  9.63   SHEEP 4.37   (22 at COW 10, 5 at COW 8)
+#:
+#: The cap branch below reproduced the top three rows 24/24. The bottom two were left to the
+#: drain-aware greedy, **and it gives 13 where he runs 10** -- wrong on 43 of his 67 seats. Pinning
+#: both branches takes it to 62/67; the greedy alone scores 1/67. The five that remain are
+#: unreachable by any constant, because he himself runs COW 10 in 22 of those games and COW 8 in 5.
+#:
+#: **Fitted to him alone, deliberately.** Across the 451 recorded seats of the whole field the same
+#: split is mush -- early-yarn mean COW 7.26, only 41% at the cap even in the top decile. A
+#: drain-weighted linear fit scored better against that mean and was rejected: it would have
+#: replaced a classifier that is perfect on the player we are trying to beat with regression toward
+#: the players we already beat. `tests/test_the_herd_split_answers_the_recorded_shop_draw.py` keeps
+#: the trap executable.
+WOOL_SHOP_NO_YARN_COW = 10
+
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     """Re-decide the cow/sheep species mix, keeping the schedule's COUNT exactly.
@@ -2658,10 +2756,15 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
     # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
     # would have cut those to 6.
-    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]:
-        if split["COW"] <= WOOL_SHOP_COW_CAP:
-            split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], WOOL_SHOP_COW_CAP))
-            split["COW"] = max(split["COW"], min(WOOL_SHOP_COW_CAP, total - split["SHEEP"]))
+    if WOOL_SHOP_SETS_THE_HERD:
+        # **Both branches of his step function are pinned, not just the capped one.** An early yarn
+        # store means 6 cows; anything else means 10. Leaving the second case to the greedy below
+        # was wrong on the majority of his recorded seats -- see `WOOL_SHOP_NO_YARN_COW`.
+        early = "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]
+        target = WOOL_SHOP_COW_CAP if early else WOOL_SHOP_NO_YARN_COW
+        if split["COW"] <= target:
+            split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], target))
+            split["COW"] = max(split["COW"], min(target, total - split["SHEEP"]))
             return split
 
     step_now = day * TPD + hour
@@ -3291,7 +3394,9 @@ def make_agent(schedule, me=0, router=True):
             # arithmetic the market block does at the BOTTOM of this function has to be available at
             # the top. `_hires_this_turn` is that block's rule stated once; if the two ever disagree
             # the plan orphans a route, so they must be read together.
-            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money)
+            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money,
+                                       shed=shed,
+                                       prices=(obs.get("market") or {}).get("prices") or {})
             # **The farmer is not a bystander to where its own crew lands.** See
             # `_clear_the_spawn_ring`: `_spawn_hand` counts it, so standing on the ring rotates every
             # spawn and puts a second hand on the dead `(5,5)` corner -- 23 turns, on d4 the
