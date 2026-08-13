@@ -10,9 +10,9 @@ measurement was made and then not written down. **If you measure something, put 
 > 2026-08-07/08 (`competition_brief.md`, "version skew"). Entries below that date were scored on
 > 1.32.2 and are not directly comparable to anything measured since — the town rebalance changed
 > absorption by up to 4.67x on melon. Treat every dollar figure here as dated by its own entry, not
-> as a current baseline. `docs/the_market_2026-08-09.md` holds the current, 1.32.6-dated market
+> as a current baseline. `docs/the_market.md` holds the current, 1.32.6-dated market
 > findings.
-> **2026-08-11 addendum:** `docs/the_ladder_is_two_scripts.md` and `docs/what_the_town_will_actually_eat.md`
+> **2026-08-11 addendum:** `docs/the_ladder_is_two_scripts.md` and `docs/the_market.md`
 > are newer still — the current position on strategy and market economics.
 
 Rules for reading it: a score is mean final bank, seat-swapped, on held-out seeds never used for
@@ -600,3 +600,54 @@ animals lost in our own season: 0
 The uncontested number says we finish ahead. **The contested head-to-head says we lose both seatings
 on the valid seed**, so this is not yet a ladder result. Open defects, with their evidence, are in
 `REGISTER.md`.
+
+## 25. Why the offline chain-search stack (stage 1) was abandoned — 2026-08-09
+
+Folded in from `docs/fable_stage1_review_2026-08-09.md` (file deleted). Verified against the saved
+artifact `data/chain_search_scheduled/best_beam_genome.npz` (money $2,484, land days 11/15) and
+`data/logs/run_scheduler_v7.log`, on the installed 1.32.6 env.
+
+**The $2,484 result is a decode veto, not a pricing bug.** `reachable_quadrants(g,12) = 0`; decode
+uses 7 of 12 chains and skips the 5 that need land — the melon block, all 3 strawberry blocks, and a
+4th wheat block, i.e. the entire revenue expansion. What actually plays: 2 cow pens, 2 sheep pens, 12
+wheat tiles NW. Banks $2,484, wins 0/16.
+
+**A separate, unconditional bug**: `decode` (`chains.py:687-691`) emits `buy_land` orders from
+`land_schedule` unconditionally even though `reachable_quadrants` gates only the chains — so the
+tape spends $3,000 on parcels on days 11/15 and then refuses every chain that would use them.
+
+**Root cause of the veto: three cash models disagree by ~10x.** `scheduler.schedule()` charges no
+crew at all (day-11 bank estimate ~$742-$1,963); `chains.cash_curve()` charges full crew from day 0
+($232/day for 11 hands), giving **$108 on day 11**; `reachable_quadrants` needs ~$1,040 on day 11,
+sees $108, refuses the parcel, and everything behind it dies. A comment at `chains.py:458` claiming
+the gate and scheduler "agree" is false.
+
+Order of what actually binds, most to least important: (1) the decode veto — fatal; (2) decode
+buying land for chains it then refuses; (3) trickle-inflow mistiming land purchase days by up to ±5
+(re-running `schedule()` with reserves 0/300/800/1500 gives parcel days 7/11, 8/11, 5/13, 7/14 —
+noise around the trickle-crossing, not a decision); (4) the originally-suspected `revenue_rate` cap
+is **not** binding, and is 4th and least important.
+
+**Other findings (not fixed, not chased further):** `to_genome` silently truncates (14 chains into
+12 slots, the last two strawberry blocks vanish uncounted); the per-chain drain cap is not shared
+across chains (4 melon chains each independently "sell" 15 units into a single 30-unit season drain,
+double-counting 60 units of headroom that doesn't exist); `OPPONENT_SHARE=0.5` vs `--share 1.0`
+disagree, a 2x market-size mismatch; CARE is not modeled at all in `revenue_rate`/`cash_curve`, so a
+CARE-compounding strategy (like rank-2 HealthStone's) can never be found by this search;
+`expected_first_demand_day` draws shops without replacement but 1.32.6 draws with replacement.
+
+**Verdict: not worth continuing in its current role** — "three layers of indirection," optimizing a
+proxy inside a proxy against a phantom field (its tape opponents predate the 2,744-seat cluster data
+and contain zero real archetypes). Never shipped; its own best output loses 16/16 to its sibling.
+Its originally-recommended next step (target `kaitofukami v23` via the 15-replay cluster sample) is
+now itself superseded by `docs/the_ladder_is_two_scripts.md`'s rebase recommendation (Dmitry Belan or
+Efe Can Celiksoy, `REGISTER.md` OPEN-10) — `chains.py`/`scheduler.py` are independently known to be
+dead code, not part of the shipped submission.
+
+## 26. The wheat-buying day budget — see `docs/fertilizer_and_wheat_supply.md`
+
+A closed, shipped fix (`FEED_BUY_CEILING_DAYS=2`) for a purchase-side defect that had us buying
+1,099 wheat/season against the field's 266-392. Full write-up, including the swept constant and the
+routing/labor bottleneck it exposed at the tighter setting, lives in
+`docs/fertilizer_and_wheat_supply.md` (merged there from `fable_the_wheat_churn_2026-08-09.md`,
+2026-08-13).
