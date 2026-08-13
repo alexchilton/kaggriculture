@@ -4737,13 +4737,67 @@ def _freshly_planted(crop, day):
             "fertilized_until_day": -1}
 
 
+def _best_replant_crop(replant, day, dated=None):
+    """Which crop to put in ground the day has just cleared, or None if nothing can finish.
+
+    **The budget's iteration order is not a ranking.** This was `next((c for c in replant if ...))`,
+    which takes the first crop with any positive prize, so WHEAT won at d26 on dict order while
+    pricing $50 against CARROT's $70 -- carrot's `max_yield_day` is 3 against wheat's 4, so from d26
+    it is the only crop the season can still finish. The #1 player plants carrot, and nothing else,
+    in exactly this window in all 16 of his downloaded games
+    (`docs/kawashigi_one_board_2026-08-13.md`).
+
+    Ties fall to the crop already earlier in the budget, so the pre-crossover behaviour is unchanged.
+
+    **`dated` is what the schedule asked for TODAY, and it outranks the prize.** `replant` is
+    cumulative, so on any late day it carries a large standing WHEAT figure beside whatever small
+    request today's row actually made. Ranking the two against each other on price is a category
+    error: the standing budget is never exhausted, so it wins every cleared tile forever. Wheat
+    prices $75 against carrot's $70 from d21 to d25, which is exactly the window the leader plants
+    carrot in, and the result on seed 11 was that none of the six scheduled carrots landed inside
+    its window -- one on d26, five on d27, all of them past the day they could still yield. The arm
+    read -$837 and that number is six wasted seeds, not carrot.
+
+    He plants 1-2 carrot BESIDE 4-11 wheat on the same days in all 66 games. The dated ask is one
+    tile; once it is met the rest of the day's cleared ground falls straight back to the standing
+    budget below, which is that same shape.
+
+    The window still governs: a dated crop whose `plant_prize` is 0 cannot finish and is refused
+    exactly as an undated one is. Urgency reorders the eligible; it never adds to them.
+
+    **Within `dated`, the SCARCEST request goes first, and that is the whole rule.** Today's row is
+    not one crop -- d21 asks for `{WHEAT: 9, CARROT: 1}` -- so serving it in dict order just hands
+    the tile back to wheat and changes nothing. It was byte-identical when written that way. The
+    day's cleared ground is allocated greedily one tile at a time, so a nine-tile ask absorbs
+    everything before a one-tile ask is ever considered, whatever the prize says. Ordering by
+    ascending remaining count is what stops the small request being starved by the large one, and it
+    self-limits: once carrot's single tile is spent, `dated[CARROT]` is 0 and wheat takes the rest of
+    the day -- which is exactly the 1-2 carrot beside 4-11 wheat that all 66 games show.
+    """
+    for crop, qty in sorted((dated or {}).items(), key=lambda kv: kv[1]):
+        if qty > 0 and replant.get(crop, 0) > 0 and plant_prize(crop, day) > 0:
+            return crop
+    best, best_prize = None, 0
+    for crop, qty in replant.items():
+        if qty <= 0:
+            continue
+        prize = plant_prize(crop, day)
+        if prize > best_prize:
+            best, best_prize = crop, prize
+    return best
+
+
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
-                plantable=None, fertilizer_price=None, replant=None):
+                plantable=None, fertilizer_price=None, replant=None, dated=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
     shed nor in a hand is never queued at all -- the deadlock that cost $45,623 was a unit holding
     the board's highest-priority job while standing on an empty shed.
+
+    `replant` is the CUMULATIVE plants budget; `dated` is only what today's own row asked for, and
+    it is consumed alongside it so a one-tile request is met once and not on every cleared tile.
+    See `_best_replant_crop`.
     """
     have_wheat = shed.get("WHEAT", 0) > 0 or carried.get("WHEAT", 0) > 0
     have_fert = shed.get("FERTILIZER", 0) > 0 or carried.get("FERTILIZER", 0) > 0
@@ -4773,10 +4827,11 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                              # ground was already worth planting, and paid a turn for the privilege.
                              or (day >= LATE_TRUNCATED_PLANT_DAY
                                  and any(o == "DIG" for o, _i, _p in ops)))):
-                    crop = next((c for c in replant if replant[c] > 0
-                                 and plant_prize(c, day) > 0), None)
+                    crop = _best_replant_crop(replant, day, dated)
                     if crop is not None:
                         replant[crop] -= 1
+                        if dated and dated.get(crop, 0) > 0:
+                            dated[crop] -= 1
                         ops = list(ops) + [("PLANT", crop, plant_prize(crop, day))]
                         if PLANT_THEN_WATER:
                             ops.extend(crop_ops(_freshly_planted(crop, day), day, have_fert))
@@ -6521,10 +6576,6 @@ STEAL_FROM_DAY_MARGIN = 4
 #: wide enough to cover a late harvest.
 SELL_CARRY_DAYS = 3
 
-#: The products the sell block actually offers, in its long-standing order. Named so the
-#: make-room release below can rank the same set by holding size without duplicating the tuple.
-SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
-
 #: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
 SHED_CAPACITY = 100
 
@@ -6944,7 +6995,22 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     plant_order = order
     if PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED and have >= want_pens:
         plant_order = list(order) + [c for c in R.shed_access_tiles() if _owned(c, unlocked)]
-    for crop, qty in want.items():
+    # **Smallest outstanding ask first.** `want` is CUMULATIVE and a Counter iterates in insertion
+    # order, so WHEAT -- first seen on d0, and standing at 139 for the season -- claimed every empty
+    # square before any other crop was reached. A crop the schedule wants one of is then never
+    # planted at all while a crop it wants a hundred of is outstanding, which is not a priority
+    # decision, just dict order.
+    #
+    # Measured: the six CARROT the schedule asks for on d21-d26 landed one on d26 and five on d27,
+    # all past the day they could still yield, because wheat took the ground every time. Ordering by
+    # ascending outstanding count self-limits -- once carrot's single tile is placed its remainder is
+    # 0 and wheat takes the whole rest of the day, which is the 1-2 carrot beside 4-11 wheat that all
+    # 66 downloaded games of the leader show.
+    def _outstanding(crop):
+        return want[crop] - state["planted"][crop] - live[crop]
+
+    for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
+        qty = want[crop]
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
         for _ in range(qty - state["planted"][crop] - live[crop]):
@@ -7099,12 +7165,23 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             t for t, c in ((t, tiles[t[1]][t[0]]) for t in RT.field_order(unlocked))
             if isinstance(c, dict) and c.get("kind") == "WEED"}
 
+    #: **What TODAY's row asked for, as distinct from the cumulative budget.**
+    #: `_replant` carries every unmet planting since day 0, so by the late season it holds a large
+    #: standing WHEAT figure that outbids any small dated request on `plant_prize` forever. This is
+    #: today's row alone, less what is already pinned, and `_best_replant_crop` serves it first.
+    #: One tile, once -- `build_nodes` decrements it, so the day's remaining cleared ground falls
+    #: straight back to the standing budget. See `router._best_replant_crop`.
+    _dated = collections.Counter(sched.get(day, {}).get("plants") or [])
+    _dated -= collections.Counter(p[1] for p in (pins or {}).values()
+                                  if p and p[0] == "PLANT")
+
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
                                           pen_for=state.get("pen_for") or {},
                                           plantable=_plantable,
                                           fertilizer_price=fertilizer_price,
-                                          replant=collections.Counter(_replant))
+                                          replant=collections.Counter(_replant),
+                                          dated=collections.Counter(_dated))
                 if n.tile not in skip]
 
     # Only units that can legally act are vehicles. A boxed-in hand is not a slow vehicle, it is no
@@ -7719,7 +7796,7 @@ SHOP_ADAPT_HERD = True
 #: `d4:COW`; the first differing purchase is day 6 (`90997714` d6:COW) or day 7 (`91267247` d7:SHEEP).
 #: Day 6 is also the SECOND unlock, so he treats one shop as not enough and two as enough -- which
 #: matches the arithmetic: after one draw, P(YARN_STORE still to come) is 1 - (7/8)**7 = 61%.
-SHOP_ADAPT_FROM_DAY = 6
+SHOP_ADAPT_FROM_DAY = 3
 
 #: The floor: animals bought regardless of what the town turns out to want. Everything the schedule
 #: asks for ABOVE this floats on the shop draw from `SHOP_ADAPT_FROM_DAY`.
@@ -7846,6 +7923,100 @@ CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
 #: whose book is spoken for scores zero rather than negative, so a pair whose demand has gone can
 #: never be pushed past the point where it stops paying, and the day gate protects the opening.
 CROP_ADAPT_FROM_DAY = 6
+
+
+#: **WOOL_SHOP_SETS_THE_HERD -- an EARLY YARN_STORE makes the herd sheep-heavy.**
+#:
+#: Read off **66** downloaded games of the #1 player, 61-0-5
+#: (`docs/kawashigi_one_board_2026-08-13.md`). Shops unlock every third day, so draw #N lands on day
+#: 3N and that is verified 66/66. Against the position of the FIRST yarn store his herd is a step
+#: function with no exceptions at all:
+#:
+#:     yarn first at draw #1 (d3)  : COW  6, SHEEP 12, total 18    n=10
+#:     yarn first at draw #2 (d6)  : COW  6, SHEEP 12, total 18    n=11
+#:     yarn first at draw #3 (d9)  : COW  6, SHEEP  8, total 14    n= 3
+#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP  4, total 14  n=16
+#:     no yarn store at all        : COW 10, SHEEP  4, total 14    n=22 (+4 at COW 8/SHEEP 6)
+#:
+#: So `COW == 6` iff a yarn store is among the FIRST THREE draws: 24/24 yes, 0/42 no. A perfect
+#: classifier over 66 games, and the reason this flag now carries a draw limit. **The 16 games at
+#: draw #4 or later are what the first version of this rule got wrong** -- it fired on a yarn store
+#: appearing at any point in the season, and would have cut the herd to 6 cows on a d12 unlock where
+#: he keeps 10. Wool arriving at d12 has only six production cycles left; that is the whole content
+#: of the cutoff.
+#:
+#: Milk-shop count predicts nothing that yarn does not already explain -- COW 6 occurs at one milk
+#: shop and at two, and at 0 milk shops the mean cow count is still 6.57. The headroom greedy below
+#: ties to COW on the reasoning that "MILK is carried by three shops against WOOL's one", which is a
+#: true statement about the shop table and the wrong way round as a conclusion: three shops sharing
+#: milk is what floors the milk price. Measured on our own fills, wool went out at
+#: $160/$109/$181/$146 on d24-d28 while milk took $1-$5 all season.
+#:
+#: **NOT built in, and it needs pens before it can be: the herd TOTAL moves too.** A yarn store by
+#: d6 takes him to 18 animals, not 18 split differently -- four extra SHEEP at $500 plus four pens
+#: plus their feed. That is 21 of the 24 yarn games, so it is the dominant branch, and this flag
+#: reaches none of it: `_herd_split` may only redistribute `want_total`, which the schedule fixes at
+#: 14. Raising it is a schedule change with a build and turn cost, not a split rule.
+WOOL_SHOP_SETS_THE_HERD = True
+
+#: What the leader holds cows to once an early wool shop is on the board. 24 of 24 such games ran
+#: exactly 6 cows and put the entire remaining budget into sheep; no yarn game ran any other number.
+WOOL_SHOP_COW_CAP = 6
+
+#: How many of the town's draws count as "early" for the rule above. Three, because draw #3 lands on
+#: d9 and is the last one he responds to -- see the table: #3 still gives COW 6, #4 does not.
+WOOL_SHOP_DRAW_LIMIT = 3
+
+
+def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
+    """Re-decide the cow/sheep species mix, keeping the schedule's COUNT exactly.
+
+    Extracted from `_place_animals` so it can be tested directly; the body below the wool rule is
+    unchanged. Anchored on what is already BOUGHT, so the target can only grow and the total is
+    capped at the schedule's own count -- a split recomputed from scratch each turn buys up to both
+    ceilings as the choice flips, measured once at COW 20 + SHEEP 18 against a schedule asking 21.
+    """
+    total = want_total["COW"] + want_total["SHEEP"]
+    split = {a: bought.get(a, 0) for a in ("COW", "SHEEP")}
+    # The floor is a commitment, so honour it even if the book for its product looks empty.
+    split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total))
+    split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total - split["COW"]))
+
+    # **The wool shop decides it, and it decides it outright.** Cows are held at the cap and every
+    # animal still unbought goes to sheep, which is what reproduces his 6/8 at a herd of 14 and his
+    # 6/12 at 18. `bought` still floors the cows, so this can never unbuy one that exists.
+    #
+    # **Only the first three draws count.** `unlocked_shops` is in unlock order and a draw lands
+    # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
+    # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
+    # would have cut those to 6.
+    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]:
+        if split["COW"] <= WOOL_SHOP_COW_CAP:
+            split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], WOOL_SHOP_COW_CAP))
+            split["COW"] = max(split["COW"], min(WOOL_SHOP_COW_CAP, total - split["SHEEP"]))
+            return split
+
+    step_now = day * TPD + hour
+    days_left = max(0, last_day - day)
+    headroom, per_animal = {}, {}
+    for a in ("COW", "SHEEP"):
+        spec = R.ANIMALS[a]
+        # Yields left for an animal bought NOW: nothing before `first_yield_day`, then one every
+        # `interval` days. A late sheep is worth much less than a late cow -- 6 days then every 3,
+        # against 8 days then every 2.
+        per_animal[a] = max(0, (days_left - spec["first_yield_day"]) // spec["interval"])
+        # **Count the shops that have NOT been drawn yet.** `town_drain_remaining` counts only what
+        # is unlocked, so reading it alone treats the draws so far as final.
+        headroom[a] = (town_drain_remaining(spec["product"], step_now, unlocked_shops)
+                       + expected_future_drain(spec["product"], day, len(unlocked_shops), last_day)
+                       - split[a] * per_animal[a])
+    # One animal at a time: each assignment consumes the headroom that justified it, so the
+    # objective is separable and concave in the count per species -- where greedy is optimal.
+    for _ in range(max(0, total - split["COW"] - split["SHEEP"])):
+        pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
+        split[pick] += 1
+        headroom[pick] -= per_animal[pick]
+    return split
 
 
 def _adapt_crops(want, planted, live, day, unlocked_shops, last_day=29):
@@ -8206,7 +8377,26 @@ SELL_CARRY_DAYS = 3
 
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
-SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT")
+#:
+#: **This is the iteration domain of the ONLY loop that emits a SELL**, and for most of this
+#: project's life it held six of the env's nine names. CARROT, TOMATO and EGG were absent, so a
+#: schedule row saying `sells {CARROT: 55}` was read by nothing at all -- not deprioritised, not
+#: outbid, simply never looked at. The same tuple governs the shed-eviction ranking and
+#: `LIQUIDATE_LAST_DAY`, so there was no day and no flag that could reach them.
+#:
+#: Traced end to end on seed 11 (`tests/test_a_product_the_schedule_asks_to_sell_can_be_sold.py`):
+#: 55 carrot seeds bought, 38 planted, harvested on schedule, **92 units standing in the shed on
+#: d29**, zero SELL orders emitted, $0 banked. All four carrot arms in
+#: `docs/carrot_swap_2026-08-12.md` were therefore comparing 55 tiles of wheat against 55 tiles of
+#: nothing, and "carrot loses $5,727" measured the missing wheat. EGG was unreachable on exactly the
+#: same line, which puts the goose verdict in the same position.
+#:
+#: The three are appended rather than merged into the order: the existing six keep their precedence
+#: for the ten order slots, so a board that grows none of the new three is byte-identical.
+#:
+#: Derived from `R.PRODUCTS` so a product added to the env cannot go missing here again.
+SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT") + tuple(
+    p for p in R.PRODUCTS if p not in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"))
 
 #: How many days ahead the FERTILIZER sell reserve looks. 0 restores the old one-day rule.
 #: Three, because `FERTILIZE` sets `fertilized_until_day = day + 2` (`kaggriculture.py:468`) and so
@@ -9311,62 +9501,8 @@ def make_agent(schedule, me=0, router=True):
             # grow, so the total is capped at the schedule's own count, while every animal still
             # unbought is re-aimed at whatever the shops now say. Shops keep unlocking to day 24, so
             # this keeps improving as the evidence arrives.
-            total = want_total["COW"] + want_total["SHEEP"]
-            split = {a: state["bought"][a] for a in ("COW", "SHEEP")}
-            # The floor is a commitment, so honour it even if the book for its product looks empty.
-            split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total))
-            split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total - split["COW"]))
-            step_now = day * TPD + hour
-            days_left = max(0, last_day - day)
-            headroom, per_animal = {}, {}
-            for a in ("COW", "SHEEP"):
-                spec = R.ANIMALS[a]
-                # Yields left for an animal bought NOW: nothing before `first_yield_day`, then one
-                # every `interval` days. This is why a late sheep is worth much less than a late cow
-                # -- 6 days then every 3, against 8 days then every 2.
-                per_animal[a] = max(0, (days_left - spec["first_yield_day"]) // spec["interval"])
-                # **Count the shops that have NOT been drawn yet.** `town_drain_remaining`
-                # deliberately counts only what is already unlocked, so reading it alone treats the
-                # draws so far as final. At day 6 that is two draws of eight, and
-                # P(YARN_STORE still appears) is 1 - (7/8)**6 = 55% -- so "no wool shop yet" is weak
-                # evidence, and committing the herd against it is the largest-regret move available.
-                # Adding the expected future drain is what stops an early gap becoming a decision.
-                headroom[a] = (town_drain_remaining(spec["product"], step_now, unlocked_shops)
-                               + expected_future_drain(spec["product"], day, len(unlocked_shops),
-                                                       last_day)
-                               - split[a] * per_animal[a])
-            # **Commit only the NEXT purchases, never the rest of the season.**
-            #
-            # The previous version allocated the whole remaining budget in one pass and, because
-            # `split` is anchored on `state["bought"]` which never falls, froze that allocation for
-            # good. Shops keep unlocking on days 9, 12, 15, 18, 21 and 24, so a herd settled at day 6
-            # ignored six later draws: seed 11 committed to cows on a board whose YARN_STORE arrived
-            # afterwards and which ended the season absorbing 534 units of wool.
-            #
-            # The day-6 choice there was CORRECT on the evidence it had. Draws are i.i.d. uniform
-            # with replacement, so nothing already seen changes the distribution of what is still to
-            # come, and buying cows with no YARN_STORE in sight is right. The error was never
-            # revisiting it once the draw did arrive.
-            #
-            # Offering the remaining budget to whichever species leads RIGHT NOW leaves every later
-            # purchase free to go the other way, and `bought` still caps the total, so this cannot
-            # overshoot the schedule's count. Ties fall to COW: cheaper ($400 vs $500), yields sooner
-            # and more often, and MILK is carried by three shops against WOOL's one.
-            # **One animal at a time, and that is provably right rather than merely careful.**
-            # Each assignment consumes the headroom that justified it, so the objective is separable
-            # and concave in the count per species -- the case where greedy one-at-a-time is optimal.
-            # It is the same shape as the shed release, which was written up as a knapsack and turned
-            # out to be a sort (`docs/REGISTER.md` #46). Handing the whole remaining budget to
-            # whichever species leads on the first unit ignores the diminishing returns: past enough
-            # cows the milk book is spoken for and the next animal should be a sheep even on a milk
-            # board. Recomputed from scratch every turn, so new unlocks move later assignments.
-            for _ in range(max(0, total - split["COW"] - split["SHEEP"])):
-                # Ties fall to COW: cheaper ($400 vs $500), yields sooner and more often, and MILK is
-                # carried by three shops against WOOL's one.
-                pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
-                split[pick] += 1
-                headroom[pick] -= per_animal[pick]
-            want_total["COW"], want_total["SHEEP"] = split["COW"], split["SHEEP"]
+            _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
+            want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue
@@ -9961,7 +10097,8 @@ _PLAN_JSON = r'''{
 },
 "seeds": {
 "WHEAT": 1,
-"STRAWBERRY": 3
+"STRAWBERRY": 3,
+"CARROT": 6
 },
 "buys": {
 "WHEAT": 5
@@ -10420,7 +10557,8 @@ _PLAN_JSON = r'''{
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"WHEAT"
+"WHEAT",
+"CARROT"
 ],
 "animals_bought": {},
 "seeds": {
@@ -10446,7 +10584,8 @@ _PLAN_JSON = r'''{
 "builds": 0,
 "places": [],
 "plants": [
-"WHEAT"
+"WHEAT",
+"CARROT"
 ],
 "animals_bought": {},
 "seeds": {},
@@ -10483,7 +10622,8 @@ _PLAN_JSON = r'''{
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"WHEAT"
+"WHEAT",
+"CARROT"
 ],
 "animals_bought": {},
 "seeds": {
@@ -10521,7 +10661,8 @@ _PLAN_JSON = r'''{
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"WHEAT"
+"WHEAT",
+"CARROT"
 ],
 "animals_bought": {},
 "seeds": {
@@ -10535,7 +10676,8 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 36,
 "FERTILIZER": 23,
 "WHEAT": 18,
-"WOOL": 12
+"WOOL": 12,
+"CARROT": 3
 }
 },
 "25": {
@@ -10557,7 +10699,8 @@ _PLAN_JSON = r'''{
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"WHEAT"
+"WHEAT",
+"CARROT"
 ],
 "animals_bought": {},
 "seeds": {
@@ -10571,7 +10714,8 @@ _PLAN_JSON = r'''{
 "WOOL": 8,
 "WHEAT": 37,
 "FERTILIZER": 16,
-"MILK": 11
+"MILK": 11,
+"CARROT": 3
 }
 },
 "26": {
@@ -10592,7 +10736,8 @@ _PLAN_JSON = r'''{
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"WHEAT"
+"WHEAT",
+"CARROT"
 ],
 "animals_bought": {},
 "seeds": {
@@ -10605,7 +10750,8 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 36,
 "MILK": 6,
 "WHEAT": 31,
-"FERTILIZER": 18
+"FERTILIZER": 18,
+"CARROT": 3
 }
 },
 "27": {
@@ -10626,7 +10772,8 @@ _PLAN_JSON = r'''{
 "MILK": 21,
 "FERTILIZER": 22,
 "WHEAT": 3,
-"WOOL": 18
+"WOOL": 18,
+"CARROT": 3
 }
 },
 "28": {
@@ -10647,7 +10794,8 @@ _PLAN_JSON = r'''{
 "MILK": 24,
 "WOOL": 8,
 "WHEAT": 60,
-"FERTILIZER": 18
+"FERTILIZER": 18,
+"CARROT": 3
 }
 },
 "29": {
@@ -10664,7 +10812,8 @@ _PLAN_JSON = r'''{
 "sells": {
 "MILK": 34,
 "WHEAT": 144,
-"FERTILIZER": 19
+"FERTILIZER": 19,
+"CARROT": 3
 }
 }
 }'''

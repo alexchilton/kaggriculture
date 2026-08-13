@@ -483,15 +483,11 @@ def standalone():
 #: The previous $24,603 was measured on the 90976060 plan and is not comparable.
 #: **Rebaselined 2026-08-13: 89,054 -> 87,927, a DELIBERATE -$1,127.** `LATE_SEASON_PAIR` and the
 #: re-solved d26-d29 routes (`67d639d`) change the late season on purpose: fertilize stops at d26,
-#: a truncated one-shot becomes plantable and harvestable, and eleven wheat go into d26's ground.
-#: On the victor grid that is -$370; here it is -$1,127. Both are inside the ~15% seed variance and
-#: NEITHER is a win on money -- the case for shipping is the row match (plant d26 off by 11 -> 1,
-#: fertilize off by 25 -> 2, water d28 off by 13 -> 1, weeds d28/d29 now exactly 1/1) plus the Elo
-#: argument that margin does not score. Recorded rather than waved through, and this line is the
-#: first thing to look at if the rating falls.
-#:
-#: The real check, `ours == repo`, passed to the dollar on this build: $87,927 both sides.
-REFERENCE = {"seed": 11, "ours": 87927, "interval": 24, "measured": "2026-08-13"}
+#: Seed and market interval for the reproduce harness. **No season figure: the `ours` tripwire was
+#: removed 2026-08-13** -- see `reproduce()` for why a dollar equality on one seed against one tape
+#: is the wrong thing to gate a ship on when the ladder scores Elo. Season money is printed by
+#: `reproduce()` for reading, and nothing asserts it.
+REFERENCE = {"seed": 11, "interval": 24}
 
 #: `actTimeout` is 1s per turn, but `remainingOverageTime` is a 60s bank for the whole episode and
 #: disqualification happens only when the bank goes negative. So the constraint is total overage,
@@ -700,8 +696,9 @@ def reproduce(days=30, replay_days=0, verbose=True):
     overage = sum(max(0.0, s * KAGGLE_SLOWDOWN - ACT_TIMEOUT) for s in times)
     local = sum(max(0.0, s - ACT_TIMEOUT) for s in times)
     if verbose:
+        # Season money is REPORTED, never asserted -- see the note on `ok` below.
         print(f"tape season: bundle ${ours:,} vs {team} ${tape:,}  "
-              f"(repo modules ${repo:,} vs ${repo_tape:,}; reference ${REFERENCE['ours']:,})")
+              f"(repo modules ${repo:,} vs ${repo_tape:,})")
         print(f"turn time over {len(times)} turns: worst {max(times) * 1000:.0f} ms, "
               f"mean {sum(times) / max(len(times), 1) * 1000:.0f} ms, "
               f"turns over {ACT_TIMEOUT:.0f}s: {sum(s > ACT_TIMEOUT for s in times)}")
@@ -718,13 +715,22 @@ def reproduce(days=30, replay_days=0, verbose=True):
             print(f"    at {f:>3}x slower: worst {f * max(times):5.2f}s  "
                   f"turns over 1s {sum(s * f > ACT_TIMEOUT for s in times):3d}  "
                   f"overage {o:6.1f}s  {'ok' if o < OVERAGE_BANK else 'DISQUALIFIED'}")
-    # `ours == repo` is the real check and it applies to EVERY build: the artifact must reproduce the
-    # repo modules to the dollar. The REFERENCE comparison is the tripwire, and it is meaningful only
-    # for the plain planner, because that is the agent the constant was measured on -- a replay build
-    # is a different agent by intent and will bank a different number. Skipping it here is not
-    # loosening the gate; asserting it would be gating a replay build against a figure that describes
-    # something else. It is stated rather than silently dropped so the exemption is visible.
-    ok = (ours == repo) and (days < 30 or replay_days or ours == REFERENCE["ours"])
+    # **`ours == repo` is the whole gate, and it is the only claim this script can prove.** The
+    # artifact must reproduce the repo modules to the dollar; that is a statement about BUNDLING,
+    # which is what this file exists to verify.
+    #
+    # **The REFERENCE season tripwire was removed 2026-08-13, permanently, on Alex's call.** It
+    # required `ours == REFERENCE["ours"]` -- a dollar equality against ONE seed and ONE tape -- so
+    # it gated shipping on exactly the criterion CLAUDE.md says never to select on: the ladder is an
+    # Elo rating, and a $43k win and a $4k win score the same. It blocked a build whose measured
+    # effect flips sign with the opponent (+$4,194 against the victor tape, -$5,478 against Seb),
+    # i.e. it was one draw of a two-sided distribution quoted to the dollar and treated as a verdict.
+    #
+    # What still gates a build, all of it stronger than a season total: the bundle imports
+    # standalone, plays a real game to DONE, beats `starter`, wins >= a floor against the repo's own
+    # agent over both seats, and reproduces the repo modules exactly. Season money is now REPORTED
+    # and never asserted.
+    ok = (ours == repo)
     return ok, ours, tape, overage
 
 
