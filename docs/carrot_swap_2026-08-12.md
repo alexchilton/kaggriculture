@@ -19,6 +19,46 @@
 > correct as arithmetic and is still the right way to size the prize — it is just not what decided
 > any of these arms.
 
+> **THE FRAME WAS ALSO WRONG — 2026-08-13, from the leader's own tapes.**
+>
+> Every arm in this file is a **swap**: `PLANT WHEAT -> PLANT CARROT` from day D, replacing a crop
+> that pays with one that pays less. At base prices wheat is $140/tile against carrot's $120, so
+> that question has a correct answer and the answer is no. It is not the question the leader is
+> answering.
+>
+> カワシギ (#1, 15-1 over 16 games, `docs/kawashigi_one_board_2026-08-13.md`) buys **8 carrot seeds
+> on d3/d6 in all 16 games** and then plants **no carrot at all until d21**. From d21 to d26 he
+> plants carrot in every game, 1-8 tiles, on ground that is otherwise finished:
+>
+>     2407  d22:4 d25:4        0434  d21:3 d22:1 d25:1 d26:2
+>     8461  d21:2 d22:1 d24:3 d25:1    8144  d21:2 d22:2 d24:2 d25:2
+>     2932  d21:2 d22:2 d24:2 d25:1 d26:1   6371  d21:1 d22:1 d24:1 d25:1 d26:1
+>
+> Carrot is `first_yield_day 2, max_yield_day 3` against wheat's `2, 4`. A wheat sown on d26 reaches
+> its window on d30, which does not exist; a carrot sown on d26 finishes. **Carrot is not a
+> competitor to wheat, it is the crop for the window in which wheat is unplantable** — additive on
+> dead tiles, never a substitution.
+>
+> **And the frame was forced by the fixture, which is the part that generalises.** These arms were
+> run by mutating a BAKED tape. Its sell rows, its harvest cadence and its seed purchases are all
+> fixed to wheat's clock, so the only carrot experiment such a fixture can express is "rewrite some
+> wheat tokens as carrot tokens". A crop on a different clock has nowhere to live in it. That single
+> cause produces all three recorded symptoms: the harvest lands a day late (cadence baked to
+> `max_yield_day 4`), nothing is ever sold (no CARROT sell row), and `D=26` starves (seed buys baked
+> to wheat). It also rules out the leader's actual play by construction, because planting into empty
+> late tiles is an ADDITION and a tape has no free slots to add to.
+>
+> The same trap is live in `SOLVED_DAYS` / `PRECOMPUTED_ROUTES`: routes solved against a job pool
+> that contains no carrot cannot route a carrot. Testing any new mechanic against baked routes
+> measures whether the baked plan absorbs it, not whether the mechanic pays.
+>
+> This is the CLAUDE.md rule verbatim: evaluate a technique against the problem it was built for.
+> Every arm here asked "is carrot better than wheat", got a correct no, and never asked "what can be
+> planted once wheat can no longer finish".
+>
+> The real test: carrot planted d21-d26 on tiles the plan leaves empty, with CARROT in the sells row.
+> `LATE_TRUNCATED_PLANT_DAY = 26` (2026-08-13) opened that window and fills it with wheat.
+
 
 Alex's method call, 2026-08-12: test the crop change on **Victor's tape**, not on our agent.
 Sweeping a crop flag on our agent conflates "is carrot worth planting" with "does our planner cope

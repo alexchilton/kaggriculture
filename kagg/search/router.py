@@ -1066,6 +1066,28 @@ def _freshly_planted(crop, day):
             "fertilized_until_day": -1}
 
 
+def _best_replant_crop(replant, day):
+    """Which crop to put in ground the day has just cleared, or None if nothing can finish.
+
+    **The budget's iteration order is not a ranking.** This was `next((c for c in replant if ...))`,
+    which takes the first crop with any positive prize, so WHEAT won at d26 on dict order while
+    pricing $50 against CARROT's $70 -- carrot's `max_yield_day` is 3 against wheat's 4, so from d26
+    it is the only crop the season can still finish. The #1 player plants carrot, and nothing else,
+    in exactly this window in all 16 of his downloaded games
+    (`docs/kawashigi_one_board_2026-08-13.md`).
+
+    Ties fall to the crop already earlier in the budget, so the pre-crossover behaviour is unchanged.
+    """
+    best, best_prize = None, 0
+    for crop, qty in replant.items():
+        if qty <= 0:
+            continue
+        prize = plant_prize(crop, day)
+        if prize > best_prize:
+            best, best_prize = crop, prize
+    return best
+
+
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
                 plantable=None, fertilizer_price=None, replant=None):
     """Every tile worth visiting today, as routing nodes.
@@ -1102,8 +1124,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                              # ground was already worth planting, and paid a turn for the privilege.
                              or (day >= LATE_TRUNCATED_PLANT_DAY
                                  and any(o == "DIG" for o, _i, _p in ops)))):
-                    crop = next((c for c in replant if replant[c] > 0
-                                 and plant_prize(c, day) > 0), None)
+                    crop = _best_replant_crop(replant, day)
                     if crop is not None:
                         replant[crop] -= 1
                         ops = list(ops) + [("PLANT", crop, plant_prize(crop, day))]

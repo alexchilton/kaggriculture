@@ -2441,7 +2441,7 @@ SHOP_ADAPT_HERD = True
 #: `d4:COW`; the first differing purchase is day 6 (`90997714` d6:COW) or day 7 (`91267247` d7:SHEEP).
 #: Day 6 is also the SECOND unlock, so he treats one shop as not enough and two as enough -- which
 #: matches the arithmetic: after one draw, P(YARN_STORE still to come) is 1 - (7/8)**7 = 61%.
-SHOP_ADAPT_FROM_DAY = 6
+SHOP_ADAPT_FROM_DAY = 3
 
 #: The floor: animals bought regardless of what the town turns out to want. Everything the schedule
 #: asks for ABOVE this floats on the shop draw from `SHOP_ADAPT_FROM_DAY`.
@@ -2568,6 +2568,73 @@ CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
 #: whose book is spoken for scores zero rather than negative, so a pair whose demand has gone can
 #: never be pushed past the point where it stops paying, and the day gate protects the opening.
 CROP_ADAPT_FROM_DAY = 6
+
+
+#: **WOOL_SHOP_SETS_THE_HERD -- a YARN_STORE on the board makes the herd sheep-heavy.**
+#:
+#: Read off 16 downloaded games of the #1 player, 15-1
+#: (`docs/kawashigi_one_board_2026-08-13.md`). His split separates on exactly one variable:
+#:
+#:     0 YARN_STORE in the first 3 draws : COW 10, SHEEP 4  (9 of 10 games; one at 6)
+#:     1 YARN_STORE                      : COW  6, SHEEP 8-12
+#:     2 YARN_STORE                      : COW  6, SHEEP 12
+#:
+#: Milk-shop count predicts nothing -- COW 6 occurs at one milk shop and at two. The headroom greedy
+#: below ties to COW on the reasoning that "MILK is carried by three shops against WOOL's one", which
+#: is a true statement about the shop table and the wrong way round as a conclusion: three shops
+#: sharing milk is what floors the milk price. Measured on our own fills, wool went out at
+#: $160/$109/$181/$146 on d24-d28 while milk took $1-$5 all season.
+WOOL_SHOP_SETS_THE_HERD = True
+
+#: What the leader holds cows to once any wool shop is on the board. Every one of his six
+#: yarn-store games ran exactly 6 cows and put the entire remaining budget into sheep.
+WOOL_SHOP_COW_CAP = 6
+
+
+def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
+    """Re-decide the cow/sheep species mix, keeping the schedule's COUNT exactly.
+
+    Extracted from `_place_animals` so it can be tested directly; the body below the wool rule is
+    unchanged. Anchored on what is already BOUGHT, so the target can only grow and the total is
+    capped at the schedule's own count -- a split recomputed from scratch each turn buys up to both
+    ceilings as the choice flips, measured once at COW 20 + SHEEP 18 against a schedule asking 21.
+    """
+    total = want_total["COW"] + want_total["SHEEP"]
+    split = {a: bought.get(a, 0) for a in ("COW", "SHEEP")}
+    # The floor is a commitment, so honour it even if the book for its product looks empty.
+    split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total))
+    split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total - split["COW"]))
+
+    # **The wool shop decides it, and it decides it outright.** Cows are held at the cap and every
+    # animal still unbought goes to sheep, which is what reproduces his 6/8 at a herd of 14 and his
+    # 6/12 at 18. `bought` still floors the cows, so this can never unbuy one that exists.
+    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in (unlocked_shops or ()):
+        if split["COW"] <= WOOL_SHOP_COW_CAP:
+            split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], WOOL_SHOP_COW_CAP))
+            split["COW"] = max(split["COW"], min(WOOL_SHOP_COW_CAP, total - split["SHEEP"]))
+            return split
+
+    step_now = day * TPD + hour
+    days_left = max(0, last_day - day)
+    headroom, per_animal = {}, {}
+    for a in ("COW", "SHEEP"):
+        spec = R.ANIMALS[a]
+        # Yields left for an animal bought NOW: nothing before `first_yield_day`, then one every
+        # `interval` days. A late sheep is worth much less than a late cow -- 6 days then every 3,
+        # against 8 days then every 2.
+        per_animal[a] = max(0, (days_left - spec["first_yield_day"]) // spec["interval"])
+        # **Count the shops that have NOT been drawn yet.** `town_drain_remaining` counts only what
+        # is unlocked, so reading it alone treats the draws so far as final.
+        headroom[a] = (town_drain_remaining(spec["product"], step_now, unlocked_shops)
+                       + expected_future_drain(spec["product"], day, len(unlocked_shops), last_day)
+                       - split[a] * per_animal[a])
+    # One animal at a time: each assignment consumes the headroom that justified it, so the
+    # objective is separable and concave in the count per species -- where greedy is optimal.
+    for _ in range(max(0, total - split["COW"] - split["SHEEP"])):
+        pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
+        split[pick] += 1
+        headroom[pick] -= per_animal[pick]
+    return split
 
 
 def _adapt_crops(want, planted, live, day, unlocked_shops, last_day=29):
@@ -4033,62 +4100,8 @@ def make_agent(schedule, me=0, router=True):
             # grow, so the total is capped at the schedule's own count, while every animal still
             # unbought is re-aimed at whatever the shops now say. Shops keep unlocking to day 24, so
             # this keeps improving as the evidence arrives.
-            total = want_total["COW"] + want_total["SHEEP"]
-            split = {a: state["bought"][a] for a in ("COW", "SHEEP")}
-            # The floor is a commitment, so honour it even if the book for its product looks empty.
-            split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total))
-            split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total - split["COW"]))
-            step_now = day * TPD + hour
-            days_left = max(0, last_day - day)
-            headroom, per_animal = {}, {}
-            for a in ("COW", "SHEEP"):
-                spec = R.ANIMALS[a]
-                # Yields left for an animal bought NOW: nothing before `first_yield_day`, then one
-                # every `interval` days. This is why a late sheep is worth much less than a late cow
-                # -- 6 days then every 3, against 8 days then every 2.
-                per_animal[a] = max(0, (days_left - spec["first_yield_day"]) // spec["interval"])
-                # **Count the shops that have NOT been drawn yet.** `town_drain_remaining`
-                # deliberately counts only what is already unlocked, so reading it alone treats the
-                # draws so far as final. At day 6 that is two draws of eight, and
-                # P(YARN_STORE still appears) is 1 - (7/8)**6 = 55% -- so "no wool shop yet" is weak
-                # evidence, and committing the herd against it is the largest-regret move available.
-                # Adding the expected future drain is what stops an early gap becoming a decision.
-                headroom[a] = (town_drain_remaining(spec["product"], step_now, unlocked_shops)
-                               + expected_future_drain(spec["product"], day, len(unlocked_shops),
-                                                       last_day)
-                               - split[a] * per_animal[a])
-            # **Commit only the NEXT purchases, never the rest of the season.**
-            #
-            # The previous version allocated the whole remaining budget in one pass and, because
-            # `split` is anchored on `state["bought"]` which never falls, froze that allocation for
-            # good. Shops keep unlocking on days 9, 12, 15, 18, 21 and 24, so a herd settled at day 6
-            # ignored six later draws: seed 11 committed to cows on a board whose YARN_STORE arrived
-            # afterwards and which ended the season absorbing 534 units of wool.
-            #
-            # The day-6 choice there was CORRECT on the evidence it had. Draws are i.i.d. uniform
-            # with replacement, so nothing already seen changes the distribution of what is still to
-            # come, and buying cows with no YARN_STORE in sight is right. The error was never
-            # revisiting it once the draw did arrive.
-            #
-            # Offering the remaining budget to whichever species leads RIGHT NOW leaves every later
-            # purchase free to go the other way, and `bought` still caps the total, so this cannot
-            # overshoot the schedule's count. Ties fall to COW: cheaper ($400 vs $500), yields sooner
-            # and more often, and MILK is carried by three shops against WOOL's one.
-            # **One animal at a time, and that is provably right rather than merely careful.**
-            # Each assignment consumes the headroom that justified it, so the objective is separable
-            # and concave in the count per species -- the case where greedy one-at-a-time is optimal.
-            # It is the same shape as the shed release, which was written up as a knapsack and turned
-            # out to be a sort (`docs/REGISTER.md` #46). Handing the whole remaining budget to
-            # whichever species leads on the first unit ignores the diminishing returns: past enough
-            # cows the milk book is spoken for and the next animal should be a sheep even on a milk
-            # board. Recomputed from scratch every turn, so new unlocks move later assignments.
-            for _ in range(max(0, total - split["COW"] - split["SHEEP"])):
-                # Ties fall to COW: cheaper ($400 vs $500), yields sooner and more often, and MILK is
-                # carried by three shops against WOOL's one.
-                pick = "COW" if headroom["COW"] >= headroom["SHEEP"] else "SHEEP"
-                split[pick] += 1
-                headroom[pick] -= per_animal[pick]
-            want_total["COW"], want_total["SHEEP"] = split["COW"], split["SHEEP"]
+            _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
+            want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue
