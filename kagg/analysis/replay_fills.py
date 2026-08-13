@@ -283,11 +283,39 @@ def shop_instances(replay):
 
 
 def shop_demand(shops, steps, shop_interval=4, center_interval=24):
-    """Units per product the town drains over `steps` turns. The real measure of demand -- a shop
-    NAME is not a quantity, and two instances of one shop drain twice as hard as one."""
+    """Units per product the town would drain over `steps` turns if `shops` stood the whole time.
+
+    A hypothetical, and only correct for a shop list that never changes. For a real game use
+    `season_drain`, which walks the list as it was recorded turn by turn.
+    """
     out = collections.Counter()
     for step in range(steps):
         out.update(town_drain(step, shops, shop_interval, center_interval))
+    return out
+
+
+def season_drain(replay):
+    """Units per product the town REALLY removed, walking the shop list as it actually stood.
+
+    Two corrections over the obvious version, both of which were live in `scripts/why_we_lost.py`:
+
+    - **The town centre was missing.** It takes one of every product but fertilizer every
+      `townCenterSellInterval` steps, on top of the shops. That is 30 units a season per product and
+      it is the entire drain on anything no shop happens to sell -- the old table printed
+      `MELON drained 0` for a game in which the town ate 30 of them.
+    - **The final shop list is not the season's list.** A shop unlocks every third day, so applying
+      the closing list to all 720 turns credits the first weeks with demand that did not exist yet.
+    """
+    replay = load(replay)
+    steps = replay["steps"]
+    shop_interval = int(_cfg(replay, "townShopSellInterval", 4))
+    center_interval = int(_cfg(replay, "townCenterSellInterval", 24))
+    out = collections.Counter()
+    # The interpreter that produced `steps[t]` ran `_town_consume` on step `t - 1` against the shop
+    # list as recorded at `steps[t - 1]`: the unlock happens later in the same call, in `_end_of_day`.
+    for t in range(1, len(steps)):
+        shops = (_obs(replay, t - 1).get("town") or {}).get("unlocked_shops") or []
+        out.update(town_drain(t - 1, shops, shop_interval, center_interval))
     return out
 
 
