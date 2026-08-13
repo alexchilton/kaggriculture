@@ -621,13 +621,24 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
             # window pricer below already clip this way; these two gates did not.
             waters_left = min(info["max_day"] - age + 1, R.SEASON_DAYS - day)
             if (not fertilized and have_fertilizer and waters_left < room
+                    and day < FERTILIZE_UNTIL_DAY
                     and cell.get("fertilized_until_day", -1) < day):
                 gain = min(room, waters_left * 2) - min(room, waters_left)
                 if gain * price > fert_price:
                     out.append(("FERTILIZE", "FERTILIZER", gain * price))
                     fertilized = True
             if not cell["watered_today"]:
-                out.append(("WATER", None, price * (2 if fertilized else 1)))
+                # **A tile can be inside its window AND on the brink of weeding on the same day, and
+                # this branch used to price only the first of those.** An in-window water is worth the
+                # unit it adds; a water on a tile at `consecutive_unwatered >= 1` is worth the whole
+                # tile, because tomorrow there is no tile. Wheat sown on d26 hits both on d28 -- age
+                # reaches `first` exactly as the second dry night falls -- and at one unit (~$25) it
+                # lost every auction: 3 weeds on d28, 4 on d29, and seven of d29's turns spent
+                # DIGging them. Held to d26+ purely for scope; the mispricing is not late-specific.
+                unit = price * (2 if fertilized else 1)
+                if day >= LATE_TRUNCATED_PLANT_DAY and cell["consecutive_unwatered"] >= 1:
+                    unit = max(unit, _crop_remaining(cell, day))
+                out.append(("WATER", None, unit))
                 # **The LAST water is not worth one unit, it is worth the tile.** See
                 # `FILLING_WATER`. It takes `room` to 0, which is exactly the condition
                 # `_one_shot_is_finished` waits for, so the HARVEST becomes legal on the next turn
@@ -691,18 +702,26 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
         # reach -- (8,0) and (9,0) -- weeded. Order in `out` matters for the same reason it does
         # above: WATER reads `fertilized_until_day` at the moment it runs.
         if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
+                and day < FERTILIZE_UNTIL_DAY
                 and price > fert_price):
             out.append(("FERTILIZE", "FERTILIZER", price))
             fertilized = True
         if not cell["watered_today"]:
             if cell["consecutive_unwatered"] >= 1:
                 out.append(("WATER", None, _crop_remaining(cell, day)))
-            elif fertilized and produces_tomorrow and room > 0:
+            elif produces_tomorrow and room > 0 and (fertilized or day >= FERTILIZE_UNTIL_DAY):
+                # **Past `FERTILIZE_UNTIL_DAY` this branch is the ONLY water a safe tile can be
+                # offered.** A tile watered yesterday has `consecutive_unwatered == 0`, so the
+                # survival branch above never fires for it, and `fertilized` is False by construction
+                # once fertilizing stops. Measured: twelve wheat planted d26 took their planting-day
+                # water and then nothing -- 3 weeds by d28, 4 by d29, and seven of d29's turns spent
+                # DIGging our own dead tiles.
                 out.append(("WATER", None, price))
             elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
 
-    if held > 0 and age >= info["first"] and (info["ongoing"] or _one_shot_is_finished(info, age, room)):
+    if held > 0 and age >= info["first"] and (info["ongoing"]
+                                              or _one_shot_is_finished(info, age, room, day)):
         out.append(("HARVEST", None, held * price))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
     # (`kaggriculture.py:454-455`); an ongoing one only collects, so a spent strawberry sits on its
@@ -728,7 +747,26 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
     return out
 
 
-def _one_shot_is_finished(info, age, room):
+#: The first day no tile is offered a FERTILIZE. The fertilizer it saves is a PRODUCT that sells,
+#: and the turn it saves goes to a water or a planting -- the two rows the late season is short of.
+#: Ours runs 9/2, 11/0, 5/0 against the tape on d26-d28, i.e. 25 turns spent on a row the tape has
+#: essentially stopped playing. **TRIED at 23 and measured -$2,547**, which is why this sits at 26:
+#: d23-d25 fertilize still fills tiles that have a window left to fill.
+LATE_SEASON_PAIR = True
+
+FERTILIZE_UNTIL_DAY = 26 if LATE_SEASON_PAIR else 99
+
+#: Whether a one-shot whose growing window cannot close before the season ends is offered for
+#: HARVEST anyway, taking a partial yield. Only reachable from d26. See the body.
+HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
+
+#: The first day a one-shot may be planted with a window the season cannot finish. Below it
+#: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
+#: and truncating it would only waste the ground.
+LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+
+
+def _one_shot_is_finished(info, age, room, day=None):
     """Has a one-shot crop stopped being able to grow? Only then is harvesting it free money.
 
     HARVEST sets the tile to `None` (`kaggriculture.py:409`), so on a one-shot crop it is not a
@@ -754,6 +792,15 @@ def _one_shot_is_finished(info, age, room):
     unsold, banks $0" at the cost of a turn that would otherwise have gone to something that clears.
     Reverted. The bug is real; this fix for it is not a net win on this benchmark.
     """
+    if (HARVEST_A_TRUNCATED_ONE_SHOT and day is not None
+            and day + (info["max_day"] - age) > R.SEASON_DAYS - 1):
+        # **The window cannot close before the season does, so waiting forfeits the tile.** This is
+        # the second half of `docs/the_late_season_is_one_defect_in_two_halves_2026-08-12.md`, and it
+        # only ever fires from d26 -- at d25 a wheat still reaches `max_day` on d29, the last day.
+        # Measured ALONE on the 12-seed ladder it cost -$92, because there was nothing extra standing
+        # to collect; it is paired here with the `plant_prize` change that puts the crop in the ground.
+        # Victor takes 26 wheat on d29 at age 2-3, `held 4 / max 6` (`91854176.json`).
+        return True
     return age >= info["max_day"] or room <= 0
 
 
@@ -890,7 +937,7 @@ def plant_prize(crop, day):
         # planted wheat that could never be collected: 32 of 66 wheat plantings sat unharvested at
         # season end against the tape's 1 of 66, each costing a seed, a PLANT turn and a WATER turn,
         # and holding ground that a later replant could have used.
-        if days_left < info["max_day"]:
+        if days_left < info["max_day"] and day < LATE_TRUNCATED_PLANT_DAY:
             return 0
         window_end = min(info["max_day"], days_left)
         waters = window_end - (info["max_day"] + 1) // 2 + 1
@@ -1046,8 +1093,15 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 # this must not invent one. Priced at `plant_prize` like every other PLANT, so the
                 # combined stop outbids a bare harvest by what the seed is actually worth.
                 if (REPLANT_A_CLEARED_TILE and replant
-                        and not CROP[cell["crop"]]["ongoing"]
-                        and any(o == "HARVEST" for o, _i, _p in ops)):
+                        and (any(o == "HARVEST" for o, _i, _p in ops)
+                             and not CROP[cell["crop"]]["ongoing"]
+                             # **A DIG clears ground exactly as a one-shot HARVEST does**
+                             # (`kaggriculture.py:477` vs `:454-455`), so the same replant is owed to
+                             # it. Held to d26+ because the all-season version measured -$2,898 on
+                             # its own -- with `plant_prize` 0 from d26 it planted only where the
+                             # ground was already worth planting, and paid a turn for the privilege.
+                             or (day >= LATE_TRUNCATED_PLANT_DAY
+                                 and any(o == "DIG" for o, _i, _p in ops)))):
                     crop = next((c for c in replant if replant[c] > 0
                                  and plant_prize(c, day) > 0), None)
                     if crop is not None:
