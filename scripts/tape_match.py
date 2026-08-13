@@ -25,7 +25,9 @@ for t, st in enumerate(d["steps"][1:]):
             A_ops[(day, o[0])] += 1
     for o in (act.get("market") or []):
         if o:
-            A_mkt[(day, o[0])] += int(o[2]) if len(o) > 2 else 1
+            # ORDER quantities on both sides of the match, which is what makes it a match:
+            # the question is whether the emitter emits the same stream the tape did.
+            A_mkt[(day, o[0] + " offered")] += int(o[2]) if len(o) > 2 else 1
 
 script, rep = dayplan.emit(sched)
 names = {v: k for k, v in R.OP.items()}

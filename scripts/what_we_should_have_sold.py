@@ -3,15 +3,21 @@
 "He out-traded us" is not actionable until it names a quantity. This does, exactly, with no model
 of the game beyond the environment's own price function.
 
-The book is fully reconstructible from a replay. Every step records `market.inventory`, and both
-players' orders are in their actions, so the town's drain at each step is a residual:
+The book is fully reconstructible from a replay: every step records `market.inventory`, and holding
+the OPPONENT'S schedule exactly as it was, our own sell schedule can be re-priced. Scaling our
+per-turn quantities and re-walking the book gives the revenue we would have banked selling more or
+less of the same goods at the same times -- the counterfactual the ladder cannot show us.
 
-    drain[t] = inv[t] + sells[t] - buys[t] - inv[t+1]
+**The quantities scaled are FILLS.** They used to be `sells[t][pl][item] += int(o[2])` off the
+action stream, and our agent re-posts a standing quota on every turn until it fills, so that counted
+one intended sale up to 24 times. The counterfactual was then walking a phantom quantity down the
+price curve -- 0.5x of an inflated schedule can exceed what we really sold, which turns "sell less"
+into "sell more" while still printing a saving. `sold_by_turn` in `kagg/analysis/replay_fills.py` is
+what changed hands, per turn, per seat.
 
-With the drain recovered and the OPPONENT'S schedule held exactly as it was, our own sell schedule
-can be re-priced. Scaling our per-turn quantities by a factor and re-walking the book gives the
-revenue we would have banked selling more or less of the same goods at the same times -- the
-counterfactual the ladder cannot show us.
+`replay()` below already knew half of this: its docstring notes that a 21,216-unit MILK offer sits
+in one of these recordings and refuses to add the OPPONENT'S orders to the book for that reason. The
+same objection applies to ours, which is the number being scaled.
 
 Two things this deliberately does NOT claim:
 
@@ -30,6 +36,10 @@ import sys
 
 import kaggle_environments.envs.kaggriculture.kaggriculture as kg
 
+sys.path.insert(0, ".")
+
+from kagg.analysis.replay_fills import seat_of, trade_fills
+
 ME = "alex chilton"
 
 #: **Only downward.** A first version searched up to 1.5x and reported that every loss was winnable,
@@ -41,52 +51,39 @@ SCALES = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 
 def load(path):
-    """Per-step inventory, both sides' orders, and the recovered town drain."""
+    """Per-step inventory and the units each side actually SOLD on each turn.
+
+    The recovered town drain and the per-turn buys used to come back from here too and were read by
+    nobody -- `replay()` needs the inventory path and our own quantities, and nothing else. The
+    drain was a residual of the sell counts, so a wrong sell count produced a matching wrong drain
+    and the two then agreed with each other, which is the most convincing way to be wrong.
+    """
     d = json.loads(open(path).read())
     teams = (d.get("info") or {}).get("TeamNames") or []
-    seat = teams.index(ME)
+    seat = seat_of(d, ME)
     steps = d["steps"]
     rewards = d.get("rewards") or [s.get("reward") for s in steps[-1]]
 
-    inv, sells, buys = [], [], []
-    for step in steps:
+    fills = trade_fills(d)
+    inv, sells = [], []
+    for t, step in enumerate(steps):
         obs = (step[0] or {}).get("observation") or {}
         book = (obs.get("market") or {}).get("inventory")
         if book is None:
             continue
         inv.append(dict(book))
-        s = [collections.Counter(), collections.Counter()]
-        b = [collections.Counter(), collections.Counter()]
-        for pl in (0, 1):
-            for o in ((step[pl] or {}).get("action") or {}).get("market", []) or []:
-                if not o:
-                    continue
-                if o[0] == "SELL":
-                    s[pl][o[1]] += int(o[2])
-                elif o[0] == "BUY_PRODUCT":
-                    b[pl][o[1]] += int(o[2])
-        sells.append(s)
-        buys.append(b)
-
-    drain = []
-    for t in range(len(inv) - 1):
-        row = {}
-        for item in inv[t]:
-            moved = (sells[t][0][item] + sells[t][1][item]
-                     - buys[t][0][item] - buys[t][1][item])
-            row[item] = inv[t][item] + moved - inv[t + 1][item]
-        drain.append(row)
-    return teams, seat, rewards, inv, sells, buys, drain
+        sells.append([collections.Counter(fills.sold_by_turn[0][t]),
+                      collections.Counter(fills.sold_by_turn[1][t])])
+    return teams, seat, rewards, inv, sells, fills
 
 
 def replay(item, seat, inv, sells, scale):
     """Revenue on `item` if our per-turn quantities are scaled, everything else as it happened.
 
-    **Perturbs the OBSERVED book rather than reconstructing it.** The opponent's orders are offers,
-    not fills -- one replay here records a 21,216-unit MILK offer -- so any model that adds their
-    quantities to the book is wrong by whatever the env refused to fill. The observed inventory path
-    already contains their true effect, and the town drain is independent of inventory, so removing
-    a fraction of *our own* sales shifts the whole path by exactly our withheld cumulative volume:
+    **Perturbs the OBSERVED book rather than reconstructing it.** The observed inventory path
+    already contains the opponent's true effect and the town drain is independent of inventory, so
+    removing a fraction of *our own* sales shifts the whole path by exactly our withheld cumulative
+    volume:
 
         inv_cf[t] = inv_obs[t] - (1 - scale) * (our sales before t)
 
@@ -110,10 +107,14 @@ def replay(item, seat, inv, sells, scale):
 def main(paths):
     grand = collections.Counter()
     for path in paths:
-        teams, seat, rewards, inv, sells, buys, drain = load(path)
+        teams, seat, rewards, inv, sells, fills = load(path)
         gap = (rewards[1 - seat] or 0) - (rewards[seat] or 0)
         print(f"\n{path.split('/')[-1]}   ours ${rewards[seat] or 0:,.0f}   "
               f"{teams[1-seat][:22]} ${rewards[1-seat] or 0:,.0f}   gap ${gap:,.0f}")
+        print("  unit columns are FILLS recovered from the shed and the market ledger, never "
+              "orders;")
+        print("  a product both sides traded on the same turn can be understated -- see "
+              f"floored/shared: {sorted(fills.floored)}")
         print(f"  {'product':<12}{'we sold':>9}{'they sold':>11}{'our $':>10}"
               f"{'best x':>8}{'units':>7}{'best $':>10}{'gain':>10}")
         total_gain = 0.0

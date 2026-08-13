@@ -67,11 +67,11 @@ def leader_timeline(path):
             elif o[0] == "HIRE":
                 hires[day] += 1
             elif o[0] == "BUY_ANIMAL":
-                animals[day] += int(o[2]) if len(o) > 2 else 1
+                animals_offered[day] += int(o[2]) if len(o) > 2 else 1
             elif o[0] == "BUY_SEED":
-                planted[day] += int(o[2]) if len(o) > 2 else 1
+                seeds_offered[day] += int(o[2]) if len(o) > 2 else 1
             elif o[0] == "SELL":
-                sold[day] += int(o[2]) if len(o) > 2 else 1
+                sells_offered[day] += int(o[2]) if len(o) > 2 else 1
     return dict(bank=bank, land=land, animals=animals, planted=planted, hires=hires, sold=sold)
 
 
@@ -118,8 +118,8 @@ print(f"   final bank ${us['final']:,.0f}   ({us['skipped']} chains skipped)\n")
 print("=" * 104)
 print("DAY BY DAY. `cum` columns are running totals; bank is the bank at that dawn.")
 print("=" * 104)
-print(f"{'day':>4} | {'OUR bank':>10} {'land':>5} {'anml':>5} {'seed':>5} {'hire':>5} "
-      f"| {'HIS bank':>10} {'land':>5} {'anml':>5} {'seed':>5} {'hire':>5} | {'bank gap':>10}")
+print(f"{'day':>4} | {'OUR bank':>10} {'land':>5} {'anmlOf':>6} {'seedOf':>6} {'hire':>5} "
+      f"| {'HIS bank':>10} {'land':>5} {'anmlOf':>6} {'seedOf':>6} {'hire':>5} | {'bank gap':>10}")
 cu = collections.Counter()
 ch = collections.Counter()
 for day in range(R.SEASON_DAYS):
@@ -128,7 +128,7 @@ for day in range(R.SEASON_DAYS):
         ch[k] += him[k].get(day, 0)
     ob = us["bank"][day] or 0.0
     hb = him["bank"][day] or 0.0
-    print(f"{day:>4} | {ob:>10,.0f} {cu['land']:>5} {cu['animals']:>5} {cu['planted']:>5} "
+    print(f"{day:>4} | {ob:>10,.0f} {cu['land']:>5} {cu['animals_offered']:>6} {cu['seeds_offered']:>6} "
           f"{us['hires'].get(day,0):>5} | {hb:>10,.0f} {ch['land']:>5} {ch['animals']:>5} "
           f"{ch['planted']:>5} {him['hires'].get(day,0):>5} | {hb - ob:>+10,.0f}")
 

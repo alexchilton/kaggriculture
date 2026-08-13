@@ -19,7 +19,7 @@ import statistics
 import sys
 
 ME = "alex chilton"
-LEVERS = ("hires", "herd", "tiles", "buy_product", "buy_animal", "sell_units",
+LEVERS = ("hires", "herd", "tiles", "buy_product_offered", "buy_animal_offered", "sell_units_offered",
           "sell_orders", "feed", "care", "plant", "water", "harvest", "fertilize")
 
 
@@ -38,12 +38,12 @@ def seats(path):
                 if not o:
                     continue
                 if o[0] == "SELL":
-                    row["sell_units"] += int(o[2])
+                    row["sell_units_offered_offered"] += int(o[2])
                     row["sell_orders"] += 1
                 elif o[0] == "BUY_PRODUCT":
-                    row["buy_product"] += int(o[2])
+                    row["buy_product_offered_offered"] += int(o[2])
                 elif o[0] == "BUY_ANIMAL":
-                    row["buy_animal"] += int(o[2]) if len(o) > 2 else 1
+                    row["buy_animal_offered_offered"] += int(o[2]) if len(o) > 2 else 1
             for h in act.get("hands", []) or []:
                 if h and h[0] in ("FEED", "CARE", "PLANT", "WATER", "HARVEST", "FERTILIZE"):
                     row[h[0].lower()] += 1

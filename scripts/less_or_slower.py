@@ -51,8 +51,11 @@ def load(path):
         inv.append(dict(book))
         c = collections.Counter()
         for o in ((step[seat] or {}).get("action") or {}).get("market", []) or []:
+            # SELL ORDER quantities. This script perturbs the observed inventory path by a
+            # fraction of them, so an inflated schedule inflates the counterfactual -- see the
+            # same argument, and the fix, in `scripts/what_we_should_have_sold.py`.
             if o and o[0] == "SELL":
-                c[o[1]] += int(o[2])
+                c[o[1]] += int(o[2])          # offered, not filled
         mine.append(c)
     return teams, seat, rewards, inv, mine
 

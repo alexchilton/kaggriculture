@@ -108,8 +108,10 @@ for t, step in enumerate(d["steps"]):
     s_ = step[seat] or {}
     for o in ((s_.get("action") or {}).get("market") or []):
         if o and o[0] == "SELL":
-            per_day[t // TD][o[1]] += int(o[2]) if len(o) > 2 else 1
+            per_day[t // TD][o[1]] += int(o[2]) if len(o) > 2 else 1   # offered
 prods = [k for k, _ in sell_qty.most_common()]
+print("  SELL units OFFERED per day -- an order re-posted until it fills is counted once "
+      "per turn it stood.")
 print(f"{'day':>4} " + " ".join(f"{p[:5]:>6}" for p in prods) + f" {'total':>7}")
 for day in sorted(per_day):
     r = per_day[day]

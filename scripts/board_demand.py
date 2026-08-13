@@ -81,10 +81,10 @@ def seb_production():
                         plants[hand[1]] += 1
                 for o in (act.get("market") or []):
                     if isinstance(o, list) and len(o) >= 2 and o[0] == "BUY_ANIMAL":
-                        animals[o[1]] += int(o[2]) if len(o) > 2 else 1
+                        animals_offered[o[1]] += int(o[2]) if len(o) > 2 else 1
             out.append({"game": pathlib.Path(path).stem, "seat": seat,
                         "interval": cfg.get("townCenterSellInterval"),
-                        "plants": dict(plants), "animals": dict(animals)})
+                        "plants": dict(plants), "animals_offered": dict(animals)})
     return out
 
 
@@ -118,7 +118,7 @@ def main():
     for r in seb_production():
         print(f"  {r['game']:<12} seat {r['seat']}  interval={r['interval']}")
         print(f"      plants  {r['plants']}")
-        print(f"      animals {r['animals']}")
+        print(f"      animals {r['animals_offered']}")
 
 
 if __name__ == "__main__":

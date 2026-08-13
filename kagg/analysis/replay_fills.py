@@ -347,6 +347,11 @@ class TradeFills:
                             collections.defaultdict(collections.Counter)]
         self.bought_by_day = [collections.defaultdict(collections.Counter),
                               collections.defaultdict(collections.Counter)]
+        #: seat -> turn -> product -> units. The day resolution above is enough for a closing-week
+        #: table; a counterfactual that walks the price curve needs the turn, because the curve
+        #: moves with every unit.
+        self.sold_by_turn = [collections.defaultdict(collections.Counter),
+                             collections.defaultdict(collections.Counter)]
         #: `BUY_ANIMAL` lands the beast in the shed like any other purchase, but COW and SHEEP are
         #: not in `PRODUCTS` so the market-inventory ledger never sees them; only the shed does.
         self.animals_bought = [collections.Counter(), collections.Counter()]
@@ -538,6 +543,7 @@ def trade_fills(replay, team=None):
                 if net[seat] > 0:
                     out.sold[seat][product] += net[seat]
                     out.sold_by_day[seat][day][product] += net[seat]
+                    out.sold_by_turn[seat][t][product] += net[seat]
                 elif net[seat] < 0:
                     out.bought[seat][product] += -net[seat]
                     out.bought_by_day[seat][day][product] += -net[seat]

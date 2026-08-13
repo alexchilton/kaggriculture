@@ -53,7 +53,7 @@ def summarise(path):
     mine = rewards[seat]
 
     land_days, hire_by_day = [], collections.Counter()
-    animals, seeds, sells, buys = collections.Counter(), collections.Counter(), \
+    animals_offered, seeds_offered, sells_offered, buys = collections.Counter(), collections.Counter(), \
         collections.Counter(), collections.Counter()
     sell_turns = collections.defaultdict(list)
     ops = collections.Counter()
@@ -66,11 +66,11 @@ def summarise(path):
             elif kind == "HIRE":
                 hire_by_day[day] += 1
             elif kind == "BUY_ANIMAL":
-                animals[order[1]] += int(order[2]) if len(order) > 2 else 1
+                animals_offered[order[1]] += int(order[2]) if len(order) > 2 else 1
             elif kind == "BUY_SEED":
-                seeds[order[1]] += int(order[2]) if len(order) > 2 else 1
+                seeds_offered[order[1]] += int(order[2]) if len(order) > 2 else 1
             elif kind == "SELL":
-                sells[order[1]] += int(order[2]) if len(order) > 2 else 1
+                sells_offered[order[1]] += int(order[2]) if len(order) > 2 else 1
                 sell_turns[order[1]].append(day)
             elif kind == "BUY_PRODUCT":
                 buys[order[1]] += int(order[2]) if len(order) > 2 else 1
@@ -114,11 +114,11 @@ print("=" * 96)
 print("HERD -- we field 4 cows and no sheep; the previous leader ran 8 cows + 6 sheep")
 print("=" * 96)
 for r in rows:
-    print(f"  {r['path'][:-5]}: {dict(r['animals'])}")
+    print(f"  {r['path'][:-5]}: {dict(r['animals_offered'])}")
 
 print()
 print("=" * 96)
-print("CROPS -- seeds bought, i.e. tiles planted over the season. We are a melon monoculture.")
+print("CROPS -- BUY_SEED units OFFERED. NOT tiles planted: a re-posted order is counted\n      once per turn it stood, and on our own games it runs up to 20x the tiles that\n      changed. Use kagg.analysis.replay_fills.real_plants for the plant count.")
 print("=" * 96)
 for r in rows:
     tot = sum(r["seeds"].values()) or 1
@@ -133,7 +133,7 @@ print("=" * 96)
 for r in rows:
     print(f"  {r['path'][:-5]}: collected {r['ops'].get('COLLECT_FERTILIZER', 0):>4}  "
           f"applied {r['ops'].get('FERTILIZE', 0):>4}  "
-          f"bought {r['buys'].get('FERTILIZER', 0):>4}  sold {r['sells'].get('FERTILIZER', 0):>4}")
+          f"bought {r['buys'].get('FERTILIZER', 0):>4}  sold {r['sells_offered'].get('FERTILIZER', 0):>4}")
 
 print()
 print("=" * 96)

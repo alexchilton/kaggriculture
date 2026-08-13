@@ -31,10 +31,13 @@ def _market(orders):
     for o in orders or []:
         if not isinstance(o, list) or not o:
             continue
+        # ORDER quantities, deliberately: this diffs what two agents ASKED FOR, turn by turn,
+        # and a difference in the ask is the thing being looked for. It is not a unit count and
+        # must not be summed into one.
         if o[0] in ("HIRE", "BUY_LAND"):
-            out[(o[0], "")] += 1
+            out[(o[0] + " offered", "")] += 1
         elif len(o) >= 3 and int(o[2]) > 0:
-            out[(o[0], o[1])] += int(o[2])
+            out[(o[0] + " offered", o[1])] += int(o[2])
     return out
 
 

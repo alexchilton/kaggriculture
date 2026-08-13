@@ -82,7 +82,10 @@ def run(seed, days, make_us=None, tape=None, theirs=None):
             elif act[0] != "PASS":
                 tot[day]["_work"] += 1
         for o in m0:
-            tot[day]["mkt:" + "_".join(str(p) for p in o[:2])] += int(o[2]) if len(o) > 2 else 1
+            # `mktoffered:` rather than `mkt:`, because these are ORDER quantities: the row
+            # is what the arm asked the market for, not what it got.
+            tot[day]["mktoffered:" + "_".join(str(p) for p in o[:2])] += (
+                int(o[2]) if len(o) > 2 else 1)
         tot[day]["_units"] = max(tot[day]["_units"], len(pos))
         n1 = len(obs["farms"][1].get("hands") or [])
         f1, h1, m1 = theirs[t] if t < len(theirs) else (["PASS"], [], [])
