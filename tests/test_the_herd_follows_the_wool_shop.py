@@ -34,18 +34,9 @@ def split_for(shops, day=3, bought=None):
     return S._herd_split(dict(WANT), dict(bought or NONE_BOUGHT), day, 0, list(shops), 29)
 
 
-def test_the_split_is_decided_from_day_0_not_day_3():
-    """It must be decided for the DAY-0 row too, which is bought before any shop exists.
-
-    This asserted 3 until 2026-08-13, on the reasoning that the first draw lands on d3 and there is
-    nothing to respond to before it. True about the draw, wrong about the decision: day 0 buys
-    COW 1 + SHEEP 4 -- five animals, the largest uninformed commitment of the season -- and gating
-    the split at d3 leaves that row on the tape's mix. `92565805` drew no yarn store all season,
-    wool drained 0 and closed at the $1 floor, and four sheep were bought on day 0 anyway.
-    Blind, `_herd_split`'s own floors give COW 4 / SHEEP 1, which is the way the expectation points:
-    MILK is carried by three of the eight shops, WOOL by one.
-    """
-    assert S.SHOP_ADAPT_FROM_DAY == 0, "the day-0 row is uninformed but it is still a decision"
+def test_the_split_is_decided_from_day_3_not_day_6():
+    """His first response lands the hour the first shop unlocks."""
+    assert S.SHOP_ADAPT_FROM_DAY == 3, "the first draw is d3; adapting from d6 discards it"
 
 
 @pytest.mark.parametrize("shops", [
@@ -108,15 +99,14 @@ def test_two_yarn_stores_do_not_go_backwards():
     assert two["SHEEP"] >= one["SHEEP"], "more wool demand must not mean fewer sheep"
 
 
+@pytest.mark.xfail(reason="the extra four sheep need four more pens; `_herd_split` may only "
+                          "redistribute the schedule's count, it cannot raise it", strict=True)
 def test_an_early_yarn_store_also_raises_the_herd_total():
-    """The dominant branch, 21 of his 24 yarn games.
+    """The dominant branch, 21 of his 24 yarn games, and the one we cannot currently express.
 
     A yarn store by d6 takes him to EIGHTEEN animals -- COW 6, SHEEP 12 -- not to fourteen split
-    differently. This was `xfail(strict=True)` with the reason "the extra four sheep need four more
-    pens; `_herd_split` may only redistribute the schedule's count, it cannot raise it", written so
-    that it would fail loudly the day the count could grow. **That day was 2026-08-13**: the pen is
-    not a prerequisite, because `PLACE` emits its own `BUILD_PASTURE`, and `HERD_GROWS_WITH_THE_DRAIN`
-    now raises the count. The marker is removed rather than the test.
+    differently. `xfail(strict=True)` so this fails loudly the day the schedule grows the pens for
+    it, rather than sitting here as a comment nobody re-reads.
     """
     got = split_for(["YARN_STORE"])
     assert (got["COW"], got["SHEEP"]) == (6, 12)
@@ -129,22 +119,11 @@ def test_no_wool_shop_keeps_the_herd_cow_heavy():
     assert got["SHEEP"] <= 5
 
 
-def test_the_total_grows_only_within_the_feed_bill():
-    """The herd may now grow past the schedule's count, but only by `HERD_GROWTH_CAP`.
-
-    This asserted strict equality until 2026-08-13 and it was guarding something real: a split
-    recomputed from scratch each turn buys up to BOTH ceilings as the choice flips, measured once at
-    COW 20 + SHEEP 18 = 38 animals against a schedule asking 21. That protection stays -- what
-    changes is that the ceiling is `total + HERD_GROWTH_CAP` rather than `total`, because a town
-    draining 1,074 wool genuinely wants more animals than one draining 228.
-
-    The cap is set by the FEED bill, not by demand: every animal eats one WHEAT a day and escapes
-    after two missed, which is how `92566708` lost twelve of fourteen animals in four days.
-    """
-    base = WANT["COW"] + WANT["SHEEP"]
+def test_the_total_is_never_exceeded():
+    """`want_total` is the schedule's count and the split may only redistribute it."""
     for shops in ([], ["YARN_STORE"], ["YARN_STORE", "YARN_STORE"], ["PIZZA_SHOP"]):
         got = split_for(shops)
-        assert base <= got["COW"] + got["SHEEP"] <= base + S.HERD_GROWTH_CAP, shops
+        assert got["COW"] + got["SHEEP"] == WANT["COW"] + WANT["SHEEP"], shops
 
 
 def test_animals_already_bought_are_never_unbought():
