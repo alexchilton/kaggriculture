@@ -282,6 +282,32 @@ SIZE_THE_RATION_ON_THE_CURVE = True
 #: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
 HARVEST_WHAT_YOU_STAND_ON = True
 
+#: **A passer-by does not demolish a crop that is still growing.**
+#:
+#: `HARVEST_WHAT_YOU_STAND_ON` is deliberately harvest-only -- "watering a tile someone else is
+#: routed to merely moves the turn around". True every day but one. On a one-shot crop's `max_day`
+#: the water is not a turn moved around, it is a UNIT: `crop_ops` offers WATER while
+#: `in_window = (max_day + 1) // 2 <= age <= max_day`, inclusive at the top. So a hand crossing the
+#: tile takes a harvest off a crop with a unit still coming, and the routed hand that was going to
+#: water it arrives at bare ground.
+#:
+#: kawashigi, seed 11, d4 -- wheat's max_day, sown d0, all seven tiles at 3 units at dawn. Five are
+#: routed and go WATER-then-HARVEST for 4 apiece; (3,2) at h06 and (1,4) at h14 are taken underfoot
+#: and bank 3. 26 against the tape's 28, whose earliest harvest is h08, after its watering round.
+#: The gap never closes -- the wheat ledger holds it at 2 through d5 and d6, and d7 opens holding 0
+#: against his 1, which is `feed 8/9`.
+#:
+#: The test is `any(o == "WATER" ...)` and not a day comparison, because that is exactly the
+#: question: `crop_ops` offering a water on this tile today IS "it can still grow", for every crop
+#: and every window, without this rule needing its own copy of the yield arithmetic.
+#:
+#: **This is not the withheld harvest.** Gating `_one_shot_is_finished` on `watered_today` banks the
+#: same 28 and costs $19,595 -- a deferred harvest never clears its tile, never replants, and the
+#: herd starves (d8 animals 9 -> 0). See `docs/the_last_growing_days_water_2026-08-14.md`. Here the
+#: HARVEST stays legal the instant it is legal; only the passer-by stands down, leaving the tile to
+#: the routed hand that already emits WATER then HARVEST back to back.
+UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW = True
+
 #: Whether a hand standing beside an animal it just placed, with no wheat in hand, walks back to the
 #: shed for one and returns. See the block in the tour walker for the trace and for what the tape
 #: does. OFF drops the stop, which is what leaves a first-day animal unfed.
@@ -2223,6 +2249,11 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     return None
                 ops = RT.crop_ops(here, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
                                   tile=tuple(pos))
+                # See `UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW`. A water still on offer means
+                # the tile has a unit left in it, and this hand is forbidden to water.
+                if (UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW
+                        and any(o == "WATER" for o, _a, _v in ops)):
+                    return None
                 if any(o == "HARVEST" for o, _a, _v in ops):
                     cared_this_turn.add(tuple(pos))
                     return ["HARVEST"]
