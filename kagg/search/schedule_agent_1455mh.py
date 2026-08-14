@@ -1452,6 +1452,43 @@ def _nearest_ground(order, tiles, taken, unlocked):
     return best
 
 
+#: **A bare pen takes the animal that is about to run out of days to bank its care bonus.**
+#:
+#: An animal's yield on its production day is `min(max_held, 1 + pending_care_bonus)`
+#: (`kaggriculture.py:814`), and the bonus is one per day the pen was fed AND cared, banked at each
+#: rollover. The window is relative to placement -- `days_since_first = next_day - placed_day -
+#: first_yield_day` (`:809`) -- so the days available to fill the cap is a constant per species:
+#:
+#:     GOOSE   first yield 4, cap 4   ->  slack 0, every day load-bearing
+#:     SHEEP   first yield 6, cap 6   ->  slack 0, every day load-bearing
+#:     COW     first yield 8, cap 6   ->  slack 2, it can miss two days and still milk six
+#:
+#: `_live_ops` chose by `next(... for a in R.ANIMAL_NAMES ...)`, and `ANIMAL_NAMES` is
+#: `["GOOSE", "COW", "SHEEP"]` -- so a unit holding cows and sheep places every COW first. COW and
+#: SHEEP are the only two sharing a structure, so this ordering decides nothing else.
+#:
+#: Day 0 on the kawashigi board buys COW 2 + SHEEP 2 and one hand does all four pens; it has turns
+#: for two FEED/CARE pairs. It placed `h07 COW, h12 COW, h17 SHEEP, h20 SHEEP` and served the cows,
+#: whose d8 milk the schedule feeds on d1-d6 anyway. Both sheep banked four bonus days instead of
+#: five and sheared `1 + 4 = 5`, so the d6 row's `WOOL 12` shipped as 10 -- `sell 15/17`.
+#:
+#: This is the site that BINDS the species. The pin already names one per pen
+#: (`_refresh_pins` writes `("BUILD", animal, cost)`) and the router chains a `("PLACE", item, ...)`
+#: off it (`router.py:1358`), but the route is a visit ORDER and `_live_ops` re-derives the work
+#: from the live board at the stop, so the plan's answer is discarded here. Four plan-time fixes --
+#: the pin order, the PLACE prize, the router's standing-pen branch, and `want_animals` -- were each
+#: measured byte-identical for exactly that reason.
+PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK = True
+
+
+def _place_order():
+    """Animals in the order a bare pen should take them: least slack first, `ANIMAL_NAMES` on ties."""
+    if not PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK:
+        return list(R.ANIMAL_NAMES)
+    return sorted(R.ANIMAL_NAMES,
+                  key=lambda a: R.ANIMALS[a]["first_yield_day"] - R.ANIMALS[a]["max_held"])
+
+
 def _emit(op, item):
     if op == "BUILD":
         return ["BUILD_COOP" if R.ANIMALS[item]["structure"] == "COOP" else "BUILD_PASTURE"]
@@ -1490,7 +1527,7 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
     elif "animal" in cell:
         ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
     elif kind in ("PASTURE", "COOP"):
-        ops = next(([("PLACE", a, 0)] for a in R.ANIMAL_NAMES
+        ops = next(([("PLACE", a, 0)] for a in _place_order()
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
         ops = [("DIG", None, 0)]
