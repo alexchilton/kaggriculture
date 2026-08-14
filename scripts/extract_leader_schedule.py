@@ -195,6 +195,55 @@ if tape:
 else:
     print(f"{'tiles':>14}: tape.json missing -- run scripts/extract_tape.py to add coordinates")
 
+#: How many hours after a BUY a SELL of the same product still counts as the same wash trade.
+WASH_TRADE_WINDOW = 1
+
+# **Net the wash trades out of `buys`/`sells`, or the day sells stock it never had.**
+# `market_price` quotes a BUY at post-buy inventory, so buying n and selling m of the same product on
+# the same day moves `n - m` into the shed at roughly zero cost -- the tape does it constantly, and
+# d0's `BUY_PRODUCT WHEAT 9` + `SELL WHEAT 3` is exactly a net 6.
+#
+# Left un-netted, the agent inherits a `sells {WHEAT: 3}` row it cannot fill from a shed that opens
+# empty, and `CUMULATIVE_SELLS` carries the unfillable remainder forward for `SELL_CARRY_DAYS`,
+# draining stock through the window that funds the d6 land purchase. Measured on the kawashigi tape:
+# un-netted d0 gives `tiles 25/50` on d6 and `animals 4/9` on d7.
+#
+# This was a HAND EDIT to the generated schedule until 2026-08-14, so every regeneration silently
+# reintroduced the loss.
+#
+# **Only a genuine wash, never a harvest.** Two conditions, both read off the order book: the day
+# cannot sell MORE of the product than it bought, and no SELL may come before the day's first BUY.
+# A day selling its own harvest fails the first -- d21 sells 125 wheat against a handful bought --
+# so nothing is netted off it.
+#
+# An earlier cut tested the DAWN SHED instead ("did the day own any before it traded"), which reads
+# correctly and is wrong here: this file walks `steps[1:]`, so the observation filed under hour 0 is
+# the state AFTER the first turn's trade. d0's shed read 5, not 0, and the netting silently never
+# fired.
+for _r in day_rows.values():
+    for _p, _sold in list(_r["sells"].items()):
+        _bought = _r["buys"].get(_p, 0)
+        if _sold <= 0 or _bought <= 0 or _sold > _bought:
+            continue
+        _buy_hours = [o[0] for o in _r["orders"] if o[1] == "BUY_PRODUCT" and o[2] == _p]
+        _sell_hours = [o[0] for o in _r["orders"] if o[1] == "SELL" and o[2] == _p]
+        # **A wash is same-turn or next-turn, not same-DAY.** Every SELL must sit within
+        # `WASH_TRADE_WINDOW` hours AFTER a BUY of the same product. d0 buys at h00 and sells at
+        # h01. d10 buys 33 wheat and sells 25 -- but the first sell is h13 against a buy at h03, ten
+        # hours earlier, and the later buys come after the sells. That is a trading day, and netting
+        # it would delete 25 units of revenue the plan is supposed to make.
+        if not _buy_hours or not all(
+                any(0 <= _sh - _bh <= WASH_TRADE_WINDOW for _bh in _buy_hours)
+                for _sh in _sell_hours):
+            continue
+        _n = min(_sold, _bought)
+        _r["buys"][_p] -= _n
+        _r["sells"][_p] -= _n
+        if _r["buys"][_p] <= 0:
+            del _r["buys"][_p]
+        if _r["sells"][_p] <= 0:
+            del _r["sells"][_p]
+
 out = {str(day): dict(
     plant_tiles=(tiles.get(day) or {}).get("plants", []),
     build_tiles=(tiles.get(day) or {}).get("builds", []),
