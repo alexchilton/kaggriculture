@@ -258,6 +258,22 @@ PLAN_TODAYS_PURCHASES = True
 #: Whether a hand standing at an empty shed at hour 0 WAITS one turn for goods the day's row has
 #: already ordered, instead of discarding the draw. See the block in the tour walker.
 WAIT_FOR_THE_MORNING_DELIVERY = True
+
+#: Whether a draw the shed could not fill is re-attempted at the tour's NEXT shed stop, instead of
+#: being discarded at the stop that came up short.
+#:
+#: This is the third answer to the same problem and the only one that is not a trade. The first --
+#: delete the want -- loses the job. The second, standing at the shed until the goods land, was
+#: measured twice on 2026-08-13 and lost the d6 land parcel both times; the block in the tour walker
+#: records both arms. This one neither waits nor gives up: the hand walks on and asks again when its
+#: route puts it back at the shed anyway, which costs the one PICKUP turn and no travel at all.
+#:
+#: It is what the tape does. Day 1 of kawashigi, seed 11: four pens against a dawn shed of three
+#: wheat, so he feeds three, banks and re-buys at h18, draws again at h19 and feeds the fourth at h21.
+#: We drew three at h00, deleted the fourth want at h01, and reached the last pen at h20 with an empty
+#: hand -- `COLLECT_FERTILIZER` alone, no FEED, and no CARE either, since CARE is only legal on a pen
+#: that has been fed.
+CARRY_THE_UNFILLED_DRAW_FORWARD = True
 #: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
 #: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
 HARVEST_WHAT_YOU_STAND_ON = True
@@ -2099,6 +2115,26 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         act = ["DROP"]
                         break
                     continue
+                # **The selective drop.** `PLACE <item> <n>` beside the shed banks n of ONE item and
+                # leaves the rest of the hand alone (`kaggriculture.py:381-395`), which is the whole
+                # reason `cover._bank` can plan a stop that sheds the fertilizer and keeps the ration.
+                # `DROP` cannot express it, and paying a turn to bin the wheat plus a turn to fetch it
+                # back is what left day 1's fourth pen one turn outside a 24-turn budget.
+                #
+                # Unlike `DROP` this one CLAMPS rather than destroys -- the reference takes
+                # `n = min(n, room)` -- so a full shed costs the bank, never the goods. The local
+                # mirror clamps identically so `shed` does not drift from the board.
+                if node.place:
+                    item = min(node.place)      # a total order, so the tape is reproducible
+                    qty = node.place.pop(item)
+                    room = max(0, SHED_CAPACITY - sum(shed.values()))
+                    give = min(qty, inv.get(item, 0), room)
+                    if give <= 0:
+                        continue
+                    shed[item] = shed.get(item, 0) + give
+                    owed_sale[item] -= give
+                    act = ["PLACE", item, give]
+                    break
                 if node.pick:
                     item = min(node.pick)       # a total order, so the tape is reproducible
                     take = min(node.pick[item], shed.get(item, 0))
@@ -2158,6 +2194,40 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     node.pick[item] -= take
                     if node.pick[item] <= 0:
                         del node.pick[item]
+                    elif (CARRY_THE_UNFILLED_DRAW_FORWARD and hour == 0
+                          and item in _bought_today):
+                        # **The other half of the morning delivery.** See
+                        # `CARRY_THE_UNFILLED_DRAW_FORWARD`. `WAIT_FOR_THE_MORNING_DELIVERY` covers a
+                        # draw that gets NOTHING at hour 0 -- but a draw that gets SOME of what it
+                        # asked for never reaches that branch, and the remainder is deleted on the
+                        # next turn like any ordinary shortfall. It is not one: `_process_market` runs
+                        # after the unit phase (`kaggriculture.py:922` then `:928`), so the rest of
+                        # the order is still in flight, and the plan was built against a shed already
+                        # credited with it (`PLAN_TODAYS_PURCHASES`).
+                        #
+                        # Moved to a stop the tour is already making, so it costs the PICKUP turn and
+                        # no travel, and the hand never stands still -- which is what the two
+                        # wait-for-it arms recorded below did, and both lost the d6 land parcel.
+                        # Deliberately hour 0 ONLY: carrying every shortfall forward, all day, was
+                        # measured on this grid and is a loss (d3 `feed 4/4 -> 3/4`, d7 `7/9 -> 4/9`,
+                        # d16 $26,664 -> $22,418) -- past dawn a short shed is competition between
+                        # hands, not a van that has not arrived.
+                        # **And only to a stop that still has a pen AFTER it.** A draw taken at the
+                        # end of the tour feeds nothing -- it spends a turn and, worse, lifts wheat
+                        # out of a shed the other hands are drawing from, so the ration is not merely
+                        # wasted, it is taken from someone. The unguarded version measured exactly
+                        # that: d3 `feed 4/4 -> 3/4` and d7 `7/9 -> 4/9` on a day with five and eight
+                        # hands, while d1 -- one farmer, nobody to steal from -- gained its fourth pen.
+                        later, _rest = None, st["route"][1:]
+                        for _k, _n in enumerate(_rest):
+                            if getattr(_n, "depot", False) and any(
+                                    getattr(_w, "needs", {}).get(item, 0) > 0
+                                    for _w in _rest[_k + 1:]):
+                                later = _n
+                                break
+                        if later is not None:
+                            later.pick[item] += node.pick[item]
+                            del node.pick[item]
                     shed[item] -= take
                     act = ["PICKUP", item, take]
                     break
