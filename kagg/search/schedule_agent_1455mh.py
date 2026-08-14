@@ -275,6 +275,29 @@ WAIT_FOR_THE_MORNING_DELIVERY = True
 #: that has been fed.
 CARRY_THE_UNFILLED_DRAW_FORWARD = True
 
+#: Whether a draw for an ANIMAL the row buys today survives an empty shed at any hour, by moving
+#: itself -- and the placement it feeds -- one stop further down the tour.
+#:
+#: The two rules above are both `hour == 0` only, which is right for wheat and wrong for a beast.
+#: An animal is bought once, for one named pen, and it lands whenever the row's order slot comes up:
+#: day 8 buys `SHEEP 1` at h05, so the shed reads `SHEEP 0` for six hours while the plan built
+#: against `PLAN_TODAYS_PURCHASES` believes it is stocked. Whichever hand reaches the shed inside
+#: that window deletes the want, and the `PLACE, FEED, CARE` behind it dies with it -- `place 0/3`,
+#: `animals 9/10`, `feed 9/10`, `care 9/10`, and one sheep sitting in the shed to the last turn.
+#:
+#: Narrower than `CARRY_THE_UNFILLED_DRAW_FORWARD` on purpose, because the all-day version of that
+#: rule was measured and is a loss (d3 `feed 4/4 -> 3/4`, d7 `7/9 -> 4/9`). The reason is contention:
+#: past dawn a short shed of WHEAT means another hand drew the ration first, so carrying the want
+#: forward does not conjure wheat, it takes a pen's feed and gives it to a later one. A bought animal
+#: has no such competition -- at h05 there is no sheep anywhere on the board, exactly one is coming,
+#: and exactly one job wants it. Deferring costs nobody anything.
+#:
+#: It moves rather than waits: standing at the shed past hour 0 was tried twice on 2026-08-13 and
+#: lost the d6 land parcel both times. The stop is re-inserted after the next piece of work, which is
+#: also what the tape does -- `h05 BUY_ANIMAL SHEEP 1`, `h06 u3 PICKUP/SHEEP`, `h09 u3 PLACE/SHEEP`.
+#: If the hand has no other work the want is dropped as before, so no hand ever idles on this.
+THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
+
 #: Whether the wheat row's money guard prices n units on the BOOK's curve rather than at n times the
 #: one price the observation publishes. See the block at the guard for the day-1 arithmetic.
 SIZE_THE_RATION_ON_THE_CURVE = True
@@ -2448,6 +2471,29 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # be a delivery not yet landed rather than a shortfall.
                         if WAIT_FOR_THE_MORNING_DELIVERY and hour == 0 and item in _bought_today:
                             break
+                        # **An animal is not a contested draw.** See
+                        # `THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT`. The two rules above
+                        # rescue a dawn draw only; the row buys day 8's SHEEP at h05, so the shed is
+                        # empty of it for six hours and whichever hand arrives first bins the want,
+                        # the PLACE behind it, and the FEED and CARE that travel with the PLACE.
+                        #
+                        # The animal and the job it fills both move one stop down the tour, so the
+                        # hand keeps working and asks again when its own route puts it back at the
+                        # shed. Only when there IS other work -- a hand with nothing else would be
+                        # standing at the shed, which is the arm that lost the d6 land parcel twice.
+                        if (THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT
+                                and item in R.ANIMAL_NAMES and item in _bought_today
+                                and node.tile not in deferred):
+                            tail = [n for n in st["route"][1:]
+                                    if getattr(n, "needs", None) and n.needs.get(item, 0) > 0]
+                            rest = [n for n in st["route"][1:] if n not in tail]
+                            if rest:
+                                deferred.add(node.tile)
+                                want = node.pick.pop(item)
+                                rest[1:1] = [DP.Depot(node.tile, pick={item: want},
+                                                      critical=node.critical)] + tail
+                                st["route"][1:] = rest
+                                continue
                         del node.pick[item]
                         continue
                     node.pick[item] -= take
