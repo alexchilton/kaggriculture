@@ -1170,7 +1170,7 @@ WHEAT_ROW_OUTRANKS_SHOPPING = True
 #: turn, then 5 at h01 and 1 at h05. We hire NINE at h00 and leave the wheat to h01, so whichever
 #: of the two is put first starves the other. The slot order is not the remaining defect; the
 #: hire distribution is. Turn this on again once the hires are spread.
-WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY = False
+WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY = True
 
 
 def _wheat_row_first(orders, hour):

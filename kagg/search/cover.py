@@ -1020,11 +1020,24 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # The test is on what THIS PEN yielded, not on what the hand happens to be carrying: a hand
         # holding the herd's wheat on a day whose row sells wheat would otherwise bank at every pen.
         # Same shape as `funds` itself in `_solve` -- `any(owed[p] > 0 for p in j.gives)`.
-        if (BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY and j.funds and pos in depots
-                and any((wanted or {}).get(p, 0) > 0 and q > 0 for p, q in j.gives.items())):
+        _earns = any((wanted or {}).get(p, 0) > 0 and q > 0 for p, q in j.gives.items())
+        if BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY and j.funds and pos in depots and _earns:
             keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
             route.append(_bank(pos, held, keep))
             held = collections.Counter(keep)
+        elif (THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN and j.funds and _earns
+                and pos not in depots
+                and all(o == "HARVEST" for o, _i in j.ops)):
+            # **The errand.** See `THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN`. Scoped to a job that is
+            # ONLY a harvest, which is exactly what `split_funding_harvest` produces -- a tending
+            # stop that happens to hold produce is not worth a trip and is left to the ordinary
+            # delivery rules. Aimed at the depot nearest the next stop, so the walk is shared.
+            _nxt = work[i + 1].tile if i + 1 < len(work) else pos
+            d = nearest(depots, pos, _nxt)
+            keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
+            route.append(_bank(d, held, keep))
+            held = collections.Counter(keep)
+            pos = d
 
     # **`yields()`, not just a non-empty hand.** `gives` is a prediction and is empty whenever the
     # board cannot supply one -- a tile whose `yield_units` is still 0 at dawn because the WATER that
@@ -1710,7 +1723,37 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
 #: shed tile whoever harvests it. The tape has the same geometry (his cows are (4,3) and (4,4)) and
 #: solves it by making the harvest a dedicated ERRAND: HARVEST, walk, PLACE/MILK, nothing else.
 #: So the missing half is a delivery that follows a split harvest off-depot, not the split itself.
-SPLIT_THE_FUNDING_HARVEST = False
+#: Whether a hand that took a SPLIT funding harvest walks the produce straight to the shed.
+#:
+#: The one rule here that is deliberately a WALK. `SPLIT_THE_FUNDING_HARVEST` lets a second hand take
+#: a ripe pen's HARVEST alone, which is what the tape does -- but on its own that LOSES ground,
+#: because the hand then carries the milk: `DELIVER_MIN` exists to stop a small load buying a walk,
+#: `DROP_WHERE_THE_TOUR_ALREADY_STANDS` demands zero detour, and `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`
+#: demands the pen BE shed ground. Measured, seed 11, d8:
+#:
+#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
+#:     our ripe cows       (4,4) IS shed ground     (3,4) is NOT
+#:
+#: Cow A banks on its own pen at h03 for one turn and no walking. Cow B cannot, whoever harvests it.
+#: The tape has the same geometry -- his cows are (4,3) and (4,4) -- and answers it with a dedicated
+#: errand: `h04 HARVEST ... h06 (4,4) PLACE/MILK`, nothing else on that tour.
+#:
+#: The walk IS the point. The milk is the day's working capital: the row buys `WHEAT 17` on a $4 dawn
+#: bank to feed ten animals, and the forced-order run showed the whole afternoon failing on cash with
+#: the town holding 9,900 wheat. Every other rule prices the trip against the LOAD; this one prices
+#: it against the DAY.
+#:
+#: With `SPLIT_THE_FUNDING_HARVEST`, both cows land together at his own hour:
+#:
+#:     h01 u0 HARVEST   h03 u4 HARVEST   h05 u0 DROP + u4 DROP + SELL MILK 12   h06 bank $1,932
+#:
+#: against $13 in every arm before it. Milk alone is NOT the win -- `buy_product` stays 5/17 and
+#: the cash sits, because the wheat is still queued behind the seed at h01. Paired with
+#: `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY` it becomes d8 `buy_product 17/17`, `feed 9/10`,
+#: `care 9/10`, and the season cost falls from -$2,433 to -$299. The two only pay together.
+
+
+SPLIT_THE_FUNDING_HARVEST = True
 
 
 def split_funding_harvest(jobs, wanted):
