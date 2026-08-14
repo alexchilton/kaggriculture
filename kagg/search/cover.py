@@ -1751,6 +1751,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
 #: the cash sits, because the wheat is still queued behind the seed at h01. Paired with
 #: `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY` it becomes d8 `buy_product 17/17`, `feed 9/10`,
 #: `care 9/10`, and the season cost falls from -$2,433 to -$299. The two only pay together.
+THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN = True
 
 
 SPLIT_THE_FUNDING_HARVEST = True
