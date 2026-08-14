@@ -1671,6 +1671,74 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     return routes, left
 
 
+#: Whether a ripe pen the day's row is WAITING ON offers its HARVEST as a separate job.
+#:
+#: `Job` is one tile and every op that tile wants, atomic to one hand. That is right for ordinary
+#: work and it is what makes the tape's day-8 plan inexpressible for us. He splits a ripe pen across
+#: two hands -- one tends it, another does nothing but harvest and run the milk to the shed:
+#:
+#:     his u0  h03 (4,3) FEED  h04 (4,3) CARE  h05 (4,3) COLLECT_FERT   <- never harvests it
+#:     his u2  h04 HARVEST                      h06 (4,4) PLACE/MILK     <- harvest only, then banks
+#:
+#: Ours bundles them, so the harvest is forced to happen FOURTH:
+#:
+#:     (3,4)  ['FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST']  4t
+#:
+#: Our d8 dawn, seed 11: bank $4, shed WHEAT 1 / FERTILIZER 7, ZERO hands -- all eleven hired during
+#: the day. Ripe cows at (3,4) and (4,4); shed-access tiles are (4,4), (4,5), (5,4), (5,5), so (4,4)
+#: is both a ripe cow and shed ground. Cow A is already banked at h03. Cow B at (3,4) cannot be:
+#: even as job 0 on a hand spawning at the shed at h01, four bundled ops put the harvest at ~h06 and
+#: the deposit at ~h08, against a sale asked at h05.
+#:
+#: **No reordering or route-pinning can beat that**, which is why hardcoding the visit sequence into
+#: `SOLVED_DAYS` changed nothing -- twice. The constraint is INSIDE one job, not between jobs. Split,
+#: the same hand does NORTH, HARVEST, SOUTH, PLACE and lands at h05.
+#:
+#: The tending job keeps `needs`, `at_risk` and therefore `required` (`REQUIRED_OPS` is `("FEED",)`),
+#: so the harvest-only job is neither. Harvesting before feeding is safe: the care bonus is applied
+#: at the day rollover (`kaggriculture.py:808-817`), not at the harvest.
+#:
+#: **SHIPPED FALSE: the split works and the follow-through does not, yet.** With it on, u2 and u4
+#: both HARVEST at h02 -- two hands on the ripe pens at once, which was structurally impossible
+#: before. But u2 then CARRIES its six milk instead of banking them, so the h03 sale we already
+#: had is lost. `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY` cannot help it, and the reason is geometry:
+#:
+#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
+#:     our ripe cows       (3,4) NOT shed ground     (4,4) IS shed ground
+#:
+#: Cow A banks on its own pen because the pen IS the shed. Cow B never can -- it needs a walk to a
+#: shed tile whoever harvests it. The tape has the same geometry (his cows are (4,3) and (4,4)) and
+#: solves it by making the harvest a dedicated ERRAND: HARVEST, walk, PLACE/MILK, nothing else.
+#: So the missing half is a delivery that follows a split harvest off-depot, not the split itself.
+SPLIT_THE_FUNDING_HARVEST = False
+
+
+def split_funding_harvest(jobs, wanted):
+    """Ripe pens the row is waiting on, with their HARVEST offered as its own job."""
+    if not SPLIT_THE_FUNDING_HARVEST:
+        return jobs
+    want = {p: q for p, q in (wanted or {}).items() if q > 0}
+    if not want:
+        return jobs
+    out = []
+    for j in jobs:
+        harvest = [o for o in j.ops if o[0] == "HARVEST"]
+        rest = [o for o in j.ops if o[0] != "HARVEST"]
+        earns = {p for p in j.products if want.get(p, 0) > 0}
+        if not harvest or not rest or not earns:
+            out.append(j)
+            continue
+        h_gives = {p: q for p, q in j.gives.items() if p in earns}
+        r_gives = {p: q for p, q in j.gives.items() if p not in earns}
+        if not h_gives:
+            out.append(j)
+            continue
+        out.append(Job(j.tile, harvest, gives=h_gives, products=frozenset(earns)))
+        out.append(Job(j.tile, rest, needs=j.needs, gives=r_gives, at_risk=j.at_risk,
+                       only=j.only, products=j.products - earns))
+    return out
+
+
 def from_nodes(nodes, tiles=None):
     """`router.Node` -> `Job`, keeping the node's own `needs` rather than re-deriving them.
 

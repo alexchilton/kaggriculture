@@ -717,6 +717,13 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     jobs = [j for j in DP.from_nodes(nodes, tiles) if j.tile not in pointless]
     at_risk = set(at_risk)
     owed = collections.Counter({p: q for p, q in (wanted or {}).items() if q > 0})
+    # **A pen the row is waiting on offers its HARVEST separately.** See
+    # `cover.SPLIT_THE_FUNDING_HARVEST`. One tile's ops are atomic to one hand, which forces a ripe
+    # pen's harvest to happen after its feed, care and collect -- the tape puts a second hand on the
+    # tile that does nothing but harvest and run the produce to the shed, and that is the only way
+    # d8's second cow reaches the market before it closes.
+    if fund:
+        jobs = DP.split_funding_harvest(jobs, owed)
     for j in jobs:
         if j.tile in at_risk:
             j.at_risk = True
