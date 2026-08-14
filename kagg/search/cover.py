@@ -226,6 +226,27 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
+#: **Batching under `DELIVER_MIN` is only coherent when a later delivery exists.** The constant's
+#: own justification is that a small load "rides to the end of the tour, which ends at the shed
+#: anyway" -- and on the shipped day that clause is false: `DELIVER_CUTOFF_TURNS` is 99, so the
+#: closing trip is never charged, and a tour whose remaining stops never stand on a shed-access
+#: tile has NO further chance to bank anything. Whatever it holds of today's row at that point is
+#: stranded by construction and reaches the shed only via the overnight sweep, after the market has
+#: closed.
+#:
+#: Day 6, seed 11, kawashigi grid: the hand shearing (4,3) took 4 WOOL against a row asking 12,
+#: then fed the cows at (0,0) and (1,0) and sat there from h09. The row sold 10/17 with the wool in
+#: its pocket all afternoon. Forcing the closing trip instead was a measured null -- that tour had
+#: spent 21 turns of 23 and the walk home costs 8 -- so the only delivery that can exist for it is
+#: this ferry, priced into the greedy like any other stop.
+#:
+#: Scoped tightly: only when the closing trip is uncharged (`deliver` False), only for a positive
+#: load of the ROW's produce (`load` already counts nothing else while
+#: `DELIVER_SURPLUS_NOT_THE_ROW` is False), and only when neither the current position nor any
+#: remaining stop is a depot tile -- a tour that still touches one is owned by the zero-detour
+#: rules, whose refusals (`REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`) are measured and must stand.
+SHIP_WHAT_NO_LATER_STOP_CAN_BANK = True
+
 #: Whether a hand already standing at the shed, holding produce today's row wants AND items later
 #: jobs need, drops the lot and draws the latter straight back -- instead of carrying the produce to
 #: the end of the tour because the drop cannot be selective. See the block in `materialise`.
@@ -787,8 +808,16 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # runs only on the rare job that already cleared `DELIVER_MIN`, whereas a `spent` accumulator
         # would have to be kept correct at all six places this loop moves `pos` -- and this function
         # is the one place in the planner where the cost model must not be paraphrased.
-        if load >= DELIVER_MIN and not reaping and (
-                due is None or turns(start, route) + dist(pos, j.tile) + tail[i] > due):
+        # **A load with no later delivery ships now, `DELIVER_MIN` notwithstanding.** See
+        # `SHIP_WHAT_NO_LATER_STOP_CAN_BANK`: with the closing trip uncharged and no remaining stop
+        # on a depot tile, there is nothing to batch FOR -- the load is stranded by construction.
+        # The `due` clock is deliberately not consulted for it: `tail` prices a closing drop that
+        # `deliver=False` never plans, so "the tour delivers in time on its own" is fiction here.
+        stranded = (SHIP_WHAT_NO_LATER_STOP_CAN_BANK and not deliver and load > 0
+                    and pos not in depots
+                    and all(tuple(w.tile) not in depots for w in work[i:]))
+        if not reaping and (stranded or (load >= DELIVER_MIN and (
+                due is None or turns(start, route) + dist(pos, j.tile) + tail[i] > due))):
             d = nearest(depots, pos, j.tile)
             # The drop takes the wheat with it, so the same stop draws back everything still ahead.
             back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
