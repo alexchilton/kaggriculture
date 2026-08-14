@@ -137,3 +137,40 @@ behind an at-risk pen it must feed to keep the animal alive, so it harvests at h
 
 Do NOT reopen: the herd mix, d8's routing/job list (`crew.cover` covers 39/39), or sizing the
 wheat row.
+
+## The milk lands: `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`
+
+**Every delivery path in `materialise` banks on the way to the NEXT job.** All of them compute
+`d = nearest(depots, pos, j.tile)` for the TRANSITION, so the stop is part of moving on and is gated
+on that move being free. Standing still is not a move, so none of them could express "bank here,
+now" -- which is the only thing his plan does. He harvests at (4,4) and PLACEs on that same tile the
+next turn, because `_refresh_pins` sites pens on shed-access tiles.
+
+Appending the bank stop directly after a funding pen, on the pen:
+
+    h02  u4 HARVEST          h03  u4 PLACE + SELL MILK 6      h04  bank $610
+                                                                   (every other arm: $13)
+
+Gated on the PEN'S OWN yield being in `wanted`, not on what the hand carries -- a test caught the
+looser version banking at every pen on a day whose row sells the wheat the herd is eating.
+
+    d8            baseline    on-pen
+    feed             2/10       6/10
+    care             2/10       6/10
+    pass           122/36     107/36
+    buy_product      5/17       5/17
+    season exact  447/697    467/697  (+20)      d16 money  32,419 -> 31,816  (-603)
+
+**First movement in d8's target cells all session.** Half the milk is on time; the second cow is
+still harvested at h11 because it is job 1 on its hand, behind an at-risk pen.
+
+## What is binding NOW
+
+`buy_product 5/17`, and for a reason that has changed. The money IS there at h04 and the row never
+asks again: `state["ordered"]` is credited when an order is QUEUED, so the twelve units the book
+refused at h01 drove `owed` to 0. Before the milk landed this fix was worthless -- the forced-order
+run re-offered at his own cadence and still failed on cash. Now the cash exists and the ask is
+missing, so credit the FILL instead of the queue.
+
+Then: `HIRE_FIRST` puts nine hires ahead of the wheat at h00, where he hires five and buys nine
+wheat behind the fertilizer sale in the same turn. That is worth the other 5 of the 17.

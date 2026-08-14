@@ -461,6 +461,40 @@ BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
 #: it cannot leave one uncovered.
 ONE_HAND_PER_FUNDING_PEN = True
 
+#: Whether a pen that FUNDS the day banks its produce on the pen, the turn after it is harvested.
+#:
+#: `_refresh_pins` sites pens ON shed-access tiles, so a hand standing on a pen is already standing
+#: on the shed. Kawashigi never walks anywhere to bank the day-8 milk:
+#:
+#:     u4  h02 (4,4) PICKUP/WHEAT  h03 FEED  h04 CARE  h05 HARVEST  h06 PLACE/MILK
+#:                                                                      ^ same tile, next turn
+#:
+#: and `SELL MILK 12` is in that same order block -- the unit phase runs before `_process_market`
+#: (`:922` then `:928`), so it lands and sells in one turn.
+#:
+#: **Every existing delivery path banks on the way to the NEXT job.** They all compute
+#: `d = nearest(depots, pos, j.tile)` for the TRANSITION, so the stop is part of moving on and is
+#: gated on that move being free. Standing still is not a move, so none of them can express "bank
+#: here, now". On d8 that put the milk in the shed at h07 with `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`
+#: on and h11 without it, against a sale asked at h05.
+#:
+#: The two hours are the whole day. Measured on the forced-order run -- the tape's own d8 orders
+#: replayed on our board:
+#:
+#:     h05  bank $24  shed MILK 0  asked BWHEAx2 SMILKx12  -> ALL FAILED
+#:     h08  bank $24  shed MILK 0  asked BWHEAx2           -> FAILED
+#:     h10  bank $24  shed MILK 0  asked BWHEAx3           -> FAILED
+#:
+#: 9 wheat fill at h00 behind the fertilizer sale and 1 at h03; the other 7 fail on CASH, with the
+#: bank flat at $24 from h04 to midnight while the town holds 9,900+ wheat. Stock never binds.
+#: Forcing his orders without the milk is `buy_product 10/17` and `+ sold $524/$3,177` -- re-offering
+#: an order you cannot pay for changes nothing, which is why this is upstream of the wheat row.
+#:
+#: Costs ONE turn and no movement, and `_bank` prefers the quantified `PLACE` here on cost, so the
+#: herd's ration stays in the hand. Deliberately NOT gated on `reaping`, `DELIVER_MIN` or `free`:
+#: those all exist to stop a small load buying a WALK, and there is no walk.
+BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY = True
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -979,6 +1013,18 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         held -= j.needs
         held += j.gives
         pos = j.tile
+        # **Bank on the pen, before moving on.** See `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`. Every
+        # path above plans its stop as part of the walk to the next job, so none of them can say
+        # "bank here, now" -- and standing on a pen IS standing on the shed, because `_refresh_pins`
+        # sites pens on shed-access tiles. One turn, no movement, and `_bank` keeps the ration.
+        # The test is on what THIS PEN yielded, not on what the hand happens to be carrying: a hand
+        # holding the herd's wheat on a day whose row sells wheat would otherwise bank at every pen.
+        # Same shape as `funds` itself in `_solve` -- `any(owed[p] > 0 for p in j.gives)`.
+        if (BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY and j.funds and pos in depots
+                and any((wanted or {}).get(p, 0) > 0 and q > 0 for p, q in j.gives.items())):
+            keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
+            route.append(_bank(pos, held, keep))
+            held = collections.Counter(keep)
 
     # **`yields()`, not just a non-empty hand.** `gives` is a prediction and is empty whenever the
     # board cannot supply one -- a tile whose `yield_units` is still 0 at dawn because the WATER that
