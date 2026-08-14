@@ -1656,6 +1656,58 @@ PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
 
 
+#: **A pen is reserved for a placement the schedule still owes, not for the Nth entry in a list.**
+#:
+#: `_refresh_pins` labelled a pen `wanted[have]`, where `wanted` is the cumulative `places` rows and
+#: `have` is the number of pens that exist. Those are different quantities and the schedule does not
+#: align them day by day -- d6 builds two pens and places nothing, d7 places three animals and builds
+#: two pens -- so through d7 it wants 10 pens against 9 placements, the index runs off the end of the
+#: list, and the loop takes its hardcoded `"COW"` default. The label then outlives the pin by design,
+#: so a pen mislabelled on the day its ground was chosen stays mislabelled.
+#:
+#: Measured on the kawashigi board, seed 11, d7 dawn. The row is `places = [SHEEP, COW, COW]` and
+#: `animals_bought = {COW: 2, SHEEP: 1}`; all three fill, `buy_animal 3/3`:
+#:
+#:     pen_for      {(5,4): COW, (6,4): COW, (6,3): COW, (5,2): COW}
+#:     nodes        four PLACE COW, no PLACE SHEEP anywhere
+#:     crew.cover   supply COW 2 -> keeps (5,4) (6,4), drops (6,3) (5,2)
+#:
+#: Two cows go in, the sheep is never picked up by anybody and sits in the shed until dusk:
+#: `place 2/3`, `animals 8/9`, and `feed 6/9` after it, since an animal in the shed cannot be fed.
+#:
+#: What the pens should be reserved for is on the board already: the cumulative `places` rows minus
+#: the animals standing in pens. At that moment that is `SHEEP 1, COW 2` -- exactly the shed. So the
+#: outstanding row is spent over the reserved-but-empty pens in siting order, nearest ground first,
+#: which is the same rule the siting itself uses.
+#:
+#: This is NOT the value ranking `router.py` rejected at -$5,676. That scored each species by
+#: `cost + remaining` and let the better one win a tie, which reallocates pastures the schedule never
+#: asked to reallocate. This ranks nothing and prefers nothing: it reads the schedule's own ordered
+#: rows and subtracts what the board has already realised.
+PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING = True
+
+
+def _outstanding_places(sched, day, tiles):
+    """The schedule's placements through `day` that no animal is standing on yet, in row order.
+
+    Earliest occurrences are matched off first, so the species left over are the ones the later rows
+    asked for -- which is what the shed is about to hold.
+    """
+    seq = [a for d in sorted(sched) if d <= day for a in (sched[d].get("places") or [])]
+    standing = collections.Counter()
+    for row in tiles:
+        for c in row:
+            if isinstance(c, dict) and c.get("animal"):
+                standing[c["animal"]] += 1
+    out = []
+    for a in seq:
+        if standing.get(a, 0) > 0:
+            standing[a] -= 1
+        else:
+            out.append(a)
+    return out
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -1703,8 +1755,29 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     want_pens = sum(int(sched.get(d, {}).get("builds", 0) or 0) for d in range(day + 1))
     wanted = [a for d in sorted(sched) if d <= day for a in (sched[d].get("places") or [])]
     have = structures + sum(1 for v in pins.values() if v[0] == "BUILD")
+    # See `PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING`. `pen_for` is insertion-ordered
+    # and pens are sited nearest-ground-first, so spending the outstanding row over its existing
+    # keys hands the earliest placements to the closest pens -- the siting rule, unchanged.
+    todo, took = [], 0
+    if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
+        todo = _outstanding_places(sched, day, tiles)
+        for t in list(pen_for):
+            if took >= len(todo):
+                break
+            a = todo[took]
+            took += 1
+            pen_for[t] = a
+            # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
+            # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
+            # disagreeing about the same tile.
+            if t in pins and pins[t][0] == "BUILD":
+                pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
     while have < want_pens:
-        a = wanted[have] if have < len(wanted) else "COW"
+        if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
+            a = todo[took] if took < len(todo) else "COW"
+            took += 1
+        else:
+            a = wanted[have] if have < len(wanted) else "COW"
         # A pen ON a shed-access cell runs its whole daily loop -- draw feed, feed, care, collect,
         # harvest -- without a single move, so those four cells are worth more than any field tile.
         spot = next((tuple(c) for c in PEN_SPOTS
