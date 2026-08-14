@@ -2043,7 +2043,10 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     cared_this_turn.add(tuple(pos))
                     return ["HARVEST"]
                 return None
-            if not here.get("fed_today") and inv.get("WHEAT", 0) > 0:
+            # **Ask the same question the planner asked.** `underfoot` used to feed any unfed pen it
+            # stood on, so a ration `will_be_fed` had deliberately declined went in anyway the moment
+            # a loaded hand crossed the tile -- d0 planned two feeds and emitted three.
+            if not here.get("fed_today") and inv.get("WHEAT", 0) > 0 and RT.will_be_fed(here, day):
                 owed = sum(1 for nd in st["route"]
                            for o, _i in getattr(nd, "ops", ()) if o == "FEED")
                 if inv["WHEAT"] > owed:
@@ -3337,6 +3340,26 @@ def make_agent(schedule, me=0, router=True):
         seeds = collections.Counter(priv.get("seeds") or {})
         invs = priv.get("inventories") or [{}]
         tiles = farm["tiles"]
+        # **Today's arrivals are fed to the schedule's own count.** Recomputed every turn rather
+        # than latched at dawn, because a pen placed today does not exist at dawn -- PLACE happens
+        # mid-day -- so there is nothing to latch. `_arrived` counts the pens that arrived today and
+        # `_arrived_fed` how many of those are already fed, both straight off the live board, so the
+        # remaining allowance is self-correcting and needs no entry in `state`.
+        _row_feeds = int((sched.get(day, {}) or {}).get("feeds", 0) or 0)
+        if _row_feeds > 0:
+            _arrived = _arrived_fed = _standing = 0
+            for _r in tiles:
+                for _c in _r:
+                    if not (isinstance(_c, dict) and _c.get("animal")):
+                        continue
+                    if int(_c.get("placed_day", -1)) == day:
+                        _arrived += 1
+                        _arrived_fed += 1 if _c.get("fed_today") else 0
+                    else:
+                        _standing += 1
+            RT.ARRIVAL_FEED_REMAINING = max(0, _row_feeds - _standing - _arrived_fed)
+        else:
+            RT.ARRIVAL_FEED_REMAINING = 0
         money = float(farm["money"])
         unlocked = set(farm.get("unlocked_quadrants") or ["NW"])
         row = sched.get(day, {})

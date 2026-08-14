@@ -42,6 +42,9 @@ args = ap.parse_args()
 
 TD = 24
 BUILD = {"BUILD_PASTURE", "BUILD_COOP"}
+#: Taken from the env rather than written out, so a new species cannot silently be dropped from a
+#: schedule as a "product". See the PLACE branch below for why the distinction matters.
+ANIMAL_NAMES = frozenset(__import__("kagg.search.routines", fromlist=["ANIMALS"]).ANIMALS)
 
 d = json.load(open(args.replay))
 seat = d["info"]["TeamNames"].index(args.team)
@@ -49,7 +52,7 @@ seat = d["info"]["TeamNames"].index(args.team)
 day_rows = collections.defaultdict(lambda: dict(
     builds=[], places=[], plants=[], animals_bought=collections.Counter(),
     seeds=collections.Counter(), land=0, land_turns=[], orders=[], hires=0, sells=collections.Counter(),
-    buys=collections.Counter(), money_dawn=None, hands=0))
+    buys=collections.Counter(), money_dawn=None, hands=0, feeds=0, cares=0))
 
 # **From `steps[1:]`, like every other reader in this project.** `steps[0].action` is the
 # placeholder recorded at reset and is never applied, so counting from index 0 puts every day
@@ -75,9 +78,31 @@ for t, step in enumerate(d["steps"][1:]):
         if op[0] in BUILD:
             row["builds"].append(op[0])
         elif op[0] == "PLACE":
-            row["places"].append(op[1] if len(op) > 1 else "?")
+            # **PLACE is not only "an animal goes into a pen".** It also puts a carried PRODUCT
+            # down on a tile -- fertilizer onto a crop, and harvested goods staged for a later
+            # pickup. `places` feeds the scheduler's pen/animal plan, where a product is not merely
+            # noise but a crash: `_refresh_pins` looks the name up in `R.ANIMALS`.
+            #
+            # This went unnoticed because the only schedule ever extracted was Victor's, and he
+            # never places a product -- his `places` is 5 SHEEP and 9 COW and nothing else.
+            # カワシギ's is COWx10 SHEEPx4 plus FERTILIZERx5, WOOLx5, MILKx5, MELONx10 and
+            # STRAWBERRYx12. Same code, same op, and the assumption held for one player only.
+            what = op[1] if len(op) > 1 else "?"
+            if what in ANIMAL_NAMES:
+                row["places"].append(what)
         elif op[0] == "PLANT":
             row["plants"].append(op[1] if len(op) > 1 else "?")
+        elif op[0] == "FEED":
+            # **The feed CADENCE is a recorded fact and was the one op we never captured.** Every
+            # other quantity the day commits to -- hands, places, seeds, buys, sells -- comes off the
+            # tape, and FEED was left to be re-derived by rule. It cannot be: on d0 he places four
+            # animals and feeds exactly TWO of them, which is neither "feed everything" nor "feed
+            # nothing that is producing" (none of them are). Both rules were measured and both lose.
+            row["feeds"] += 1
+        elif op[0] == "CARE":
+            # CARE only banks `pending_care_bonus` on a day the pen is also fed, so the two counts
+            # are read together or neither is meaningful.
+            row["cares"] += 1
     for o in (a.get("market") or []):
         if not o:
             continue
@@ -181,6 +206,8 @@ out = {str(day): dict(
     orders=day_rows[day]["orders"],
     builds=len(day_rows[day]["builds"]),
     places=day_rows[day]["places"],
+    feeds=day_rows[day]["feeds"],
+    cares=day_rows[day]["cares"],
     plants=day_rows[day]["plants"],
     animals_bought=dict(day_rows[day]["animals_bought"]),
     seeds=dict(day_rows[day]["seeds"]),
