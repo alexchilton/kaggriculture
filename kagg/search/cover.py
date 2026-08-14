@@ -275,6 +275,32 @@ REDRAW_RATHER_THAN_CARRY = True
 #: row also sells, so it still fires.
 REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE = True
 
+#: Whether a shed stop banks only the SURPLUS, with `PLACE`, rather than dumping the whole hand with
+#: `DROP` and drawing the ration straight back.
+#:
+#: `DROP` is all-or-nothing (`kaggriculture.py:333`), so a herd tour that wants to bank one fertilizer
+#: has to bin the wheat its next pens are about to eat and spend a second turn replacing it. Every
+#: comment in this file that says "the drop takes the wheat with it, so the same stop draws back
+#: everything still ahead" is describing that second turn.
+#:
+#: There is a one-turn version and it is the same op the leader uses. `PLACE <item> <n>` on a
+#: shed-adjacent tile is a QUANTIFIED shed drop (`kaggriculture.py:381-395`): n of ONE item into the
+#: shed, the rest of the hand untouched. Kawashigi's day 1 emits no `DROP` at all -- his single bank
+#: of the day is `PLACE FERTILIZER` at h18.
+#:
+#: Measured on day 1, seed 11, kawashigi tape. The farmer works alone on 24 turns and his tour priced
+#: at 18: `Shed[WHEATx3] (4,4)pen Shed[DROP+WHEATx2] (4,3)pen Shed[DROP+WHEATx1] (2,4)pen`. The fourth
+#: pen `(3,4)` priced at **25 in every position** and went uncovered -- one turn over -- while two of
+#: those eighteen turns were spent re-drawing wheat the same stop had just binned. `feed 3/4` and
+#: `care 3/4` on the day, and that is the head of the chain: the sheep miss a production night, d6
+#: shears 9 where the tape shears 12, and d7 cannot afford its third animal.
+#:
+#: It is chosen on COST, never by preference -- `_bank` returns whichever of the two stops is cheaper,
+#: so a hand with three products to bank and nothing owed ahead still DROPs, which is one turn against
+#: three. And never for an animal: `PLACE` on a built empty pen puts the beast IN it
+#: (`kaggriculture.py:370-378`), and pens sit on shed-access tiles by design.
+BANK_THE_SURPLUS_NOT_THE_HAND = True
+
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
 #:
@@ -489,9 +515,13 @@ class Depot:
     market and wheat for three more pens cannot shed one without the other, so it sheds both and
     takes the wheat straight back. `PICKUP` is unbounded (`kaggriculture.py:340`), so the draw costs
     one turn per distinct ITEM and not one per unit: fourteen pens is one wheat pickup.
+
+    `place` is the third way, and it is the one that CAN pick the wool out of that hand: a
+    shed-adjacent `PLACE <item> <n>` banks n of one item and nothing else
+    (`kaggriculture.py:381-395`). `_bank` decides between it and `drop` on cost alone.
     """
 
-    __slots__ = ("tile", "drop", "pick", "critical")
+    __slots__ = ("tile", "drop", "pick", "place", "critical")
 
     depot = True
     needs = ()
@@ -501,10 +531,16 @@ class Depot:
     at_risk = False
     only = None
 
-    def __init__(self, tile, drop=False, pick=None, critical=False):
+    def __init__(self, tile, drop=False, pick=None, critical=False, place=None):
         self.tile = tuple(tile)
         self.drop = bool(drop)
         self.pick = collections.Counter({i: q for i, q in (pick or {}).items() if q > 0})
+        #: Items to bank with `PLACE <item> <n>` instead of dumping the hand. A shed-adjacent PLACE
+        #: is a QUANTIFIED shed drop (`kaggriculture.py:381-395`): it moves n of one item and leaves
+        #: the rest of the inventory alone. `DROP` cannot -- it is all-or-nothing
+        #: (`kaggriculture.py:333`) -- which is why a stop that banks produce and keeps its ration
+        #: has to pay twice with `drop`, and once with this. See `BANK_THE_SURPLUS_NOT_THE_HAND`.
+        self.place = collections.Counter({i: q for i, q in (place or {}).items() if q > 0})
         #: Whether this draw serves a job that dies TONIGHT if it is skipped (`Job.at_risk and
         #: Job.required` -- an animal one missed feed from escaping). Set by `materialise`, which
         #: alone knows which jobs the draw is FOR; the executor reads it to decide whether a shed
@@ -514,7 +550,9 @@ class Depot:
 
     @property
     def turns(self):
-        return (1 if self.drop else 0) + len(self.pick)
+        # One turn per PLACE, because PLACE names one item: `kaggriculture.py:381` reads
+        # `action[1]` and `action[2]`, so two items to bank is two turns.
+        return (1 if self.drop else 0) + len(self.place) + len(self.pick)
 
     @property
     def service(self):
@@ -523,6 +561,7 @@ class Depot:
     @property
     def ops(self):
         out = [("DROP", None)] if self.drop else []
+        out += [("PLACE", i) for i in sorted(self.place)]
         return out + [("PICKUP", i) for i in sorted(self.pick)]
 
     def places(self):
@@ -535,8 +574,39 @@ class Depot:
         return False
 
     def __repr__(self):
-        bits = (["DROP"] if self.drop else []) + [f"{i}x{q}" for i, q in sorted(self.pick.items())]
+        bits = ((["DROP"] if self.drop else [])
+                + [f"PLACE:{i}x{q}" for i, q in sorted(self.place.items())]
+                + [f"{i}x{q}" for i, q in sorted(self.pick.items())])
         return f"Shed{self.tile}[{'+'.join(bits) or '-'}]"
+
+
+def _bank(tile, held, need, critical=False):
+    """The cheapest shed stop that arrives holding `held` and leaves holding `need`.
+
+    Two ways to do it, and they cost differently:
+
+        DROP  + PICKUP per item still owed        1 + len(need - held ... all of need)
+        PLACE per item banked + PICKUP per short  len(held - need) + len(need - held)
+
+    The second is what `BANK_THE_SURPLUS_NOT_THE_HAND` buys. Both leave the hand holding exactly
+    `need`, so this is a cost choice and nothing else; whichever is cheaper wins, ties to `DROP`
+    because that is the behaviour every measurement in this file was taken against.
+
+    **An animal in the hand forces `DROP`.** `PLACE` on a built, empty pen puts the beast in the pen
+    rather than the shed (`kaggriculture.py:370-378`), and `_refresh_pins` sites pens ON shed-access
+    tiles -- so the selective drop is not selective for livestock, it is a placement.
+    """
+    drop = Depot(tile, drop=True, pick=need, critical=critical)
+    if not BANK_THE_SURPLUS_NOT_THE_HAND:
+        return drop
+    if any(q > 0 and i in R.ANIMALS for i, q in held.items()):
+        return drop
+    give = collections.Counter({i: q - need.get(i, 0) for i, q in held.items()
+                                if q > need.get(i, 0)})
+    take = collections.Counter({i: q - held.get(i, 0) for i, q in need.items()
+                                if q > held.get(i, 0)})
+    keep = Depot(tile, pick=take, place=give, critical=critical)
+    return keep if keep.turns < drop.turns else drop
 
 
 def nearest(depots, frm, to=None):
@@ -796,7 +866,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
             # item drawn back, and it is only taken when the hand actually holds something the row
             # is waiting for -- never to shed a load nobody is buying today.
             back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
-            route.append(Depot(d, drop=True, pick=back))
+            route.append(_bank(d, held, back))
             held = collections.Counter(back)
             pos = d
         # **Rule 2 now has a clock.** `left` is when this tour delivers under its own steam: what has
@@ -819,9 +889,10 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         if not reaping and (stranded or (load >= DELIVER_MIN and (
                 due is None or turns(start, route) + dist(pos, j.tile) + tail[i] > due))):
             d = nearest(depots, pos, j.tile)
-            # The drop takes the wheat with it, so the same stop draws back everything still ahead.
+            # The drop takes the wheat with it, so the same stop draws back everything still ahead --
+            # unless `_bank` can shed the produce alone with PLACE and keep the ration in hand.
             back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
-            route.append(Depot(d, drop=True, pick=back))
+            route.append(_bank(d, held, back))
             held = collections.Counter(back)
             pos = d
         elif short:
