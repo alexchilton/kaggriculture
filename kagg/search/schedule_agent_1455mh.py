@@ -4677,7 +4677,22 @@ def make_agent(schedule, me=0, router=True):
         # land day re-offers once the parcel's turn is over.
         if BUY_THE_ROW_AT_DAWN and owed > 0 and not state.get("dawn_row_sent", False):
             short = max(short, owed)
-        short = min(short, int(money * 0.5 // quote))
+        # **The ration is not discretionary spending and is not held to half the bank.** This line
+        # used to read `short = min(short, int(money * 0.5 // quote))`. On a thin dawn that floors to
+        # ZERO: d1 opens on $44 against a quote of $28, so `int(44 * 0.5 // 28) == 0` and the row of
+        # five buys nothing for six hours, then dribbles 2+1+1 and lands three. d5 is the same shape,
+        # `cap50 == 1` against a row of two. The tape buys its five outright.
+        #
+        # Those one- and two-unit misses are the whole chain: d3's dawn shed holds exactly 2 wheat
+        # and the day feeds exactly 2 of 4, the sheep miss production days, and d6 shears 9 where the
+        # tape shears 12 -- which is the $599 that leaves d7 unable to afford its third animal and d8
+        # opening on an empty shed.
+        #
+        # A half-bank reserve is the right instinct for a purchase that can wait. FEED cannot: two
+        # unfed days remove the animal outright (`kaggriculture.py:804`), and the order is already
+        # bounded three ways -- by `owed` (the day's own row), by `BUY_DRIP`, and by the env refusing
+        # what the bank cannot cover. The cap was a fourth bound on the one purchase that needed none.
+        short = min(short, int(money // quote))
         # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
         # is QUEUED, and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race
         # still closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn
