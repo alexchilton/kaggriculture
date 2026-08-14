@@ -274,6 +274,10 @@ WAIT_FOR_THE_MORNING_DELIVERY = True
 #: hand -- `COLLECT_FERTILIZER` alone, no FEED, and no CARE either, since CARE is only legal on a pen
 #: that has been fed.
 CARRY_THE_UNFILLED_DRAW_FORWARD = True
+
+#: Whether the wheat row's money guard prices n units on the BOOK's curve rather than at n times the
+#: one price the observation publishes. See the block at the guard for the day-1 arithmetic.
+SIZE_THE_RATION_ON_THE_CURVE = True
 #: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
 #: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
 HARVEST_WHAT_YOU_STAND_ON = True
@@ -4785,7 +4789,31 @@ def make_agent(schedule, me=0, router=True):
         # unfed days remove the animal outright (`kaggriculture.py:804`), and the order is already
         # bounded three ways -- by `owed` (the day's own row), by `BUY_DRIP`, and by the env refusing
         # what the bank cannot cover. The cap was a fourth bound on the one purchase that needed none.
-        short = min(short, int(money // quote))
+        # **What n units COST, not n times the sticker price.** `market_price` moves per unit inside
+        # one order -- said twice above, as the whole reason `BUY_DRIP` exists -- and this guard did
+        # not use it. `int(money // quote)` prices four wheat at 4 x $28 when the book charges
+        # 28 + 29 + 30 + 31 = $118, so the last unit does not fill. And it is not merely lost: the row
+        # is closed on orders QUEUED (`state["ordered"]` below), so the shortfall is never re-offered.
+        #
+        # Measured d1, seed 11, offered against FILLED: h04 bank $13, price $28, offered 4, filled 3;
+        # h11 offered 1, filled 1. The $26 the book left is exactly the bank h11 opens on. The row of
+        # five closed at four, and that fifth wheat is d3's fourth feed.
+        #
+        # `market.inventory` is `shared: True` in the observation spec, so this is the real book and
+        # not a guess. Falls back to the flat divide if the env is not importable, which is what
+        # `market_price` already does.
+        if SIZE_THE_RATION_ON_THE_CURVE:
+            _book = int(((obs.get("market") or {}).get("inventory") or {}).get("WHEAT", 0) or 0)
+            _purse, _n = money, 0
+            while _n < short:
+                _unit = market_price("WHEAT", _book - _n)
+                if _unit > _purse:
+                    break
+                _purse -= _unit
+                _n += 1
+            short = _n
+        else:
+            short = min(short, int(money // quote))
         # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
         # is QUEUED, and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race
         # still closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn
