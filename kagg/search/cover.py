@@ -400,6 +400,40 @@ BANK_ONLY_AFTER_THE_LAST_HARVEST = True
 #: Left False rather than deleted only until the d6 row is re-confirmed green; delete it then.
 BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
 
+#: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
+#: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
+#:
+#: `BANK_ONLY_AFTER_THE_LAST_HARVEST` is read off Seb's day 4, where the harvest is REVENUE: nothing
+#: that day depends on it, so it can ride to the closing trip. Day 8 of the Kawashigi tape inverts
+#: that. `COW` is `first_yield_day 8`, so the two cows placed on day 0 open d8 holding six units
+#: each -- and both boards agree on it, ours `CO@3,4 y6 CO@4,4 y6` against his `CO@4,3 y6 CO@4,4 y6`,
+#: with the full care bonus consumed on both sides. The row is `sells {FERTILIZER 6, MILK 12}` and
+#: `buys {WHEAT 17}` on a $4 dawn bank, so the milk is not revenue, it is the day's WORKING CAPITAL:
+#: the wheat it pays for is what feeds ten animals. Measured, seed 11:
+#:
+#:     h05 u4 HARVEST   h08 u4 HARVEST   h09-h17 twelve milk in hand, bank $13
+#:     h17 u4 DROP      h18 shed 12, SELL MILK 12   h19 bank $1,873 -- every stop already walked
+#:
+#: We harvest all twelve and sell all twelve, thirteen hours late. The tape banks the same milk at
+#: h05 with two `PLACE/MILK` and spends it through the day; it closes `feed 10/10 care 10/10`
+#: against our 2 and 2. The whole d8 deficit is delivery LATENCY -- not production, not routing
+#: (`crew.cover` covers 39/39), not the size of the wheat row.
+#:
+#: **Why this is not `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED` again.** That one gated on `rush`, the
+#: short-of-cash signal -- which was False on the d10 it was written for and True on d6, where the
+#: extra drops shifted the cash timing and cost `buy_product 5/5 -> 4/5`. The gate here is not
+#: poverty, it is **"the hand is carrying what today's row sells"**: `wanted` is the sell row, so the
+#: stop only opens where the day's own plan is waiting on those goods. d6's hands are not carrying
+#: d6's produce at the blocked stops, which is the difference the measurement has to confirm.
+#:
+#: **It has to be folded into `reaping` itself, not into one branch.** Traced on d8, all 1,678
+#: blocked stops look like `free=True spare=7 owed=False held={FERTILIZER 1, MILK 6} after={}` --
+#: nothing owed ahead, so they fall to the FREE DROP and never reach the selective `_bank` branch,
+#: which requires `owed_ahead`. An exemption written for the selective branch alone measured as a
+#: byte-identical d8. And the free drop is safe here by construction: it already refuses whenever
+#: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
+BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -838,9 +872,17 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # `rush` exempts it: see `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`. A day that cannot pay its
         # own bill needs the produce in the shed while the market is open, not swept there overnight
         # by `_drop_inventories_to_shed` after it has closed.
+        # **A short day, and the hand is holding what that day's row SELLS.** See
+        # `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`. Both halves are load-bearing and neither works
+        # alone: `rush` by itself is the reverted `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`, which
+        # fired on fertilizer rounds too; the row test by itself is true on Seb's day 4, where
+        # fourteen wheat harvests meet a `WHEAT 49` row and the dusk rule is exactly right.
+        funding = (BANK_THE_ROWS_PRODUCE_WHILE_REAPING and rush
+                   and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
         reaping = (BANK_ONLY_AFTER_THE_LAST_HARVEST
                    and any(w.harvests() for w in work[i:])
-                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush))
+                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush)
+                   and not funding)
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))
