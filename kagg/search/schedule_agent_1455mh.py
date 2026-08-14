@@ -1687,6 +1687,45 @@ DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
 PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING = True
 
 
+#: **Sowing keeps back the ground the pens still to come will need.**
+#:
+#: Pens and crops draw from the same pool: `_next_ground(order, tiles, taken)` returns the first
+#: square in `field_order` that is neither built on nor pinned, and `field_order` is sorted by
+#: distance from the shed. Sowing runs after the BUILD loop in the same call, so day 0 takes the
+#: whole inner ring for crops and the pens the schedule builds on d2 and d4 get whatever is left.
+#:
+#: Read off Kawashigi's raw replay (seat 0 -- `farms[1]` of our own run is Yusuke Hayashi, not him):
+#:
+#:     d2  KAWASHIGI  pens 4  crops 19  free 2  ->  (4,2)d2  (2,4)d2
+#:         OURS       pens 4  crops 19  free 2  ->  (1,0)d7  (0,0)d8
+#:     d4  KAWASHIGI  pens 5  crops 19  free 1  ->  (4,2)d2     5th pen on (2,4), distance 2
+#:         OURS       pens 4  crops 19  free 1                  5th pen on (0,0), distance 8
+#:
+#: Same pen count, same crop count, same number of free squares, and the two day-0 pen blocks have
+#: the same Manhattan sum. The ONLY difference is which two squares stay open. He sows outward and
+#: keeps the inner ring; we sow the inner ring and keep the corner, so our d2 and d4 pens land at
+#: distance 7 and 8. A FEED is a shed round trip, so those two cost 14 and 16 turns of walking
+#: before any work, and d7 reads `feed 6/9` with 48 idle turns.
+#:
+#: **The horizon is the next land purchase, not the season.** Reserving for every pen the schedule
+#: ever builds would hold ten squares out of twenty-one on day 0 and push the whole planting to the
+#: rim. A parcel reopens near ground, so only the pens that have to fit on ground we already own are
+#: the ones sowing owes anything to -- d2 and d4 here, which is two, which is exactly what he keeps.
+#:
+#: A reserved square is a preference and never a loss: if sowing runs out of ordinary ground it takes
+#: the reserved squares rather than leave a planting unsown, because a crop in the ground today beats
+#: a pen sited well in two days.
+PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL = True
+
+
+def _pens_due_before_more_land(sched, day):
+    """How many pens the schedule builds after `day` but before it buys its next parcel."""
+    nxt = min((d for d in sorted(sched)
+               if d > day and int(sched[d].get("land", 0) or 0) > 0), default=None)
+    return sum(int(sched[d].get("builds", 0) or 0) for d in sorted(sched)
+               if d > day and (nxt is None or d < nxt))
+
+
 def _outstanding_places(sched, day, tiles):
     """The schedule's placements through `day` that no animal is standing on yet, in row order.
 
@@ -1841,12 +1880,27 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     def _outstanding(crop):
         return want[crop] - state["planted"][crop] - live[crop]
 
+    # See `PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL`. Held nearest-first,
+    # because that is the ground a pen is worth more on and the ground sowing is about to take.
+    sow_order = plant_order
+    if PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL:
+        owed_later = _pens_due_before_more_land(sched, day)
+        if owed_later > 0:
+            free_now = [t for t in plant_order
+                        if t not in taken and tiles[t[1]][t[0]] is None]
+            held = set(free_now[:owed_later])
+            sow_order = [t for t in plant_order if t not in held]
+
     for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
         qty = want[crop]
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
         for _ in range(qty - state["planted"][crop] - live[crop]):
-            spot = _next_ground(plant_order, tiles, taken)
+            spot = _next_ground(sow_order, tiles, taken)
+            # A preference, never a loss: ordinary ground first, the held squares rather than
+            # leave the row unsown.
+            if spot is None:
+                spot = _next_ground(plant_order, tiles, taken)
             if spot is None:
                 break
             pins[spot] = ("PLANT", crop, RT.plant_prize(crop, day))
