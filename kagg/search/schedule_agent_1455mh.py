@@ -2867,6 +2867,62 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     return split
 
 
+#: **HERD_SPLIT_IS_A_SEASON_DECISION -- the split decides the MIX; the schedule decides the ORDER.**
+#:
+#: `_place_animals` used to hand `_herd_split` the herd accumulated through **today** and then use
+#: its answer as today's cumulative target. That makes one function decide two different things, and
+#: it gets the second one wrong: every branch of the split fills a species to a cap before it gives
+#: anything to the other, so on a schedule that interleaves them the later species is deferred to
+#: the end of the herd regardless of which days its rows sit on.
+#:
+#: Measured on the kawashigi board, seed 11, FILLS not offers. His `animals_bought` rows ARE his
+#: recorded order stream -- `d0 COW2 SHEEP2, d3 COW1, d5 COW1, d7 COW2 SHEEP1, d8 SHEEP1, d9 COW2,
+#: d11 COW2` -- so any divergence here is ours. Cumulative bought at dusk:
+#:
+#:                ours          his tape
+#:     d5         C4 / S2       C4 / S2       identical to here
+#:     d7         C6 / S2       C6 / S3       his d7 row is COW 2 + SHEEP 1
+#:     d8         C8 / S2       C6 / S4       his d8 row is SHEEP 1
+#:     d9         C10 / S2      C8 / S4
+#:     d11        C10 / S4      C10 / S4      the totals reconcile, four days late
+#:
+#: The MIX was never in dispute. YARN_STORE lands on this board at d12 -- the fourth draw, outside
+#: `WOOL_SHOP_DRAW_LIMIT` -- so `WOOL_SHOP_SETS_THE_HERD` pins COW at `WOOL_SHOP_NO_YARN_COW = 10`
+#: and the split returns COW 10 / SHEEP 4, which is exactly what the schedule asks for. Only the
+#: order moved, and the order is what the sells depend on: two sheep that arrive on d11 instead of
+#: d7 and d8 shear nothing into the d8-d10 wool rows, and a sheep's first yield is 6 days out.
+#:
+#: So the split is asked about the SEASON, once, and its answer is spent along the schedule's own
+#: rows in day order -- a head keeps its scheduled species while that species has season allowance
+#: left, and flips only when it does not. On a board whose shops genuinely say all-cow the allowance
+#: runs out at the first sheep row and every later one still becomes a cow, so the adaptivity the
+#: flag was built for is untouched; what is removed is the reordering it was never asked for.
+HERD_SPLIT_IS_A_SEASON_DECISION = True
+
+
+def _herd_through_day(sched, day, split):
+    """Today's cumulative COW/SHEEP target: the schedule's rows in day order, re-labelled to `split`.
+
+    Walks every row from day 0 so the allowance is consumed in the order the season buys in, and
+    counts only the heads rowed on or before `day`. A head whose scheduled species still has season
+    allowance keeps it; one whose species is exhausted takes the other, which is how a board that
+    wants a different mix still gets it. Species other than COW and SHEEP are not the split's
+    business and are left to the caller's own accumulation.
+    """
+    room = {"COW": int(split["COW"]), "SHEEP": int(split["SHEEP"])}
+    out = collections.Counter()
+    for dd in sorted(sched):
+        for a in ("COW", "SHEEP"):
+            for _ in range(int((sched[dd].get("animals_bought") or {}).get(a, 0) or 0)):
+                pick = a if room[a] > 0 else ("SHEEP" if a == "COW" else "COW")
+                if room[pick] <= 0:
+                    continue
+                room[pick] -= 1
+                if dd <= day:
+                    out[pick] += 1
+    return out
+
+
 #: **How many of the schedule's animals become GEESE, swapped in place and as early as possible.**
 #:
 #: RESTORED. `7a88d30` ("Delete the geese rather than leave a losing flag in the tree") deleted this
@@ -4506,8 +4562,21 @@ def make_agent(schedule, me=0, router=True):
             # grow, so the total is capped at the schedule's own count, while every animal still
             # unbought is re-aimed at whatever the shops now say. Shops keep unlocking to day 24, so
             # this keeps improving as the evidence arrives.
-            _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
-            want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
+            # **Ask about the SEASON, spend along the schedule's rows -- see
+            # `HERD_SPLIT_IS_A_SEASON_DECISION`.** Handing the split today's partial herd made it
+            # decide the buying ORDER as well as the mix, and its cows-first fill deferred every
+            # floating sheep to the end of the herd.
+            if HERD_SPLIT_IS_A_SEASON_DECISION:
+                _season = collections.Counter()
+                for dd in sched:
+                    for a, qty in (sched[dd].get("animals_bought") or {}).items():
+                        _season[a] += int(qty)
+                _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
+                _through = _herd_through_day(sched, day, _s)
+                want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
+            else:
+                _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
+                want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue
