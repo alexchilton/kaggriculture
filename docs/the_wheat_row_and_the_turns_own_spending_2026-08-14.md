@@ -126,3 +126,71 @@ purchases are `(shed + carried)_now + fed_today - (shed + carried)_dawn - harves
 same shape `SEED_ROW_IS_A_FLOOR` already uses for seed (`bought = seeds_now + planted_today -
 seeds_dawn`), with one extra term. Model it on that, and dawn-latch the wheat exactly as
 `state["seeds_dawn"]` is latched.
+
+## What d8 actually is: the first milk day
+
+Established by measurement after both fixes above were reverted.
+It supersedes the framing of this whole document — the wheat row is a symptom.
+
+**Forcing the tape's exact d8 market does not reproduce his d8 market.**
+Replaying his hour-stamped `orders` verbatim (buys and sells together):
+
+    d8            ours/tape       baseline was
+    feed             9/10             2/10
+    care             9/10             2/10
+    sell             6/18            18/18
+    buy_product     10/17             5/17
+    + sold        $524/$3,177     $3,220/$3,177
+
+6 units sold — exactly the `SELL FERTILIZER 6`.
+His `SELL MILK 12` filled **zero**, because we hold no milk.
+So `buy_product` cannot match until the sells match, and the sells cannot match until the goods
+exist. Every order-logic fix was downstream of the binding constraint.
+
+The other half matters as much: with his market forced, `feed 2/10 -> 9/10` and `care 2/10 -> 9/10`.
+**The d8 unit plan is right — the day is starved, not misrouted.**
+`crew.cover` also covers d8 completely (39/39 jobs, nothing dropped), so the
+`19 jobs left uncovered on day 8` at `crew.py:120` is STALE — invalidated by the `Job.turns` fix
+recorded twenty lines below it in the same docstring.
+
+**The herd mix is not the cause.** Ours matches the tape animal for animal at every dawn:
+
+    day     COW    SHEEP   GOOSE
+    d1      2/2     2/2     0/0
+    d4      3/3     2/2     0/0
+    d6      4/4     2/2     0/0
+    d8      6/6     3/3     0/0
+
+**Why d8 specifically.** `COW` is `first_yield_day 8, interval 2, max_held 6, product MILK`.
+Cows placed on d0 first yield on d8, holding up to 6 each — two early cows is 12 milk, which is
+exactly his `SELL MILK 12`. His shed holds 0 milk at d8 dawn, same as ours: the 12 units are
+collected *during* d8. d8 is not a poor day, it is the day the cows first pay out.
+
+**The capability we do not use.** `PLACE` is overloaded (`kaggriculture.py:363`):
+
+    if item in ANIMALS and tile.kind == ANIMALS[item]["structure"] and "animal" not in tile:
+        ...place the animal...
+    if _is_shed_adjacent(...):          # otherwise: targeted shed deposit of n units
+        private["shed"][item] += min(n, inv.get(item, 0))
+
+His `u2:PLACE/MILK` and `u4:PLACE/MILK` at h05 are **milk deposits, not animal placements**, and
+`SELL MILK 12` is in that same h05 order block — the unit phase runs before `_process_market`
+(`:922` then `:928`), so it lands and sells in one turn.
+
+This also corrects the reading of d8 `place 0/3`: two of those three are shed deposits, not animals.
+
+`PLACE <product> <n>` deposits a NAMED QUANTITY. `DROP` dumps a unit's whole inventory with no
+amount and no choice of item. **The agent only ever emits DROP**, and on d8 it drops at h07, h17,
+h18 and h23 — all after his h05 sell. So the milk cannot reach the shed before the turn meant to
+sell it.
+
+    cows placed early -> first_yield_day 8 -> collect on d8 -> PLACE 12 MILK into the shed at h05
+                      -> SELL MILK 12 in the same turn      -> funds BUY_PRODUCT WHEAT -> feed 10/10
+
+## Next step
+
+A measurement, not a flag: does the agent emit any milk collection on d8, and if so why does it not
+reach the shed before h05. `PLACE <product> <n>` as a shed deposit appears to be unused anywhere in
+the agent.
+
+Do NOT reopen: the herd mix, d8's routing/job list, or sizing the wheat row.
