@@ -93,13 +93,47 @@ Two separate causes on d8, both visible above:
 - `state["ordered"]` is credited when an order is QUEUED, so the twelve units the book refused at
   h01 drive `owed` to 0 and the row is never re-offered, however much money lands later.
 
+## One hand per ripe pen: `ONE_HAND_PER_FUNDING_PEN`
+
+The tour ORDER was never the defect, and neither was the flag. Reading the work sequence `cover`
+hands each unit on d8 -- remembering that `schedule_agent_1455mh:3809` builds task tiles as `(x, y)`
+while the board is `(y, x)`, which cost one wrong diagnosis in this session:
+
+    u4  0. (4,4) [FEED, CARE, COLLECT_FERTILIZER, HARVEST]  4t  funds   <== ripe cow
+        1. (4,3) [FEED, CARE, COLLECT_FERTILIZER, HARVEST]  4t  funds   <== the OTHER ripe cow
+
+Both ripe pens correctly flagged `funds`, both at the FRONT of the tour -- and BOTH ON ONE HAND.
+Eight turns of work back to back, so the second cow cannot be banked before ~h08. The tape puts one
+hand on each. `greedy` ranks on `(added turns, unit, tile, index)`, pure cheapest-insertion, so
+appending the second cow to the hand already standing on the first always wins.
+
+The fix is a preference inside that ranking, never a refusal. **It also has to be repeated in
+`COMPACT`**, which accepts any relocation that lowers total turns and silently stacked them back --
+the spread survived `greedy` and vanished before the tour was built.
+
+    baseline      exact 447/697   d16 32,419
+    bank only     exact 465 (+18) d16 31,321 (-1,098)
+    split only    exact 468 (+21) d16 31,888 (-531)
+    split + bank  exact 465 (+18) d16 31,321 (-1,098)   BYTE-IDENTICAL to bank alone
+
+**The two are not complementary.** With the banking flag on, the split is a no-op: once each funding
+pen needs its own depot stop, stacking them is already the expensive option and `greedy` separates
+them without being asked. Two routes to the same assignment.
+
+d0-d7 are byte-identical to baseline across all 41 rows, so nothing regresses in order. The herd
+goes exact from d10 (`animals 13/14 -> 14/14`, d10-d16) and the first cow's harvest moves h05 -> h03.
+
+**d8's target cells do not move in ANY arm**: `buy_product 5/17`, `feed 2/10`, `care 2/10` are
+identical in all four. The milk is still not in the shed by h05 -- u1's cow is job 1 on its tour,
+behind an at-risk pen it must feed to keep the animal alive, so it harvests at h10.
+
 ## Next
 
-1. **Both ripe pens are the first stop for two units, all ops in one visit, bank on the tile.**
-   `Job.funds` already marks them (`rush` is True on d8 and the row owes MILK) but it orders the
-   ASSIGNMENT, not the position within each unit's tour -- which is why u1 reaches its cow at h11.
-2. Then credit `state["ordered"]` on the FILL, so the wheat row re-offers as the milk money lands.
-3. Then re-measure `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` on top of both.
+1. The remaining d8 gap is the WHEAT ROW, not the milk -- `HIRE_FIRST` puts nine hires ahead of it
+   at h00, and `state["ordered"]` is credited on the QUEUE so a refused order is never re-offered.
+   Fix the credit first; it is the only one of the three that changes `buy_product 5/17`.
+2. Only then is it worth asking whether a `funds` pen should outrank an at-risk pen on the same
+   hand -- that trade is an animal's life against the day's cash and must not be guessed at.
 
 Do NOT reopen: the herd mix, d8's routing/job list (`crew.cover` covers 39/39), or sizing the
 wheat row.

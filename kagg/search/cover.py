@@ -434,6 +434,33 @@ BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
 #: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
 BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
 
+#: Whether two pens the day's row is WAITING ON may be stacked on the same hand.
+#:
+#: Day 8 of the Kawashigi tape. The two cows placed on day 0 open d8 holding six units each -- twelve
+#: milk, exactly his `SELL MILK 12`, and that sale funds the day: the row buys `WHEAT 17` on a $4
+#: dawn bank and the wheat feeds ten animals. His plan puts ONE HAND ON EACH ripe pen, read off the
+#: raw replay:
+#:
+#:     u4   h02 (4,4) PICKUP/WHEAT   h03 FEED   h04 CARE   h05 HARVEST   h06 PLACE/MILK
+#:     u2                                                  h04 HARVEST   h06 PLACE/MILK
+#:
+#: Ours puts both on u4, as jobs 0 and 1 of its tour -- both correctly flagged `funds`, both at the
+#: FRONT, so neither the flag nor the ordering is wrong. But that is eight turns of work back to
+#: back on one hand, so the second cow's milk cannot reach the shed before ~h08.
+#:
+#: **Two hours late fills exactly as much as thirteen.** Forcing the tape's own d8 orders on top of
+#: `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` was byte-identical to forcing them without it -- `sell
+#: 6/18`, `+ sold $524/$3,177` -- because `SELL MILK 12` at h05 found an empty shed either way. So
+#: the delivery rule cannot pay until the two harvests happen at the same time.
+#:
+#: `greedy` ranks on `(added turns, unit, tile, index)`, pure cheapest-insertion, so appending the
+#: second cow to the hand already standing on the first always wins. That is right for ordinary work
+#: -- its own docstring measures round-robin turning 776 idle turns into 742 extra moves -- and
+#: wrong for the two stops the day's cash depends on. This is therefore a PREFERENCE inside the
+#: existing ranking and never a refusal: a funding pen with nowhere else to go still gets placed, so
+#: it cannot leave one uncovered.
+ONE_HAND_PER_FUNDING_PEN = True
+
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -1395,7 +1422,14 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         got = slot_now(u, j, cap[u])
                         if got is None:
                             continue
-                        key = (got[0] - used[u], u, j.tile, got[1])
+                        # **A second funding pen prefers a hand that has none.** See
+                        # `ONE_HAND_PER_FUNDING_PEN`. Leads the key, so it outranks travel cost --
+                        # the value of these two stops is the HOUR they finish, not the walk they
+                        # cost. It only ever discriminates between feasible slots, so a funding pen
+                        # with nowhere else to go is still placed by the same pass.
+                        stacked = (ONE_HAND_PER_FUNDING_PEN and j.funds
+                                   and any(x.funds for x in routes[u]))
+                        key = (stacked, got[0] - used[u], u, j.tile, got[1])
                         if best is None or key < best[0]:
                             best = (key, j, u, got[1], got[0])
                 if best is None:
@@ -1437,6 +1471,14 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # cannot answer for the home unit. Every other unit is untouched and can.
                         got = slot(v, j, rest) if v == u else slot_now(v, j)
                         if got is None:
+                            continue
+                        # **Compaction must not undo the funding spread.** See
+                        # `ONE_HAND_PER_FUNDING_PEN`. This loop accepts any move that lowers total
+                        # turns, and stacking the second funding pen back onto the hand already
+                        # standing on the first always does -- which is how the spread was measured
+                        # to survive `greedy` and then vanish before the tour was built.
+                        if (ONE_HAND_PER_FUNDING_PEN and j.funds and v != u
+                                and any(x.funds for x in routes[v])):
                             continue
                         gain = ((used[u] - got[0]) if v == u
                                 else (used[u] + used[v]) - (without + got[0]))
