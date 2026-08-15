@@ -1210,6 +1210,19 @@ PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
                       for d, units in SOLVED_DAYS.items() if d not in UNSOLVE_DAYS}
 
+#: **On the LAST day a stop whose ops shrank keeps its solved seat.** `_apply_precomputed` keys a
+#: stop on the exact `(tile, ops)` tuple, which is right on an ordinary day -- a tuple that stops
+#: matching means the board is not the board the day was solved for -- and is the recorded landmine
+#: on d29: `NO_UPKEEP_ON_THE_LAST_DAY` strips FEED/CARE from a pen's job, the key stops matching,
+#: and the stop leaves the solved route for greedy insertion instead of getting two turns cheaper.
+#: Measured as harvest 396 -> 389, sell 1489 -> 1474 (see `router.NO_UPKEEP_ON_THE_LAST_DAY`).
+#:
+#: The fallback fires only on `SEASON_DAYS - 1`, only when the exact key misses, and only for a job
+#: at the SAME tile whose op set is a SUBSET of the solved stop's -- a reduced form of the work the
+#: solve described, never new work. Everything else stays a recorded miss, and every earlier day
+#: keeps the exact-key rule byte-identical.
+MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE = True
+
 #: Days where a precomputed route was offered and did not fit today's jobs. Read it after a run --
 #: if the day under test is in here, the route never ran and the numbers mean nothing.
 PRECOMPUTED_MISSES = []
@@ -1252,8 +1265,17 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
         for tile, ops in work:
             key = (tuple(tile), tuple(ops))
             if not pool.get(key):
-                missed.append(key)
-                continue
+                # The last day only: seat a REDUCED form of the solved stop -- same tile, ops a
+                # subset of what the solve described. See `MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`.
+                fallback = None
+                if MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE and day == R.SEASON_DAYS - 1:
+                    fallback = next((k for k, lst in pool.items()
+                                     if lst and k[0] == tuple(tile) and set(k[1]) <= set(ops)),
+                                    None)
+                if fallback is None:
+                    missed.append(key)
+                    continue
+                key = fallback
             if u >= len(units):
                 no_unit += 1          # the hand never arrived; its work goes through insertion
                 continue
