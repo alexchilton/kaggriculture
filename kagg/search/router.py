@@ -117,6 +117,44 @@ CRITICAL = 1_000_000
 #: ANIMALS STANDING IN PENS per day, never on cells or money alone.
 FEED_IS_CRITICAL_WHEN_AT_RISK = True
 
+#: **Whether a one-shot crop on its LAST SAFE DAY is CRITICAL, exactly as a hungry pen is.**
+#:
+#: `_decay_plants` (`reference/kaggriculture.py:752`) runs on **every step**, not at the rollover:
+#: a one-shot crop past `max_lifespan_step = (planted_day + max_yield_day + 1) * 24` loses one unit
+#: every two steps and becomes a WEED at zero. `_one_shot_is_finished` legalises the HARVEST at
+#: `age >= max_day`. So the safe window is exactly ONE DAY WIDE, for every one-shot crop -- wheat
+#: legal at age 4 and decaying from age 5 h00, melon legal at 12 and decaying from 13.
+#:
+#: Water does not extend it. `max_lifespan_step` is fixed when the crop is planted
+#: (`kaggriculture.py:224`) and nothing updates it for a one-shot. This is an expiry date, not
+#: thirst, and it is the second weed source -- the first being `consecutive_unwatered >= 2`.
+#:
+#: **`cover.py` contains ZERO references to `max_lifespan_step`**, and `cover` is what decides the
+#: visit ORDER. So a harvest with four hours to live was ranked identically to one with all day and
+#: landed wherever insertion was cheapest. Measured on seed 11 against the kawashigi tape, weeds
+#: off so nothing is random:
+#:
+#:     died     tile     crop  planted  safe day   job built that day            seated
+#:     17/h05  (0,7)    WHEAT       12        16   [WATER, HARVEST, PLANT, ...]  False
+#:     25/h07  (8,4)    WHEAT       20        24   [WATER, HARVEST, HARVEST,..]  False
+#:     28/h09  (1,2)    WHEAT       23        27   [WATER, HARVEST, HARVEST,..]  False
+#:
+#: **Eleven of sixteen had a HARVEST job built on the safe day and it was not seated.** The job
+#: exists and loses the auction -- a ranking failure, not a missing job and not a turn shortage.
+#: Pricing it at `CRITICAL` is the same handle `FEED_IS_CRITICAL_WHEN_AT_RISK` uses for the pen that
+#: loses its animal tonight, and it puts the stop in `cover`'s first greedy pass.
+#:
+#: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
+#: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
+#: whole fix has to sit on the day before, which is what `age >= max_day` selects.
+HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
+
+#: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
+#: so an ungated version WOULD re-rank d4 -- inside the d0-d8 window that is matched to the tape op
+#: for op and must not regress. Nothing actually rots before d16 on seed 11, so gating here costs
+#: nothing measurable and removes the whole class of risk by construction.
+HARVEST_CRITICAL_FROM_DAY = 9
+
 #: The reference's seed prices (`CROPS[...]["seed"]`). Seeds are NOT held in the shed or in a unit's
 #: inventory -- `private["seeds"]` is consumed directly by PLANT -- which is why PLANT never generates
 #: a depot stop no matter that it carries an item name.
@@ -745,7 +783,17 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
                                               or _one_shot_is_finished(info, age, room, day)):
-        out.append(("HARVEST", None, held * price))
+        prize = held * price
+        # **Its last safe day, and there is no second chance.** See
+        # `HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY`. `age >= max_day` is the day the harvest
+        # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
+        # every two steps from h00. So this fires on exactly the one day the tile can be taken
+        # whole, and on any day after it while something is still left to save.
+        if (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY and not info["ongoing"]
+                and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                and age >= info["max_day"]):
+            prize += CRITICAL
+        out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
     # (`kaggriculture.py:454-455`); an ongoing one only collects, so a spent strawberry sits on its
     # square for the rest of the season while the schedule still wants somewhere to plant.
