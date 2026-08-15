@@ -43,7 +43,7 @@ FILLS = {"SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL"}
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="victor", choices=sorted(B.TAPES))
+    ap.add_argument("--tape", default=B.DEFAULT_TAPE, choices=sorted(B.TAPES))
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--days", type=int, default=30)

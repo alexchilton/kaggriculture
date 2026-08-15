@@ -33,6 +33,8 @@ import sys
 
 sys.path.insert(0, ".")
 
+import kagg.plan as _PLAN  # noqa: E402  -- needs the sys.path insert above
+
 #: Bound in `main()` from `--module`. The comparison is worthless if it silently runs a different
 #: agent than the one under discussion, and this file hardcoded `schedule_agent` while every base
 #: decision in the project was about `schedule_agent`.
@@ -128,7 +130,17 @@ RETIRED_TAPES = {
 #: someone else. The two disagree in kind, not degree: the `animals` row totals -4 over six days
 #: against Seb, oscillating, which reads as timing jitter -- and -14 over fourteen days against
 #: Victor, one-directional, which is a defect. It was invisible the whole time.
-DEFAULT_TAPE = "victor"
+#:
+#: **It then happened a THIRD time, which is why this is no longer a literal.** The project moved to
+#: Kawashigi's plan on 2026-08-13 -- `kagg/plan.py` holds `SHIPPED_PLAN` and the measurement behind
+#: it, his plan winning on both boards ($115,477 vs $112,402 on Victor's, $112,026 vs $56,940 on his
+#: own) -- while this stayed pinned to `"victor"` for two days. So every grid run without an explicit
+#: `--tape` ran the shipped plan on Victor's board and diffed it against Victor's actions.
+#:
+#: The default is now DERIVED from the same constant the submission is built from. `kagg/plan.py`
+#: exists precisely because "which plan do we play" was a string repeated across 27 files until it
+#: looked like a fact; this was the 28th, and it is the one the grid is read off.
+DEFAULT_TAPE = _PLAN.SHIPPED_PLAN.parent.name
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 CROPS = ("WHEAT", "STRAWBERRY", "MELON", "TOMATO", "CARROT")
 ANIMALS = ("COW", "SHEEP", "CHICKEN", "GOOSE", "PIG")

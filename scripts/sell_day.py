@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO))
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--day", type=int, default=5)
-    ap.add_argument("--tape", default="victor")
+    ap.add_argument("--tape", default=B.DEFAULT_TAPE)
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--module", default="schedule_agent")
     args = ap.parse_args()
