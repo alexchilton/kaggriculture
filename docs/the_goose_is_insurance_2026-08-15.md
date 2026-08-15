@@ -50,6 +50,16 @@ Both seats settle into ONE inventory. Measured opponent season volumes:
 
     MILK  250-410      WOOL  ~250      EGG  0    -- and ours is 0 too
 
+> **RETRACTED 2026-08-15. These two volumes are summed sell OFFERS, not fills.** The agent re-posts
+> an unfilled order every turn, so they are inflated by roughly 6x. Measured against market
+> inventory instead: across 26 replays a no-yarn board ends at `inv - I0 = +59` units of wool for
+> **both herds combined**, and `93240733` lands at +59 with the opponent running zero sheep. Real
+> wool supply is ~8 units per sheep per season, so two full herds move ~60-70 units, not 500.
+> Milk was checked the same way and is ~200-240 units per seat per season, realised at $37-$78 a
+> unit on a milk-poor board and $231 on a milk-rich one. **Every number below that uses `theirs`
+> is therefore wrong and the ranking must be re-derived from fills before this doc is used again.**
+> See `feedback_offers_are_not_fills`, which this document violated.
+
 Six animals, net of purchase cost:
 
                               2 shops draining it    ZERO shops draining it

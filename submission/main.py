@@ -1340,14 +1340,14 @@ SOLVED_DAYS = {
         11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER',))],
     },
     14: {
-        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 2), ('WATER', 'HARVEST'))],
+        0: [],
         1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
         2: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((2, 9), ('WATER',)), ((0, 9), ('WATER',)), ((1, 9), ('WATER',)), ((1, 8), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER',))],
         3: [((7, 3), ('WATER', 'HARVEST')), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 2), ('WATER',)), ((9, 1), ('PLANT', 'WATER')), ((8, 0), ('PLANT', 'WATER'))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 1), ('WATER', 'HARVEST'))],
         5: [((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 0), ('WATER',)), ((6, 0), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER',)), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((8, 4), ('WATER', 'HARVEST'))],
         6: [((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 6), ('WATER',)), ((2, 5), ('WATER',)), ((1, 5), ('WATER',)), ((1, 4), ('FERTILIZE', 'WATER')), ((0, 4), ('FERTILIZE', 'WATER'))],
-        7: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 1), ('WATER', 'HARVEST'))],
+        7: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 2), ('WATER', 'HARVEST'))],
         8: [((2, 3), ('FERTILIZE', 'WATER')), ((1, 3), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((1, 1), ('WATER',)), ((0, 1), ('WATER',)), ((0, 0), ('PLANT', 'WATER')), ((1, 0), ('WATER',))],
     },
     15: {
@@ -1483,84 +1483,84 @@ SOLVED_DAYS = {
         12: [((1, 4), ('WATER',)), ((1, 6), ('HARVEST',)), ((0, 6), ('HARVEST',)), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((0, 9), ('WATER',)), ((1, 9), ('WATER',)), ((2, 9), ('WATER',)), ((3, 9), ('HARVEST',)), ((4, 9), ('HARVEST',))],
     },
     24: {
-        0: [((3, 2), ('FERTILIZE', 'WATER')), ((2, 1), ('FERTILIZE', 'WATER')), ((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('HARVEST',)), ((0, 0), ('FERTILIZE', 'WATER'))],
-        1: [((5, 1), ('WATER',)), ((6, 1), ('WATER',)), ((6, 0), ('HARVEST', 'DIG')), ((7, 0), ('WATER',)), ((8, 0), ('FERTILIZE', 'WATER')), ((9, 0), ('PLANT', 'WATER')), ((9, 1), ('FERTILIZE', 'WATER'))],
-        2: [((4, 6), ('WATER',)), ((3, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 6), ('WATER',)), ((1, 5), ('WATER',)), ((0, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        3: [((4, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 8), ('WATER', 'HARVEST', 'HARVEST')), ((4, 9), ('WATER', 'HARVEST')), ((3, 9), ('WATER', 'HARVEST'))],
-        4: [((2, 3), ('WATER',)), ((1, 3), ('WATER',)), ((0, 3), ('FERTILIZE', 'WATER')), ((0, 4), ('WATER',)), ((0, 6), ('FERTILIZE', 'WATER')), ((1, 7), ('WATER',)), ((2, 7), ('FERTILIZE', 'WATER'))],
-        5: [((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 2), ('WATER',)), ((1, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 2), ('FERTILIZE', 'WATER')), ((0, 1), ('HARVEST',))],
-        6: [((3, 7), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('HARVEST',)), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((1, 8), ('HARVEST',))],
-        7: [((7, 3), ('WATER',)), ((7, 2), ('FERTILIZE', 'WATER')), ((7, 1), ('HARVEST', 'DIG')), ((8, 1), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((8, 3), ('FERTILIZE', 'WATER'))],
-        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        9: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 0), ('WATER',)), ((4, 0), ('FERTILIZE', 'WATER', 'HARVEST'))],
-        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((9, 3), ('WATER',)), ((9, 2), ('HARVEST', 'DIG'))],
+        0: [((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('HARVEST',)), ((0, 0), ('FERTILIZE', 'WATER')), ((0, 1), ('HARVEST',)), ((0, 2), ('FERTILIZE', 'WATER'))],
+        1: [((5, 1), ('WATER',)), ((6, 0), ('HARVEST', 'DIG')), ((7, 0), ('WATER',)), ((8, 0), ('FERTILIZE', 'WATER')), ((9, 0), ('PLANT', 'WATER')), ((9, 1), ('FERTILIZE', 'WATER')), ((9, 2), ('HARVEST', 'DIG'))],
+        2: [((3, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((1, 5), ('WATER',)), ((0, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        3: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 8), ('WATER', 'HARVEST', 'HARVEST')), ((4, 9), ('WATER', 'HARVEST')), ((3, 9), ('WATER', 'HARVEST'))],
+        4: [((2, 3), ('WATER',)), ((1, 3), ('WATER',)), ((0, 3), ('FERTILIZE', 'WATER')), ((0, 4), ('WATER',)), ((0, 6), ('FERTILIZE', 'WATER')), ((0, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        5: [((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('FERTILIZE', 'WATER')), ((2, 2), ('WATER',)), ((2, 1), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((4, 6), ('WATER',)), ((3, 7), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('HARVEST',)), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((1, 8), ('HARVEST',))],
+        7: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((8, 2), ('FERTILIZE', 'WATER')), ((8, 1), ('FERTILIZE', 'WATER')), ((7, 1), ('HARVEST', 'DIG'))],
+        8: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 7), ('FERTILIZE', 'WATER')), ((2, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 0), ('WATER',)), ((4, 0), ('FERTILIZE', 'WATER', 'HARVEST'))],
+        10: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((1, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
     },
     25: {
-        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER',)), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        1: [((6, 2), ('FERTILIZE', 'WATER')), ((5, 1), ('FERTILIZE', 'WATER')), ((4, 1), ('FERTILIZE', 'WATER')), ((3, 1), ('HARVEST',)), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((0, 2), ('HARVEST',))],
+        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('FERTILIZE', 'WATER')), ((5, 1), ('FERTILIZE', 'WATER')), ((5, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER',)), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((0, 2), ('HARVEST',))],
         2: [((4, 6), ('FERTILIZE', 'WATER')), ((1, 8), ('FERTILIZE', 'WATER')), ((0, 8), ('FERTILIZE', 'WATER')), ((0, 9), ('FERTILIZE', 'WATER')), ((1, 9), ('FERTILIZE', 'WATER')), ((2, 9), ('FERTILIZE', 'WATER'))],
         3: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 5), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('WATER',)), ((0, 6), ('HARVEST',))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 4), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 3), ('HARVEST',))],
-        5: [((7, 3), ('FERTILIZE', 'WATER')), ((8, 3), ('FERTILIZE', 'WATER')), ((8, 4), ('FERTILIZE', 'WATER')), ((9, 4), ('FERTILIZE', 'WATER')), ((9, 3), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        6: [((3, 6), ('WATER',)), ((2, 6), ('WATER', 'HARVEST')), ((1, 6), ('HARVEST',)), ((1, 4), ('WATER',)), ((1, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        7: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        8: [((4, 0), ('HARVEST',)), ((3, 0), ('HARVEST',)), ((2, 0), ('HARVEST',)), ((1, 0), ('WATER',)), ((0, 0), ('WATER',)), ((0, 1), ('WATER',)), ((1, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 1), ('HARVEST',))],
-        9: [((7, 2), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((9, 2), ('PLANT', 'WATER')), ((9, 1), ('WATER',)), ((9, 0), ('WATER',)), ((8, 0), ('WATER',)), ((8, 1), ('HARVEST', 'DIG'))],
-        10: [((4, 7), ('WATER',)), ((4, 9), ('HARVEST',)), ((3, 9), ('HARVEST',)), ((3, 8), ('HARVEST',)), ((2, 8), ('HARVEST',)), ((2, 7), ('HARVEST',)), ((1, 7), ('HARVEST',)), ((0, 7), ('WATER', 'HARVEST'))],
-        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        5: [((7, 3), ('FERTILIZE', 'WATER')), ((8, 3), ('FERTILIZE', 'WATER')), ((8, 4), ('FERTILIZE', 'WATER')), ((9, 4), ('FERTILIZE', 'WATER')), ((9, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((3, 6), ('WATER',)), ((1, 6), ('HARVEST',)), ((1, 4), ('WATER',)), ((0, 4), ('WATER', 'HARVEST', 'HARVEST')), ((0, 3), ('HARVEST',)), ((1, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        7: [((6, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((7, 1), ('PLANT', 'WATER')), ((8, 0), ('WATER',)), ((7, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        8: [((4, 0), ('HARVEST',)), ((3, 0), ('HARVEST',)), ((2, 0), ('HARVEST',)), ((1, 0), ('WATER',)), ((0, 0), ('WATER',)), ((0, 1), ('WATER',)), ((1, 1), ('PLANT', 'WATER')), ((2, 1), ('HARVEST',)), ((3, 1), ('HARVEST',))],
+        9: [((6, 2), ('FERTILIZE', 'WATER')), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 2), ('WATER',)), ((9, 2), ('WATER', 'HARVEST', 'DIG')), ((9, 1), ('WATER',)), ((9, 0), ('WATER',)), ((8, 1), ('HARVEST', 'DIG'))],
+        10: [((4, 7), ('WATER',)), ((4, 9), ('HARVEST',)), ((3, 9), ('HARVEST',)), ((3, 8), ('HARVEST',)), ((2, 8), ('HARVEST',)), ((2, 7), ('HARVEST',)), ((0, 7), ('PLANT', 'WATER')), ((1, 7), ('HARVEST',))],
+        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
     },
     26: {
-        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER',)), ((3, 1), ('WATER',)), ((2, 1), ('WATER',)), ((1, 1), ('WATER',)), ((1, 2), ('WATER',)), ((2, 2), ('WATER',)), ((2, 3), ('PLANT', 'WATER')), ((1, 3), ('WATER',))],
-        1: [((5, 1), ('WATER',)), ((5, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((4, 0), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',)), ((1, 0), ('HARVEST',))],
-        2: [((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',))],
-        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((8, 3), ('WATER', 'HARVEST', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((7, 1), ('WATER',))],
+        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 1), ('WATER',)), ((2, 1), ('WATER',)), ((1, 1), ('WATER',)), ((1, 0), ('HARVEST',))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER',)), ((4, 1), ('WATER',)), ((4, 0), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',))],
+        2: [((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',)), ((1, 4), ('WATER',)), ((1, 3), ('PLANT', 'WATER')), ((1, 2), ('WATER',)), ((2, 2), ('WATER',))],
+        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((8, 3), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((7, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
         5: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((3, 8), ('WATER',)), ((2, 8), ('WATER',))],
-        6: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        7: [((8, 4), ('WATER',)), ((9, 4), ('WATER',)), ((9, 3), ('WATER',)), ((9, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER',))],
-        8: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER',)), ((0, 4), ('WATER',)), ((0, 3), ('WATER',)), ((0, 2), ('WATER',)), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        6: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        7: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((9, 4), ('WATER',)), ((9, 3), ('WATER',)), ((9, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER',))],
+        8: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 4), ('WATER',)), ((0, 3), ('WATER',)), ((0, 2), ('WATER',)), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [],
         10: [((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((1, 7), ('WATER',)), ((1, 8), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((1, 9), ('HARVEST',)), ((2, 9), ('DIG',)), ((3, 9), ('WATER',)), ((4, 9), ('WATER',))],
-        11: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((6, 1), ('PLANT', 'WATER')), ((6, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        11: [((5, 0), ('PLANT', 'WATER')), ((6, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 1), ('PLANT', 'WATER')), ((7, 1), ('WATER',))],
     },
     27: {
-        0: [((3, 2), ('WATER',)), ((3, 1), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((2, 1), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((1, 2), ('WATER',)), ((2, 2), ('WATER', 'HARVEST', 'HARVEST'))],
-        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('WATER', 'HARVEST', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((3, 7), ('WATER',)), ((3, 9), ('HARVEST', 'DIG'))],
-        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 1), ('WATER',)), ((6, 0), ('WATER',)), ((7, 0), ('WATER',)), ((7, 1), ('WATER',)), ((7, 2), ('WATER',)), ((6, 2), ('WATER', 'HARVEST', 'HARVEST'))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        0: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 1), ('WATER',)), ((8, 1), ('WATER',)), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('WATER', 'HARVEST', 'HARVEST'))],
+        2: [((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST', 'HARVEST')), ((0, 5), ('WATER',)), ((0, 4), ('WATER',)), ((1, 4), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        3: [((5, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((6, 0), ('WATER',)), ((7, 0), ('WATER',)), ((7, 1), ('WATER',)), ((7, 2), ('PLANT', 'WATER')), ((6, 2), ('WATER', 'HARVEST'))],
+        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER',)), ((2, 2), ('WATER', 'HARVEST', 'HARVEST')), ((2, 1), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
         5: [((5, 0), ('WATER',)), ((4, 0), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((3, 0), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((2, 0), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
-        6: [((4, 6), ('WATER', 'HARVEST', 'HARVEST')), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((3, 8), ('HARVEST', 'DIG')), ((2, 8), ('HARVEST', 'DIG')), ((2, 7), ('HARVEST', 'DIG')), ((2, 6), ('WATER',)), ((2, 5), ('WATER', 'HARVEST', 'HARVEST'))],
-        7: [((4, 9), ('DIG',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 5), ('WATER',)), ((0, 4), ('WATER',)), ((0, 3), ('HARVEST', 'DIG'))],
-        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        9: [((8, 4), ('WATER', 'HARVEST', 'HARVEST')), ((8, 3), ('WATER',)), ((8, 2), ('PLANT', 'WATER')), ((8, 1), ('WATER',)), ((9, 2), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER', 'HARVEST'))],
-        10: [((1, 4), ('WATER',)), ((1, 3), ('WATER',)), ((1, 1), ('WATER',)), ((1, 0), ('WATER',)), ((0, 0), ('PLANT', 'WATER')), ((0, 1), ('WATER',)), ((0, 2), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
-        11: [((1, 5), ('WATER', 'HARVEST', 'HARVEST')), ((1, 6), ('HARVEST', 'DIG')), ((0, 6), ('HARVEST', 'DIG')), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((1, 7), ('HARVEST', 'DIG'))],
+        6: [((4, 6), ('WATER', 'HARVEST', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((3, 7), ('WATER',)), ((2, 7), ('HARVEST', 'DIG')), ((2, 8), ('HARVEST', 'DIG')), ((3, 8), ('HARVEST', 'DIG')), ((3, 9), ('HARVEST', 'DIG'))],
+        7: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('DIG',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',))],
+        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 1), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
+        9: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST')), ((8, 3), ('WATER',)), ((8, 2), ('PLANT', 'WATER')), ((9, 2), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER', 'HARVEST'))],
+        10: [((1, 2), ('WATER',)), ((1, 0), ('WATER',)), ((1, 1), ('WATER',)), ((0, 1), ('WATER',)), ((0, 2), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((0, 3), ('HARVEST', 'DIG'))],
+        11: [((2, 5), ('WATER', 'HARVEST', 'HARVEST')), ((2, 6), ('WATER',)), ((1, 6), ('HARVEST', 'DIG')), ((0, 6), ('HARVEST', 'DIG')), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((1, 7), ('HARVEST', 'DIG'))],
     },
     28: {
-        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST'))],
+        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST')), ((0, 4), ('WATER',)), ((0, 5), ('WATER', 'HARVEST'))],
         1: [((4, 6), ('WATER',)), ((4, 7), ('WATER', 'HARVEST')), ((4, 8), ('WATER', 'HARVEST')), ((2, 9), ('WATER', 'HARVEST')), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((0, 7), ('WATER',))],
         2: [],
-        3: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((8, 3), ('WATER', 'HARVEST')), ((9, 3), ('WATER',)), ((9, 2), ('WATER', 'HARVEST')), ((9, 1), ('WATER', 'HARVEST')), ((9, 0), ('WATER', 'HARVEST'))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER', 'HARVEST')), ((1, 3), ('WATER',)), ((1, 2), ('WATER', 'HARVEST'))],
-        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        6: [((2, 5), ('WATER', 'HARVEST')), ((1, 5), ('WATER',)), ((0, 5), ('WATER', 'HARVEST')), ((0, 4), ('WATER',)), ((0, 3), ('WATER', 'HARVEST')), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER',)), ((1, 0), ('HARVEST',)), ((1, 1), ('WATER',))],
+        3: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((9, 4), ('HARVEST',)), ((9, 3), ('WATER',)), ((9, 2), ('WATER',)), ((9, 1), ('WATER', 'HARVEST'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST'))],
+        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER', 'HARVEST'))],
+        6: [((1, 5), ('WATER',)), ((1, 3), ('WATER', 'HARVEST')), ((1, 2), ('WATER', 'HARVEST')), ((1, 1), ('WATER', 'HARVEST')), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER', 'HARVEST')), ((1, 0), ('HARVEST',))],
         7: [],
-        8: [((3, 2), ('WATER', 'HARVEST')), ((3, 1), ('WATER',)), ((4, 1), ('WATER', 'HARVEST')), ((4, 0), ('WATER',)), ((5, 0), ('WATER', 'HARVEST')), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST'))],
-        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 2), ('WATER', 'HARVEST')), ((8, 2), ('WATER',)), ((8, 1), ('WATER',)), ((7, 1), ('WATER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST'))],
-        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 6), ('WATER', 'HARVEST')), ((3, 7), ('WATER', 'HARVEST')), ((1, 7), ('WATER', 'HARVEST')), ((1, 8), ('HARVEST',))],
+        8: [((4, 0), ('WATER',)), ((5, 0), ('WATER', 'HARVEST')), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST'))],
+        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('WATER', 'HARVEST')), ((8, 2), ('WATER',)), ((8, 1), ('WATER', 'HARVEST'))],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 7), ('WATER', 'HARVEST')), ((1, 7), ('WATER', 'HARVEST')), ((2, 6), ('WATER', 'HARVEST'))],
     },
     29: {
-        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('WATER', 'HARVEST')), ((0, 4), ('WATER', 'HARVEST'))],
-        1: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 5), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((0, 7), ('WATER', 'HARVEST'))],
-        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        3: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST')), ((9, 3), ('WATER', 'HARVEST'))],
-        4: [((3, 1), ('WATER', 'HARVEST')), ((2, 1), ('WATER', 'HARVEST')), ((0, 1), ('WATER',)), ((1, 1), ('WATER', 'HARVEST')), ((1, 0), ('WATER',)), ((0, 0), ('WATER', 'HARVEST'))],
-        5: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        6: [((4, 6), ('WATER', 'HARVEST')), ((4, 9), ('WATER', 'HARVEST')), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((3, 8), ('WATER', 'HARVEST'))],
-        7: [],
-        8: [((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER', 'HARVEST')), ((8, 1), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST'))],
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER', 'HARVEST'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST'))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 5), ('WATER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST')), ((0, 4), ('WATER', 'HARVEST'))],
+        3: [],
+        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 1), ('WATER',)), ((1, 0), ('WATER',))],
+        5: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 1), ('WATER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST')), ((7, 0), ('WATER', 'HARVEST'))],
+        6: [((4, 6), ('WATER', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER', 'HARVEST'))],
+        7: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 2), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST')), ((9, 2), ('WATER', 'HARVEST')), ((9, 3), ('WATER', 'HARVEST'))],
+        8: [((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER', 'HARVEST')), ((4, 0), ('WATER', 'HARVEST'))],
     },
 }
 '''
@@ -4285,6 +4285,44 @@ CRITICAL = 1_000_000
 #: ANIMALS STANDING IN PENS per day, never on cells or money alone.
 FEED_IS_CRITICAL_WHEN_AT_RISK = True
 
+#: **Whether a one-shot crop on its LAST SAFE DAY is CRITICAL, exactly as a hungry pen is.**
+#:
+#: `_decay_plants` (`reference/kaggriculture.py:752`) runs on **every step**, not at the rollover:
+#: a one-shot crop past `max_lifespan_step = (planted_day + max_yield_day + 1) * 24` loses one unit
+#: every two steps and becomes a WEED at zero. `_one_shot_is_finished` legalises the HARVEST at
+#: `age >= max_day`. So the safe window is exactly ONE DAY WIDE, for every one-shot crop -- wheat
+#: legal at age 4 and decaying from age 5 h00, melon legal at 12 and decaying from 13.
+#:
+#: Water does not extend it. `max_lifespan_step` is fixed when the crop is planted
+#: (`kaggriculture.py:224`) and nothing updates it for a one-shot. This is an expiry date, not
+#: thirst, and it is the second weed source -- the first being `consecutive_unwatered >= 2`.
+#:
+#: **`cover.py` contains ZERO references to `max_lifespan_step`**, and `cover` is what decides the
+#: visit ORDER. So a harvest with four hours to live was ranked identically to one with all day and
+#: landed wherever insertion was cheapest. Measured on seed 11 against the kawashigi tape, weeds
+#: off so nothing is random:
+#:
+#:     died     tile     crop  planted  safe day   job built that day            seated
+#:     17/h05  (0,7)    WHEAT       12        16   [WATER, HARVEST, PLANT, ...]  False
+#:     25/h07  (8,4)    WHEAT       20        24   [WATER, HARVEST, HARVEST,..]  False
+#:     28/h09  (1,2)    WHEAT       23        27   [WATER, HARVEST, HARVEST,..]  False
+#:
+#: **Eleven of sixteen had a HARVEST job built on the safe day and it was not seated.** The job
+#: exists and loses the auction -- a ranking failure, not a missing job and not a turn shortage.
+#: Pricing it at `CRITICAL` is the same handle `FEED_IS_CRITICAL_WHEN_AT_RISK` uses for the pen that
+#: loses its animal tonight, and it puts the stop in `cover`'s first greedy pass.
+#:
+#: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
+#: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
+#: whole fix has to sit on the day before, which is what `age >= max_day` selects.
+HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
+
+#: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
+#: so an ungated version WOULD re-rank d4 -- inside the d0-d8 window that is matched to the tape op
+#: for op and must not regress. Nothing actually rots before d16 on seed 11, so gating here costs
+#: nothing measurable and removes the whole class of risk by construction.
+HARVEST_CRITICAL_FROM_DAY = 9
+
 #: The reference's seed prices (`CROPS[...]["seed"]`). Seeds are NOT held in the shed or in a unit's
 #: inventory -- `private["seeds"]` is consumed directly by PLANT -- which is why PLANT never generates
 #: a depot stop no matter that it carries an item name.
@@ -4913,7 +4951,17 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
                                               or _one_shot_is_finished(info, age, room, day)):
-        out.append(("HARVEST", None, held * price))
+        prize = held * price
+        # **Its last safe day, and there is no second chance.** See
+        # `HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY`. `age >= max_day` is the day the harvest
+        # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
+        # every two steps from h00. So this fires on exactly the one day the tile can be taken
+        # whole, and on any day after it while something is still left to save.
+        if (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
+                and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                and age >= _last_safe_age(info)):
+            prize += CRITICAL
+        out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
     # (`kaggriculture.py:454-455`); an ongoing one only collects, so a spent strawberry sits on its
     # square for the rest of the season while the schedule still wants somewhere to plant.
@@ -4955,6 +5003,33 @@ HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
 #: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
 #: and truncating it would only waste the ground.
 LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+
+
+def _last_safe_age(info):
+    """The age at which a crop's produce must be off the tile, for BOTH crop shapes.
+
+    `_decay_plants` (`kaggriculture.py:752`) eats one unit every two steps once `step` passes
+    `max_lifespan_step`, and turns the tile to WEED at zero. That deadline is set in two different
+    places, and reading only the one-shot half is what let four strawberry tiles bleed out on
+    seed 11:
+
+    one-shot  `:224`      `(planted_day + max_yield_day + 1) * 24`, fixed at planting.
+                          Last safe age == `max_day`.
+
+    ongoing   `:224`      planted with `-1`, which `_decay_plants` skips -- it never decays while
+                          it is still producing.
+              `:801-802`  on the day its LAST production lands, and only then:
+                              if production_count == cd["max_yield"]:
+                                  tile["max_lifespan_step"] = (next_day + 1) * turns_per_day
+                          So the clock starts at the final production. `production_count` is
+                          `days_since_first // interval + 1`, so it reaches `max_yield` at
+                          `first + interval * (max_yield - 1)`.
+
+    Water does not extend either one.
+    """
+    if not info["ongoing"]:
+        return info["max_day"]
+    return info["first"] + info["interval"] * (info["max_yield"] - 1)
 
 
 def _one_shot_is_finished(info, age, room, day=None):
@@ -9058,16 +9133,21 @@ CROP_ADAPT_FROM_DAY = 6
 
 #: **WOOL_SHOP_SETS_THE_HERD -- an EARLY YARN_STORE makes the herd sheep-heavy.**
 #:
-#: Read off **66** downloaded games of the #1 player, 61-0-5
-#: (`docs/kawashigi_one_board_2026-08-13.md`). Shops unlock every third day, so draw #N lands on day
-#: 3N and that is verified 66/66. Against the position of the FIRST yarn store his herd is a step
-#: function with no exceptions at all:
+#: Re-measured 2026-08-15 over **74 distinct** downloaded games of the #1 player -- every replay on
+#: disk carrying his seat, deduplicated by episode id. Shops unlock every third day, so draw #N
+#: lands on day 3N. Against the position of the FIRST yarn store:
 #:
-#:     yarn first at draw #1 (d3)  : COW  6, SHEEP 12, total 18    n=10
-#:     yarn first at draw #2 (d6)  : COW  6, SHEEP 12, total 18    n=11
-#:     yarn first at draw #3 (d9)  : COW  6, SHEEP  8, total 14    n= 3
-#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP  4, total 14  n=16
-#:     no yarn store at all        : COW 10, SHEEP  4, total 14    n=22 (+4 at COW 8/SHEEP 6)
+#:     yarn first at draw #1 (d3)    : COW  6, SHEEP 9.05, total 15.05   n=21   quads 4.00
+#:     yarn first at draw #2 (d6)    : COW  6, SHEEP 9.26, total 15.26   n=23   quads 4.00
+#:     yarn first at draw #3 (d9)    : COW  6, SHEEP 6.00, total 12.00   n= 7   quads 3.00
+#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP 4.00, total 14.00   n=34   quads 3.00
+#:     no yarn store at all          : COW 9.64, SHEEP 4.36, total 14    n=56   quads 3.00
+#:
+#: **The earlier version of this table said "SHEEP 12, total 18" on draws #1-#2 and it was wrong.**
+#: He never runs 18 animals; the maximum over all 74 seats is 16. The correction was already
+#: recorded in `tests/test_the_herd_split_answers_the_recorded_shop_draw.py` on 2026-08-13 and never
+#: propagated to here or to `tests/test_the_herd_follows_the_wool_shop.py`, which is how a wrong
+#: number survived two weeks and sent a session chasing a herd size that does not exist.
 #:
 #: So `COW == 6` iff a yarn store is among the FIRST THREE draws: 24/24 yes, 0/42 no. A perfect
 #: classifier over 66 games, and the reason this flag now carries a draw limit. **The 16 games at
@@ -9083,11 +9163,22 @@ CROP_ADAPT_FROM_DAY = 6
 #: milk is what floors the milk price. Measured on our own fills, wool went out at
 #: $160/$109/$181/$146 on d24-d28 while milk took $1-$5 all season.
 #:
-#: **NOT built in, and it needs pens before it can be: the herd TOTAL moves too.** A yarn store by
-#: d6 takes him to 18 animals, not 18 split differently -- four extra SHEEP at $500 plus four pens
-#: plus their feed. That is 21 of the 24 yarn games, so it is the dominant branch, and this flag
-#: reaches none of it: `_herd_split` may only redistribute `want_total`, which the schedule fixes at
-#: 14. Raising it is a schedule change with a build and turn cost, not a split rule.
+#: **The herd TOTAL moves too -- but only on FOUR quadrants, and that closes the question for us.**
+#: Cross-tabulating the same 74 seats by quadrants owned:
+#:
+#:     quads  herd   n
+#:         3    12    4
+#:         3    14   47          <- three quadrants NEVER exceeds 14, 51 seats
+#:         4    13    1
+#:         4    14    4
+#:         4    15    9
+#:         4    16    9
+#:
+#: We play three quadrants, and on three quadrants he caps at 14 -- exactly the count the schedule
+#: fixes. So there is no herd-total gap to close at our board size, and `_herd_split` being unable
+#: to raise `want_total` costs nothing. Growing the herd is part of buying the fourth parcel, not a
+#: separate change: see `docs/fable_fourth_quadrant_reopened_2026-08-15.md`, which reaches the same
+#: place from the field data.
 WOOL_SHOP_SETS_THE_HERD = True
 
 #: What the leader holds cows to once an early wool shop is on the board. 24 of 24 such games ran
@@ -9121,6 +9212,54 @@ WOOL_SHOP_DRAW_LIMIT = 3
 #: the trap executable.
 WOOL_SHOP_NO_YARN_COW = 10
 
+#: **Fit the whole herd to the leader's THREE-QUADRANT seats, which is the board we play.**
+#:
+#: Measured 2026-08-15 over 74 distinct episodes on disk carrying his seat, restricted to the 51
+#: that own three quadrants. Seat alignment verified on `92498144`, where `farms[0]` is カワシギ at
+#: $149,998 and matches `rewards[0]`. He has exactly three answers there:
+#:
+#:     COW  SHEEP  total   n
+#:       6      6     12    4     every one has its first YARN_STORE in draws 1-3
+#:       8      6     14    5     four of five have exactly ONE milk shop and no yarn store
+#:      10      4     14   42
+#:
+#: Exhaustive search over both thresholds (`data/logs/kawa_q3_rule_search.log`) puts the best fit at
+#: `yarn_by=3, milk_lo=1` with **49/51 = 96.1%** exact on (COW, SHEEP), against the previous rule's
+#: 42/51 = 82.4%. The two misses are a symmetric pair -- identical features, opposite choices -- so
+#: they are noise, not a missing input.
+#:
+#: **The change that matters is the TOTAL, and it goes DOWN.** The old rule capped cows at 6 and
+#: then spent the rest of a fixed 14-animal budget on sheep, giving COW 6 / SHEEP 8 where he runs
+#: COW 6 / SHEEP 6. Those two sheep are ~16 units of wool into a book that floors 59 units above
+#: `I0`, plus $1,000 and two FEED and two CARE stops a day. Lowering the total needs no new pens --
+#: unlike raising it, which he only ever does on FOUR quadrants.
+#: **PARKED AND OFF, 2026-08-15. The fit is good; the change is not safe for OUR agent.**
+#:
+#: Dropping the total to twelve only pays if the freed capacity becomes crops. He converts it --
+#: ~12 more plantings and ~29 more waters on his total-12 seats, with his hire count unchanged at
+#: 277. **We have no logic that does that.** Our crop rows are fixed by the schedule and the solver
+#: is not reactive, so we would take the cost and idle the gain; we already idle 1365 unit-turns a
+#: season against the tape's 660.
+#:
+#: And the cost lands on the wrong boards. The early-yarn branch fires exactly where wool is well
+#: drained and valuable -- those seats run wool drain 240-504 and wool closes $24-$248 -- so two
+#: fewer sheep is ~16 units surrendered at up to $240 each against $1,000 saved.
+#:
+#: The measurement stands and is worth keeping: 49/51 = 96.1% against his three-quadrant seats,
+#: versus 42/51 = 82.4% for the shipped rule (`data/logs/kawa_q3_rule_search.log`). Re-enable only
+#: alongside logic that spends the freed turns on planting.
+HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE = False
+
+#: Sheep on the early-wool branch. Six, not "all the budget that is left".
+EARLY_WOOL_SHEEP = 6
+
+#: At or below this many MILK-carrying shops, with no yarn store at all, he moves a cow into a
+#: sheep: COW 8 / SHEEP 6 rather than COW 10 / SHEEP 4. MILK is carried by three of the eight shop
+#: types, so one milk shop is a genuinely thin book.
+MILK_POOR_SHOP_COUNT = 1
+MILK_POOR_COW = 8
+MILK_POOR_SHEEP = 6
+
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     """Re-decide the cow/sheep species mix, keeping the schedule's COUNT exactly.
@@ -9144,6 +9283,26 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
     # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
     # would have cut those to 6.
+    if WOOL_SHOP_SETS_THE_HERD and HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE:
+        _seen = list(unlocked_shops or ())
+        _early = "YARN_STORE" in _seen[:WOOL_SHOP_DRAW_LIMIT]
+        _milk = 0
+        if _KG is not None:
+            _milk = sum(1 for s in _seen if "MILK" in _KG.SHOPS.get(s, ()))
+        if _early:
+            cow_t, sheep_t = WOOL_SHOP_COW_CAP, EARLY_WOOL_SHEEP
+        elif "YARN_STORE" not in _seen and _milk <= MILK_POOR_SHOP_COUNT:
+            cow_t, sheep_t = MILK_POOR_COW, MILK_POOR_SHEEP
+        else:
+            cow_t, sheep_t = WOOL_SHOP_NO_YARN_COW, total - WOOL_SHOP_NO_YARN_COW
+        # `bought` floors both, so this can never unbuy an animal that exists; the cap keeps the
+        # schedule's own count as a ceiling while allowing the early-wool branch to sit BELOW it.
+        split["COW"] = max(split["COW"], min(cow_t, total))
+        split["SHEEP"] = max(split["SHEEP"], min(sheep_t, total - split["COW"]))
+        if split["COW"] + split["SHEEP"] > total:
+            split["SHEEP"] = max(bought.get("SHEEP", 0), total - split["COW"])
+        return split
+
     if WOOL_SHOP_SETS_THE_HERD:
         # **Both branches of his step function are pinned, not just the capped one.** An early yarn
         # store means 6 cows; anything else means 10. Leaving the second case to the greedy below
