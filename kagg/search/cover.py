@@ -1162,7 +1162,16 @@ RANK_HOME_DAYS = frozenset({4})
 
 #: Whether a tour that cannot get its load home gives up trailing jobs until it can. Never a trade:
 #: the produce those jobs make is stranded by definition, so the turns buy nothing as things stand.
-TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
+TRIM_A_TAIL_THAT_CANNOT_COME_HOME = True
+
+#: The days the trim may fire. **Only the last day, and the reason is the overnight sweep.** On
+#: every other day `_drop_inventories_to_shed` banks whatever a tour ends up holding, so a kept job
+#: always beats a walk and the trim is a pure loss -- which is why it shipped False for d4. On d29
+#: the sweep lands after the market is gone and the kept job's produce is DISCARDED, so the walk
+#: is worth strictly more than the job by construction. The reserve pricing cannot reach a
+#: precomputed day (`_apply_precomputed` seats stops without pricing them); this trim in `plan` is
+#: the one place a solved d29 tour can shed work for its delivery.
+TRIM_HOME_DAYS = frozenset({29})
 
 
 #: **Routes solved OFFLINE and replayed, keyed by day.** `{day: {unit: [(tile, (ops...)), ...]}}`
@@ -1210,6 +1219,19 @@ PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
                       for d, units in SOLVED_DAYS.items() if d not in UNSOLVE_DAYS}
 
+#: **On the LAST day a stop whose ops shrank keeps its solved seat.** `_apply_precomputed` keys a
+#: stop on the exact `(tile, ops)` tuple, which is right on an ordinary day -- a tuple that stops
+#: matching means the board is not the board the day was solved for -- and is the recorded landmine
+#: on d29: `NO_UPKEEP_ON_THE_LAST_DAY` strips FEED/CARE from a pen's job, the key stops matching,
+#: and the stop leaves the solved route for greedy insertion instead of getting two turns cheaper.
+#: Measured as harvest 396 -> 389, sell 1489 -> 1474 (see `router.NO_UPKEEP_ON_THE_LAST_DAY`).
+#:
+#: The fallback fires only on `SEASON_DAYS - 1`, only when the exact key misses, and only for a job
+#: at the SAME tile whose op set is a SUBSET of the solved stop's -- a reduced form of the work the
+#: solve described, never new work. Everything else stays a recorded miss, and every earlier day
+#: keeps the exact-key rule byte-identical.
+MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE = True
+
 #: Days where a precomputed route was offered and did not fit today's jobs. Read it after a run --
 #: if the day under test is in here, the route never ran and the numbers mean nothing.
 PRECOMPUTED_MISSES = []
@@ -1252,8 +1274,17 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
         for tile, ops in work:
             key = (tuple(tile), tuple(ops))
             if not pool.get(key):
-                missed.append(key)
-                continue
+                # The last day only: seat a REDUCED form of the solved stop -- same tile, ops a
+                # subset of what the solve described. See `MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`.
+                fallback = None
+                if MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE and day == R.SEASON_DAYS - 1:
+                    fallback = next((k for k, lst in pool.items()
+                                     if lst and k[0] == tuple(tile) and set(k[1]) <= set(ops)),
+                                    None)
+                if fallback is None:
+                    missed.append(key)
+                    continue
+                key = fallback
             if u >= len(units):
                 no_unit += 1          # the hand never arrived; its work goes through insertion
                 continue
@@ -1984,7 +2015,7 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
             home = materialise(units[u], seq, held, depots, wanted, True, rush, due=due)
             if turns(units[u], home) <= budget[u]:
                 route, cost = home, turns(units[u], home)
-            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in RANK_HOME_DAYS:
+            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in TRIM_HOME_DAYS:
                 # **The trailing job is producing goods that will be STRANDED, so dropping it is a
                 # gain and not a trade.** u1 on d4 harvests (2,1) at h15 and (1,1) at h18, ends six
                 # steps from the shed with eight wheat and passes to dusk; the rollover sweeps it

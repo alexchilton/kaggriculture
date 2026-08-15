@@ -187,7 +187,12 @@ DELIVER_CUTOFF_TURNS = 99
 #:
 #: and the tape spends NINE DROPs on d29 against our two. That is the whole difference: it walks its
 #: load in, we finish the season holding it.
-WALK_THE_LOAD_HOME_DAYS = (10,)
+#:
+#: **The first attempt at (10, 29) recovered 7 of 58 units and was reverted**: a solved route
+#: stores work stops, `plan` appends the closing walk out of turns the tour did not spend, and with
+#: FEED/CARE still planned d29 had no slack to append into. `NO_UPKEEP_ON_THE_LAST_DAY` now frees
+#: those turns first, which is what this flag was waiting for.
+WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
 
 #: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
@@ -478,6 +483,30 @@ CARE_WHAT_YOU_STAND_ON = True
 #: rollover -- only late, and `_process_market` reads the shed, so late means unsold and then
 #: re-bought.
 WALK_THE_LOAD_HOME = True
+
+#: On the LAST day, a loaded hand abandons what is left of its route at the last hour that still
+#: reaches the shed. The runtime mirror of `cover.TRIM_HOME_DAYS`: the plan trims tails it can
+#: price, but the executor re-derives work at every stop, so a tour runs a turn or two past its
+#: costing and the planned walk starts too late -- the d29 trace shows u8 ending the season at
+#: (4,3), ONE tile from the shed, holding 11 units. Work given up here would have made produce the
+#: close discards anyway. Follows the `NO_UPKEEP_ON_THE_LAST_DAY` master switch.
+LAST_DAY_DEADLINE_WALK = True
+
+
+def must_walk_home_now(day, hour, pos, held, depots):
+    """The last turn a loaded hand can still bank its load: walk `dist` plus one turn to DROP.
+
+    `_drop_inventories_to_shed` runs after d29's final turn, when the market is gone, so a load
+    still in a hand at the close is discarded -- leaving later than this bound loses all of it.
+    Every earlier day banks the load in the sweep for free, so this must never fire there.
+    """
+    if not LAST_DAY_DEADLINE_WALK or not RT.upkeep_buys_nothing(day):
+        return False
+    if not any(v > 0 for v in (held or {}).values()):
+        return False
+    need = min(RT.dist(pos, t) for t in depots) + 1
+    return (TPD - hour) <= need
+
 
 #: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
 #:
@@ -1747,7 +1776,10 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         ops = next(([("PLACE", a, 0)] for a in _place_order()
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
-        ops = [("DIG", None, 0)]
+        # A DIG clears ground for a planting that must happen on a LATER day, so on the last day
+        # it is a turn spent to tidy up -- the d29 trace shows u4 digging (1,0) and (3,0) while
+        # 3 units strand in its hand. Same gate as FEED/CARE (`router.upkeep_buys_nothing`).
+        ops = [] if RT.upkeep_buys_nothing(day) else [("DIG", None, 0)]
     else:
         ops = []
     return [(o, i) for o, i, _p in ops]
@@ -2398,6 +2430,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # both surviving across turns because the stop object is the state.
         act = ["PASS"]
         at_shed = tuple(pos) in set(depots)
+        # **The last-day deadline.** See `must_walk_home_now`. Handled here, before the tour walk
+        # and before underfoot/thirsty can spend the turn: from this hour every remaining stop
+        # makes produce the close will discard, and the load in hand is the only job left.
+        if must_walk_home_now(day, hour, pos, inv, depots):
+            st["route"].clear()
+            if at_shed:
+                if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
+                    act = ["DROP"]
+            else:
+                home = min(depots, key=lambda t: RT.dist(pos, t))
+                m = _step_towards(pos, home, unlocked)
+                if m is not None:
+                    act = [m]
+            acts.append(act)
+            continue
 
         def underfoot():
             """The op worth doing on the tile this hand is STANDING on, or None.
@@ -2462,6 +2509,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     return ["FEED"]
             if (CARE_WHAT_YOU_STAND_ON and here.get("fed_today")
                     and not here.get("cared_today")
+                    and not RT.upkeep_buys_nothing(day)
                     and tuple(pos) not in cared_this_turn
                     and tuple(pos) not in working_tiles):
                 # Claimed on RETURN: both call sites consume a non-None `underfoot()`

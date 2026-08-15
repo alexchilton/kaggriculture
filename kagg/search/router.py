@@ -170,7 +170,14 @@ FEED_IS_CRITICAL_WHEN_AT_RISK = True
 #:
 #: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
 #: crew is standing around; the harvest is simply not ranked high enough to be seated.
-BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False   # null: see BANK_THE_FIELD_ON_D28
+#:
+#: **A behavioral null on this board, ON anyway, and both halves are deliberate.** Three shapes
+#: (prize, at_risk, at_risk + re-solve) measured byte-identical on the grid: d28's solved route
+#: already seats every job with slack, so the promotion changes no seating today. It is ON because
+#: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
+#: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
+#: (an opponent, a lost hand) needs the ranking to already say so.
+BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = True
 
 #: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
@@ -730,7 +737,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 gain = 2 if fertilized else 1
                 if FILLING_WATER and age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
-        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
+        elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
+              and not upkeep_buys_nothing(day)):
+            # The last-day gate: this water buys the tile surviving TONIGHT's rollover, and after
+            # d29's rollover there is no tile to have saved. Same switch as FEED/CARE.
             # Outside the window water buys nothing but survival, and it is only needed on the day
             # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
             # `consecutive_unwatered` starts at 1 on the planting day and weeds the tile at 2, so a
@@ -756,7 +766,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
         elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
-              and (tile[0] + tile[1] + day) % 2 == 0):
+              and (tile[0] + tile[1] + day) % 2 == 0
+              and not upkeep_buys_nothing(day)):
+            # Same last-day gate as the survival water above: the alternation only exists to keep
+            # `consecutive_unwatered` below 2 across days, and there is no next day.
             # **Half the safe tiles, alternating -- which is what the leader actually does.**
             #
             # Measured off カワシギ's own d3, seed 11: his board at dawn is 19 tiles, every one at
@@ -980,6 +993,12 @@ FEED_CADENCE_FROM_DAY = 7
 def will_be_fed(cell, day):
     """Whether `animal_ops` would offer this pen a FEED today. The market block sizes its wheat
     purchases off this, so it has to be the same rule and not a second copy of it."""
+    # **The last day, before everything else.** Dropping FEED from `animal_ops` alone measured
+    # d29 `feed 14/0 -> 14/0` unchanged: the route is a visit ORDER, the executor re-derives work
+    # at stops and crossings, and `underfoot()` (`schedule_agent:2458`) feeds any pen this
+    # predicate says yes to. One predicate, so the last day says no exactly once.
+    if upkeep_buys_nothing(day):
+        return False
     # **An animal placed TODAY cannot be fed into producing anything, and is not at risk.** FEED
     # does exactly two things (`_daily_refresh_animals`, kaggriculture.py:795-820): it resets
     # `consecutive_unfed`, which is already 0 on the turn the animal is placed, and on a production
@@ -1039,20 +1058,24 @@ def will_be_fed(cell, day):
 #:
 #: HARVEST and COLLECT_FERTILIZER are deliberately NOT dropped: milk, wool and fertilizer already on
 #: the pen are real produce that can still be sold today if it reaches the shed.
-#: **MEASURED A REGRESSION 2026-08-15 AND LEFT OFF.** The reasoning above is sound and the tape
-#: agrees, but our route machinery cannot take the turns. `cover._apply_precomputed` matches a stop
-#: by `(tile, ops)`; a pen whose job was `[FEED, CARE, COLLECT_FERTILIZER, HARVEST]` becomes
-#: `[COLLECT_FERTILIZER, HARVEST]`, the key stops matching the solved plan, and the stop drops out
-#: of the route rather than getting cheaper. On the kawashigi grid, ours/tape:
 #:
-#:                           harvest        sell   d29 sell  d29 harv   season $
-#:     shipped              396/389    1489/1533    93/148     27/19     150,728
-#:     upkeep drop ONLY     389/389    1474/1533    78/148     20/19     147,646
-#:     + d29 re-solved      388/389    1478/1533    82/148     19/19     149,144
-#:
-#: d29 HARVEST falls 27 -> 20 while freeing 28 turns, which is the tell. Re-open only after
-#: `_apply_precomputed` stops keying on the exact op tuple.
-NO_UPKEEP_ON_THE_LAST_DAY = False
+#: **Parked 2026-08-15, re-opened the same day once the landmine was defused.** The first attempt
+#: measured harvest 396 -> 389, sell 1489 -> 1474, because `cover._apply_precomputed` matched a stop
+#: by the exact `(tile, ops)` tuple: a pen whose job was `[FEED, CARE, COLLECT_FERTILIZER, HARVEST]`
+#: became `[COLLECT_FERTILIZER, HARVEST]`, the key stopped matching the solved plan, and the stop
+#: dropped out of the route rather than getting cheaper. `cover.MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`
+#: now seats the reduced stop on the unit the solve chose, which is what this flag was waiting for.
+NO_UPKEEP_ON_THE_LAST_DAY = True
+
+
+def upkeep_buys_nothing(day):
+    """True on the last day, when FEED and CARE pay out at a rollover the season never reaches.
+
+    The one gate for every upkeep path: `animal_ops` (the plan), `will_be_fed` (the executor's
+    underfoot FEED and the wheat-purchase sizing), and `underfoot()`'s CARE branch, which cannot
+    ask `animal_ops` and needs the same answer.
+    """
+    return NO_UPKEEP_ON_THE_LAST_DAY and day is not None and day >= R.SEASON_DAYS - 1
 
 
 def animal_ops(cell, day, have_wheat):
@@ -1061,9 +1084,7 @@ def animal_ops(cell, day, have_wheat):
     price = BASE_PRICE[a["product"]]
     out = []
     fed = cell["fed_today"]
-    last_day = (NO_UPKEEP_ON_THE_LAST_DAY and day is not None
-                and day >= R.SEASON_DAYS - 1)
-    if last_day:
+    if upkeep_buys_nothing(day):
         # Collect what is already there; buy nothing that pays out tomorrow.
         if cell.get("fertilizer_available"):
             out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
