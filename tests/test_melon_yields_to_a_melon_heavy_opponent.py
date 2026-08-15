@@ -32,26 +32,58 @@ import pytest
 SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
 
 
+#: The real shapes: `seeds` is `{crop: qty}`, `plants` is an ORDERED LIST of crop names, one per
+#: stop. Getting this wrong is what broke the mirror gate -- see `_melon_to_strawberry`'s docstring.
 def _row():
-    return {"seeds": {"MELON": 3, "WHEAT": 4}, "plants": {"MELON": 3, "WHEAT": 4},
+    return {"seeds": {"MELON": 3, "WHEAT": 4},
+            "plants": ["WHEAT", "MELON", "WHEAT", "MELON", "WHEAT", "MELON", "WHEAT"],
             "sells": {"MILK": 6}, "hires": 2}
 
 
 def test_the_melon_count_becomes_a_strawberry_count():
     out = SA._melon_to_strawberry(_row())
     assert out["seeds"] == {"WHEAT": 4, "STRAWBERRY": 3}, out["seeds"]
-    assert out["plants"] == {"WHEAT": 4, "STRAWBERRY": 3}, out["plants"]
+
+
+def test_the_planting_order_is_preserved_position_for_position():
+    """`plants` drives the tour. Only the crop at a melon stop changes; nothing moves."""
+    row = _row()
+    out = SA._melon_to_strawberry(row)
+    assert out["plants"] == ["WHEAT", "STRAWBERRY", "WHEAT", "STRAWBERRY",
+                             "WHEAT", "STRAWBERRY", "WHEAT"], out["plants"]
+    assert len(out["plants"]) == len(row["plants"]), "a stop was added or lost"
 
 
 def test_the_count_is_kept_exactly():
     """54 either way -- only the crop is re-decided, never the number of stops."""
-    row = {"seeds": {"MELON": 5, "STRAWBERRY": 4}, "plants": {"MELON": 5, "STRAWBERRY": 4}}
+    row = {"seeds": {"MELON": 5, "STRAWBERRY": 4}, "plants": ["MELON"] * 5 + ["STRAWBERRY"] * 4}
     out = SA._melon_to_strawberry(row)
-    for key in ("seeds", "plants"):
-        before = sum(row[key].get(c, 0) for c in ("MELON", "STRAWBERRY"))
-        after = sum(out[key].get(c, 0) for c in ("MELON", "STRAWBERRY"))
-        assert before == after == 9, f"{key}: {before} -> {after}"
-        assert "MELON" not in out[key], out[key]
+    before = sum(row["seeds"].get(c, 0) for c in ("MELON", "STRAWBERRY"))
+    after = sum(out["seeds"].get(c, 0) for c in ("MELON", "STRAWBERRY"))
+    assert before == after == 9, f"seeds: {before} -> {after}"
+    assert "MELON" not in out["seeds"] and "MELON" not in out["plants"], out
+    assert out["plants"].count("STRAWBERRY") == 9, out["plants"]
+
+
+def test_the_shipped_schedules_own_rows_survive_the_swap():
+    """Run it over every row of the real schedule, so the shape cannot drift out from under it."""
+    import json
+    import pathlib
+
+    p = pathlib.Path(__file__).resolve().parent.parent / "data/seed_scripts/kawashigi/schedule.json"
+    if not p.exists():
+        pytest.skip(f"{p} is gitignored and not on this machine")
+    sched = json.loads(p.read_text())
+    swapped = 0
+    for day, row in sched.items():
+        out = SA._melon_to_strawberry(row)
+        assert isinstance(out.get("seeds", {}), dict), f"d{day} seeds: {out.get('seeds')!r}"
+        assert isinstance(out.get("plants", []), list), f"d{day} plants: {out.get('plants')!r}"
+        assert "MELON" not in out.get("seeds", {}), f"d{day} kept melon seed: {out['seeds']}"
+        assert "MELON" not in out.get("plants", []), f"d{day} kept a melon stop"
+        assert len(out.get("plants", [])) == len(row.get("plants") or []), f"d{day} lost a stop"
+        swapped += 1 if out is not row else 0
+    assert swapped >= 3, f"only {swapped} rows carried melon at all -- is this the right schedule?"
 
 
 def test_the_rest_of_the_row_is_untouched():
@@ -68,7 +100,7 @@ def test_the_input_row_is_not_mutated():
 
 
 def test_a_row_with_no_melon_is_returned_unchanged():
-    row = {"seeds": {"WHEAT": 4}, "plants": {"WHEAT": 4}}
+    row = {"seeds": {"WHEAT": 4}, "plants": ["WHEAT"] * 4}
     assert SA._melon_to_strawberry(row) is row
 
 

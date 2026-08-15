@@ -36,6 +36,7 @@ Run: .venv/bin/python scripts/build_planner_submission.py
 """
 
 import json
+import kagg.plan as _PLAN
 import pathlib
 import sys
 
@@ -105,7 +106,7 @@ PACKAGES = ("kagg", "kagg.economics", "kagg.search")
 #: was measured against THIS schedule and THIS tape on `scripts/breakdown.py --tape victor`.
 #: Shipping 90976060 would put a planner tuned on one plan onto another -- the same
 #: indirection between the search space and the artifact this file already records twice.
-PLAN = pathlib.Path("data/seed_scripts/victor/schedule.json")
+PLAN = _PLAN.SHIPPED_PLAN
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 
 #: The raw replay the plan was distilled from. `--replay-days N` embeds its author's ACTUAL per-turn
@@ -521,14 +522,21 @@ KAGGLE_SLOWDOWN = 6.0
 
 
 def _season(policy, days=30, seed=None):
-    """Play `policy` against Seb's tape and return (our bank, tape bank, per-turn seconds)."""
+    """Play `policy` against a recorded tape and return (our bank, tape bank, per-turn seconds).
+
+    The tape only supplies an OPPONENT to time against and to play a full season into. Nothing is
+    asserted about the money: the season tripwire was removed on 2026-08-13 (see the note on `ok`),
+    and the surviving gate is `ours == repo`, a statement about bundling. `seb` was retired from
+    `breakdown.TAPES`, and this reference was not moved with it -- the build died on
+    `KeyError: 'seb'` after every other gate had already passed.
+    """
     import time
 
     from kaggle_environments import make
 
     from scripts.breakdown import TAPES, tape_policy
 
-    replay, _schedule, team = TAPES["seb"]
+    replay, _schedule, team = TAPES["kawashigi"]
     env = make("kaggriculture",
                configuration={"seed": seed or REFERENCE["seed"], "weedSpawnChance": 0.0})
     env.reset(2)

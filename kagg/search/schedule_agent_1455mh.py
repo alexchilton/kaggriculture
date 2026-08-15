@@ -3784,17 +3784,30 @@ MELON_YIELD_OPPONENT_MELON = 7
 
 
 def _melon_to_strawberry(row):
-    """One day's row with its MELON count moved into STRAWBERRY. The count is kept exactly."""
+    """One day's row with its MELON moved into STRAWBERRY. The count and the ORDER are kept exactly.
+
+    The two rows have different shapes and both matter. `seeds` is a `{crop: qty}` dict -- the day's
+    shopping list, priced by `RT.SEED_COST`. `plants` is an ordered LIST of crop names, one entry per
+    stop, and the order is the planting order the tour is built from, so a melon entry is rewritten
+    in place rather than counted and re-appended. Shipped d6, for instance, is
+    `seeds {'STRAWBERRY': 3, 'MELON': 5, 'CARROT': 7}` against `plants ['MELON', 'MELON']`.
+
+    Writing this against a dict `plants` cost a build: `dict(['MELON', 'MELON'])` raises, the bundle
+    returned a null reward in the mirror gate, and the unit tests stayed green because they had been
+    written against the same wrong shape. `test_the_shipped_schedules_own_rows_survive_the_swap`
+    exists so the shape cannot drift out from under this again.
+    """
     seeds = dict(row.get("seeds") or {})
-    plants = dict(row.get("plants") or {})
-    if int(seeds.get("MELON", 0)) <= 0 and int(plants.get("MELON", 0)) <= 0:
+    plants = list(row.get("plants") or [])
+    if int(seeds.get("MELON", 0) or 0) <= 0 and "MELON" not in plants:
         return row
     out = dict(row)
-    for key, src in (("seeds", seeds), ("plants", plants)):
-        n = int(src.pop("MELON", 0) or 0)
-        if n > 0:
-            src["STRAWBERRY"] = int(src.get("STRAWBERRY", 0) or 0) + n
-            out[key] = src
+    n = int(seeds.pop("MELON", 0) or 0)
+    if n > 0:
+        seeds["STRAWBERRY"] = int(seeds.get("STRAWBERRY", 0) or 0) + n
+        out["seeds"] = seeds
+    if "MELON" in plants:
+        out["plants"] = ["STRAWBERRY" if c == "MELON" else c for c in plants]
     return out
 
 
