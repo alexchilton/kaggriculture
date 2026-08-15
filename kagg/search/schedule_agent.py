@@ -492,20 +492,41 @@ WALK_THE_LOAD_HOME = True
 #: close discards anyway. Follows the `NO_UPKEEP_ON_THE_LAST_DAY` master switch.
 LAST_DAY_DEADLINE_WALK = True
 
+#: Turns of head start the walk gets, on top of `dist + 1`.
+#:
+#: **Three, and only one of them is the executor's.** The rule
+#: fires on the hour the walk must begin, but the executor re-derives work at each stop and finishes
+#: the current one first, so the first step happens the turn AFTER the rule says go.
+#:
+#: Measured on ladder game `93346440`, d29, our seat. u5 is at (7,1) at h18, five tiles from the
+#: depot at (5,4): `need` is 6 and `24 - 18 == 6`, so the old bound fires exactly at h18 -- and the
+#: unit does not move until h19 and arrives at h23 with no turn left to DROP:
+#:
+#:     hr   u4          u5           u7          u8
+#:     21   (2,4):3     (7,4):12     (7,4):4     (2,3):11
+#:     22   (3,4):3     (6,4):12     (6,4):4     (2,4):11
+#:     23   (4,4):3     (5,4):12     (5,4):4     (3,4):11
+#:
+#: Three hands STAND ON a depot at h23 still holding, and u8 is one tile short. 3+12+4+11 = 30
+#: units, the whole of that game's carried total, worth $2,334 at its closing book.
+LAST_DAY_WALK_SLACK = 3
+
 
 def must_walk_home_now(day, hour, pos, held, depots):
-    """The last turn a loaded hand can still bank its load: walk `dist` plus one turn to DROP.
+    """The last turn a loaded hand can still bank its load: walk `dist`, one turn to DROP, plus slack.
 
     `_drop_inventories_to_shed` runs after d29's final turn, when the market is gone, so a load
     still in a hand at the close is discarded -- leaving later than this bound loses all of it.
     Every earlier day banks the load in the sweep for free, so this must never fire there.
+
+    The slack is `LAST_DAY_WALK_SLACK`; see there for the trace that sets it.
     """
     if not LAST_DAY_DEADLINE_WALK or not RT.upkeep_buys_nothing(day):
         return False
     if not any(v > 0 for v in (held or {}).values()):
         return False
     need = min(RT.dist(pos, t) for t in depots) + 1
-    return (TPD - hour) <= need
+    return (TPD - hour) <= need + LAST_DAY_WALK_SLACK
 
 
 #: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
