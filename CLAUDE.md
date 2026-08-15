@@ -255,7 +255,14 @@ These were agreed before any code was written, specifically so they cannot be ra
 
 ## Kaggle
 
-- `kaggle-environments >= 1.32.2` is required. Earlier versions do not contain the `kaggriculture` env.
+- **`kaggle-environments >= 1.32.7` is required** (2026-08-15 balance change, PR #1399).
+  1.32.2 is only the version that first contained the `kaggriculture` env at all; it is not the
+  version the ladder runs. 1.32.6 -> 1.32.7 put CARROT, TOMATO and EGG on a new `hinge` price shape,
+  which our own sims did not have — `kagg/sim/market.py` died on `KeyError: 'hinge'` and
+  `kagg/sim/jax_sim.py` would have priced all three at flat base **in silence**.
+  Any baseline measured before 2026-08-15 describes a different game. See
+  `docs/balance_change_eggs_tomatoes_carrots_2026-08-15.md` and
+  `tests/test_the_market_curve_matches_the_reference.py`, which pins our curve to `reference/`.
 - **5 submissions per day.** Always test locally in the arena before submitting.
 - Credentials are at `~/.kaggle/kaggle.json`. Never print or commit them.
 
