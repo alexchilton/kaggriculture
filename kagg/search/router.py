@@ -170,7 +170,14 @@ FEED_IS_CRITICAL_WHEN_AT_RISK = True
 #:
 #: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
 #: crew is standing around; the harvest is simply not ranked high enough to be seated.
-BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False   # null: see BANK_THE_FIELD_ON_D28
+#:
+#: **A behavioral null on this board, ON anyway, and both halves are deliberate.** Three shapes
+#: (prize, at_risk, at_risk + re-solve) measured byte-identical on the grid: d28's solved route
+#: already seats every job with slack, so the promotion changes no seating today. It is ON because
+#: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
+#: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
+#: (an opponent, a lost hand) needs the ranking to already say so.
+BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = True
 
 #: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
