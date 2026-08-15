@@ -2877,6 +2877,22 @@ SELL_A_DRAINLESS_PRODUCT_AT_ONCE = True
 NO_DRAIN_PRODUCTS = ("MELON",)
 SELL_AT_ONCE_FROM_DAY = 18
 
+#: **The flush days, exempted individually rather than by lowering the floor.**
+#:
+#: The floor above is 18 and the melon flush is d10-d11, so the exemption could never fire on the
+#: days it was written for. Traced on seed 11 against Kawashigi's tape: 67 melons are ripe at d10 h00
+#: -- more than the tape's 60 -- they reach the shed at h21-h23 so only 35 clear that day, and the
+#: remaining **37 sit in the shed from d11 h00 to d11 h16** while the tape sells his own d11 melon
+#: into the same book. Melon recovers ONE unit a day, so every one of those sixteen hours makes the
+#: price strictly worse. There is no recovery to wait for.
+#:
+#: **Two days, not a lower floor.** Lowering `SELL_AT_ONCE_FROM_DAY` to 10 would also release
+#: d12-d17, which nothing here has measured and where the original "nothing to win before d18"
+#: reasoning still stands. This is the smallest change that reaches the defect.
+#:
+#: d0-d9 cannot move under any value here, so the matched opening is out of reach by construction.
+SELL_AT_ONCE_DAYS = (10, 11)
+
 
 def market_price(prod, inventory):
     """`kaggriculture.market_price`, or `BASE_PRICE` flat if the env is not importable."""
@@ -4819,7 +4835,8 @@ def make_agent(schedule, me=0, router=True):
             if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
                     and not unfunded
                     and not (SELL_A_DRAINLESS_PRODUCT_AT_ONCE and prod in NO_DRAIN_PRODUCTS
-                             and day >= SELL_AT_ONCE_FROM_DAY)):
+                             and (day >= SELL_AT_ONCE_FROM_DAY
+                                  or day in SELL_AT_ONCE_DAYS))):
                 n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
