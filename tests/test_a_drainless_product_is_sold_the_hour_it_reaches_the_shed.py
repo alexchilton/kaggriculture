@@ -59,6 +59,8 @@ def trace():
         rows.append(dict(
             day=t // 24, hour=t % 24,
             shed=int((priv.get("shed") or {}).get("MELON", 0) or 0),
+            hands=sum(int((i or {}).get("MELON", 0) or 0)
+                      for i in (priv.get("inventories") or [])),
             sold=sum(int(o[2]) for o in (a0.get("market") or [])
                      if o and o[0] == "SELL" and o[1] == "MELON" and len(o) > 2),
         ))
@@ -98,7 +100,12 @@ def test_the_gate_can_reach_the_flush(trace):
     those days keep the `LATE_SELL_FROM_HOUR` hold, because nothing has measured them and the
     original "nothing to win before d18" reasoning still stands everywhere the flush is not.
     """
-    flush = sorted({r["day"] for r in trace if r["shed"] >= 20})
+    # **The flush is found from what our hands CARRY, not from what the shed holds.**
+    # This read `r["shed"] >= 20` and went red -- "no melon flush found at all" -- the moment
+    # `WALK_THE_LOAD_HOME_DAYS` let the load reach the shed during the day, because a hand now
+    # deposits and the market sells inside the same turn and the shed observation never samples it.
+    # A stale premise, not a broken agent: the shed sitting on twenty melon was the defect.
+    flush = sorted({r["day"] for r in trace if r["shed"] + r["hands"] >= 20})
     assert flush, "no melon flush found at all -- the fixture is wrong, not the agent"
     exempt = set(getattr(A, "SELL_AT_ONCE_DAYS", ())) | set(range(A.SELL_AT_ONCE_FROM_DAY, 30))
     missed = [d for d in flush if d not in exempt]

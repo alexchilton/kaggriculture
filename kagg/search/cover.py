@@ -1095,6 +1095,38 @@ PLACE_FOLLOWS_ITS_BUILD = True
 #: carried to h23 with the row asking for 18 and the shed empty all day.
 RESERVE_THE_TRIP_FOR_TODAYS_HARVEST = True
 
+#: **Whether the packer may only price a tour the caller is going to ask for.**
+#:
+#: `cover.cost` is what the greedy admits on. On `RESERVE_DAYS` it prices the sequence as
+#: `materialise(deliver=True, wanted_only=True)` -- a tour ending in one closing walk to the shed.
+#: The shipped agent never asks for that tour: `_solve` sets
+#: `deliver = max(budget) > DELIVER_CUTOFF_TURNS` with the cutoff at 99 against budgets of 23-24, so
+#: `deliver` is always False and the closing walk is never planned.
+#:
+#: Pricing it anyway measures a tour that does not exist, and measures it CHEAP: with no walk home,
+#: `materialise` inserts MID-TOUR shed trips instead so the load is not stranded past market close,
+#: and those are not in the delivering tour. Seed 11, day 10, unit 9, one sequence priced both ways:
+#:
+#:     deliver=True, wanted_only=True   21 turns  SHED -> (7,4) -> (6,4) -> (6,3) -> (5,3) -> SHED
+#:     deliver=False                    29 turns  SHED -> (7,4) -> SHED -> (6,4) -> SHED -> (6,3) -> (5,3)
+#:
+#: Budget 23. The packer admitted 21 turns and the day walked 29, so the last two stops were never
+#: reached -- both FEEDs. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:817`), and
+#: the ladder loses tile (6,4) on day 11 that way in 93186363, 93237183 and 93239838.
+#:
+#: **Measured ON, and it is NOT a clean win, which is why it is a flag and not an edit.** Seed 11
+#: against the kawashigi tape, d0-d8 byte-identical either way:
+#:
+#:     feed d10  11/12 -> 12/12      harvest d9-d29  -15 -> -19
+#:     feed d11  13/14 -> 14/14      place   d9-d29  -29 -> -31
+#:     sell d9-d29  -108 -> -62      idle    d9-d29 +406 -> +452
+#:
+#: It closes the starvation -- 0 stranded FEEDs and 0 unfed animals from d8 on, against 3 and 2 --
+#: and it costs the melon day: `sell d10 86/91 -> 57/91`, `drop d10 8 -> 4`, and NO melon reaches
+#: the shed during d10 at all, because the over-long tours were what banked it mid-day. The freed
+#: turns are not re-spent: u3 and u6 finish d10 at 0 of 23 with nothing assigned.
+PRICE_THE_TOUR_THE_CALLER_WILL_WALK = True
+
 #: First day the reserve may fire. **d0-d6 is deliberately untouched -- Alex's instruction, and the
 #: measurement agrees**: without the reserve those days are exact on `harvest 14/14`, `water 17/17`
 #: and `feed 7/7`, and with it d4 falls to `harvest 10/14`, `water 12/17`, `feed 6/7`. The opening is
@@ -1302,7 +1334,26 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         # is 18 turns of work against a 7-turn trip on a 23-turn budget, so no ordering has both --
         # and costs d10-d16 $1,722. The trade is real; `RESERVE_DAYS` says on which days it is worth
         # taking.
-        if RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS:
+        #
+        # **And it may only price a tour the caller is going to ASK FOR.** `deliver` decides whether
+        # `plan` ever materialises the closing walk, and the shipped agent sets
+        # `deliver = max(budget) > DELIVER_CUTOFF_TURNS` with the cutoff at 99 against budgets of
+        # 23-24 -- so `deliver` is always False and the closing walk is never planned. Pricing the
+        # reserve anyway measured a tour that does not exist, and it measured it CHEAP: with no walk
+        # home, `materialise` inserts mid-tour shed trips instead so the load is not stranded past
+        # market close, and those trips are not in the delivering tour. Seed 11, day 10, unit 9, one
+        # sequence priced both ways:
+        #
+        #     deliver=True, wanted_only=True   21 turns   SHED -> (7,4) -> (6,4) -> (6,3) -> (5,3) -> SHED
+        #     deliver=False                    29 turns   SHED -> (7,4) -> SHED -> (6,4) -> SHED -> (6,3) -> (5,3)
+        #
+        # Budget 23. The packer admitted 21 turns of work, the day walked 29, and the last two stops
+        # were never reached -- both of them FEEDs. `consecutive_unfed >= 2` deletes the animal
+        # (`kaggriculture.py:817`), so the same overrun two days running is a $400 asset gone and a
+        # pasture idle for the rest of the season. Seen on the ladder in 93186363, 93237183 and
+        # 93239838, each losing tile (6,4) on day 11.
+        if ((deliver or not PRICE_THE_TOUR_THE_CALLER_WILL_WALK)
+                and RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS):
             return turns(units[u], materialise(units[u], work, load(u), depots, wanted, True, rush,
                                                wanted_only=True, due=due))
         return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush,

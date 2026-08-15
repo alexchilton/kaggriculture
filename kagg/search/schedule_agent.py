@@ -138,6 +138,35 @@ LAST_TURN_IS_WORKABLE = True
 #: baseline of 63. Any future attempt to cut the ferrying has to move both rules or neither.
 DELIVER_CUTOFF_TURNS = 99
 
+#: Days the closing walk home is planned anyway, whatever `DELIVER_CUTOFF_TURNS` says.
+#:
+#: **The reason 99 gives for never charging the trip does not hold on the melon flush.** It is that
+#: "Victor's produce reaches the shed on the overnight sweep, which is free" -- true of money at
+#: season end, false of a product whose price is a race. `_drop_inventories_to_shed`
+#: (`kaggriculture.py:812`) banks the load at the ROLLOVER, which is after the market has closed for
+#: that day. No shop stocks melon and the town takes one unit a day, so the book does not recover
+#: overnight; a day late is a day of the opponent's own flush walking the price down ahead of us.
+#:
+#: Measured on seed 11 against the kawashigi tape. All thirteen ripe melon tiles get a HARVEST job
+#: and all thirteen are seated -- the harvest is not the defect. No tour contains a shed stop:
+#:
+#:     u0   16/24  (3,2)W (3,1)WH (2,1)WH (1,1)WH (1,0)WH       ends at (1,0), 8 turns spare
+#:     u8   23/23  (2,4)FCC (0,3)WH (0,2)WH (0,1)WH (0,0)WHPW   ends at (0,0), none spare
+#:     u10  23/23  (4,3)FCCH (4,2)FCC (4,1)PW (4,0)WH (3,0)WH (2,0)WH
+#:     u3    0/23  (idle)          u6   0/23  (idle)
+#:
+#:     d10 h00-h23   shed 0 all day, hands 0 -> 66, book 272 -> 246, nothing offered
+#:     d11 h00       shed 72, SELL 60 at 246, then SELL 12 at 189
+#:
+#: Sixty-five melons carried to dusk while two hands hold 46 unused turns. `plan` appends the
+#: closing trip out of turns the tour did NOT spend, so it can only ever use slack -- u0's eight
+#: spare turns against a seven-step walk to the shed.
+#:
+#: **Two days, not a lower cutoff.** The constant was tuned on the victor grid across d0-d16 and
+#: lowering it would reopen every one of those days. This is the smallest change that reaches the
+#: flush, and d0-d9 cannot move under it by construction.
+WALK_THE_LOAD_HOME_DAYS = (10, 11)
+
 
 def _at_risk_tiles(tiles):
     """Tiles where skipping today's work destroys something tonight. Read off the board, not priced.
@@ -781,7 +810,7 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     # The closing shed trip is planned only while there is time to make it. With two turns or fewer
     # left a hand cannot both work and get back, and the overnight sweep banks the produce anyway --
     # so reserving it there only refuses the last harvest of the day. See `cover.materialise`.
-    deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS
+    deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS or day in WALK_THE_LOAD_HOME_DAYS
     # `day` gates `cover.RESERVE_FROM_DAY`, which must never fire on d0-d9.
     out, _uncovered = DP.plan(units, jobs, budget, depots, carry, supply=supply, deliver=deliver,
                               wanted=owed, rush=fund, day=day)
