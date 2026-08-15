@@ -190,14 +190,46 @@ DELIVER_CUTOFF_TURNS = 99
 WALK_THE_LOAD_HOME_DAYS = (10,)
 
 
-def _at_risk_tiles(tiles):
+#: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
+#:
+#: Selling costs no unit-turns -- a SELL is a market order, not a unit action -- so what the last day
+#: can sell is decided by what sits in `private["shed"]` when it starts, and the shed is filled for
+#: free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce taken on d28 is banked overnight
+#: at zero cost and sells all through d29. Produce taken ON d29 lands in a hand and that drop comes
+#: after the final turn, so it is discarded: the season currently ends with 51 sellable units, about
+#: $1,192, in the crew's hands.
+#:
+#: So "skipping this today destroys something tonight" is literally true of a ripe tile on d28, which
+#: is why it belongs here rather than in a prize. **A prize cannot reach a solved day at all** --
+#: `cover._apply_precomputed` seats a stop by `(tile, ops)` and the prize never enters -- while
+#: `at_risk` is what `solve_day.weight(j)` reads, so it survives the re-solve.
+#:
+#: カワシギ, ours/tape: d28 harvest 27/32, d29 harvest 27/19, d29 sell 93/148. He harvests harder on
+#: d28 and spends d29 selling. We back-load +10 harvests into d23-d29 while d0-d22 are level, and we
+#: are not short of turns on d28 -- 48 idle unit-turns against his 32.
+#: **MEASURED A NULL 2026-08-15 AND LEFT OFF.** Three ways: prize, at_risk, and at_risk plus a d28
+#: re-solve. All three byte-identical on the grid. d28 is not under-prioritising anything -- its
+#: solved route already seats every job with slack, two hands idle, and only 7 ripe units remain
+#: unharvested at dusk. And the planting rows are IDENTICAL to the tape (d25 9/9, d26 9/9, d27
+#: 11/11), so his crops do not ripen earlier than ours either. Whatever gives him d28 harvest 32 to
+#: our 27 and d29 19 to our 27, it is neither ranking nor planting date.
+BANK_THE_FIELD_ON_D28 = False
+
+#: The last day whose carried load is banked overnight; d29's own drop lands after the final turn.
+LAST_FREE_DROP_DAY = 28
+
+
+def _at_risk_tiles(tiles, day=None):
     """Tiles where skipping today's work destroys something tonight. Read off the board, not priced.
 
     `consecutive_unfed`/`consecutive_unwatered` are already 1 -- one more missed day and the animal
     walks off or the tile weeds. A pen fed yesterday, or a tile watered yesterday, can slip a day for
     free, which is precisely how the tape feeds 16 of 19 pens on day 19 and loses nothing.
+
+    On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
     """
     out = set()
+    banking = bool(BANK_THE_FIELD_ON_D28 and day is not None and day == LAST_FREE_DROP_DAY)
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
@@ -206,6 +238,8 @@ def _at_risk_tiles(tiles):
                 out.add((x, y))
             elif (WATER_AT_RISK and cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
+                out.add((x, y))
+            elif banking and int(cell.get("yield_units", 0) or 0) > 0:
                 out.add((x, y))
     return out
 
@@ -2296,7 +2330,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         sub = _solve([plan_units[u] for u in live], nodes_for(set()),
                      [budget[u] for u in live], depots,
                      {k: load[u] for k, u in enumerate(live)}, supply=plan_supply,
-                     at_risk=_at_risk_tiles(tiles),
+                     at_risk=_at_risk_tiles(tiles, day),
                      pointless=_pointless_tiles(tiles, day, plants_left),
                      tiles=tiles, wanted=owed_sale, fund=short_of_cash, day=day)
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}

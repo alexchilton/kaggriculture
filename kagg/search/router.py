@@ -147,6 +147,34 @@ FEED_IS_CRITICAL_WHEN_AT_RISK = True
 #: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
 #: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
 #: whole fix has to sit on the day before, which is what `age >= max_day` selects.
+#: **BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY -- d28 is the last harvest that banks itself.**
+#:
+#: Selling costs no unit-turns: a SELL is a market order in `_process_market`, not a unit action. So
+#: what the last day can sell is decided entirely by what sits in `private["shed"]` when it starts,
+#: and the shed is filled for free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce
+#: harvested on d28 is banked overnight at zero cost and is sellable all through d29. Produce
+#: harvested ON d29 lands in a hand, and that drop comes after the final turn, so it is discarded.
+#:
+#: This is how カワシギ takes the last two days without ever planning a delivery (ours/tape):
+#:
+#:     closing week   harvest      sell    drop     pass
+#:     d28             27/32     103/92     2/0    48/32
+#:     d29             27/19      93/148    3/9    30/56
+#:
+#:     harvest d0-d22   ours 201   tape 204     level
+#:     harvest d23-d29  ours 195   tape 185     we back-load +10
+#:
+#: He harvests 32 on d28 to our 27, the overnight drop banks it, and d29 becomes a selling day --
+#: 148 units to our 93. We back-load into the one day where delivery is not free, and the season
+#: ends with 51 sellable units, about $1,192, stranded in hands.
+#:
+#: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
+#: crew is standing around; the harvest is simply not ranked high enough to be seated.
+BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False   # null: see BANK_THE_FIELD_ON_D28
+
+#: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
+LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
+
 HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
 
 #: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
@@ -789,9 +817,12 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        if (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
-                and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
-                and age >= _last_safe_age(info)):
+        last_free = (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
+                     and day is not None and day == LAST_FREE_DROP_DAY)
+        if (last_free
+                or (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
+                    and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                    and age >= _last_safe_age(info))):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
@@ -1092,7 +1123,11 @@ def animal_ops(cell, day, have_wheat):
     if cell.get("fertilizer_available"):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
-        out.append(("HARVEST", None, cell["yield_units"] * price))
+        prize = cell["yield_units"] * price
+        if (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
+                and day is not None and day == LAST_FREE_DROP_DAY):
+            prize += CRITICAL          # last night this milk or wool can bank itself for free
+        out.append(("HARVEST", None, prize))
     if YIELD_FIRST:
         # Stable, so COLLECT_FERTILIZER still precedes HARVEST and FEED still precedes CARE. Built
         # in rule order above because the CARE prize is conditional on FEED being served; only the

@@ -1,0 +1,83 @@
+==============================================================================
+93318573.json   LOSS   us $68,714  vs  James Mancillas $69,359
+  weedSpawnChance=0.005  townCenterSellInterval=24  seat 0
+
+  SHOPS  [('BAKERY', 1), ('BRUNCH_SPOT', 1), ('FARMERS_MARKET', 2), ('PIZZA_SHOP', 1), ('SMOOTHIE_SHOP', 1), ('YARN_STORE', 2)]
+  demand drained over the season, units:
+     WHEAT          895
+     STRAWBERRY     716
+     WOOL           716
+     TOMATO         537
+     EGG            358
+     MILK           358
+     CARROT         358
+
+         herd                         crops planted (offers)            
+  US     {'COW': 10, 'SHEEP': 4}      {'WHEAT': 223, 'STRAWBERRY': 165, 'CARROT': 97, 'MELON': 12}
+         sells offered: [('WHEAT', 476), ('STRAWBERRY', 265), ('MILK', 258), ('FERTILIZER', 202), ('WOOL', 112), ('MELON', 72)]
+  THEM   {'COW': 8, 'SHEEP': 6}       {'WHEAT': 67, 'STRAWBERRY': 41, 'MELON': 26}
+         sells offered: [('WHEAT', 1212), ('STRAWBERRY', 267), ('FERTILIZER', 235), ('MILK', 226), ('WOOL', 164), ('MELON', 132)]
+
+  CLOSING PRICES (a product at the floor is one we flooded):
+     MILK        $   1.00  of base $160   drained   358  <-- FLOOR
+     WOOL        $ 232.00  of base $200   drained   716  <-- above base
+     EGG         $  65.00  of base $50    drained   358  <-- above base
+     STRAWBERRY  $  22.00  of base $120   drained   716
+     MELON       $   4.00  of base $250   drained     0
+     WHEAT       $  49.00  of base $25    drained   895  <-- above base
+     CARROT      $  52.00  of base $35    drained   358  <-- above base
+     TOMATO      $ 280.00  of base $60    drained   537  <-- above base
+     FERTILIZER  $  16.00  of base $100   drained     0
+
+  CLOSING WEEK        our$     delta  ourBuys |     their$     delta  theirBuys
+  d23              54,673        +0       65 |     51,333        +0         17
+  d24              55,682    +1,009       19 |     54,990    +3,657         14
+  d25              58,570    +2,888       85 |     55,237      +247         14
+  d26              60,088    +1,518       25 |     56,843    +1,606         43
+  d27              61,492    +1,404       29 |     57,911    +1,068        167
+  d28              65,004    +3,512        7 |     58,479      +568        125
+
+  WEEDS by origin (CROP = a missed watering, EMPTY = a spawn):
+     US    from CROP  28  from EMPTY   5  cleared  31  DIGs  55  final   2
+     THEM  from CROP  32  from EMPTY   6  cleared  22  DIGs  29  final  16
+==============================================================================
+93323101.json   LOSS   us $119,623  vs  Adarsh $123,542
+  weedSpawnChance=0.005  townCenterSellInterval=24  seat 0
+
+  SHOPS  [('FARMERS_MARKET', 1), ('ICE_CREAM_SHOP', 1), ('PET_CAFE', 1), ('PIZZA_SHOP', 1), ('SMOOTHIE_SHOP', 1), ('YARN_STORE', 3)]
+  demand drained over the season, units:
+     WOOL         1,074
+     MILK           537
+     WHEAT          537
+     STRAWBERRY     537
+     CARROT         537
+     TOMATO         358
+
+         herd                         crops planted (offers)            
+  US     {'COW': 6, 'SHEEP': 8}       {'WHEAT': 252, 'STRAWBERRY': 160, 'CARROT': 63, 'MELON': 12}
+         sells offered: [('WHEAT', 508), ('STRAWBERRY', 213), ('FERTILIZER', 206), ('WOOL', 191), ('MILK', 171), ('MELON', 72)]
+  THEM   {'COW': 8, 'SHEEP': 6}       {'WHEAT': 92, 'STRAWBERRY': 42, 'MELON': 24}
+         sells offered: [('WHEAT', 828), ('STRAWBERRY', 313), ('MILK', 237), ('FERTILIZER', 233), ('WOOL', 164), ('MELON', 144)]
+
+  CLOSING PRICES (a product at the floor is one we flooded):
+     MILK        $ 160.00  of base $160   drained   537
+     WOOL        $ 246.00  of base $200   drained 1,074  <-- above base
+     EGG         $  52.00  of base $50    drained     0  <-- above base
+     STRAWBERRY  $  26.00  of base $120   drained   537
+     MELON       $  16.00  of base $250   drained     0
+     WHEAT       $  41.00  of base $25    drained   537  <-- above base
+     CARROT      $  50.00  of base $35    drained   537  <-- above base
+     TOMATO      $ 144.00  of base $60    drained   358  <-- above base
+     FERTILIZER  $  12.00  of base $100   drained     0
+
+  CLOSING WEEK        our$     delta  ourBuys |     their$     delta  theirBuys
+  d23              82,431        +0       65 |     86,556        +0          5
+  d24              87,856    +5,425       19 |     93,264    +6,708         73
+  d25              92,646    +4,790       85 |    100,389    +7,125          6
+  d26              97,290    +4,644       25 |    100,210      -179         59
+  d27             101,526    +4,236       29 |    106,559    +6,349          8
+  d28             111,642   +10,116        7 |    113,396    +6,837          0
+
+  WEEDS by origin (CROP = a missed watering, EMPTY = a spawn):
+     US    from CROP  28  from EMPTY   2  cleared  30  DIGs  49  final   0
+     THEM  from CROP  17  from EMPTY   0  cleared  17  DIGs  43  final   0
