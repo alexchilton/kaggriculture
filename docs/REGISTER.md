@@ -226,6 +226,48 @@ top up through the day.
 *Correction on the record:* first reported as "-2 from d10". That was a column-offset miscount. It is
 **d16**, and the `sheep` row is `an_SHEEP`, animals standing, not an op count.
 
+### OPEN-5b — The same starvation now fires on the LADDER, and it is a cash failure
+
+Owner: nobody. Evidence: `data/seed_scripts/ours_ladder_new/`, 2026-08-13.
+`scratchpad/escapes.py` reproduces it from a downloaded replay in one pass.
+
+OPEN-5 above is the seed-11 tape version of this. On the ladder it is worse and the trigger is
+plainly **cash**, not reachability:
+
+```
+day  feeds  harv  wheat_shed  money  hands
+  8      9     1           0    137      6
+  9     10     4           0  1,377      7
+ 10      1     1           0      1     14     <-- first escape
+ 11      0     0           0     75     10
+ 12      0    13           0     22     10     <-- eight escape in one day
+ 13      0     0           7    167      8
+```
+
+`FEED` takes one WHEAT from the acting hand (`kaggriculture.py:496`); two consecutive unfed days and
+the animal leaves and the pen stays (`:804`). The shed held **zero wheat from d8 to d12** while the
+bank was at $1, $75, $22 — neither the stock nor the cash to buy it. Twelve of fourteen animals
+walked: $5,200 of stock plus seventeen days of milk and wool.
+
+**It is not a regression from the carrot release.** Verified with the carrot-sell discriminator:
+`92566708` (new build) and `92535914` (old build, zero carrot sells) have the identical signature —
+12 escapes, 2 surviving cows, 13 bare pens. The old-build game is also the worst margin in the whole
+downloaded set, $46,313 against $154,391.
+
+Nothing reserves the feed bill. `RESERVE_THE_SEED_BILL` does exactly this for seeds, and the feed
+bill is the more expensive liability: a missed seed costs a planting, a missed feed costs the animal.
+
+### OPEN-5c — A pen is built after the last animal is bought, and stands empty to the close
+
+Owner: nobody. Present in **every** downloaded ladder game, both builds.
+
+Fifteen `BUILD_PASTURE` ops against fourteen animals. The last `BUY_ANIMAL` lands on d18; pens are
+still going up on d21 (2) and d24 (1). The d24 pen is bare from d24 to d29 while the bank holds
+$53k-$95k and a sheep costs $500. In `92550780` the town was draining 1,074 wool and wool closed at
+$252 — above base — so that empty pen was worth roughly $250 a unit, all season.
+
+Distinct from OPEN-5b: no animal died here, one was simply never bought for a pen we paid to build.
+
 ### OPEN-6 — Idle diverges only when the board gets busy
 
 Owner: nobody.
@@ -331,7 +373,7 @@ terminal. These are the ones that were still open; nothing here has been closed 
 
 - **1.32.6 test failures.** 9 left, 8 of them inside `schedule_agent.py`. Both simulators fail
   parity on 1.32.6 — see the version caveat at the top of this file.
-- **Submission base undecided:** HEAD vs `schedule_agent_1455mh`. 1455mh is the only artifact that
+- **Submission base undecided:** HEAD vs `schedule_agent`. 1455mh is the only artifact that
   ever scored 1455 and is what every measurement this session was taken on.
 - **Re-run every market A/B** once the sell and feed reds are green. They were all measured against
   a planner that has since changed.
@@ -349,8 +391,98 @@ terminal. These are the ones that were still open; nothing here has been closed 
 
 Measured on the `matching-the-tape` grid, seed 11, `90494364`, at `9ec3ebc`. d0 and d1 pass.
 
-- **d4 `feed 6/7` / `care 6/7`** — one animal unserved. Real, ours.
-- **d6 `place 0/1`, `plant 13/14`, `water 16/17`, `buy_product 7/9`** — real, ours.
+**Re-measured 2026-08-12 at HEAD against Victor's tape, `--days 17 --moves`.**
+d0–d10 is now op-for-op exact on every non-exempt row *except* three cells, and two of the three are
+the tape being wrong rather than us:
+
+- **d1 `care 0/5` is NOT a defect — do not close it.** `reference/kaggriculture.py:816` banks the
+  bonus only `if tile["cared_today"] and tile["fed_today"]`, and `:820` wipes `cared_today` either
+  way. d1 is a day nobody feeds (`feed 0/0`, both sides), so Victor's five CAREs bank exactly zero.
+  `router.py:852` gates `if not cell["cared_today"] and fed:` and is correct by the source.
+  This is a **plan** difference, not an execution one: with `fed` False the CARE op is never emitted
+  into the node set, so no amount of routing could produce it.
+  It is also not a turn we reclaim — d1 idles 31/28, so the five turns are spare either way.
+- **d5 `dig 0/1` and d7 `dig 0/1`** — the only other cells. `weeds` is `0/0` on all eleven days and
+  the grid runs `weedSpawnChance 0.0`, so there is nothing to dig; Victor digs blind because an
+  open-loop tape cannot see which tile the RNG weeded. On the ladder (`0.005`) that insurance is
+  not free. **Do not chase these two cells on seed 11** — the grid cannot reach the condition that
+  makes them right or wrong.
+- **d4 `feed 6/7` / `care 6/7`** — CLOSED at HEAD, both now 5/5 through d4.
+- **d6 `place 0/1`, `plant 13/14`, `water 16/17`, `buy_product 7/9`** — CLOSED at HEAD, all exact.
+
+**d11 is where the season actually starts diverging, and it is a self-sustaining loop.**
+It is an *execution* problem — movement — not a plan shortfall, and unlike d1 it is worth fixing.
+
+```
+                    d10     d11     d12     d13     d14     d15     d16
+  water           43/43   40/41   43/46   28/27   41/45   35/35   50/59
+  weeds             0/0     1/0     1/0     1/0     2/0     2/0     2/0
+  strawb          31/31   35/36   35/36   35/36   35/36   35/36   35/36
+  dig               0/0     0/1     0/0     1/0     0/0     0/0     0/0
+  drop              3/5     5/0     6/1     7/0     5/0     4/2     4/1
+  move            124/144 128/99  117/100 105/86  110/97  114/108 138/128
+  idle             98/78   23/57   23/39   19/48   24/38   13/23   60/49
+  mv/wk         1.06/1.23 1.24/1.02 1.04/0.88 1.25/1.18 1.13/1.04 1.10/1.09 1.13/0.92
+```
+
+The consequence chain is not in doubt: **+29 move turns → one water short → a weed → a tile gone.**
+`consecutive_unwatered >= 2` turns the tile into a WEED (`kaggriculture.py:770`), `weedSpawnChance`
+is 0.0 on this grid, so every weed here is our own missed water; it costs the tile permanently
+(`strawb 35/36` to the end of the run) plus a turn to clear (`dig 1/0` at d13).
+`idle 23/57` says we are near-saturated while the tape has 57 turns spare and still waters more.
+
+Note `water 43/43` at d10 with a weed appearing at d11: the *count* matches and the *coverage* does
+not. We water the wrong 43. Do not read the water row as a throughput number.
+
+**What the +29 move turns are NOT.** Two causes were proposed and both are dead:
+
+- **Mid-day ferrying — NO.** `scripts/day_ops.py --day 11` shows 3 of our 5 drops at **h23**, the
+  closing walk home. Only two are mid-day, both by u6. The free drop is gated on
+  `dist(pos,d) + dist(d,j.tile) == dist(pos,j.tile)` (`cover.py:708`) — zero detour by
+  construction — so drops cannot buy movement, and `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED` is
+  already `False`. The `drop 5/0` row reads like ferrying and is not.
+- **Pen siting — NO, and it was already measured.** Our d11 pen set is genuinely more spread than
+  the tape's (sum-to-depot 41 vs 29; worst pen 7 steps vs 3; `(9,1) (9,2) (0,3) (0,4)`), and that
+  difference **does not propagate**. The `PEN_SPOTS` comment records a ceiling test that pinned
+  Victor's own pen tiles and moved 150 cells to 148. An arm wiring the ungated catch-up siting in
+  `build_nodes` to `_nearest_ground` produced a **byte-identical 17-day grid** — reverted same day,
+  along with its test. Distance-to-depot of the pen SET is not the quantity that predicts movement.
+
+- **Brink-water pricing — NO, and this one narrows the problem.** The tile that dies is `(1,2)`, a
+  strawberry, and it was not unlucky: `d4:1 d6:1 d8:1 d10:1`, skipped every even day for a week,
+  then skipped again on d11. That is the designed alternate-day cadence
+  (`router.crop_ops`, `consecutive_unwatered >= 1`), which Seb runs too — so ~20 tiles sit one miss
+  from death every day, board-wide, all season. Adding the weed's own cost (the lost square plus
+  the DIG) to the brink WATER prize at both sites produced a **byte-identical 17-day grid** and
+  `(1,2)` still died. Reverted with its test.
+  **What that rules out is the whole priority story:** raising every brink water by the same amount
+  changes no ordering among brink tiles, so if `(1,2)` were losing a triage it would now win one.
+  It is not losing a triage — **it is never reached.** This is a REACHABILITY problem, not a
+  pricing or ranking one, and any further prize/rank arm is answering the wrong question.
+  (Do not confuse this with `router.py:656`, the *separate* recorded arm that promoted brink water
+  into the MANDATORY pass and measured **-$2,804** over twelve seeds.)
+
+- **The closing walk home — NO, and the reason is decisive.** `_end_of_day` calls
+  `_drop_inventories_to_shed` (`kaggriculture.py:865`): every hand is emptied into the shed at the
+  rollover, free, no walk, and the units are teleported home anyway. So a closing trip is only
+  needed when today's market must see the goods while it is open, or when the shed would overflow
+  (the sweep DISCARDS overflow). Victor exploits this — he does `drop 0` on d11.
+  There is also a genuine internal mismatch: `cost` prices a reserve day with `wanted_only=True`
+  (`cover.py:941`) while `_solve` materialised the route without it (`cover.py:1430`), and a
+  synthetic WOOL tour against a WHEAT row was priced at 10 turns and built at 19.
+  Threading the flag through produced a **byte-identical 17-day grid**. Reverted with its test.
+  **Why it is null: on d10-d16 every tour's load is already `wanted`.** d11's row is
+  `sells={'MILK': 6, 'FERTILIZER': 24}` and the three units that drop at h23 spent the day on
+  `COLLECT_FERTILIZER`, so the market genuinely needs those drops and `wanted_only` suppresses
+  nothing. The 9-turn gap exists only for loads the sell row ignores, which this schedule does not
+  produce. Classic "check the harness sends what the agent would send" — the test built a case the
+  game never reaches.
+
+**Do not re-derive any of these four.** The open question is unchanged and unanswered: where do the
+29 turns go? The one lead not yet tested is the planting frontier — the tape puts 7 of its 11 d11
+plantings in the SW quadrant and waters 8 tiles there; we put 1 there and cram 10 into the two north
+quadrants that already hold every pen. That is `field_order`'s fixed `_QUAD_ORDER`, which fills a
+quadrant before opening the next, and it is a CROP siting question, not a pen one.
 - **d4 `tiles 50/25` is NOT a defect.** Seb buys that parcel on d4 in his own game; the tape column
   is degraded because he is $35 poorer at h22 when replayed against us. The money column from d4 on
   inherits the same contamination. See the skill `.claude/skills/matching-the-tape`.
@@ -389,8 +521,9 @@ Do not reopen without new evidence that contradicts the named artifact.
 | C-20 | Dropping the harvest earlier is free money | FALSE. Four arms; the one that worked mechanically moved the first DROP h19 → h5 and still lost $8,292, because `DROP 116 → 137` bought `HARVEST 300 → 294`. A late harvest is already priced. | `experiment_log.md` §20 |
 | C-21 | Pen geometry is a lever | FALSE. His exact tiles buy 2 cells of 150, and the Manhattan sum from (4,4) is 22 for both day-0 blocks. `DEPOT_RING_FIRST` ships off; its money sign reversed on a held-out draw. | `experiment_log.md` §21 |
 | C-22 | `Node.service` under-counting is a bug to fix | It is the packing calibration that matches the tape. Correct prices, worse reproduction, every arm. Both constants ship at 0 and will not move. | `experiment_log.md` §22 |
-| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. | `kagg/search/schedule_agent_1455mh.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
-| C-24 | Fertilizer priced at its $100 base when deciding whether to fertilize | Fixed. The live market quote (`obs["market"]["prices"]["FERTILIZER"]`) is read every turn and threaded into `_router_acts` as `fertilizer_price` — nothing eats fertilizer, so its book only ratchets up ($50 by day 17, $20 by day 26 in 85/85 recorded games), and pricing at base meant refusing to fertilize a tile for a price nobody would pay. Shipped, unconditional (no flag to disable). | `kagg/search/schedule_agent_1455mh.py:2602-2612` |
+| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. **AMENDED 2026-08-15 — the melon half was closed for the wrong reason; see C-23a.** | `kagg/search/schedule_agent.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
+| C-23a | The strawberry/melon split cannot adapt | FALSE — it adapts, just not to shops. Across all 16 downloaded カワシギ games the split has exactly two states and the total is **always 54**: `STRAW 34 / MELON 20` (10 games) and `STRAW 42 / MELON 12` (6). Every game buys `MELON 12` on d0; the whole decision is one binary +8 executed `d5:+3 d6:+5`. It separates **16/16 on the opponent** — all six `researchstudio.site` games hold at 12, every game against Yusuke Hayashi / Filip Strzałka / Arda Ceylan tops up to 20 — and the signal is on the board he can see at d5: `MELON 9, WHEAT 7` against `MELON 5, STRAWBERRY 3, WHEAT 6`. The first shop unlocks at d2h23 in all sixteen and does **not** separate them (`PIZZA_SHOP` and `SMOOTHIE_SHOP` appear on both sides). Melon is the one crop no shop buys (`kaggriculture.py:91-98`), so its price is set purely by what the two farms dump into the town book; an opponent on nine melon tiles floods it, and the eight tiles are worth more in a crop somebody bids for. C-23's reasoning — "a pair with one board-independent member cannot adapt" — is correct about `SHOP_ADAPT_CROPS` and wrong as a verdict on the question: the signal was never the shop draw. Implemented 2026-08-15. | `kagg/search/schedule_agent.py` (`MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT`), `tests/test_melon_yields_to_a_melon_heavy_opponent.py` |
+| C-24 | Fertilizer priced at its $100 base when deciding whether to fertilize | Fixed. The live market quote (`obs["market"]["prices"]["FERTILIZER"]`) is read every turn and threaded into `_router_acts` as `fertilizer_price` — nothing eats fertilizer, so its book only ratchets up ($50 by day 17, $20 by day 26 in 85/85 recorded games), and pricing at base meant refusing to fertilize a tile for a price nobody would pay. Shipped, unconditional (no flag to disable). | `kagg/search/schedule_agent.py:2602-2612` |
 
 ---
 

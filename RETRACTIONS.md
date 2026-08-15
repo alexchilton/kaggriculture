@@ -70,6 +70,39 @@ worth fixing and it has so far cost nothing measurable. Commit message amended.
 branch cannot fire for milk at all. It is a wheat rule. One command would have shown this before the
 extraction.
 
+### 7. "The melon rule should be losing" — FALSIFIED PREDICTION
+
+**Claimed**, in `docs/when_and_what_to_sell_2026-08-15.md` section 7, before the data landed:
+`MELON_YIELD_OPPONENT_MELON = 99` (rule off) should beat `= 7` (rule as shipped).
+
+**Result**, 960 games against 24 recorded ladder opponents, both seatings:
+
+    value  games     win   mean ours  mean margin
+        7    480   68.1%     96,015       14,450     rule ON
+       99    480   67.9%     94,029       13,250     rule OFF
+
+The prediction was **wrong**. The rule is a null, not a loss -- 0.2pp is one game in 480, inside
+binomial noise (SE ~2.1pp), and the ON arm is marginally ahead on money.
+
+**Why the model was wrong:** it swapped the whole 120-unit melon line into strawberry. The real
+switch is **8 tiles** (melon 20 -> 12, strawberry 34 -> 42, measured across his 67 games). A 15x
+scaling error. The fragility analysis in that doc stands; its conclusion about this rule does not.
+
+**What is still true and still unexplained:** he swaps in 15 of 67 games (22%); our threshold of 7
+fires on ~68%, because every opponent in every one of his games plants >=12 melon. And **no signal
+tested separates his two states** -- not opponent melon (ranges overlap 18-26), not the shop draw
+(largest separation is PET_CAFE at d8, 6 games of 15). The trigger is unidentified.
+
+### 8. "`place` will snap back to ~35 when the routes are regenerated"
+
+**Claimed:** the stale Victor routes were destroying 17 shed deposits, since the greedy did 35
+against the tape's 36 and the precomputed routes dropped it to 18.
+
+**Correction:** after regeneration `place` went **18 -> 8**, further from the tape, not closer. The
+stale routes were not the cause. This is now the largest unexplained op gap (8 vs 36) and needs the
+ops classified by tile -- `PLACE` is animal placement AND shed deposit
+(`reference/kaggriculture.py:377`) -- before anyone theorises again.
+
 ---
 
 ## (b) Still UNVERIFIED — no measurement behind them
@@ -128,6 +161,21 @@ extraction.
 5. **The dead-agent trap was real and measurable.** `schedule_agent.py` was a dead 3,610-line
    predecessor while the shipped agent was `schedule_agent_1455mh.py` bundled under that same name.
    **75 scripts imported the dead one**, including all three sell diagnostics.
+
+6. **Re-solving the routes against the shipped plan closed 75% of the gap to the tape.**
+
+       money d29   victor routes $139,025 -> resolved $147,355   tape $150,076
+       gap                $11,051         ->        $2,721
+       harvest d9-d29         335         ->           362        tape 375
+       move (season)        3,036         ->         2,588        tape 3,477
+       idle (season)          987         ->         1,370        tape 660
+
+   Eighteen days re-solved in day order, every one seated 100% with zero uncovered. The win is
+   fewer wasted steps: mv/wk 1.02 -> 0.85 against his 1.25.
+
+7. **The melon rule is a measured null** (68.1% vs 67.9% over 960 games) and **geese are a measured
+   disaster** (69.4% -> 38.9% at two birds). Kawashigi plants **zero geese and zero tomato in all 67
+   of his recorded games**, which agrees.
 
 ---
 
