@@ -4109,42 +4109,77 @@ MELON_YIELD_OPPONENT_MELON = 7
 WHEAT_TILES_TO_CARROT = 0
 WHEAT_TILES_TO_TOMATO = 0
 
+#: **Every crop against every other, as `(src, dst, tiles)` triples.** The two integers above can
+#: only ever spend wheat; this can also take melon away, or buy wheat with strawberry.
+#:
+#: Why the general form is needed, measured on ladder game `93346440` -- a game we WON by $70,525:
+#:
+#:     product        base   inv close   price close
+#:     MELON           250       10157        $  4     1.6% of base, book UP 157 units
+#:     WHEAT            25        9419        $ 49     ~2x base, deepest drain on the board
+#:     STRAWBERRY      120        9916        $197     above base
+#:     TOMATO           60        9916        $ 70     above base
+#:     CARROT           35       10032        $ 28     we supplied it, nobody drained it
+#:
+#: and on a second board (GUI, 2026-08-15): EGG $141 of $50, CARROT $80 of $35, WHEAT $48 of $25,
+#: MELON $1 of $250, MILK $1 of $160, WOOL $11 of $200.
+#:
+#: Neither melon's collapse nor wheat's premium is reachable with a wheat-only knob, and
+#: `SHOP_ADAPT_CROPS`'s own docstring names that exact axis -- "wheat against strawberry+melon" --
+#: as the one worth building.
+#:
+#: Applied from `LATE_CROP_FROM_DAY`, in the order given, each budget season-wide and draining as it
+#: is spent. Inert at `()`, so this ships as a no-op until a sweep sets it.
+CROP_TILE_SHIFTS = ()
+
 #: Late only. The early rows are the opening this repo matches op-for-op, and both crops are scarcity
 #: plays whose price is highest once the shops have had a season to drain the book.
 LATE_CROP_FROM_DAY = 12
 
 
-def _wheat_to(row, crop, budget):
-    """Re-crew up to `budget` of this row's WHEAT plant stops to `crop`. Returns (row, spent).
+def _recrew(row, src, dst, budget):
+    """Re-crew up to `budget` of this row's `src` plant stops to `dst`. Returns (row, spent).
 
     `plants` is an ORDERED LIST of crop names, one per stop, and the order is the planting order the
     tour is built from -- so a stop is renamed in place and nothing moves. `seeds` is a `{crop: qty}`
-    dict and is moved by the same count, which is what keeps the day's bill honest: the two crops do
-    not cost the same (`RT.SEED_COST` WHEAT 10, CARROT 20, TOMATO 50) and `_days_bill` prices the
-    row, so swapping the plants without the seeds would under-bill the day and mis-set `short_of_cash`.
+    dict and is moved by the same count, which is what keeps the day's bill honest: the crops do
+    not cost the same (`RT.SEED_COST` WHEAT 10, CARROT 20, TOMATO 50, MELON 80, STRAWBERRY 100) and
+    `_days_bill` prices the row, so swapping the plants without the seeds would under-bill the day
+    and mis-set `short_of_cash`.
+
+    **Any crop to any crop, which `_wheat_to` could not express.** That mattered: it could ask for
+    more tomato but never for less melon, and melon is the worst-realising crop we grow. Ladder game
+    `93346440`, a $70,525 WIN, closed melon at $4 against a base of $250 while wheat closed at $49
+    against a base of $25. A knob that only spends wheat cannot reach either.
     """
-    if budget <= 0:
+    if budget <= 0 or src == dst:
         return row, 0
     plants = list(row.get("plants") or [])
-    idx = [i for i, c in enumerate(plants) if c == "WHEAT"][:budget]
+    idx = [i for i, c in enumerate(plants) if c == src][:budget]
     if not idx:
         return row, 0
     n = len(idx)
     for i in idx:
-        plants[i] = crop
+        plants[i] = dst
     seeds = dict(row.get("seeds") or {})
-    take = min(n, int(seeds.get("WHEAT", 0) or 0))
+    take = min(n, int(seeds.get(src, 0) or 0))
     if take > 0:
-        seeds["WHEAT"] = int(seeds["WHEAT"]) - take
-        if seeds["WHEAT"] <= 0:
-            seeds.pop("WHEAT")
-    # The stop is being planted either way, so the seed must be bought even if this row's wheat
+        seeds[src] = int(seeds[src]) - take
+        if seeds[src] <= 0:
+            seeds.pop(src)
+    # The stop is being planted either way, so the seed must be bought even if this row's source
     # order was smaller than its plant count (`SEED_ROW_IS_A_FLOOR` tops the rest up in play).
-    seeds[crop] = int(seeds.get(crop, 0) or 0) + n
+    seeds[dst] = int(seeds.get(dst, 0) or 0) + n
     out = dict(row)
     out["plants"] = plants
     out["seeds"] = seeds
     return out, n
+
+
+def _wheat_to(row, crop, budget):
+    """Back-compat shim: `_recrew` with WHEAT as the source. Kept so the two integer knobs below,
+    and the tests that pin them, keep working unchanged."""
+    return _recrew(row, "WHEAT", crop, budget)
 
 
 def _melon_to_strawberry(row):
@@ -4295,6 +4330,18 @@ def make_agent(schedule, me=0, router=True):
                 for _crop in ("CARROT", "TOMATO"):          # a total order, so a sweep is reproducible
                     _r, _spent = _wheat_to(_r, _crop, state["late_crop_left"][_crop])
                     state["late_crop_left"][_crop] -= _spent
+                sched[day] = _r
+                row = _r
+
+            # **The general form: any crop onto any other.** See `CROP_TILE_SHIFTS`. Applied after
+            # the two wheat integers so a sweep that sets both is still a total order.
+            if day >= LATE_CROP_FROM_DAY and CROP_TILE_SHIFTS:
+                if "crop_shift_left" not in state:
+                    state["crop_shift_left"] = [int(n) for _, _, n in CROP_TILE_SHIFTS]
+                _r = sched.get(day) or {}
+                for _i, (_src, _dst, _) in enumerate(CROP_TILE_SHIFTS):
+                    _r, _spent = _recrew(_r, _src, _dst, state["crop_shift_left"][_i])
+                    state["crop_shift_left"][_i] -= _spent
                 sched[day] = _r
                 row = _r
 
