@@ -1162,7 +1162,16 @@ RANK_HOME_DAYS = frozenset({4})
 
 #: Whether a tour that cannot get its load home gives up trailing jobs until it can. Never a trade:
 #: the produce those jobs make is stranded by definition, so the turns buy nothing as things stand.
-TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
+TRIM_A_TAIL_THAT_CANNOT_COME_HOME = True
+
+#: The days the trim may fire. **Only the last day, and the reason is the overnight sweep.** On
+#: every other day `_drop_inventories_to_shed` banks whatever a tour ends up holding, so a kept job
+#: always beats a walk and the trim is a pure loss -- which is why it shipped False for d4. On d29
+#: the sweep lands after the market is gone and the kept job's produce is DISCARDED, so the walk
+#: is worth strictly more than the job by construction. The reserve pricing cannot reach a
+#: precomputed day (`_apply_precomputed` seats stops without pricing them); this trim in `plan` is
+#: the one place a solved d29 tour can shed work for its delivery.
+TRIM_HOME_DAYS = frozenset({29})
 
 
 #: **Routes solved OFFLINE and replayed, keyed by day.** `{day: {unit: [(tile, (ops...)), ...]}}`
@@ -2006,7 +2015,7 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
             home = materialise(units[u], seq, held, depots, wanted, True, rush, due=due)
             if turns(units[u], home) <= budget[u]:
                 route, cost = home, turns(units[u], home)
-            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in RANK_HOME_DAYS:
+            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in TRIM_HOME_DAYS:
                 # **The trailing job is producing goods that will be STRANDED, so dropping it is a
                 # gain and not a trade.** u1 on d4 harvests (2,1) at h15 and (1,1) at h18, ends six
                 # steps from the shed with eight wheat and passes to dusk; the rollover sweeps it
