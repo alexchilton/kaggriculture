@@ -1,5 +1,31 @@
 # docs/ — index
 
+**Updated 2026-08-15.** Read this section before anything below it: several of the framings further
+down were overturned today, and the file dated 2026-08-11 that follows still states them.
+
+## Read first, 2026-08-15
+
+| File | What it is |
+|---|---|
+| `REGISTER.md` | **The live open/closed list.** Repaired today — it was corrupted at line 1 and seven days stale on this branch. Check it before opening anything. |
+| `stale_audit_2026-08-15.md` | What else in here is measured on a tape we no longer ship, through a bug now fixed, or against a flag that no longer exists. Start here before trusting any older doc. |
+| `fable_allocation_economics_2026-08-15.md` | The 1.32.7 hinge priced and validated against the organisers' own figures (carrot 25.8 / tomato 53.4 / egg 22.4%). Unconditional wheat->carrot/tomato conversion has **no edge**; the play is conditional on 2+ tomato shops visible by d12. |
+| `fable_geese_audit_2026-08-15.md` | **Geese are closed on the Elo objective** — margin-best in 0.9% of shop draws, because exiting the flooded milk/wool books gifts the opponent ~$9-10k of price suppression. Corrects the goose yield (44, not 46) and my own cow/sheep revenue model. |
+| `fable_fourth_quadrant_2026-08-15.md` | No path to a 4th quadrant. Land is affordable from d11; the fibonacci hire curve costs ~$21,960 against at most $15,298 of crop. |
+| `three_ladder_games_2026-08-15.md` | Read off real ladder replays: neither the escaped animal nor solved-route seating predicts the result. Both animal books flooring does — 1W/4L against 10W/3L. |
+| `the_goose_is_insurance_2026-08-15.md` | My own arithmetic, **superseded on its conclusion** by the audit above. Kept only for the dating that reopened the question: `HERD_GEESE` was measured 2026-08-11/12 and `c99a8a5` fixed `SELLABLE` on 2026-08-13, so that verdict was taken while every egg was unsellable. |
+| `where_the_harvest_gap_is_2026-08-15.md` | A hypothesis I then **disproved** — labelled as such inside. `WATER_ROTATION` is not the cause of `harvest -19`; crop decay and unseated harvests are. |
+
+**Two mechanism findings from 2026-08-15 that are not in any older doc:**
+
+- `_decay_plants` runs on **every step**, not the rollover, so a one-shot crop's safe harvest window
+  is **exactly one day wide** and water does not extend it. That is a second weed source alongside
+  `consecutive_unwatered >= 2`, and `cover.py` cannot see it.
+- `cover._apply_precomputed` returns before the budget check and matches jobs on `(tile, ops)`
+  alone, so on **d12-d29 neither the turn budget nor a job's prize is enforced**.
+
+---
+
 **Consolidated 2026-08-11**, on top of the 2026-08-09 consolidation below.
 The trigger: `scripts/episode_index.py` pulled the official episode datasets for 2026-08-09 and
 -08-10 — 1,372 episodes, 2,744 seats — giving this project its first population-scale read of the

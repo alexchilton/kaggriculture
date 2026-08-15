@@ -27,8 +27,16 @@ from pathlib import Path
 OUT = Path("data")
 INDEX = "kaggle/kaggriculture-episodes-index"
 # Newest first: the later day has the stronger field, so its episodes are the better teachers.
-DATASETS = ("kaggle/kaggriculture-episodes-2026-07-31",
-            "kaggle/kaggriculture-episodes-2026-07-30")
+#
+# **These go stale silently and that is the whole risk here.** They read 2026-07-31/07-30 until
+# 2026-08-15, by which point Kaggle had published every day up to 2026-08-14 -- so a "fresh" pull
+# was quietly re-reading a two-week-old field that predates the 1.32.6 town rebalance AND the
+# 1.32.7 hinge change. Episodes from before 2026-08-08 describe a different economy and are not
+# teachers, they are noise. `kaggle datasets list -s kaggriculture-episodes-2026-08` lists what
+# actually exists; update this before every pull rather than trusting it.
+DATASETS = ("kaggle/kaggriculture-episodes-2026-08-14",
+            "kaggle/kaggriculture-episodes-2026-08-13",
+            "kaggle/kaggriculture-episodes-2026-08-12")
 
 # A replay is only worth keeping if the winner played well. `contrarian` banks ~$51k and the pair in
 # 89197802 banked $106k and $113k, so this keeps the ones with something to teach and discards the

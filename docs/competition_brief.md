@@ -60,7 +60,7 @@ framing as the whole story.
 `docs/the_ladder_is_two_scripts.md`, measured from 2,744 ladder seats: the ladder top is ~3,210, our
 best-ever submission is 1,257.9, and the field plants 108-147 WHEAT tiles a season against our 24.
 
-## Baselines, measured locally on 1.32.2
+## Baselines, measured locally on 1.32.2 — SUPERSEDED, see the version-skew note below
 
 ```
 starter vs starter  ->  3512 / 3512     (+$512 profit over a whole season)
@@ -207,6 +207,26 @@ Every one of these was, at some point, written up as our bug and turned out to b
   observation, which is why our agent re-offers every turn and why any metric counting *offers*
   rather than *fills* over-reads by up to 11x.
 
+## Version skew — and it has moved TWICE now
+
+> **Updated 2026-08-15. Read this before the section below, which describes the FIRST skew only.**
+>
+> The required version is **`kaggle-environments >= 1.32.7`**, not 1.32.2. Two changes, not one:
+>
+> - **1.32.6** (2026-08-07/08) — the "town rebalance" described below.
+> - **1.32.7** (2026-08-15, PR #1399) — CARROT, TOMATO and EGG moved to a new `hinge` price shape.
+>   `kagg/sim/market.py` died on `KeyError: 'hinge'`, and `kagg/sim/jax_sim.py` would have priced
+>   all three at flat base **in silence**. See
+>   `docs/balance_change_eggs_tomatoes_carrots_2026-08-15.md` and
+>   `tests/test_the_market_curve_matches_the_reference.py`, which pins our curve to `reference/`.
+>
+> Measured 2026-08-15, Monte Carlo over the shop draw, probability the hinge fires by d29 with zero
+> production: **carrot 25.8%, tomato 53.4%, egg 22.4%** — matching the organisers' announced
+> 26/50/22, so the model is validated (`docs/fable_allocation_economics_2026-08-15.md`).
+>
+> **Any baseline measured before 2026-08-15 describes a different game**, and any measured before
+> 2026-08-08 describes a different game again.
+
 ## Version skew — 1.32.2 vs 1.32.6
 
 `kaggle-environments` 1.32.6 shipped a "town rebalance" on 2026-08-07:
@@ -245,7 +265,7 @@ locked tiles, so every tour currently detours around ground it would be allowed 
 Credentials at `~/.kaggle/kaggle.json`. Never print or commit them.
 
 ```bash
-pip install -U "kaggle-environments>=1.32.2"    # earlier versions lack the env
+pip install -U "kaggle-environments>=1.32.7"    # 1.32.2 only FIRST contained the env
 kaggle competitions submit kaggriculture -f main.py -m "v1"
 kaggle competitions submissions kaggriculture
 kaggle competitions episodes <SUBMISSION_ID>
