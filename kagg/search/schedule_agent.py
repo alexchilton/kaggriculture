@@ -2462,6 +2462,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     return ["FEED"]
             if (CARE_WHAT_YOU_STAND_ON and here.get("fed_today")
                     and not here.get("cared_today")
+                    and not RT.upkeep_buys_nothing(day)
                     and tuple(pos) not in cared_this_turn
                     and tuple(pos) not in working_tiles):
                 # Claimed on RETURN: both call sites consume a non-None `underfoot()`

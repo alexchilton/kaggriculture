@@ -40,14 +40,6 @@ import pytest
 
 import reference.kaggriculture as KG
 
-#: **PARKED 2026-08-15: correct reasoning, measured regression.** `NO_UPKEEP_ON_THE_LAST_DAY` is
-#: False. Freeing the 28 turns made d29 HARVEST fall 27 -> 20, because `cover._apply_precomputed`
-#: keys a stop on `(tile, ops)` and dropping FEED/CARE changes the key, so the stop leaves the solved
-#: route instead of getting cheaper. See the flag's docstring for the grid.
-PARKED = pytest.mark.xfail(strict=True, reason=(
-    "NO_UPKEEP_ON_THE_LAST_DAY is off: _apply_precomputed matches on the exact op tuple, so "
-    "removing upkeep drops the whole stop from the solved route. harvest 396->389, sell 1489->1474."))
-
 RT = importlib.import_module("kagg.search.router")
 R = importlib.import_module("kagg.search.routines")
 
@@ -76,7 +68,6 @@ def test_upkeep_pays_out_only_at_the_rollover():
         "sanity: FEED must not add yield_units during the turn")
 
 
-@PARKED
 def test_no_feed_is_offered_on_the_last_day():
     ops = RT.animal_ops(_pen(), LAST_DAY, have_wheat=True)
     assert not [o for o in ops if o[0] == "FEED"], (
@@ -84,12 +75,38 @@ def test_no_feed_is_offered_on_the_last_day():
         f"exist, and a starved animal costs nothing once the season is scored: {ops}")
 
 
-@PARKED
 def test_no_care_is_offered_on_the_last_day():
     ops = RT.animal_ops(_pen(fed=True), LAST_DAY, have_wheat=True)
     assert not [o for o in ops if o[0] == "CARE"], (
         f"a CARE was offered on d{LAST_DAY}; its bonus is released by the next production night, "
         f"which never comes: {ops}")
+
+
+def test_the_underfoot_feed_also_stops_on_the_last_day():
+    """The 2026-08-15 relapse. Dropping FEED from `animal_ops` measured d29 feed 14 -> 14.
+
+    The route is a visit order and the EXECUTOR re-derives work at every stop and crossing:
+    `underfoot()` (`schedule_agent:2458`) feeds any pen it stands on if `will_be_fed` agrees, so
+    the ration the planner declined went in anyway the moment a loaded hand crossed the pen. The
+    predicate is the one place all the feed paths ask, so it is the one place the last day says no.
+    """
+    assert not RT.will_be_fed(_pen(), LAST_DAY), (
+        "will_be_fed still says yes on the last day, so underfoot() re-adds every FEED the "
+        "planner dropped -- measured as d29 feed 14/0 with NO_UPKEEP_ON_THE_LAST_DAY on")
+
+
+def test_the_underfoot_feed_still_runs_on_d28():
+    """The other side: d28's feed pays out at the d29 rollover and must stay."""
+    assert RT.will_be_fed(_pen(), LAST_DAY - 1), (
+        "will_be_fed stopped feeding a d28 pen; only the last day buys nothing")
+
+
+def test_the_last_day_gate_is_one_predicate():
+    """`underfoot()`'s CARE branch cannot ask `animal_ops`, so it needs the same gate the FEED
+    paths use. Pin the helper both will call."""
+    assert RT.upkeep_buys_nothing(LAST_DAY)
+    assert not RT.upkeep_buys_nothing(LAST_DAY - 1)
+    assert not RT.upkeep_buys_nothing(None)
 
 
 def test_a_ripe_pen_is_still_harvested_on_the_last_day():
