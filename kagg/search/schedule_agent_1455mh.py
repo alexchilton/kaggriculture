@@ -3783,6 +3783,68 @@ MELON_YIELD_FROM_DAY = 5
 MELON_YIELD_OPPONENT_MELON = 7
 
 
+#: **Turn late WHEAT plantings into CARROT / TOMATO.** Sweepable integers: how many wheat plant
+#: stops, from `LATE_CROP_FROM_DAY` onward, are re-crewed to each.
+#:
+#: The 2026-08-15 balance change (PR #1399) put both on a `hinge` scarcity curve, and CARROT's
+#: `below_target` went 0.20 -> 1.00 on top of that. Measured on two ladder replays of our own agent:
+#:
+#:     end-of-season scarcity     x      T   x/T   old $   new $
+#:     CARROT                   456    450  1.01      42      71     +69%
+#:     TOMATO                   228    200  1.14      87      91      +5%
+#:     TOMATO (other replay)    387    200  1.94     108     274    +154%
+#:
+#: Carrot's gain is the target change and applies at ANY depth; tomato's is the hinge and needs
+#: x ~ 2T, which it reached in one of two games. So carrot is the steady one and tomato is a lottery
+#: on how hard the shops drain it -- expect tomato to need far more seeds to separate from noise.
+#:
+#: **Wheat is the right thing to spend.** FEED takes one WHEAT from the acting hand, so wheat looks
+#: load-bearing; it is not. Measured on the same two replays, we buy far more wheat as PRODUCT than
+#: we ever eat -- 422 bought against 329 fed, and 420 against 316 -- so the herd is fed entirely out
+#: of purchases and every wheat TILE is grown purely to sell. Reallocating them costs no feed at all.
+#:
+#: Both default to 0, which is a no-op, so this is inert until a sweep sets it.
+WHEAT_TILES_TO_CARROT = 0
+WHEAT_TILES_TO_TOMATO = 0
+
+#: Late only. The early rows are the opening this repo matches op-for-op, and both crops are scarcity
+#: plays whose price is highest once the shops have had a season to drain the book.
+LATE_CROP_FROM_DAY = 12
+
+
+def _wheat_to(row, crop, budget):
+    """Re-crew up to `budget` of this row's WHEAT plant stops to `crop`. Returns (row, spent).
+
+    `plants` is an ORDERED LIST of crop names, one per stop, and the order is the planting order the
+    tour is built from -- so a stop is renamed in place and nothing moves. `seeds` is a `{crop: qty}`
+    dict and is moved by the same count, which is what keeps the day's bill honest: the two crops do
+    not cost the same (`RT.SEED_COST` WHEAT 10, CARROT 20, TOMATO 50) and `_days_bill` prices the
+    row, so swapping the plants without the seeds would under-bill the day and mis-set `short_of_cash`.
+    """
+    if budget <= 0:
+        return row, 0
+    plants = list(row.get("plants") or [])
+    idx = [i for i, c in enumerate(plants) if c == "WHEAT"][:budget]
+    if not idx:
+        return row, 0
+    n = len(idx)
+    for i in idx:
+        plants[i] = crop
+    seeds = dict(row.get("seeds") or {})
+    take = min(n, int(seeds.get("WHEAT", 0) or 0))
+    if take > 0:
+        seeds["WHEAT"] = int(seeds["WHEAT"]) - take
+        if seeds["WHEAT"] <= 0:
+            seeds.pop("WHEAT")
+    # The stop is being planted either way, so the seed must be bought even if this row's wheat
+    # order was smaller than its plant count (`SEED_ROW_IS_A_FLOOR` tops the rest up in play).
+    seeds[crop] = int(seeds.get(crop, 0) or 0) + n
+    out = dict(row)
+    out["plants"] = plants
+    out["seeds"] = seeds
+    return out, n
+
+
 def _melon_to_strawberry(row):
     """One day's row with its MELON moved into STRAWBERRY. The count and the ORDER are kept exactly.
 
@@ -3919,6 +3981,20 @@ def make_agent(schedule, me=0, router=True):
                 if state.get("melon_yield"):
                     sched[day] = _melon_to_strawberry(sched.get(day) or {})
                     row = sched[day]
+
+            # **Spend late wheat tiles on the two crops the balance change repriced.**
+            # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
+            # sweep value means "this many tiles over the whole season", not per day. Inert at 0.
+            if day >= LATE_CROP_FROM_DAY and (WHEAT_TILES_TO_CARROT or WHEAT_TILES_TO_TOMATO):
+                if "late_crop_left" not in state:
+                    state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
+                                               "TOMATO": int(WHEAT_TILES_TO_TOMATO)}
+                _r = sched.get(day) or {}
+                for _crop in ("CARROT", "TOMATO"):          # a total order, so a sweep is reproducible
+                    _r, _spent = _wheat_to(_r, _crop, state["late_crop_left"][_crop])
+                    state["late_crop_left"][_crop] -= _spent
+                sched[day] = _r
+                row = _r
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
