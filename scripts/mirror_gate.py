@@ -70,7 +70,7 @@ def one(job):
     SA = importlib.import_module("kagg.search." + module)
     # **The baseline may be a DIFFERENT module.** Comparing two agents is not the same question as
     # comparing two flag settings of one agent: the shipped `schedule_agent` sits on a base that
-    # scored 1232.8 while `schedule_agent_1455*` sit on one that scored 1455, so "is this change
+    # scored 1232.8 while `schedule_agent` sits on one that scored 1455, so "is this change
     # good" and "is this the right base" have to be asked separately.
     SB = importlib.import_module("kagg.search." + base_module) if base_module else SA
     # **And an agent must carry the plan it was calibrated for.** This harness fed one hardcoded plan
@@ -138,7 +138,7 @@ def main():
                     help="the CANDIDATE seat's agent module")
     ap.add_argument("--base-module", default=None,
                     help="the BASELINE seat's module, if comparing two agents rather than two "
-                         "flag settings of one (e.g. schedule_agent_1455mh)")
+                         "flag settings of one (e.g. schedule_agent)")
     ap.add_argument("--set", action="append", default=[],
                     help="NAME=VALUE flag override applied to the CANDIDATE seat only")
     ap.add_argument("--plan", default=str(PLAN),

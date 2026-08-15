@@ -7,7 +7,7 @@
 # Planning the day once: four correct diagnoses, three of them net-negative
 
 2026-08-09, seed 11, weeds off, Seb tape `90494364`, measured by
-`scripts/breakdown.py --module schedule_agent_1455mh --days 7`.
+`scripts/breakdown.py --module schedule_agent --days 7`.
 The criterion is d0-d6 matching the tape op-for-op, never money.
 
 ## The question

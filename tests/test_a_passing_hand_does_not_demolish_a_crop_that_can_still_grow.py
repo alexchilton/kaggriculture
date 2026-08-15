@@ -62,7 +62,7 @@ def harvest():
     import scripts.breakdown as B
     from kaggle_environments import make
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay, schedule, team = B.TAPES["kawashigi"]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in B.TAPE_ONLY} for d, r in sched.items()}

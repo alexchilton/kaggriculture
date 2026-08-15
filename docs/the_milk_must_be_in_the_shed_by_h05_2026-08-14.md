@@ -96,7 +96,7 @@ Two separate causes on d8, both visible above:
 ## One hand per ripe pen: `ONE_HAND_PER_FUNDING_PEN`
 
 The tour ORDER was never the defect, and neither was the flag. Reading the work sequence `cover`
-hands each unit on d8 -- remembering that `schedule_agent_1455mh:3809` builds task tiles as `(x, y)`
+hands each unit on d8 -- remembering that `schedule_agent:3809` builds task tiles as `(x, y)`
 while the board is `(y, x)`, which cost one wrong diagnosis in this session:
 
     u4  0. (4,4) [FEED, CARE, COLLECT_FERTILIZER, HARVEST]  4t  funds   <== ripe cow

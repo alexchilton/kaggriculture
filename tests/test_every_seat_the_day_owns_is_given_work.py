@@ -35,7 +35,7 @@ is a hiring question, not a routing one, and nothing here asserts on it -- the t
 **These are invariants, not scores.** Each is binary and each is a statement about the planner's own
 inputs and outputs, so a flag that quietly changes who gets routed breaks a named test instead of
 moving a number in the grid. That is the whole point of the file: the flags in `crew.py`,
-`cover.py` and `schedule_agent_1455mh.py` are global, they interact, and their effect on *seat
+`cover.py` and `schedule_agent.py` are global, they interact, and their effect on *seat
 utilisation* is invisible in a per-day op grid until it has already cost the day.
 
 Scope: d0-d10, the days that must match the tape. Nothing here asserts anything about the ops
@@ -54,7 +54,7 @@ REPLAY = REPO / "data/seed_scripts/top_guys/91422988.json"
 SCHEDULE = REPO / "data/seed_scripts/top_guys/91422988/schedule.json"
 TEAM = "Seb (allegedly)"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 11
 TPD = 24

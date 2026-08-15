@@ -45,7 +45,7 @@ REPLAY = REPO / "data/seed_scripts/top_guys/91422988.json"
 SCHEDULE = REPO / "data/seed_scripts/top_guys/91422988/schedule.json"
 TEAM = "Seb (allegedly)"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 7
 

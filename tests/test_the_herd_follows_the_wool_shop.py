@@ -23,7 +23,7 @@ a passing rule.
 """
 import pytest
 
-from kagg.search import schedule_agent_1455mh as S
+from kagg.search import schedule_agent as S
 
 
 WANT = {"COW": 10, "SHEEP": 4}
@@ -75,17 +75,17 @@ def test_a_yarn_store_that_arrives_late_does_not_trigger_the_rule():
         "the wool rule fired on a draw-#4 yarn store, which the leader ignores; got %r" % (got,))
 
 
-@pytest.mark.xfail(reason="the headroom greedy, not the wool rule: it swings to the COW FLOOR of 4 "
-                          "on any yarn store, early or late. Pre-existing, and changing it means "
-                          "changing the greedy rather than adding a rule -- flagged, not fixed",
-                   strict=True)
 def test_a_late_yarn_store_still_leaves_the_herd_cow_heavy():
-    """What he actually does once the rule correctly declines to fire, and what we do instead.
+    """What he actually does once the rule correctly declines to fire.
 
-    With the yarn store at draw #4 the rule is out of the way and the headroom greedy decides. It
-    answers a wool shop -- at ANY position -- by falling to `HERD_FLOOR_COW` and putting the rest
-    into sheep, giving COW 4 / SHEEP 10 where all sixteen of his late-yarn games run COW 10 /
-    SHEEP 4. So the greedy is not merely un-tuned here, it is inverted.
+    **This was `xfail(strict)` until 2026-08-13, and the reason it was is worth keeping.** With the
+    yarn store at draw #4 the rule used to step aside and leave the headroom greedy to decide, and
+    the greedy answered a wool shop -- at ANY position -- by falling to `HERD_FLOOR_COW` and putting
+    the rest into sheep. That gave COW 4 / SHEEP 10 where all sixteen of his late-yarn games run
+    COW 10 / SHEEP 4: not merely un-tuned, inverted.
+
+    `WOOL_SHOP_NO_YARN_COW` fixed it by pinning the second branch of his step function rather than
+    leaving it to the greedy, so the marker came off.
     """
     got = split_for(["BAKERY", "PIZZA_SHOP", "BRUNCH_SPOT", "YARN_STORE"], day=12)
     assert got["COW"] >= 9, (

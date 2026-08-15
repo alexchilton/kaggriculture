@@ -38,7 +38,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 SEED, WEEDS, TPD = 11, 0.0, 24
 TAPE = "seb1326"
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 
 #: The day the loss is measured on: 7 hires, one quadrant owned, and a 55-unit SELL row that needs
 #: every hand it can get.

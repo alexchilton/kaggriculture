@@ -22,7 +22,7 @@ def main():
     ap.add_argument("--day", type=int, default=5)
     ap.add_argument("--tape", default="victor")
     ap.add_argument("--seed", type=int, default=11)
-    ap.add_argument("--module", default="schedule_agent_1455mh")
+    ap.add_argument("--module", default="schedule_agent")
     args = ap.parse_args()
 
     import breakdown as B

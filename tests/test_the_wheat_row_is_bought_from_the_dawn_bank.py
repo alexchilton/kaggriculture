@@ -21,6 +21,7 @@ rule's business and `_do_buy_product` fills only what the money covers; what thi
 row is offered while the dawn bank is still intact.
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -30,10 +31,10 @@ from kaggle_environments import make
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 REPLAY = REPO / "data/seed_scripts/top2/91854176.json"
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 TEAM = "Victor @ Tufa Labs"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 12
 TPD = 24

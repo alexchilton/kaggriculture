@@ -142,7 +142,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--first-seed", type=int, default=11)
-    ap.add_argument("--module", default="kagg.search.schedule_agent_1455mh")
+    ap.add_argument("--module", default="kagg.search.schedule_agent")
     ap.add_argument("--schedule", default=OURS)
     ap.add_argument("--replay", default=RIVAL)
     args = ap.parse_args()

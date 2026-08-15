@@ -35,6 +35,7 @@ not a finding.
     PYTHONPATH=. .venv/bin/python -u scripts/product_search.py --arms 40 --seeds 6 --holdout 6
 """
 import argparse
+import kagg.plan as _PLAN
 import collections
 import itertools
 import json
@@ -48,7 +49,7 @@ from concurrent.futures import ProcessPoolExecutor
 sys.path.insert(0, ".")
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PLAN = REPO / "data/seed_scripts/victor/schedule.json"
+PLAN = _PLAN.SHIPPED_PLAN
 FIELD = REPO / "data/seed_scripts/field"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders",
              "money_dawn", "money_dusk", "bank", "tiles", "weeds")
@@ -132,7 +133,7 @@ def apply_arm(sched, arm):
 #: than with a `hasattr` at the call site, because a per-worker `hasattr` that silently skips turns
 #: a swept axis into a no-op and still prints a win rate for it.
 GEESE_FLAG = next((n for n in ("HERD_GEESE", "GEESE", "HERD_GOOSE", "WANT_GEESE")
-                   if hasattr(__import__("kagg.search.schedule_agent_1455mh",
+                   if hasattr(__import__("kagg.search.schedule_agent",
                                          fromlist=["x"]), n)), None)
 
 
@@ -146,7 +147,7 @@ def _play(job):
     field = pathlib.Path(field)
     from kaggle_environments import make
 
-    from kagg.search import schedule_agent_1455mh as SA
+    from kagg.search import schedule_agent as SA
 
     # Module flags. Set per worker process, which is why the pool is `ProcessPoolExecutor` -- a
     # thread pool would race on module state and silently mix arms.

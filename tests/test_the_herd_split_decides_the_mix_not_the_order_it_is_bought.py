@@ -51,7 +51,7 @@ def herd():
     from kagg.analysis.fills import record_fills
     from kaggle_environments import make
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay, schedule, team = B.TAPES["kawashigi"]
     sched = _PLAN.load(schedule)
     shops = B.recorded_shops(replay)
@@ -100,7 +100,7 @@ def test_the_premise_the_schedule_interleaves_the_two_species(herd):
     """Guard. The override can only reorder a sheep it can reach: one rowed on or after
     `SHOP_ADAPT_FROM_DAY`, with a cow rowed after it. Both hold here -- d7 `COW2 SHEEP1` and d8
     `SHEEP1` sit in front of d9 `COW2` and d11 `COW2`."""
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     sched = _PLAN.load("data/seed_scripts/kawashigi/schedule.json")
     rows = {int(dd): (sched[dd].get("animals_bought") or {}) for dd in sched}
     sheep = [d for d, r in rows.items() if int(r.get("SHEEP", 0) or 0) > 0]

@@ -124,7 +124,7 @@ def main():
     ap.add_argument("--root", default="data/seed_scripts",
                     help="restrict the field to one directory, e.g. data/seed_scripts/ladder")
     ap.add_argument("--allow-us", action="store_true", help="include our own past agents")
-    ap.add_argument("--module", default="kagg.search.schedule_agent_1455mh")
+    ap.add_argument("--module", default="kagg.search.schedule_agent")
     ap.add_argument("--schedule", default=OURS)
     #: `crew.ACTIVE_UNTIL_DAY` decides which days the crew planner owns; everything else falls
     #: through to `cover.cover`. It is 7 at HEAD and 30 in the working tree, and the difference has

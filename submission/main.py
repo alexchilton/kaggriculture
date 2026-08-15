@@ -6037,6 +6037,29 @@ THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
 SIZE_THE_RATION_ON_THE_CURVE = True
 #: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
 #: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
+#: **A hand with an exhausted route walks to a crop that becomes a WEED tonight.**
+#:
+#: CLAUDE.md records "the day is planned ONCE, at hour 0. No replan, no urgency, no idle top-up",
+#: and that is right about REPLANNING -- nothing here re-solves the day. This is the narrowest
+#: possible exception: a hand that was going to emit PASS, and a tile that is one dry day from being
+#: destroyed. It cannot displace planned work, because it only ever runs on a turn already lost.
+#:
+#: Measured on ladder replay `93183652`, our own agent, 2026-08-15:
+#:
+#:     total PASS turns in the season                                847
+#:     PASS turns while a crop was ONE DAY from becoming a weed      773   (91%)
+#:     weed births on our farm                                        40   (26 STRAWBERRY, 14 WHEAT)
+#:     further turns spent on DIG cleaning them up                    58
+#:
+#: **Zero of the 40 came from `_spawn_weeds`**, even though the ladder runs the env default
+#: `weedSpawnChance = 0.005` -- every one was a standing crop we failed to water, turning at h00.
+#: So this is not defending against the RNG, it is not throwing away tiles we already paid to seed
+#: and plant. A WATER is one turn; the weed costs the tile, its whole remaining yield, and a DIG.
+#:
+#: The idle mass is d7-d18 (74, 69, 62, 72 turns on d8, d9, d11, d12) and nearly gone by d19, so
+#: this is a mid-game rule that runs out of fuel exactly when the crew saturates.
+THIRSTY_CROP_PULLS_AN_IDLE_HAND = False
+
 HARVEST_WHAT_YOU_STAND_ON = True
 
 #: **A passer-by does not demolish a crop that is still growing.**
@@ -7986,6 +8009,9 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     #: tile, so the whole dawn shift stands on it at h2: eight turns, thirteen wasted hand-turns over
     #: d0-d6, which was the entire overshoot that had this rule shipped OFF.
     cared_this_turn = set()
+    #: Thirsty tiles an idle hand has committed to this turn, so two of them do not converge on one
+    #: crop and spend two turns saving one. See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`.
+    thirsty_claimed = set()
     #: Tiles where a hand is standing on its own next WORK stop and so will be offered that tile's
     #: ops by `_live_ops` this turn. The underfoot rule is for a hand CROSSING a tile; letting a
     #: passer-by take the care first only moves the wasted turn onto the hand whose job it was.
@@ -8437,6 +8463,49 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         #
         # Walking five of the six steps and not arriving is worth nothing today, but it is worth
         # nothing either way; the unit was passing. On the days it does arrive it is worth the sell.
+        # **A hand with nothing left to do walks to the crop that dies tonight.**
+        # See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`. Placed after `WALK_THE_LOAD_HOME` deliberately:
+        # carrying a load to the shed is worth a sale today, and this is worth a tile tomorrow, so
+        # the load wins the tie. Both only ever fire on a hand that was already passing.
+        if THIRSTY_CROP_PULLS_AN_IDLE_HAND and act == ["PASS"]:
+            best = None
+            for _y, _r in enumerate(tiles):
+                for _x, _c in enumerate(_r):
+                    if not (isinstance(_c, dict) and _c.get("crop")):
+                        continue
+                    # Dies at the next h00: `consecutive_unwatered` already counts yesterday, and
+                    # `_daily_refresh_plants` increments again for a day that ends unwatered, so
+                    # `>= 1 and not watered_today` is exactly "one more dry day and it is a WEED"
+                    # (`kaggriculture.py:777-782`, then the `>= 2` branch at `:771`).
+                    if _c.get("watered_today"):
+                        continue
+                    if int(_c.get("consecutive_unwatered", 0) or 0) < 1:
+                        continue
+                    _t = (_y, _x)
+                    # `working_tiles` is a hand standing on its own next stop; it will be offered
+                    # this tile's ops anyway. `thirsty_claimed` stops two idle hands converging on
+                    # one tile, which would spend two turns to save one.
+                    if _t in thirsty_claimed or _t in working_tiles:
+                        continue
+                    if not _owned(_t, unlocked):
+                        continue
+                    _d = RT.dist(pos, _t)
+                    if best is None or _d < best[0]:
+                        best = (_d, _t)
+            if best is not None:
+                _d, _t = best
+                if _d == 0:
+                    thirsty_claimed.add(_t)
+                    act = ["WATER"]
+                else:
+                    _m = _step_towards(pos, _t, unlocked)
+                    if _m is not None:
+                        # Claimed on the WALK, not on arrival: a second hand must not start the same
+                        # journey. If this one is interrupted tomorrow the claim is gone with the
+                        # turn, so nothing is stranded.
+                        thirsty_claimed.add(_t)
+                        act = [_m]
+
         if WALK_THE_LOAD_HOME and act == ["PASS"] and any(v > 0 for v in inv.values()):
             if at_shed:
                 # Same clamp as the planned drop: DROP `del`s every item after taking what fits
@@ -9517,6 +9586,68 @@ MELON_YIELD_FROM_DAY = 5
 MELON_YIELD_OPPONENT_MELON = 7
 
 
+#: **Turn late WHEAT plantings into CARROT / TOMATO.** Sweepable integers: how many wheat plant
+#: stops, from `LATE_CROP_FROM_DAY` onward, are re-crewed to each.
+#:
+#: The 2026-08-15 balance change (PR #1399) put both on a `hinge` scarcity curve, and CARROT's
+#: `below_target` went 0.20 -> 1.00 on top of that. Measured on two ladder replays of our own agent:
+#:
+#:     end-of-season scarcity     x      T   x/T   old $   new $
+#:     CARROT                   456    450  1.01      42      71     +69%
+#:     TOMATO                   228    200  1.14      87      91      +5%
+#:     TOMATO (other replay)    387    200  1.94     108     274    +154%
+#:
+#: Carrot's gain is the target change and applies at ANY depth; tomato's is the hinge and needs
+#: x ~ 2T, which it reached in one of two games. So carrot is the steady one and tomato is a lottery
+#: on how hard the shops drain it -- expect tomato to need far more seeds to separate from noise.
+#:
+#: **Wheat is the right thing to spend.** FEED takes one WHEAT from the acting hand, so wheat looks
+#: load-bearing; it is not. Measured on the same two replays, we buy far more wheat as PRODUCT than
+#: we ever eat -- 422 bought against 329 fed, and 420 against 316 -- so the herd is fed entirely out
+#: of purchases and every wheat TILE is grown purely to sell. Reallocating them costs no feed at all.
+#:
+#: Both default to 0, which is a no-op, so this is inert until a sweep sets it.
+WHEAT_TILES_TO_CARROT = 0
+WHEAT_TILES_TO_TOMATO = 0
+
+#: Late only. The early rows are the opening this repo matches op-for-op, and both crops are scarcity
+#: plays whose price is highest once the shops have had a season to drain the book.
+LATE_CROP_FROM_DAY = 12
+
+
+def _wheat_to(row, crop, budget):
+    """Re-crew up to `budget` of this row's WHEAT plant stops to `crop`. Returns (row, spent).
+
+    `plants` is an ORDERED LIST of crop names, one per stop, and the order is the planting order the
+    tour is built from -- so a stop is renamed in place and nothing moves. `seeds` is a `{crop: qty}`
+    dict and is moved by the same count, which is what keeps the day's bill honest: the two crops do
+    not cost the same (`RT.SEED_COST` WHEAT 10, CARROT 20, TOMATO 50) and `_days_bill` prices the
+    row, so swapping the plants without the seeds would under-bill the day and mis-set `short_of_cash`.
+    """
+    if budget <= 0:
+        return row, 0
+    plants = list(row.get("plants") or [])
+    idx = [i for i, c in enumerate(plants) if c == "WHEAT"][:budget]
+    if not idx:
+        return row, 0
+    n = len(idx)
+    for i in idx:
+        plants[i] = crop
+    seeds = dict(row.get("seeds") or {})
+    take = min(n, int(seeds.get("WHEAT", 0) or 0))
+    if take > 0:
+        seeds["WHEAT"] = int(seeds["WHEAT"]) - take
+        if seeds["WHEAT"] <= 0:
+            seeds.pop("WHEAT")
+    # The stop is being planted either way, so the seed must be bought even if this row's wheat
+    # order was smaller than its plant count (`SEED_ROW_IS_A_FLOOR` tops the rest up in play).
+    seeds[crop] = int(seeds.get(crop, 0) or 0) + n
+    out = dict(row)
+    out["plants"] = plants
+    out["seeds"] = seeds
+    return out, n
+
+
 def _melon_to_strawberry(row):
     """One day's row with its MELON moved into STRAWBERRY. The count and the ORDER are kept exactly.
 
@@ -9653,6 +9784,20 @@ def make_agent(schedule, me=0, router=True):
                 if state.get("melon_yield"):
                     sched[day] = _melon_to_strawberry(sched.get(day) or {})
                     row = sched[day]
+
+            # **Spend late wheat tiles on the two crops the balance change repriced.**
+            # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
+            # sweep value means "this many tiles over the whole season", not per day. Inert at 0.
+            if day >= LATE_CROP_FROM_DAY and (WHEAT_TILES_TO_CARROT or WHEAT_TILES_TO_TOMATO):
+                if "late_crop_left" not in state:
+                    state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
+                                               "TOMATO": int(WHEAT_TILES_TO_TOMATO)}
+                _r = sched.get(day) or {}
+                for _crop in ("CARROT", "TOMATO"):          # a total order, so a sweep is reproducible
+                    _r, _spent = _wheat_to(_r, _crop, state["late_crop_left"][_crop])
+                    state["late_crop_left"][_crop] -= _spent
+                sched[day] = _r
+                row = _r
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
@@ -11207,7 +11352,10 @@ _PLAN_JSON = r'''{
 "buys": {
 "WHEAT": 6
 },
-"sells": {}
+"sells": {},
+"shed_dusk": {
+"WHEAT": 3
+}
 },
 "1": {
 "money_dawn": 16.0,
@@ -11226,6 +11374,9 @@ _PLAN_JSON = r'''{
 },
 "sells": {
 "FERTILIZER": 3
+},
+"shed_dusk": {
+"WHEAT": 4
 }
 },
 "2": {
@@ -11243,7 +11394,10 @@ _PLAN_JSON = r'''{
 "buys": {
 "WHEAT": 4
 },
-"sells": {}
+"sells": {},
+"shed_dusk": {
+"WHEAT": 4
+}
 },
 "3": {
 "money_dawn": 421.0,
@@ -11266,7 +11420,8 @@ _PLAN_JSON = r'''{
 "buys": {},
 "sells": {
 "FERTILIZER": 4
-}
+},
+"shed_dusk": {}
 },
 "4": {
 "money_dawn": 131.0,
@@ -11291,6 +11446,9 @@ _PLAN_JSON = r'''{
 },
 "sells": {
 "FERTILIZER": 4
+},
+"shed_dusk": {
+"WHEAT": 1
 }
 },
 "5": {
@@ -11323,6 +11481,9 @@ _PLAN_JSON = r'''{
 "sells": {
 "FERTILIZER": 5,
 "WHEAT": 18
+},
+"shed_dusk": {
+"WHEAT": 7
 }
 },
 "6": {
@@ -11350,6 +11511,9 @@ _PLAN_JSON = r'''{
 "sells": {
 "FERTILIZER": 5,
 "WOOL": 12
+},
+"shed_dusk": {
+"WHEAT": 7
 }
 },
 "7": {
@@ -11388,7 +11552,8 @@ _PLAN_JSON = r'''{
 },
 "sells": {
 "FERTILIZER": 6
-}
+},
+"shed_dusk": {}
 },
 "8": {
 "money_dawn": 190.0,
@@ -11425,6 +11590,9 @@ _PLAN_JSON = r'''{
 "sells": {
 "FERTILIZER": 6,
 "MILK": 12
+},
+"shed_dusk": {
+"WHEAT": 8
 }
 },
 "9": {
@@ -11451,6 +11619,9 @@ _PLAN_JSON = r'''{
 "FERTILIZER": 9,
 "WHEAT": 8,
 "WOOL": 8
+},
+"shed_dusk": {
+"WHEAT": 11
 }
 },
 "10": {
@@ -11479,6 +11650,9 @@ _PLAN_JSON = r'''{
 "FERTILIZER": 138,
 "WHEAT": 25,
 "MELON": 60
+},
+"shed_dusk": {
+"WHEAT": 12
 }
 },
 "11": {
@@ -11532,6 +11706,10 @@ _PLAN_JSON = r'''{
 "sells": {
 "MELON": 12,
 "MILK": 6
+},
+"shed_dusk": {
+"FERTILIZER": 12,
+"WHEAT": 14
 }
 },
 "12": {
@@ -11565,6 +11743,9 @@ _PLAN_JSON = r'''{
 "sells": {
 "MILK": 6,
 "FERTILIZER": 58
+},
+"shed_dusk": {
+"WHEAT": 10
 }
 },
 "13": {
@@ -11592,6 +11773,10 @@ _PLAN_JSON = r'''{
 "FERTILIZER": 11,
 "MILK": 6,
 "WHEAT": 8
+},
+"shed_dusk": {
+"FERTILIZER": 3,
+"WHEAT": 9
 }
 },
 "14": {
@@ -11619,6 +11804,10 @@ _PLAN_JSON = r'''{
 "MILK": 9,
 "FERTILIZER": 20,
 "WOOL": 6
+},
+"shed_dusk": {
+"FERTILIZER": 7,
+"WHEAT": 18
 }
 },
 "15": {
@@ -11651,6 +11840,9 @@ _PLAN_JSON = r'''{
 "WHEAT": 8,
 "FERTILIZER": 62,
 "STRAWBERRY": 6
+},
+"shed_dusk": {
+"WHEAT": 2
 }
 },
 "16": {
@@ -11685,6 +11877,9 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 2,
 "WHEAT": 11,
 "MELON": 6
+},
+"shed_dusk": {
+"WHEAT": 3
 }
 },
 "17": {
@@ -11715,6 +11910,9 @@ _PLAN_JSON = r'''{
 "WHEAT": 27,
 "FERTILIZER": 192,
 "STRAWBERRY": 6
+},
+"shed_dusk": {
+"WHEAT": 4
 }
 },
 "18": {
@@ -11751,6 +11949,9 @@ _PLAN_JSON = r'''{
 "MELON": 12,
 "STRAWBERRY": 8,
 "FERTILIZER": 100
+},
+"shed_dusk": {
+"WHEAT": 16
 }
 },
 "19": {
@@ -11783,7 +11984,8 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 14,
 "FERTILIZER": 258,
 "WHEAT": 50
-}
+},
+"shed_dusk": {}
 },
 "20": {
 "money_dawn": 64361.0,
@@ -11817,7 +12019,8 @@ _PLAN_JSON = r'''{
 "FERTILIZER": 14,
 "STRAWBERRY": 8,
 "WHEAT": 14
-}
+},
+"shed_dusk": {}
 },
 "21": {
 "money_dawn": 68046.0,
@@ -11849,7 +12052,8 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 14,
 "WHEAT": 125,
 "FERTILIZER": 175
-}
+},
+"shed_dusk": {}
 },
 "22": {
 "money_dawn": 82826.0,
@@ -11885,7 +12089,8 @@ _PLAN_JSON = r'''{
 "WOOL": 8,
 "FERTILIZER": 7,
 "WHEAT": 25
-}
+},
+"shed_dusk": {}
 },
 "23": {
 "money_dawn": 87522.0,
@@ -11921,7 +12126,8 @@ _PLAN_JSON = r'''{
 "MILK": 6,
 "WHEAT": 129,
 "FERTILIZER": 161
-}
+},
+"shed_dusk": {}
 },
 "24": {
 "money_dawn": 100176.0,
@@ -11957,7 +12163,8 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 17,
 "WHEAT": 56,
 "FERTILIZER": 67
-}
+},
+"shed_dusk": {}
 },
 "25": {
 "money_dawn": 107725.0,
@@ -11994,6 +12201,9 @@ _PLAN_JSON = r'''{
 "MILK": 6,
 "WHEAT": 106,
 "CARROT": 4
+},
+"shed_dusk": {
+"WHEAT": 1
 }
 },
 "26": {
@@ -12030,6 +12240,9 @@ _PLAN_JSON = r'''{
 "FERTILIZER": 12,
 "CARROT": 5,
 "WHEAT": 17
+},
+"shed_dusk": {
+"WHEAT": 5
 }
 },
 "27": {
@@ -12067,7 +12280,8 @@ _PLAN_JSON = r'''{
 "MILK": 6,
 "FERTILIZER": 16,
 "WHEAT": 112
-}
+},
+"shed_dusk": {}
 },
 "28": {
 "money_dawn": 136185.0,
@@ -12091,7 +12305,8 @@ _PLAN_JSON = r'''{
 "WHEAT": 37,
 "STRAWBERRY": 4,
 "CARROT": 5
-}
+},
+"shed_dusk": {}
 },
 "29": {
 "money_dawn": 142621.0,
@@ -12113,7 +12328,8 @@ _PLAN_JSON = r'''{
 "STRAWBERRY": 6,
 "MILK": 27,
 "CARROT": 6
-}
+},
+"shed_dusk": {}
 }
 }'''
 _REPLAY_DAYS = 0
@@ -12169,7 +12385,7 @@ def agent(obs, config=None):
     fresh = int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0
     if fresh or me not in _AGENTS:
         # `start_day` exists only on the older `schedule_agent`. The module bundled here is
-        # `schedule_agent_1455mh`, which plans its opening rather than replaying one, and its
+        # `schedule_agent`, which plans its opening rather than replaying one, and its
         # `make_agent` has no such parameter -- passing it unconditionally is a TypeError on the
         # first observation, i.e. a submission that banks the $3,000 start. Sent only when a replay
         # opening was actually asked for; `--replay-days` defaults to 0 and the builder refuses the

@@ -49,7 +49,7 @@ def _run():
 
     import breakdown as B
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay, schedule, team = B.TAPES["kawashigi"]
     raw = json.loads(pathlib.Path(schedule).read_text())
     thin = {int(k): {kk: vv for kk, vv in r.items() if kk not in B.TAPE_ONLY}
