@@ -99,6 +99,21 @@ TAPES = {
     # `tests/test_the_grid_compares_against_the_leader_we_rebased_on.py`.
     "kawashigi": ("data/seed_scripts/kawashigi/92498144.json",
                   "data/seed_scripts/kawashigi/schedule.json", "\u30ab\u30ef\u30b7\u30ae"),
+    # **The FOUR-quadrant branch**, added 2026-08-15. Our three-quadrant rows for d0-d8 and
+    # the leader's four-quadrant tape (`91907974`) from d9 -- the first day the two plans
+    # disagree, so the opening is unchanged by construction rather than by measurement.
+    #
+    # It exists to be SOLVED against, and that is the point of the entry: the middle element
+    # drives `make_agent`, so `resolve_days.py --tape kawashigi_q4c` solves routes for the
+    # 100-tile board this plan actually plays. The shipped routes were solved for 75 tiles and
+    # `_apply_precomputed` keys a stop on `(tile, ops)`, so they DROP rather than adapt on a
+    # four-quadrant board.
+    #
+    # Solve on an ARMED seed. `YARN_STORE` unlocks by d6 on 15 of 100 seeds and this branch is
+    # only ever taken on those -- run on every seed it measured -$2,749 a season.
+    "kawashigi_q4c": ("data/seed_scripts/downloads_2026-08-13/91907974.json",
+                      "data/seed_scripts/kawashigi_q4c/schedule.json",
+                      "\u30ab\u30ef\u30b7\u30ae"),
 }
 
 #: **Removed on 2026-08-13, on Alex's instruction: "no seb - only vic or the new nr 1".**

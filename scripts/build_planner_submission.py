@@ -57,7 +57,15 @@ MODULES = (
     # offline visit orders `cover._apply_precomputed` seats. Without them the bundle imports fine and
     # then plays every day on the greedy, which is a silent 8-day regression rather than a crash.
     ("kagg.search.solved_days", "kagg/search/solved_days.py"),
+    # **The 100-tile routes, for the four-quadrant branch only.** Data, like `solved_days`, and
+    # loaded lazily by `q4_branch.install_the_fourth_quadrant` -- but it must be in the bundle or
+    # the branch raises `ModuleNotFoundError` on the 15% of games that arm it, which is a crash in
+    # a minority of games rather than an obvious one.
+    ("kagg.search.solved_days_q4", "kagg/search/solved_days_q4.py"),
     ("kagg.search.cover", "kagg/search/cover.py"),
+    # **Before `schedule_agent`, which imports it at module scope.** Its rows are embedded in the
+    # module itself: a submission has no `data/` directory to read them from.
+    ("kagg.search.q4_branch", "kagg/search/q4_branch.py"),
     # **After `cover`, and it is not optional.** `cover.plan` does `from . import crew as CREW` on
     # every call to pick the assignment routine, so a bundle without it imports fine, passes the
     # entry-point check, and then dies with `ImportError: cannot import name 'crew'` on the first

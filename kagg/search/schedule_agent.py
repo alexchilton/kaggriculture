@@ -39,6 +39,7 @@ import collections
 import itertools
 
 from . import cover as DP
+from . import q4_branch as _Q4
 from . import router as RT
 
 #: Solve the day as a COVERING problem -- cover every job the board offers -- instead of as a prize
@@ -4249,6 +4250,12 @@ def make_agent(schedule, me=0, router=True):
     def agent(obs, config=None):
         day = int(obs.get("day", 0) or 0)
         hour = int(obs.get("hour", 0) or 0)
+        # **The four-quadrant branch.** Decides once on d6, and only when the yarn store is already
+        # unlocked -- the read three top players make. On an armed draw it rewrites rows 9-29 of
+        # `sched` IN PLACE with the leader's four-quadrant tape and installs the 100-tile routes.
+        # Rows 0-8 are the same plan in both tapes, so the opening cannot move. See
+        # `kagg/search/q4_branch.py` for the measurements, which do NOT show a gain.
+        _Q4.arm(sched, state, obs, day)
         farms = obs.get("farms") or []
         if len(farms) <= me:
             return {"farmer": ["PASS"], "hands": [], "market": []}
