@@ -3269,7 +3269,22 @@ WOOL_SHOP_NO_YARN_COW = 10
 #: COW 6 / SHEEP 6. Those two sheep are ~16 units of wool into a book that floors 59 units above
 #: `I0`, plus $1,000 and two FEED and two CARE stops a day. Lowering the total needs no new pens --
 #: unlike raising it, which he only ever does on FOUR quadrants.
-HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE = True
+#: **PARKED AND OFF, 2026-08-15. The fit is good; the change is not safe for OUR agent.**
+#:
+#: Dropping the total to twelve only pays if the freed capacity becomes crops. He converts it --
+#: ~12 more plantings and ~29 more waters on his total-12 seats, with his hire count unchanged at
+#: 277. **We have no logic that does that.** Our crop rows are fixed by the schedule and the solver
+#: is not reactive, so we would take the cost and idle the gain; we already idle 1365 unit-turns a
+#: season against the tape's 660.
+#:
+#: And the cost lands on the wrong boards. The early-yarn branch fires exactly where wool is well
+#: drained and valuable -- those seats run wool drain 240-504 and wool closes $24-$248 -- so two
+#: fewer sheep is ~16 units surrendered at up to $240 each against $1,000 saved.
+#:
+#: The measurement stands and is worth keeping: 49/51 = 96.1% against his three-quadrant seats,
+#: versus 42/51 = 82.4% for the shipped rule (`data/logs/kawa_q3_rule_search.log`). Re-enable only
+#: alongside logic that spends the freed turns on planting.
+HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE = False
 
 #: Sheep on the early-wool branch. Six, not "all the budget that is left".
 EARLY_WOOL_SHEEP = 6

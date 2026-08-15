@@ -33,11 +33,18 @@ why this is cheap -- unlike raising it, which he only ever does on FOUR quadrant
 
 Our current rule scores 42/51 = 82.4% exact against him. This one scores 49/51 = 96.1%.
 """
-import collections
-
 import pytest
 
 from kagg.search import schedule_agent as S
+
+#: **PARKED 2026-08-15.** The fit is good -- 49/51 = 96.1% against his three-quadrant seats versus
+#: 42/51 = 82.4% shipped -- but `HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE` is OFF, because
+#: dropping the herd to twelve only pays if the freed turns become crops and our solver is not
+#: reactive. See the flag's docstring. `strict=True` so re-enabling it turns these green and says so.
+PARKED = pytest.mark.xfail(strict=True, reason=(
+    "HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE is off: the total-12 branch surrenders ~16 units "
+    "of wool on exactly the boards where wool pays, and we have no logic to spend the freed turns "
+    "on planting the way he does."))
 
 
 NONE_BOUGHT = {"COW": 0, "SHEEP": 0, "GOOSE": 0}
@@ -50,11 +57,13 @@ def split_for(shops, day=3, bought=None, want=None):
 
 #: (shops in unlock order, his COW, his SHEEP). The three branches, at every position that
 #: discriminates them.
+#: The last two match the shipped rule as well, so they must pass with the flag OFF and are not
+#: marked parked; the first four are the branches the flag actually changes.
 CASES = [
-    (["YARN_STORE"], 6, 6),                                          # first yarn at draw #1
-    (["BAKERY", "YARN_STORE"], 6, 6),                                # draw #2
-    (["BAKERY", "BRUNCH_SPOT", "YARN_STORE"], 6, 6),                 # draw #3
-    (["PIZZA_SHOP", "BAKERY", "BRUNCH_SPOT"], 8, 6),                 # no yarn, ONE milk shop
+    pytest.param(["YARN_STORE"], 6, 6, marks=PARKED),                    # first yarn at draw #1
+    pytest.param(["BAKERY", "YARN_STORE"], 6, 6, marks=PARKED),          # draw #2
+    pytest.param(["BAKERY", "BRUNCH_SPOT", "YARN_STORE"], 6, 6, marks=PARKED),   # draw #3
+    pytest.param(["PIZZA_SHOP", "BAKERY", "BRUNCH_SPOT"], 8, 6, marks=PARKED),   # no yarn, 1 milk
     (["PIZZA_SHOP", "ICE_CREAM_SHOP", "BAKERY"], 10, 4),             # no yarn, two milk shops
     (["BAKERY", "BRUNCH_SPOT", "FARMERS_MARKET", "YARN_STORE"], 10, 4),   # yarn at draw #4
 ]
@@ -67,6 +76,7 @@ def test_the_split_matches_the_leader_on_three_quadrants(shops, cow, sheep):
         f"on {shops!r} he runs COW {cow} / SHEEP {sheep}; we chose {got!r}")
 
 
+@PARKED
 def test_an_early_wool_board_buys_twelve_animals_not_fourteen():
     """The defect, isolated from the ratio.
 
@@ -79,6 +89,7 @@ def test_an_early_wool_board_buys_twelve_animals_not_fourteen():
         f"we chose a total of {got['COW'] + got['SHEEP']}: {got!r}")
 
 
+@PARKED
 def test_a_milk_poor_board_moves_one_cow_into_a_sheep():
     """The 8/6 branch, which our rule has never expressed.
 
@@ -107,6 +118,7 @@ def test_animals_already_bought_are_never_unbought():
     assert got["COW"] + got["SHEEP"] >= 10, got
 
 
+@PARKED
 def test_the_rule_beats_the_old_one_on_his_own_seats():
     """The 90% bar, asserted rather than described.
 
