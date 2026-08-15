@@ -57,7 +57,13 @@ sys.path.insert(0, str(REPO))
 
 TARGET = REPO / "kagg" / "search" / "solved_days.py"
 FIXTURES = REPO / "tests" / "fixtures"
-DEFAULT_DAYS = (12, 16, 18, 23, 24, 25, 26, 27, 28, 29)
+#: **Every precomputed day, not a subset.** This was `(12, 16, 18, 23, 24, 25, 26, 27, 28, 29)` --
+#: the ten days that existed when the script was written -- and `solved_days.py` has held all
+#: eighteen of d12-d29 since 2026-08-15. `_write_solved` starts from `_load_solved()`, so the days
+#: left out are preserved rather than deleted; they are simply never re-solved, and a day solved
+#: against an older planner is exactly the stale artifact this script exists to remove. A run that
+#: silently skips eight of eighteen days reads as a full regeneration and is not one.
+DEFAULT_DAYS = tuple(range(12, 30))
 
 
 def _run(cmd, log):
