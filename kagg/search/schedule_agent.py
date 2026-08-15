@@ -3169,16 +3169,21 @@ CROP_ADAPT_FROM_DAY = 6
 
 #: **WOOL_SHOP_SETS_THE_HERD -- an EARLY YARN_STORE makes the herd sheep-heavy.**
 #:
-#: Read off **66** downloaded games of the #1 player, 61-0-5
-#: (`docs/kawashigi_one_board_2026-08-13.md`). Shops unlock every third day, so draw #N lands on day
-#: 3N and that is verified 66/66. Against the position of the FIRST yarn store his herd is a step
-#: function with no exceptions at all:
+#: Re-measured 2026-08-15 over **74 distinct** downloaded games of the #1 player -- every replay on
+#: disk carrying his seat, deduplicated by episode id. Shops unlock every third day, so draw #N
+#: lands on day 3N. Against the position of the FIRST yarn store:
 #:
-#:     yarn first at draw #1 (d3)  : COW  6, SHEEP 12, total 18    n=10
-#:     yarn first at draw #2 (d6)  : COW  6, SHEEP 12, total 18    n=11
-#:     yarn first at draw #3 (d9)  : COW  6, SHEEP  8, total 14    n= 3
-#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP  4, total 14  n=16
-#:     no yarn store at all        : COW 10, SHEEP  4, total 14    n=22 (+4 at COW 8/SHEEP 6)
+#:     yarn first at draw #1 (d3)    : COW  6, SHEEP 9.05, total 15.05   n=21   quads 4.00
+#:     yarn first at draw #2 (d6)    : COW  6, SHEEP 9.26, total 15.26   n=23   quads 4.00
+#:     yarn first at draw #3 (d9)    : COW  6, SHEEP 6.00, total 12.00   n= 7   quads 3.00
+#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP 4.00, total 14.00   n=34   quads 3.00
+#:     no yarn store at all          : COW 9.64, SHEEP 4.36, total 14    n=56   quads 3.00
+#:
+#: **The earlier version of this table said "SHEEP 12, total 18" on draws #1-#2 and it was wrong.**
+#: He never runs 18 animals; the maximum over all 74 seats is 16. The correction was already
+#: recorded in `tests/test_the_herd_split_answers_the_recorded_shop_draw.py` on 2026-08-13 and never
+#: propagated to here or to `tests/test_the_herd_follows_the_wool_shop.py`, which is how a wrong
+#: number survived two weeks and sent a session chasing a herd size that does not exist.
 #:
 #: So `COW == 6` iff a yarn store is among the FIRST THREE draws: 24/24 yes, 0/42 no. A perfect
 #: classifier over 66 games, and the reason this flag now carries a draw limit. **The 16 games at
@@ -3194,11 +3199,22 @@ CROP_ADAPT_FROM_DAY = 6
 #: milk is what floors the milk price. Measured on our own fills, wool went out at
 #: $160/$109/$181/$146 on d24-d28 while milk took $1-$5 all season.
 #:
-#: **NOT built in, and it needs pens before it can be: the herd TOTAL moves too.** A yarn store by
-#: d6 takes him to 18 animals, not 18 split differently -- four extra SHEEP at $500 plus four pens
-#: plus their feed. That is 21 of the 24 yarn games, so it is the dominant branch, and this flag
-#: reaches none of it: `_herd_split` may only redistribute `want_total`, which the schedule fixes at
-#: 14. Raising it is a schedule change with a build and turn cost, not a split rule.
+#: **The herd TOTAL moves too -- but only on FOUR quadrants, and that closes the question for us.**
+#: Cross-tabulating the same 74 seats by quadrants owned:
+#:
+#:     quads  herd   n
+#:         3    12    4
+#:         3    14   47          <- three quadrants NEVER exceeds 14, 51 seats
+#:         4    13    1
+#:         4    14    4
+#:         4    15    9
+#:         4    16    9
+#:
+#: We play three quadrants, and on three quadrants he caps at 14 -- exactly the count the schedule
+#: fixes. So there is no herd-total gap to close at our board size, and `_herd_split` being unable
+#: to raise `want_total` costs nothing. Growing the herd is part of buying the fourth parcel, not a
+#: separate change: see `docs/fable_fourth_quadrant_reopened_2026-08-15.md`, which reaches the same
+#: place from the field data.
 WOOL_SHOP_SETS_THE_HERD = True
 
 #: What the leader holds cows to once an early wool shop is on the board. 24 of 24 such games ran
@@ -3232,6 +3248,39 @@ WOOL_SHOP_DRAW_LIMIT = 3
 #: the trap executable.
 WOOL_SHOP_NO_YARN_COW = 10
 
+#: **Fit the whole herd to the leader's THREE-QUADRANT seats, which is the board we play.**
+#:
+#: Measured 2026-08-15 over 74 distinct episodes on disk carrying his seat, restricted to the 51
+#: that own three quadrants. Seat alignment verified on `92498144`, where `farms[0]` is カワシギ at
+#: $149,998 and matches `rewards[0]`. He has exactly three answers there:
+#:
+#:     COW  SHEEP  total   n
+#:       6      6     12    4     every one has its first YARN_STORE in draws 1-3
+#:       8      6     14    5     four of five have exactly ONE milk shop and no yarn store
+#:      10      4     14   42
+#:
+#: Exhaustive search over both thresholds (`data/logs/kawa_q3_rule_search.log`) puts the best fit at
+#: `yarn_by=3, milk_lo=1` with **49/51 = 96.1%** exact on (COW, SHEEP), against the previous rule's
+#: 42/51 = 82.4%. The two misses are a symmetric pair -- identical features, opposite choices -- so
+#: they are noise, not a missing input.
+#:
+#: **The change that matters is the TOTAL, and it goes DOWN.** The old rule capped cows at 6 and
+#: then spent the rest of a fixed 14-animal budget on sheep, giving COW 6 / SHEEP 8 where he runs
+#: COW 6 / SHEEP 6. Those two sheep are ~16 units of wool into a book that floors 59 units above
+#: `I0`, plus $1,000 and two FEED and two CARE stops a day. Lowering the total needs no new pens --
+#: unlike raising it, which he only ever does on FOUR quadrants.
+HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE = True
+
+#: Sheep on the early-wool branch. Six, not "all the budget that is left".
+EARLY_WOOL_SHEEP = 6
+
+#: At or below this many MILK-carrying shops, with no yarn store at all, he moves a cow into a
+#: sheep: COW 8 / SHEEP 6 rather than COW 10 / SHEEP 4. MILK is carried by three of the eight shop
+#: types, so one milk shop is a genuinely thin book.
+MILK_POOR_SHOP_COUNT = 1
+MILK_POOR_COW = 8
+MILK_POOR_SHEEP = 6
+
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     """Re-decide the cow/sheep species mix, keeping the schedule's COUNT exactly.
@@ -3255,6 +3304,26 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
     # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
     # would have cut those to 6.
+    if WOOL_SHOP_SETS_THE_HERD and HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE:
+        _seen = list(unlocked_shops or ())
+        _early = "YARN_STORE" in _seen[:WOOL_SHOP_DRAW_LIMIT]
+        _milk = 0
+        if _KG is not None:
+            _milk = sum(1 for s in _seen if "MILK" in _KG.SHOPS.get(s, ()))
+        if _early:
+            cow_t, sheep_t = WOOL_SHOP_COW_CAP, EARLY_WOOL_SHEEP
+        elif "YARN_STORE" not in _seen and _milk <= MILK_POOR_SHOP_COUNT:
+            cow_t, sheep_t = MILK_POOR_COW, MILK_POOR_SHEEP
+        else:
+            cow_t, sheep_t = WOOL_SHOP_NO_YARN_COW, total - WOOL_SHOP_NO_YARN_COW
+        # `bought` floors both, so this can never unbuy an animal that exists; the cap keeps the
+        # schedule's own count as a ceiling while allowing the early-wool branch to sit BELOW it.
+        split["COW"] = max(split["COW"], min(cow_t, total))
+        split["SHEEP"] = max(split["SHEEP"], min(sheep_t, total - split["COW"]))
+        if split["COW"] + split["SHEEP"] > total:
+            split["SHEEP"] = max(bought.get("SHEEP", 0), total - split["COW"])
+        return split
+
     if WOOL_SHOP_SETS_THE_HERD:
         # **Both branches of his step function are pinned, not just the capped one.** An early yarn
         # store means 6 cows; anything else means 10. Leaving the second case to the greedy below

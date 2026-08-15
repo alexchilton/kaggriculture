@@ -25,8 +25,26 @@ it always buys, which is survival. That is two clauses, and it is the whole rule
 
 The cost of the missing cadence is turns, and d7 is where it bites: 12 jobs short of the tape with
 3 turns of slack, while spending 12 unit-turns on FEED and CARE against Seb's 6.
+
+**DISABLED 2026-08-15, and NOT because the reasoning here is wrong.** Every test in this file
+asserts the behaviour of `RT.FEED_ONLY_WHEN_IT_BUYS_SOMETHING`, which has been **False** since
+2026-08-11 with a documented reason (`router.py:919-926`): the cadence was calibrated on Seb's tape
+and we match Victor's, and Victor feeds every animal every day. Feeding nightly is also what stopped
+the starvation losses -- the two ladder replays downloaded 2026-08-15 show **0 animals lost** on our
+side against 1 on the opponent's.
+
+These are marked `xfail(strict=True)` rather than deleted or commented out, so that turning the flag
+back on makes them go GREEN and strict-xfail reports it for review. A commented-out test is a test
+nobody re-reads.
 """
 import importlib
+
+import pytest
+
+CADENCE_OFF = pytest.mark.xfail(strict=True, reason=(
+    "FEED_ONLY_WHEN_IT_BUYS_SOMETHING is deliberately False since 2026-08-11 -- we match Victor, "
+    "who feeds every animal every night, and nightly feeding is what stopped the starvation "
+    "losses. Goes green if the cadence is re-enabled, which is the point."))
 
 import pytest
 
@@ -47,6 +65,7 @@ def test_a_hungry_pen_is_always_fed():
             f"{kind} carrying a miss was not scheduled to eat; one more and it is gone")
 
 
+@CADENCE_OFF
 def test_a_pen_that_ate_last_night_is_not_fed_again_tonight_for_nothing():
     """A COW has `interval` 2, so the night after a production night buys nothing (`:810-816`)."""
     cow = ANIMALS["COW"]
@@ -63,6 +82,7 @@ def test_a_pen_is_fed_on_its_production_night():
             f"{kind} not fed on its first production night (day {day}), so the care bonus is lost")
 
 
+@CADENCE_OFF
 def test_an_animal_years_from_yielding_is_not_fed_nightly():
     """A COW placed on d0 first yields on d8. The seven nights before buy nothing but survival, and
     the hunger clause already buys that at half the wheat and half the turns."""

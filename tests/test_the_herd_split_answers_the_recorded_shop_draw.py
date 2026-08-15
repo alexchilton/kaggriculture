@@ -111,12 +111,21 @@ def test_the_rule_reproduces_the_leaders_cow_count_on_his_own_draws(leader):
     would keep the count inside the budget.
     """
     wrong = [(r[1], r[3], _cow(r[2])) for r in leader if _cow(r[2]) != r[3]]
-    unreachable = [w for w in wrong if w[0] is None and w[1] == 8]
+    # **The no-yarn seats split BOTH ways and neither answer can win them all.** He runs COW 10 on
+    # most no-yarn draws and COW 8 on a minority, and since 2026-08-15 `MILK_POOR_SHOP_COUNT` picks
+    # COW 8 when the board also carries at most one MILK shop. That converts most of the old
+    # mismatches into matches and creates one of the opposite shape: a seat with one milk shop where
+    # he still ran COW 10. Measured on his 51 three-quadrant seats the exchange is worth
+    # 49/51 = 96.1% exact on (COW, SHEEP) against 42/51 = 82.4% before -- see
+    # `tests/test_the_herd_total_drops_on_an_early_wool_board.py` and
+    # `data/logs/kawa_q3_rule_search.log`. Both directions are allowed here, and only on a no-yarn
+    # draw; a mismatch of any other shape must still fail.
+    unreachable = [w for w in wrong if w[0] is None and w[1] in (8, 10)]
     assert wrong == unreachable, (
-        "%d of %d seats disagree in a way the COW-8 no-yarn minority does not explain "
+        "%d of %d seats disagree in a way the no-yarn COW 8/10 minority does not explain "
         "(first-yarn-draw, his COW, our COW): %s"
         % (len(wrong), len(leader), [w for w in wrong if w not in unreachable][:8]))
-    assert len(unreachable) <= 5, "his no-yarn COW-8 minority has grown to %d" % len(unreachable)
+    assert len(unreachable) <= 5, "the no-yarn minority has grown to %d" % len(unreachable)
 
 
 def test_the_draw_limit_is_where_his_behaviour_actually_changes(leader):
@@ -158,7 +167,12 @@ def test_the_split_never_invents_or_loses_an_animal(seats):
     for _team, _first, shops, cow, sheep in seats:
         total = cow + sheep
         split = SA._herd_split({"COW": total, "SHEEP": 0}, {}, 9, 0, list(shops))
-        assert split["COW"] + split["SHEEP"] == total, shops[:3]
+        # **The total is now a CEILING, not an identity.** Until 2026-08-15 the rule could only
+        # redistribute the schedule's count, so this asserted equality. On a board whose first
+        # YARN_STORE lands in draws 1-3 the leader buys TWELVE animals on three quadrants, not
+        # fourteen, and `HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE` now reproduces that. Buying
+        # fewer needs no new pens, so it is expressible where raising the total is not.
+        assert split["COW"] + split["SHEEP"] <= total, shops[:3]
         assert split["COW"] >= 0 and split["SHEEP"] >= 0, shops[:3]
 
 
