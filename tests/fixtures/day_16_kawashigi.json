@@ -248,7 +248,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -355,7 +355,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -912,8 +912,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -1141,7 +1141,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"

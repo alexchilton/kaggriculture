@@ -147,7 +147,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -218,7 +218,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -398,7 +398,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -693,8 +693,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -878,8 +878,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -915,8 +915,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -952,8 +952,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {

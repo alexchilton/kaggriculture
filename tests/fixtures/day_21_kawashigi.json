@@ -256,7 +256,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -316,7 +316,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -502,7 +502,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -680,8 +680,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -717,8 +717,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -903,8 +903,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -1002,8 +1002,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -1077,7 +1077,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -1302,8 +1302,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -1339,8 +1339,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -1483,8 +1483,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -1520,8 +1520,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {

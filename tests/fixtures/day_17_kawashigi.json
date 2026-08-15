@@ -272,7 +272,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -552,7 +552,7 @@
    "gives": {
     "WHEAT": 3
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"

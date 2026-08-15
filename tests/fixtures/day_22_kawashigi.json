@@ -148,7 +148,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -282,7 +282,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -496,7 +496,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -590,7 +590,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -706,7 +706,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -743,7 +743,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
@@ -965,7 +965,7 @@
    "gives": {
     "WHEAT": 10
    },
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": [
     "WHEAT"
