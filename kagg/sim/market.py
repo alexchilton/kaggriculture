@@ -59,7 +59,10 @@ BASE = np.array([p["base"] for p in _P], dtype=np.float64)
 I0 = np.array([p["I0"] for p in _P], dtype=np.float64)
 T = np.array([p["T"] for p in _P], dtype=np.float64)
 
-_SHAPES = ("linear", "sq", "sqrt", "log", "log10")
+#: `hinge` arrived with the 2026-08-15 balance change (kaggle-environments 1.32.7, PR #1399) and is
+#: the only shape that reads `T`, so it is appended rather than inserted -- the ids are positional
+#: and `BELOW_FUNC` is built from them.
+_SHAPES = ("linear", "sq", "sqrt", "log", "log10", "hinge")
 _SHAPE_ID = {name: i for i, name in enumerate(_SHAPES)}
 BELOW_FUNC = np.array([_SHAPE_ID[p["below_func"]] for p in _P], dtype=np.int64)
 ABOVE_FUNC = np.array([_SHAPE_ID[p["above_func"]] for p in _P], dtype=np.int64)
@@ -67,30 +70,50 @@ BELOW_TARGET = np.array([p["below_target"] for p in _P], dtype=np.float64)
 ABOVE_TARGET = np.array([p["above_target"] for p in _P], dtype=np.float64)
 
 
-def _shape(func_id, x):
+#: `kaggriculture.HINGE_GAIN`. Read from the reference rather than restated, because the whole point
+#: of this module is that it is the same curve.
+HINGE_GAIN = float(getattr(kg, "HINGE_GAIN", 8.0))
+
+
+def _shape(func_id, x, t=None):
     """Vectorized `kaggriculture._shape`, selecting per element by function id.
 
     `func_id` broadcasts against `x`, so this works for a full [B, N_PRODUCTS] grid and for a
     single product's [B] column alike.
+
+    `t` is the per-product knee and is used by `hinge` alone -- the reference passes `T` to every
+    call and ignores it in the other five branches (`kaggriculture._shape`). Hinge is
+    `u + GAIN * max(0, u - 1)**2` for `u = x / T`: linear up to the knee, then quadratic, so
+    `f(T) == 1` exactly as it does for every other shape and `target` keeps its meaning. It
+    degenerates to linear when `t` is missing or non-positive, matching the reference.
     """
     x = np.maximum(np.asarray(x, dtype=np.float64), 0.0)
     func_id = np.asarray(func_id)
     out = np.zeros(np.broadcast(func_id, x).shape, dtype=np.float64)
-    branches = (x, x * x, np.sqrt(x), np.log1p(x), np.log10(1.0 + x))
+    if t is None:
+        hinge = x
+    else:
+        t = np.asarray(t, dtype=np.float64)
+        safe = np.where(t > 0.0, t, 1.0)
+        u = x / safe
+        hinge = np.where(t > 0.0, u + HINGE_GAIN * np.maximum(0.0, u - 1.0) ** 2, x)
+    branches = (x, x * x, np.sqrt(x), np.log1p(x), np.log10(1.0 + x), hinge)
     for fid, values in enumerate(branches):
         np.copyto(out, np.broadcast_to(values, out.shape), where=(func_id == fid))
     return out
 
 
 # `amp` depends only on constants, so precompute it once.
-_BELOW_AMP = BELOW_TARGET * BASE / _shape(BELOW_FUNC, T)
-_ABOVE_AMP = ABOVE_TARGET * BASE / _shape(ABOVE_FUNC, T)
+_BELOW_AMP = BELOW_TARGET * BASE / _shape(BELOW_FUNC, T, T)
+_ABOVE_AMP = ABOVE_TARGET * BASE / _shape(ABOVE_FUNC, T, T)
 
 
-def _price_from(inventory, base, i0, below_func, below_amp, above_func, above_amp):
+def _price_from(inventory, base, i0, below_func, below_amp, above_func, above_amp, t=None):
     inventory = np.asarray(inventory, dtype=np.float64)
-    scarce = base + below_amp * _shape(below_func, i0 - inventory)
-    glut = base - above_amp * _shape(above_func, inventory - i0)
+    if t is None:
+        t = T
+    scarce = base + below_amp * _shape(below_func, i0 - inventory, t)
+    glut = base - above_amp * _shape(above_func, inventory - i0, t)
     raw = np.where(inventory < i0, scarce, glut)
     return np.maximum(PRICE_FLOOR, np.rint(raw)).astype(np.int64)
 
@@ -104,7 +127,7 @@ def price_of(product, inventory):
     """Price of one product across a batch. `inventory` is any shape, typically [B]."""
     i = PRODUCT_INDEX[product] if isinstance(product, str) else int(product)
     return _price_from(
-        inventory, BASE[i], I0[i], BELOW_FUNC[i], _BELOW_AMP[i], ABOVE_FUNC[i], _ABOVE_AMP[i]
+        inventory, BASE[i], I0[i], BELOW_FUNC[i], _BELOW_AMP[i], ABOVE_FUNC[i], _ABOVE_AMP[i], T[i]
     )
 
 
