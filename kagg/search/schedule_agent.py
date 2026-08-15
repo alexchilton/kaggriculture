@@ -187,7 +187,12 @@ DELIVER_CUTOFF_TURNS = 99
 #:
 #: and the tape spends NINE DROPs on d29 against our two. That is the whole difference: it walks its
 #: load in, we finish the season holding it.
-WALK_THE_LOAD_HOME_DAYS = (10,)
+#:
+#: **The first attempt at (10, 29) recovered 7 of 58 units and was reverted**: a solved route
+#: stores work stops, `plan` appends the closing walk out of turns the tour did not spend, and with
+#: FEED/CARE still planned d29 had no slack to append into. `NO_UPKEEP_ON_THE_LAST_DAY` now frees
+#: those turns first, which is what this flag was waiting for.
+WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
 
 #: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
