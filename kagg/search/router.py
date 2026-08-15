@@ -789,9 +789,9 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        if (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY and not info["ongoing"]
+        if (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
                 and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
-                and age >= info["max_day"]):
+                and age >= _last_safe_age(info)):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
@@ -835,6 +835,33 @@ HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
 #: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
 #: and truncating it would only waste the ground.
 LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+
+
+def _last_safe_age(info):
+    """The age at which a crop's produce must be off the tile, for BOTH crop shapes.
+
+    `_decay_plants` (`kaggriculture.py:752`) eats one unit every two steps once `step` passes
+    `max_lifespan_step`, and turns the tile to WEED at zero. That deadline is set in two different
+    places, and reading only the one-shot half is what let four strawberry tiles bleed out on
+    seed 11:
+
+    one-shot  `:224`      `(planted_day + max_yield_day + 1) * 24`, fixed at planting.
+                          Last safe age == `max_day`.
+
+    ongoing   `:224`      planted with `-1`, which `_decay_plants` skips -- it never decays while
+                          it is still producing.
+              `:801-802`  on the day its LAST production lands, and only then:
+                              if production_count == cd["max_yield"]:
+                                  tile["max_lifespan_step"] = (next_day + 1) * turns_per_day
+                          So the clock starts at the final production. `production_count` is
+                          `days_since_first // interval + 1`, so it reaches `max_yield` at
+                          `first + interval * (max_yield - 1)`.
+
+    Water does not extend either one.
+    """
+    if not info["ongoing"]:
+        return info["max_day"]
+    return info["first"] + info["interval"] * (info["max_yield"] - 1)
 
 
 def _one_shot_is_finished(info, age, room, day=None):

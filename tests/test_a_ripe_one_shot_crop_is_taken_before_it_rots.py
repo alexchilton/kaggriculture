@@ -130,20 +130,70 @@ def test_the_last_safe_day_is_priced_critical(deaths):
         "a crop that is still filling must not be CRITICAL -- harvesting it demolishes the tile")
 
 
+def test_an_ongoing_crop_is_priced_critical_on_its_final_production_day():
+    """An ongoing crop has a one-day window too, and it is NOT the one-shot window.
+
+    `kaggriculture.py:224` plants an ongoing crop with `max_lifespan_step = -1`, so it never decays
+    while it is still producing. `:801-802` sets the deadline on the day of its **final**
+    production:
+
+        if production_count == cd["max_yield"]:
+            tile["max_lifespan_step"] = (next_day + 1) * turns_per_day
+
+    So the clock starts at the last production, not at planting, and the tile has exactly one day
+    to be collected before `_decay_plants` starts eating it at h00 the following day.
+
+    In age terms that day is `first + interval * (max_yield - 1)`. STRAWBERRY (`first 10`,
+    `interval 2`, `max_yield 4`) planted d11 makes its final production on **d27** -- and on seed 11
+    three strawberry tiles died at **d28 h03**, exactly one rollover later.
+
+    `crop_ops` guards the CRITICAL prize with `not info["ongoing"]`, so this whole class of tile can
+    never be flagged. This is the mechanism, asserted directly, for the same reason as the one-shot
+    test above: it is a pure function of the cell and the day.
+    """
+    import kagg.search.router as RT
+
+    info = RT.CROP["STRAWBERRY"]
+    last_safe_age = info["first"] + info["interval"] * (info["max_yield"] - 1)
+    assert last_safe_age == 16, "premise moved; re-read kaggriculture.py:789-802"
+
+    def cell(planted):
+        return dict(kind="PLANT", crop="STRAWBERRY", yield_units=2, planted_day=planted,
+                    watered_today=True, consecutive_unwatered=0, fertilized_until_day=-1)
+
+    final = RT.crop_ops(cell(27 - last_safe_age), 27, True, tile=(4, 9))   # age 16, its one safe day
+    harvest = [o for o in final if o[0] == "HARVEST"]
+    assert harvest, "no HARVEST offered on the final production day at all"
+    assert harvest[0][2] >= RT.CRITICAL, (
+        f"final-production-day HARVEST priced at {harvest[0][2]}, below CRITICAL={RT.CRITICAL}; "
+        f"the tile decays from h00 tomorrow and this loses the auction today")
+
+    still = RT.crop_ops(cell(27 - last_safe_age + 2), 27, True, tile=(4, 9))   # age 14, still going
+    assert not [o for o in still if o[0] == "HARVEST" and o[2] >= RT.CRITICAL], (
+        "a crop with productions left must not be CRITICAL -- it gets another chance tomorrow")
+
+
 @pytest.mark.xfail(strict=True, reason=(
-    "KNOWN GAP. The fix cuts deaths on seed 11's own shop draw from 24 tiles/24 units to 10/11, "
-    "but cannot reach zero: 4 of the 10 die of THIRST (consecutive_unwatered >= 2 at the rollover, "
+    "KNOWN GAP. On seed 11's own shop draw the CRITICAL pricing cuts deaths from 24 tiles/24 units "
+    "to 10/11, and extending it to ongoing crops via _last_safe_age takes it to 8 tiles/9 units. "
+    "It cannot reach zero: 2 of the 8 die of THIRST (consecutive_unwatered >= 2 at the rollover, "
     "h00) which this fix does not target, and 6 still decay because from d12 the route comes from "
     "PRECOMPUTED_ROUTES, which cover._apply_precomputed matches on (tile, ops) alone -- the prize "
     "never enters, so CRITICAL is ignored on exactly the days the rot happens. strict=True so this "
     "goes red the moment either half is fixed."))
 def test_no_matured_crop_rots_with_produce_still_on_it(deaths):
     """The defect. Every one of these is a tile the board grew and we let bleed out."""
+    import kagg.search.router as RT
     lost = sum(d["units"] for d in deaths)
+    # `planted + max_yield_day` is the one-shot clock ONLY. An ongoing crop is planted with
+    # `max_lifespan_step = -1` and gets its deadline from its final production instead, so that
+    # arithmetic printed "safe day was d21" for strawberry tiles that actually died on the d27
+    # clock -- a wrong label on a correct row, which is exactly the failure this repo keeps hitting.
     detail = "\n".join(
         f"  d{d['day']}/h{d['hour']:02d} {d['tile']} {d['crop']} planted d{d['planted']}, "
         f"{d['units']} unit(s) lost; its safe day was "
-        f"d{d['planted'] + KG.CROPS[d['crop']]['max_yield_day']}"
+        f"d{d['planted'] + RT._last_safe_age(RT.CROP[d['crop']])}"
+        f"{'  (thirst, not decay)' if d['hour'] == 0 else ''}"
         for d in deaths if d["crop"] in KG.CROPS)
     assert not deaths, (
         f"{len(deaths)} matured tiles rotted carrying {lost} units:\n{detail}")
