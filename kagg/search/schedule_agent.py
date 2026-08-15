@@ -172,6 +172,21 @@ DELIVER_CUTOFF_TURNS = 99
 #: **One day, not a lower cutoff.** `DELIVER_CUTOFF_TURNS` was tuned on the victor grid across
 #: d0-d16 and lowering it would reopen every one of those days. This is the smallest change that
 #: reaches the flush, and d0-d9 cannot move under it by construction.
+#:
+#: **d29 added 2026-08-15, for a different reason: on the last day the free drop is too late.**
+#: `_end_of_day` calls `_drop_inventories_to_shed`, so on every ordinary day a carried load reaches
+#: the shed for nothing -- which is why カワシギ emits five DROPs in a whole season against 389
+#: harvests. After d29's last turn that drop still runs, but there is no turn left to sell into, and
+#: `_commit_unit` refuses a SELL unless the goods are already in `private["shed"]`. So produce held
+#: at the close is not carried over, it is discarded.
+#:
+#: Measured at the final step of d29 on the kawashigi grid, seed 11:
+#:
+#:     US    carried and LOST  58 units  ~$1,430  {WHEAT 34, MILK 12, FERTILIZER 12}
+#:     TAPE  carried and LOST   7 units    ~$245  {WHEAT 7}
+#:
+#: and the tape spends NINE DROPs on d29 against our two. That is the whole difference: it walks its
+#: load in, we finish the season holding it.
 WALK_THE_LOAD_HOME_DAYS = (10,)
 
 

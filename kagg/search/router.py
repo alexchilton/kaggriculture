@@ -987,12 +987,58 @@ def will_be_fed(cell, day):
     return ((day + 1) - int(cell.get("placed_day", 0)) - a["first_yield_day"]) >= 0
 
 
+#: **No FEED and no CARE on the last day. Both pay out at a rollover that scores nothing.**
+#:
+#: `_daily_refresh_animals` runs inside `_end_of_day`, so on d29 it fires at the rollover into day
+#: **30**. The base unit and the care bonus land on the pen and no turn ever exists to harvest them.
+#: The other thing a FEED buys is survival, and that is worthless too: the score is banked money, so
+#: an animal that escapes after the final turn costs nothing.
+#:
+#: Measured on the kawashigi grid, last three days, ours/tape:
+#:
+#:     row              d27       d28       d29
+#:     feed           14/14     14/10     14/0
+#:     care           14/12     14/9      14/0
+#:     harvest        31/35     29/32     26/19
+#:     drop            0/0       2/0       2/9
+#:
+#: The tape does ZERO upkeep on its last day and spends it harvesting and walking produce in -- nine
+#: DROPs to our two. Our 28 upkeep turns are most of the ~36 needed to send six loaded hands to the
+#: shed, and the season currently ends with 51 sellable units stranded in hands, about $1,192.
+#:
+#: HARVEST and COLLECT_FERTILIZER are deliberately NOT dropped: milk, wool and fertilizer already on
+#: the pen are real produce that can still be sold today if it reaches the shed.
+#: **MEASURED A REGRESSION 2026-08-15 AND LEFT OFF.** The reasoning above is sound and the tape
+#: agrees, but our route machinery cannot take the turns. `cover._apply_precomputed` matches a stop
+#: by `(tile, ops)`; a pen whose job was `[FEED, CARE, COLLECT_FERTILIZER, HARVEST]` becomes
+#: `[COLLECT_FERTILIZER, HARVEST]`, the key stops matching the solved plan, and the stop drops out
+#: of the route rather than getting cheaper. On the kawashigi grid, ours/tape:
+#:
+#:                           harvest        sell   d29 sell  d29 harv   season $
+#:     shipped              396/389    1489/1533    93/148     27/19     150,728
+#:     upkeep drop ONLY     389/389    1474/1533    78/148     20/19     147,646
+#:     + d29 re-solved      388/389    1478/1533    82/148     19/19     149,144
+#:
+#: d29 HARVEST falls 27 -> 20 while freeing 28 turns, which is the tell. Re-open only after
+#: `_apply_precomputed` stops keying on the exact op tuple.
+NO_UPKEEP_ON_THE_LAST_DAY = False
+
+
 def animal_ops(cell, day, have_wheat):
     """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed."""
     a = ANIMALS[cell["animal"]]
     price = BASE_PRICE[a["product"]]
     out = []
     fed = cell["fed_today"]
+    last_day = (NO_UPKEEP_ON_THE_LAST_DAY and day is not None
+                and day >= R.SEASON_DAYS - 1)
+    if last_day:
+        # Collect what is already there; buy nothing that pays out tomorrow.
+        if cell.get("fertilizer_available"):
+            out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
+        if cell.get("yield_units", 0) > 0:
+            out.append(("HARVEST", None, cell["yield_units"] * price))
+        return out
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
         # **A feed buys two things, and on most nights it buys neither.** From

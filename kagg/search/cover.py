@@ -1186,9 +1186,29 @@ TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
 #: the whole mechanism off and run the greedy everywhere.
 from .solved_days import SOLVED_DAYS                                          # noqa: E402
 
+#: **Days the greedy plans itself even though a solved route exists.**
+#:
+#: A solved route stores WORK STOPS only -- `(tile, ops)` -- and `materialise` appends the shed trip
+#: afterwards out of whatever turns the tour did not spend. That is fine on any day whose load is
+#: banked for free by `_end_of_day`, and it is exactly wrong on the LAST day, where the automatic
+#: drop happens after the final turn and `_commit_unit` will not sell out of a hand. d29 has no
+#: slack to append into, so the walk home never gets planned and the season ends with the crew
+#: holding sellable produce.
+#: **MEASURED AND PARKED 2026-08-15.** `(29,)` lets the greedy plan the last day with `deliver=True`
+#: and is a real but small gain -- sell 1489 -> 1502, d29 sell 93 -> 106, season +$256, harvest
+#: 396 -> 393. It does NOT fix the problem: stranded units rose 51 -> 78, because the greedy
+#: harvests more on d29 than it can walk in.
+#:
+#: **The reason it is parked is that d29 is the wrong day to fix.** カワシギ harvests 32 on d28 to
+#: our 27 and only 19 on d29 to our 27, then spends d29 selling -- 148 units to our 93, with 56 PASS
+#: turns. `_end_of_day` delivers d28's load to the shed overnight for free. He never plans a d29
+#: delivery because he does not need one. We back-load 10 harvests into d23-d29 (195 against his
+#: 185) while d0-d22 are level (201 against 204). Move the work to d28 and the delivery is free.
+UNSOLVE_DAYS = ()
+
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
-                      for d, units in SOLVED_DAYS.items()}
+                      for d, units in SOLVED_DAYS.items() if d not in UNSOLVE_DAYS}
 
 #: Days where a precomputed route was offered and did not fit today's jobs. Read it after a run --
 #: if the day under test is in here, the route never ran and the numbers mean nothing.
