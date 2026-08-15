@@ -730,7 +730,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 gain = 2 if fertilized else 1
                 if FILLING_WATER and age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
-        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
+        elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
+              and not upkeep_buys_nothing(day)):
+            # The last-day gate: this water buys the tile surviving TONIGHT's rollover, and after
+            # d29's rollover there is no tile to have saved. Same switch as FEED/CARE.
             # Outside the window water buys nothing but survival, and it is only needed on the day
             # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
             # `consecutive_unwatered` starts at 1 on the planting day and weeds the tile at 2, so a
@@ -756,7 +759,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
         elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
-              and (tile[0] + tile[1] + day) % 2 == 0):
+              and (tile[0] + tile[1] + day) % 2 == 0
+              and not upkeep_buys_nothing(day)):
+            # Same last-day gate as the survival water above: the alternation only exists to keep
+            # `consecutive_unwatered` below 2 across days, and there is no next day.
             # **Half the safe tiles, alternating -- which is what the leader actually does.**
             #
             # Measured off カワシギ's own d3, seed 11: his board at dawn is 19 tiles, every one at

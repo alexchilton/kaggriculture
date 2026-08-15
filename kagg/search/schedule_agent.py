@@ -1752,7 +1752,10 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         ops = next(([("PLACE", a, 0)] for a in _place_order()
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
-        ops = [("DIG", None, 0)]
+        # A DIG clears ground for a planting that must happen on a LATER day, so on the last day
+        # it is a turn spent to tidy up -- the d29 trace shows u4 digging (1,0) and (3,0) while
+        # 3 units strand in its hand. Same gate as FEED/CARE (`router.upkeep_buys_nothing`).
+        ops = [] if RT.upkeep_buys_nothing(day) else [("DIG", None, 0)]
     else:
         ops = []
     return [(o, i) for o, i, _p in ops]
