@@ -303,6 +303,29 @@ THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
 SIZE_THE_RATION_ON_THE_CURVE = True
 #: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
 #: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
+#: **A hand with an exhausted route walks to a crop that becomes a WEED tonight.**
+#:
+#: CLAUDE.md records "the day is planned ONCE, at hour 0. No replan, no urgency, no idle top-up",
+#: and that is right about REPLANNING -- nothing here re-solves the day. This is the narrowest
+#: possible exception: a hand that was going to emit PASS, and a tile that is one dry day from being
+#: destroyed. It cannot displace planned work, because it only ever runs on a turn already lost.
+#:
+#: Measured on ladder replay `93183652`, our own agent, 2026-08-15:
+#:
+#:     total PASS turns in the season                                847
+#:     PASS turns while a crop was ONE DAY from becoming a weed      773   (91%)
+#:     weed births on our farm                                        40   (26 STRAWBERRY, 14 WHEAT)
+#:     further turns spent on DIG cleaning them up                    58
+#:
+#: **Zero of the 40 came from `_spawn_weeds`**, even though the ladder runs the env default
+#: `weedSpawnChance = 0.005` -- every one was a standing crop we failed to water, turning at h00.
+#: So this is not defending against the RNG, it is not throwing away tiles we already paid to seed
+#: and plant. A WATER is one turn; the weed costs the tile, its whole remaining yield, and a DIG.
+#:
+#: The idle mass is d7-d18 (74, 69, 62, 72 turns on d8, d9, d11, d12) and nearly gone by d19, so
+#: this is a mid-game rule that runs out of fuel exactly when the crew saturates.
+THIRSTY_CROP_PULLS_AN_IDLE_HAND = False
+
 HARVEST_WHAT_YOU_STAND_ON = True
 
 #: **A passer-by does not demolish a crop that is still growing.**
@@ -2252,6 +2275,9 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     #: tile, so the whole dawn shift stands on it at h2: eight turns, thirteen wasted hand-turns over
     #: d0-d6, which was the entire overshoot that had this rule shipped OFF.
     cared_this_turn = set()
+    #: Thirsty tiles an idle hand has committed to this turn, so two of them do not converge on one
+    #: crop and spend two turns saving one. See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`.
+    thirsty_claimed = set()
     #: Tiles where a hand is standing on its own next WORK stop and so will be offered that tile's
     #: ops by `_live_ops` this turn. The underfoot rule is for a hand CROSSING a tile; letting a
     #: passer-by take the care first only moves the wasted turn onto the hand whose job it was.
@@ -2703,6 +2729,49 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         #
         # Walking five of the six steps and not arriving is worth nothing today, but it is worth
         # nothing either way; the unit was passing. On the days it does arrive it is worth the sell.
+        # **A hand with nothing left to do walks to the crop that dies tonight.**
+        # See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`. Placed after `WALK_THE_LOAD_HOME` deliberately:
+        # carrying a load to the shed is worth a sale today, and this is worth a tile tomorrow, so
+        # the load wins the tie. Both only ever fire on a hand that was already passing.
+        if THIRSTY_CROP_PULLS_AN_IDLE_HAND and act == ["PASS"]:
+            best = None
+            for _y, _r in enumerate(tiles):
+                for _x, _c in enumerate(_r):
+                    if not (isinstance(_c, dict) and _c.get("crop")):
+                        continue
+                    # Dies at the next h00: `consecutive_unwatered` already counts yesterday, and
+                    # `_daily_refresh_plants` increments again for a day that ends unwatered, so
+                    # `>= 1 and not watered_today` is exactly "one more dry day and it is a WEED"
+                    # (`kaggriculture.py:777-782`, then the `>= 2` branch at `:771`).
+                    if _c.get("watered_today"):
+                        continue
+                    if int(_c.get("consecutive_unwatered", 0) or 0) < 1:
+                        continue
+                    _t = (_y, _x)
+                    # `working_tiles` is a hand standing on its own next stop; it will be offered
+                    # this tile's ops anyway. `thirsty_claimed` stops two idle hands converging on
+                    # one tile, which would spend two turns to save one.
+                    if _t in thirsty_claimed or _t in working_tiles:
+                        continue
+                    if not _owned(_t, unlocked):
+                        continue
+                    _d = RT.dist(pos, _t)
+                    if best is None or _d < best[0]:
+                        best = (_d, _t)
+            if best is not None:
+                _d, _t = best
+                if _d == 0:
+                    thirsty_claimed.add(_t)
+                    act = ["WATER"]
+                else:
+                    _m = _step_towards(pos, _t, unlocked)
+                    if _m is not None:
+                        # Claimed on the WALK, not on arrival: a second hand must not start the same
+                        # journey. If this one is interrupted tomorrow the claim is gone with the
+                        # turn, so nothing is stranded.
+                        thirsty_claimed.add(_t)
+                        act = [_m]
+
         if WALK_THE_LOAD_HOME and act == ["PASS"] and any(v > 0 for v in inv.values()):
             if at_shed:
                 # Same clamp as the planned drop: DROP `del`s every item after taking what fits
