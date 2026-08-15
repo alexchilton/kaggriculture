@@ -35,7 +35,7 @@ findings — of everything below built around matching Seb's tape.
 - **`the_top_five_clusters_2026-08-09.md`'s field description (15 replays, 3 per team) is superseded
   in scale** by the 2,744-seat sample. Its `counter_meta` (Seb, rank #1 at 3,201.1 in that sample) is
   the same player whose bank has since halved. Banded.
-- **`SHOP_ADAPT_CROPS` (`kagg/search/schedule_agent_1455mh.py`) is OFF.** Three pairs were tried —
+- **`SHOP_ADAPT_CROPS` (`kagg/search/schedule_agent.py`) is OFF.** Three pairs were tried —
   `WHEAT<->CARROT`, `TOMATO<->STRAWBERRY`, `STRAWBERRY<->MELON` — and all three failed for reasons
   recorded in the flag's own docstring; read it before proposing a fourth. `REGISTER.md` C-23.
 - **Fertilizer is now priced off the live market quote, not its $100 base, when deciding whether to

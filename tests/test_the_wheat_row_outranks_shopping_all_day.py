@@ -35,7 +35,7 @@ import importlib
 
 import pytest
 
-SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+SA = importlib.import_module("kagg.search.schedule_agent")
 
 
 @pytest.fixture(autouse=True)

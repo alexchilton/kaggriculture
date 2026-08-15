@@ -29,6 +29,7 @@ never emitted. The day's tenth planting, and one STRAWBERRY seed still in the st
 Two assertions, mechanism and consequence.
 """
 import json
+import kagg.plan as _PLAN
 import pathlib
 import sys
 
@@ -66,12 +67,12 @@ def test_day_eight_emits_every_planting_its_plan_committed_to():
 
     import breakdown as B
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay = REPO / "data/seed_scripts/top2/91854176.json"
     team = "Victor @ Tufa Labs"
     seed, tpd, day = 11, 24, 8
 
-    raw = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    raw = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     thin = {int(k): {kk: vv for kk, vv in r.items() if kk not in B.TAPE_ONLY}
             for k, r in raw.items()}
     want = sum(int(q) for q in (thin[day].get("seeds") or {}).values())

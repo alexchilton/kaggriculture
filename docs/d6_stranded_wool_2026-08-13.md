@@ -74,5 +74,5 @@ Both gates need rebasing onto the kawashigi tape; that is not this change.
 
 ## Environment note for reproduction
 
-Commit `2ddffb6` alone does not run: `schedule_agent_1455mh` calls `router.crop_ops(..., tile=tile)`, which only exists in the UNCOMMITTED `kagg/search/router.py` in the main checkout (the `WATER_ROTATION` work), and `scripts/breakdown.py` needs the untracked `kagg/plan.py`.
+Commit `2ddffb6` alone does not run: `schedule_agent` calls `router.crop_ops(..., tile=tile)`, which only exists in the UNCOMMITTED `kagg/search/router.py` in the main checkout (the `WATER_ROTATION` work), and `scripts/breakdown.py` needs the untracked `kagg/plan.py`.
 Both were mirrored into this worktree unchanged; they are not part of this fix.

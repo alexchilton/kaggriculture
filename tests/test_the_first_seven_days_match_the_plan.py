@@ -40,7 +40,7 @@ DAYS = 7
 #: The agent under test. `1455` is the only artifact that ever scored 1455 and this is that planner
 #: plus the market graft plus the shop-adaptive herd. It must be driven by the schedule it was
 #: calibrated for -- 90494364, the one loaded above -- or the comparison measures the wrong pairing.
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 
 
 def _schedule():

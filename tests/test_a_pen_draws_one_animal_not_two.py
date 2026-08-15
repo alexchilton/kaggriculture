@@ -25,6 +25,7 @@ The assertion is on the DRAW, per unit: animals drawn == PLACE ops in that unit'
 `place` row, which is downstream and would pass for the wrong reason if some other cap moved.
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -33,9 +34,9 @@ import pytest
 from kaggle_environments import make
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 9
 TPD = 24

@@ -45,7 +45,7 @@ TEAM = "Seb (allegedly)"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 SEED = 11
 DAYS = 17
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 
 
 def _thin():

@@ -22,7 +22,7 @@ sold one at dawn and bought the same unit back an hour later -- paying the sprea
 a net of nothing. Six wheat reach the hands, six pens are fed, and `feed 5/7` on d6 has the same
 shape one day later.
 
-**The arithmetic, at `schedule_agent_1455mh.py` in the WHEAT branch of the sell loop:**
+**The arithmetic, at `schedule_agent.py` in the WHEAT branch of the sell loop:**
 
     reserve = feed_days(day) * alive - drawn - will_buy
 
@@ -54,7 +54,7 @@ REPLAY = REPO / "data/seed_scripts/top_guys/91422988.json"
 SCHEDULE = REPO / "data/seed_scripts/top_guys/91422988/schedule.json"
 TEAM = "Seb (allegedly)"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAY = 4
 

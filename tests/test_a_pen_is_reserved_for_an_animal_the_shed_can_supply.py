@@ -50,7 +50,7 @@ def day_seven():
     from kagg.analysis.fills import record_fills
     from kaggle_environments import make
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay, schedule, team = B.TAPES["kawashigi"]
     sched = _PLAN.load(schedule)
     shops = B.recorded_shops(replay)

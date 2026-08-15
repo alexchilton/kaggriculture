@@ -1,7 +1,7 @@
 """The goose machinery was deleted on evidence that is now void, and this restores it.
 
 `7a88d30` ("Delete the geese rather than leave a losing flag in the tree") removed `HERD_GEESE` and
-`swap_in_geese` from `kagg/search/schedule_agent_1455mh.py`, on the strength of `c9c1c18`'s
+`swap_in_geese` from `kagg/search/schedule_agent.py`, on the strength of `c9c1c18`'s
 measurement: "-21k a game at one bird in the mirror, and 42 points of win rate against 24 recorded
 opponents at two." That measurement is void: `SELLABLE` held only six of the env's nine product
 names at the time (see `tests/test_a_product_the_schedule_asks_to_sell_can_be_sold.py`), and EGG was
@@ -27,7 +27,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO))
 
-import kagg.search.schedule_agent_1455mh as sa            # noqa: E402
+import kagg.search.schedule_agent as sa            # noqa: E402
 import kagg.search.routines as R                           # noqa: E402
 
 SEED = 11

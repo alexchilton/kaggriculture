@@ -10,7 +10,7 @@ Alex, 2026-08-10, correcting the `sell_deadline` design I built the same day.
 
 ## What is wrong
 
-`schedule_agent_1455mh.sell_deadline(hour, selling, short_of_cash)` returns **one hour**, and
+`schedule_agent.sell_deadline(hour, selling, short_of_cash)` returns **one hour**, and
 `short_of_cash` is **one boolean** over the whole day's bill:
 
     short_of_cash = FUND_THE_DAY_WHEN_SHORT and any(owed_sale.values()) and _days_bill(row) > money

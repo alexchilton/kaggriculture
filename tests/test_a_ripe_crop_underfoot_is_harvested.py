@@ -40,7 +40,7 @@ def harvests_by_day():
     """`{day: HARVESTs our seat emitted}`, playing the shipped plan against the Kawashigi tape."""
     import scripts.breakdown as B
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     B.schedule_agent = SA
     replay, schedule, team = B.TAPES["kawashigi"]
     sched = _PLAN.load(schedule)

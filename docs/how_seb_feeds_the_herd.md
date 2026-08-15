@@ -92,7 +92,7 @@ Our herd hand u4 does all three roles alone:
 
 `DROP` is all-or-nothing (`kaggriculture.py:333`), so the h6 re-supply dumps the cow too and
 pays to pick it up again. By h8 the shed holds 1 wheat, the leftover want is deleted
-(`schedule_agent_1455mh.py:1761`), and the shed is bare from h9 to h18 -- so
+(`schedule_agent.py:1761`), and the shed is bare from h9 to h18 -- so
 `FETCH_THE_FEED_AND_RETURN` cannot fire either.
 
 Wheat ledger, both sides: 6 in the shed at dawn, 1 bought during the day, 7 animals.

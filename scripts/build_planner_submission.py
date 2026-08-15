@@ -65,7 +65,7 @@ MODULES = (
     # inside the function, so this is the order that resolves.
     ("kagg.search.crew", "kagg/search/crew.py"),
     ("kagg.search.router", "kagg/search/router.py"),
-    # **`schedule_agent_1455mh.py` bundled UNDER the name `kagg.search.schedule_agent`.** The two
+    # **`schedule_agent.py` bundled UNDER the name `kagg.search.schedule_agent`.** The two
     # files diverged at `6f31999` (2026-08-09) and `schedule_agent.py` has had none of the work
     # since: no `PLAN_THE_CREW_THAT_ARRIVES`, no `WALK_THE_LOAD_HOME`, no `NEVER_SELL_TODAYS_RATION`,
     # no `_clear_the_spawn_ring`. Every grid, gate and sweep in this repo runs `_1455mh`; shipping
@@ -75,7 +75,7 @@ MODULES = (
     # The dotted name stays `kagg.search.schedule_agent` because the entry point below and the
     # loader resolve `_SA` by it, and because `_1455mh` itself imports only its three siblings
     # (`cover`, `router`, `routines`), all of which are bundled above.
-    ("kagg.search.schedule_agent", "kagg/search/schedule_agent_1455mh.py"),
+    ("kagg.search.schedule_agent", "kagg/search/schedule_agent.py"),
 )
 
 #: Package stubs, created only where nothing real is already imported. Empty `__path__`, so an
@@ -199,7 +199,7 @@ def agent(obs, config=None):
     fresh = int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0
     if fresh or me not in _AGENTS:
         # `start_day` exists only on the older `schedule_agent`. The module bundled here is
-        # `schedule_agent_1455mh`, which plans its opening rather than replaying one, and its
+        # `schedule_agent`, which plans its opening rather than replaying one, and its
         # `make_agent` has no such parameter -- passing it unconditionally is a TypeError on the
         # first observation, i.e. a submission that banks the $3,000 start. Sent only when a replay
         # opening was actually asked for; `--replay-days` defaults to 0 and the builder refuses the
@@ -771,7 +771,7 @@ if __name__ == "__main__":
                  "  off. This is a deliberate refusal, not a failure -- nothing has been written.")
     # **Refuse a replay opening the bundled module cannot honour**, rather than emitting a file that
     # raises `TypeError` on its first observation and banks the $3,000 start. `start_day` is a
-    # parameter of the OLD `schedule_agent`; `MODULES` above bundles `schedule_agent_1455mh`, which
+    # parameter of the OLD `schedule_agent`; `MODULES` above bundles `schedule_agent`, which
     # plans its opening instead of replaying one.
     if _args.replay_days:
         import inspect as _inspect

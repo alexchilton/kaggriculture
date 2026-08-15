@@ -107,7 +107,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="candidate")
     ap.add_argument("--module", default="schedule_agent",
-                    help="which agent module to play, e.g. schedule_agent_1455m")
+                    help="which agent module to play, e.g. schedule_agent")
     ap.add_argument("--limit", type=int, default=None, help="cap the number of tape seats")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--seed", type=int, default=101)

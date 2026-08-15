@@ -25,6 +25,7 @@ The assertion is on FILLS per product per day, against the row. It says nothing 
 `buys` row at all -- there the top-up is the only rule there is and remains unbounded.
 """
 import collections
+import kagg.plan as _PLAN
 import json
 import pathlib
 import sys
@@ -47,7 +48,7 @@ def bought():
     from kaggle_environments import make
 
     from kagg.analysis.fills import record_fills
-    import kagg.search.schedule_agent_1455mh as sa
+    import kagg.search.schedule_agent as sa
 
     replay, schedule, team = B.TAPES["victor"]
     sched = {int(k): v for k, v in json.loads((REPO / schedule).read_text()).items()}
@@ -79,7 +80,7 @@ def bought():
 
 
 def _rows():
-    raw = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    raw = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     return {int(k): dict(v.get("buys") or {}) for k, v in raw.items()}
 
 

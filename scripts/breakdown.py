@@ -35,14 +35,14 @@ sys.path.insert(0, ".")
 
 #: Bound in `main()` from `--module`. The comparison is worthless if it silently runs a different
 #: agent than the one under discussion, and this file hardcoded `schedule_agent` while every base
-#: decision in the project was about `schedule_agent_1455*`.
+#: decision in the project was about `schedule_agent`.
 schedule_agent = None
 
 #: **The module the work is actually going into.** `--module` defaulted to `schedule_agent`, last
 #: touched 2026-08-09 (`ea72a1e`), while every commit since has gone into this one. Four days of
 #: grids therefore measured an agent nobody was changing, and produced at least one finding -- a
 #: "missing cow since d6" -- that evaporated the moment the right module was loaded.
-DEFAULT_MODULE = "schedule_agent_1455mh"
+DEFAULT_MODULE = "schedule_agent"
 
 #: Products the agent must be ABLE to sell, checked on every load. `c99a8a5` found that CARROT,
 #: TOMATO and EGG were missing from `SELLABLE`, so no carrot the farm grew could be turned into
