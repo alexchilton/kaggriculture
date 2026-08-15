@@ -140,6 +140,23 @@
   },
   {
    "tile": [
+    3,
+    0
+   ],
+   "ops": [
+    [
+     "WATER",
+     null
+    ]
+   ],
+   "needs": {},
+   "gives": {},
+   "at_risk": true,
+   "funds": false,
+   "products": []
+  },
+  {
+   "tile": [
     4,
     0
    ],
@@ -298,13 +315,13 @@
    ],
    "ops": [
     [
-     "DIG",
+     "WATER",
      null
     ]
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -375,8 +392,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -553,8 +570,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -759,8 +776,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -796,8 +813,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -895,8 +912,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -932,8 +949,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -960,13 +977,13 @@
    ],
    "ops": [
     [
-     "DIG",
+     "WATER",
      null
     ]
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1157,7 +1174,7 @@
    ],
    "needs": {},
    "gives": {
-    "WHEAT": 2
+    "WHEAT": 3
    },
    "at_risk": false,
    "funds": false,
@@ -1374,23 +1391,6 @@
    "products": [
     "WHEAT"
    ]
-  },
-  {
-   "tile": [
-    0,
-    9
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
   },
   {
    "tile": [
