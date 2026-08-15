@@ -4356,15 +4356,22 @@ def make_agent(schedule, me=0, router=True):
 
             # **The general form: any crop onto any other.** See `CROP_TILE_SHIFTS`. Applied after
             # the two wheat integers so a sweep that sets both is still a total order.
-            if day >= LATE_CROP_FROM_DAY and CROP_TILE_SHIFTS:
+            # **Only touch a day that HAS a row, and only write back if something moved.**
+            # `sched.get(day) or {}` followed by an unconditional `sched[day] = _r` inserted an
+            # EMPTY row on every day the schedule does not plant -- which changed the season
+            # identically for every shift, including ones with nothing to re-crew. A fork
+            # comparison then returned the same +$4,691 for all ten configs.
+            if day >= LATE_CROP_FROM_DAY and CROP_TILE_SHIFTS and sched.get(day):
                 if "crop_shift_left" not in state:
                     state["crop_shift_left"] = [int(n) for _, _, n in CROP_TILE_SHIFTS]
-                _r = sched.get(day) or {}
+                _r, _moved = sched[day], 0
                 for _i, (_src, _dst, _) in enumerate(CROP_TILE_SHIFTS):
                     _r, _spent = _recrew(_r, _src, _dst, state["crop_shift_left"][_i])
                     state["crop_shift_left"][_i] -= _spent
-                sched[day] = _r
-                row = _r
+                    _moved += _spent
+                if _moved:
+                    sched[day] = _r
+                    row = _r
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
