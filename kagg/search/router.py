@@ -177,7 +177,7 @@ FEED_IS_CRITICAL_WHEN_AT_RISK = True
 #: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
 #: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
 #: (an opponent, a lost hand) needs the ranking to already say so.
-BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = True
+BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False
 
 #: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
