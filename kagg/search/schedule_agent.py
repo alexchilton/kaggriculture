@@ -484,6 +484,30 @@ CARE_WHAT_YOU_STAND_ON = True
 #: re-bought.
 WALK_THE_LOAD_HOME = True
 
+#: On the LAST day, a loaded hand abandons what is left of its route at the last hour that still
+#: reaches the shed. The runtime mirror of `cover.TRIM_HOME_DAYS`: the plan trims tails it can
+#: price, but the executor re-derives work at every stop, so a tour runs a turn or two past its
+#: costing and the planned walk starts too late -- the d29 trace shows u8 ending the season at
+#: (4,3), ONE tile from the shed, holding 11 units. Work given up here would have made produce the
+#: close discards anyway. Follows the `NO_UPKEEP_ON_THE_LAST_DAY` master switch.
+LAST_DAY_DEADLINE_WALK = True
+
+
+def must_walk_home_now(day, hour, pos, held, depots):
+    """The last turn a loaded hand can still bank its load: walk `dist` plus one turn to DROP.
+
+    `_drop_inventories_to_shed` runs after d29's final turn, when the market is gone, so a load
+    still in a hand at the close is discarded -- leaving later than this bound loses all of it.
+    Every earlier day banks the load in the sweep for free, so this must never fire there.
+    """
+    if not LAST_DAY_DEADLINE_WALK or not RT.upkeep_buys_nothing(day):
+        return False
+    if not any(v > 0 for v in (held or {}).values()):
+        return False
+    need = min(RT.dist(pos, t) for t in depots) + 1
+    return (TPD - hour) <= need
+
+
 #: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
 #:
 #: **Left ON, and the alternative is measured, not assumed.** It disagrees with `DUSK_FEED_TOPUP`,
@@ -2406,6 +2430,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # both surviving across turns because the stop object is the state.
         act = ["PASS"]
         at_shed = tuple(pos) in set(depots)
+        # **The last-day deadline.** See `must_walk_home_now`. Handled here, before the tour walk
+        # and before underfoot/thirsty can spend the turn: from this hour every remaining stop
+        # makes produce the close will discard, and the load in hand is the only job left.
+        if must_walk_home_now(day, hour, pos, inv, depots):
+            st["route"].clear()
+            if at_shed:
+                if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
+                    act = ["DROP"]
+            else:
+                home = min(depots, key=lambda t: RT.dist(pos, t))
+                m = _step_towards(pos, home, unlocked)
+                if m is not None:
+                    act = [m]
+            acts.append(act)
+            continue
 
         def underfoot():
             """The op worth doing on the tile this hand is STANDING on, or None.
