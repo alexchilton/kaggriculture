@@ -2728,7 +2728,16 @@ RANK_HOME_DAYS = frozenset({4})
 
 #: Whether a tour that cannot get its load home gives up trailing jobs until it can. Never a trade:
 #: the produce those jobs make is stranded by definition, so the turns buy nothing as things stand.
-TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
+TRIM_A_TAIL_THAT_CANNOT_COME_HOME = True
+
+#: The days the trim may fire. **Only the last day, and the reason is the overnight sweep.** On
+#: every other day `_drop_inventories_to_shed` banks whatever a tour ends up holding, so a kept job
+#: always beats a walk and the trim is a pure loss -- which is why it shipped False for d4. On d29
+#: the sweep lands after the market is gone and the kept job's produce is DISCARDED, so the walk
+#: is worth strictly more than the job by construction. The reserve pricing cannot reach a
+#: precomputed day (`_apply_precomputed` seats stops without pricing them); this trim in `plan` is
+#: the one place a solved d29 tour can shed work for its delivery.
+TRIM_HOME_DAYS = frozenset({29})
 
 
 #: **Routes solved OFFLINE and replayed, keyed by day.** `{day: {unit: [(tile, (ops...)), ...]}}`
@@ -2752,9 +2761,42 @@ TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
 #: the whole mechanism off and run the greedy everywhere.
 from .solved_days import SOLVED_DAYS                                          # noqa: E402
 
+#: **Days the greedy plans itself even though a solved route exists.**
+#:
+#: A solved route stores WORK STOPS only -- `(tile, ops)` -- and `materialise` appends the shed trip
+#: afterwards out of whatever turns the tour did not spend. That is fine on any day whose load is
+#: banked for free by `_end_of_day`, and it is exactly wrong on the LAST day, where the automatic
+#: drop happens after the final turn and `_commit_unit` will not sell out of a hand. d29 has no
+#: slack to append into, so the walk home never gets planned and the season ends with the crew
+#: holding sellable produce.
+#: **MEASURED AND PARKED 2026-08-15.** `(29,)` lets the greedy plan the last day with `deliver=True`
+#: and is a real but small gain -- sell 1489 -> 1502, d29 sell 93 -> 106, season +$256, harvest
+#: 396 -> 393. It does NOT fix the problem: stranded units rose 51 -> 78, because the greedy
+#: harvests more on d29 than it can walk in.
+#:
+#: **The reason it is parked is that d29 is the wrong day to fix.** カワシギ harvests 32 on d28 to
+#: our 27 and only 19 on d29 to our 27, then spends d29 selling -- 148 units to our 93, with 56 PASS
+#: turns. `_end_of_day` delivers d28's load to the shed overnight for free. He never plans a d29
+#: delivery because he does not need one. We back-load 10 harvests into d23-d29 (195 against his
+#: 185) while d0-d22 are level (201 against 204). Move the work to d28 and the delivery is free.
+UNSOLVE_DAYS = ()
+
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
-                      for d, units in SOLVED_DAYS.items()}
+                      for d, units in SOLVED_DAYS.items() if d not in UNSOLVE_DAYS}
+
+#: **On the LAST day a stop whose ops shrank keeps its solved seat.** `_apply_precomputed` keys a
+#: stop on the exact `(tile, ops)` tuple, which is right on an ordinary day -- a tuple that stops
+#: matching means the board is not the board the day was solved for -- and is the recorded landmine
+#: on d29: `NO_UPKEEP_ON_THE_LAST_DAY` strips FEED/CARE from a pen's job, the key stops matching,
+#: and the stop leaves the solved route for greedy insertion instead of getting two turns cheaper.
+#: Measured as harvest 396 -> 389, sell 1489 -> 1474 (see `router.NO_UPKEEP_ON_THE_LAST_DAY`).
+#:
+#: The fallback fires only on `SEASON_DAYS - 1`, only when the exact key misses, and only for a job
+#: at the SAME tile whose op set is a SUBSET of the solved stop's -- a reduced form of the work the
+#: solve described, never new work. Everything else stays a recorded miss, and every earlier day
+#: keeps the exact-key rule byte-identical.
+MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE = True
 
 #: Days where a precomputed route was offered and did not fit today's jobs. Read it after a run --
 #: if the day under test is in here, the route never ran and the numbers mean nothing.
@@ -2798,8 +2840,17 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
         for tile, ops in work:
             key = (tuple(tile), tuple(ops))
             if not pool.get(key):
-                missed.append(key)
-                continue
+                # The last day only: seat a REDUCED form of the solved stop -- same tile, ops a
+                # subset of what the solve described. See `MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`.
+                fallback = None
+                if MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE and day == R.SEASON_DAYS - 1:
+                    fallback = next((k for k, lst in pool.items()
+                                     if lst and k[0] == tuple(tile) and set(k[1]) <= set(ops)),
+                                    None)
+                if fallback is None:
+                    missed.append(key)
+                    continue
+                key = fallback
             if u >= len(units):
                 no_unit += 1          # the hand never arrived; its work goes through insertion
                 continue
@@ -3530,7 +3581,7 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
             home = materialise(units[u], seq, held, depots, wanted, True, rush, due=due)
             if turns(units[u], home) <= budget[u]:
                 route, cost = home, turns(units[u], home)
-            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in RANK_HOME_DAYS:
+            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in TRIM_HOME_DAYS:
                 # **The trailing job is producing goods that will be STRANDED, so dropping it is a
                 # gain and not a trade.** u1 on d4 harvests (2,1) at h15 and (1,1) at h18, ends six
                 # steps from the shed with eight wheat and passes to dusk; the rollover sweeps it
@@ -4315,6 +4366,41 @@ FEED_IS_CRITICAL_WHEN_AT_RISK = True
 #: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
 #: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
 #: whole fix has to sit on the day before, which is what `age >= max_day` selects.
+#: **BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY -- d28 is the last harvest that banks itself.**
+#:
+#: Selling costs no unit-turns: a SELL is a market order in `_process_market`, not a unit action. So
+#: what the last day can sell is decided entirely by what sits in `private["shed"]` when it starts,
+#: and the shed is filled for free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce
+#: harvested on d28 is banked overnight at zero cost and is sellable all through d29. Produce
+#: harvested ON d29 lands in a hand, and that drop comes after the final turn, so it is discarded.
+#:
+#: This is how カワシギ takes the last two days without ever planning a delivery (ours/tape):
+#:
+#:     closing week   harvest      sell    drop     pass
+#:     d28             27/32     103/92     2/0    48/32
+#:     d29             27/19      93/148    3/9    30/56
+#:
+#:     harvest d0-d22   ours 201   tape 204     level
+#:     harvest d23-d29  ours 195   tape 185     we back-load +10
+#:
+#: He harvests 32 on d28 to our 27, the overnight drop banks it, and d29 becomes a selling day --
+#: 148 units to our 93. We back-load into the one day where delivery is not free, and the season
+#: ends with 51 sellable units, about $1,192, stranded in hands.
+#:
+#: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
+#: crew is standing around; the harvest is simply not ranked high enough to be seated.
+#:
+#: **A behavioral null on this board, ON anyway, and both halves are deliberate.** Three shapes
+#: (prize, at_risk, at_risk + re-solve) measured byte-identical on the grid: d28's solved route
+#: already seats every job with slack, so the promotion changes no seating today. It is ON because
+#: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
+#: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
+#: (an opponent, a lost hand) needs the ranking to already say so.
+BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = True
+
+#: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
+LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
+
 HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
 
 #: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
@@ -4870,7 +4956,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 gain = 2 if fertilized else 1
                 if FILLING_WATER and age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
-        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
+        elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
+              and not upkeep_buys_nothing(day)):
+            # The last-day gate: this water buys the tile surviving TONIGHT's rollover, and after
+            # d29's rollover there is no tile to have saved. Same switch as FEED/CARE.
             # Outside the window water buys nothing but survival, and it is only needed on the day
             # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
             # `consecutive_unwatered` starts at 1 on the planting day and weeds the tile at 2, so a
@@ -4896,7 +4985,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
         elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
-              and (tile[0] + tile[1] + day) % 2 == 0):
+              and (tile[0] + tile[1] + day) % 2 == 0
+              and not upkeep_buys_nothing(day)):
+            # Same last-day gate as the survival water above: the alternation only exists to keep
+            # `consecutive_unwatered` below 2 across days, and there is no next day.
             # **Half the safe tiles, alternating -- which is what the leader actually does.**
             #
             # Measured off カワシギ's own d3, seed 11: his board at dawn is 19 tiles, every one at
@@ -4957,9 +5049,12 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        if (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
-                and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
-                and age >= _last_safe_age(info)):
+        last_free = (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
+                     and day is not None and day == LAST_FREE_DROP_DAY)
+        if (last_free
+                or (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
+                    and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                    and age >= _last_safe_age(info))):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
@@ -5117,6 +5212,12 @@ FEED_CADENCE_FROM_DAY = 7
 def will_be_fed(cell, day):
     """Whether `animal_ops` would offer this pen a FEED today. The market block sizes its wheat
     purchases off this, so it has to be the same rule and not a second copy of it."""
+    # **The last day, before everything else.** Dropping FEED from `animal_ops` alone measured
+    # d29 `feed 14/0 -> 14/0` unchanged: the route is a visit ORDER, the executor re-derives work
+    # at stops and crossings, and `underfoot()` (`schedule_agent:2458`) feeds any pen this
+    # predicate says yes to. One predicate, so the last day says no exactly once.
+    if upkeep_buys_nothing(day):
+        return False
     # **An animal placed TODAY cannot be fed into producing anything, and is not at risk.** FEED
     # does exactly two things (`_daily_refresh_animals`, kaggriculture.py:795-820): it resets
     # `consecutive_unfed`, which is already 0 on the turn the animal is placed, and on a production
@@ -5155,12 +5256,60 @@ def will_be_fed(cell, day):
     return ((day + 1) - int(cell.get("placed_day", 0)) - a["first_yield_day"]) >= 0
 
 
+#: **No FEED and no CARE on the last day. Both pay out at a rollover that scores nothing.**
+#:
+#: `_daily_refresh_animals` runs inside `_end_of_day`, so on d29 it fires at the rollover into day
+#: **30**. The base unit and the care bonus land on the pen and no turn ever exists to harvest them.
+#: The other thing a FEED buys is survival, and that is worthless too: the score is banked money, so
+#: an animal that escapes after the final turn costs nothing.
+#:
+#: Measured on the kawashigi grid, last three days, ours/tape:
+#:
+#:     row              d27       d28       d29
+#:     feed           14/14     14/10     14/0
+#:     care           14/12     14/9      14/0
+#:     harvest        31/35     29/32     26/19
+#:     drop            0/0       2/0       2/9
+#:
+#: The tape does ZERO upkeep on its last day and spends it harvesting and walking produce in -- nine
+#: DROPs to our two. Our 28 upkeep turns are most of the ~36 needed to send six loaded hands to the
+#: shed, and the season currently ends with 51 sellable units stranded in hands, about $1,192.
+#:
+#: HARVEST and COLLECT_FERTILIZER are deliberately NOT dropped: milk, wool and fertilizer already on
+#: the pen are real produce that can still be sold today if it reaches the shed.
+#:
+#: **Parked 2026-08-15, re-opened the same day once the landmine was defused.** The first attempt
+#: measured harvest 396 -> 389, sell 1489 -> 1474, because `cover._apply_precomputed` matched a stop
+#: by the exact `(tile, ops)` tuple: a pen whose job was `[FEED, CARE, COLLECT_FERTILIZER, HARVEST]`
+#: became `[COLLECT_FERTILIZER, HARVEST]`, the key stopped matching the solved plan, and the stop
+#: dropped out of the route rather than getting cheaper. `cover.MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`
+#: now seats the reduced stop on the unit the solve chose, which is what this flag was waiting for.
+NO_UPKEEP_ON_THE_LAST_DAY = True
+
+
+def upkeep_buys_nothing(day):
+    """True on the last day, when FEED and CARE pay out at a rollover the season never reaches.
+
+    The one gate for every upkeep path: `animal_ops` (the plan), `will_be_fed` (the executor's
+    underfoot FEED and the wheat-purchase sizing), and `underfoot()`'s CARE branch, which cannot
+    ask `animal_ops` and needs the same answer.
+    """
+    return NO_UPKEEP_ON_THE_LAST_DAY and day is not None and day >= R.SEASON_DAYS - 1
+
+
 def animal_ops(cell, day, have_wheat):
     """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed."""
     a = ANIMALS[cell["animal"]]
     price = BASE_PRICE[a["product"]]
     out = []
     fed = cell["fed_today"]
+    if upkeep_buys_nothing(day):
+        # Collect what is already there; buy nothing that pays out tomorrow.
+        if cell.get("fertilizer_available"):
+            out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
+        if cell.get("yield_units", 0) > 0:
+            out.append(("HARVEST", None, cell["yield_units"] * price))
+        return out
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
         # **A feed buys two things, and on most nights it buys neither.** From
@@ -5214,7 +5363,11 @@ def animal_ops(cell, day, have_wheat):
     if cell.get("fertilizer_available"):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
-        out.append(("HARVEST", None, cell["yield_units"] * price))
+        prize = cell["yield_units"] * price
+        if (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
+                and day is not None and day == LAST_FREE_DROP_DAY):
+            prize += CRITICAL          # last night this milk or wool can bank itself for free
+        out.append(("HARVEST", None, prize))
     if YIELD_FIRST:
         # Stable, so COLLECT_FERTILIZER still precedes HARVEST and FEED still precedes CARE. Built
         # in rule order above because the CARE prize is conditional on FEED being served; only the
@@ -6136,17 +6289,69 @@ DELIVER_CUTOFF_TURNS = 99
 #: **One day, not a lower cutoff.** `DELIVER_CUTOFF_TURNS` was tuned on the victor grid across
 #: d0-d16 and lowering it would reopen every one of those days. This is the smallest change that
 #: reaches the flush, and d0-d9 cannot move under it by construction.
-WALK_THE_LOAD_HOME_DAYS = (10,)
+#:
+#: **d29 added 2026-08-15, for a different reason: on the last day the free drop is too late.**
+#: `_end_of_day` calls `_drop_inventories_to_shed`, so on every ordinary day a carried load reaches
+#: the shed for nothing -- which is why カワシギ emits five DROPs in a whole season against 389
+#: harvests. After d29's last turn that drop still runs, but there is no turn left to sell into, and
+#: `_commit_unit` refuses a SELL unless the goods are already in `private["shed"]`. So produce held
+#: at the close is not carried over, it is discarded.
+#:
+#: Measured at the final step of d29 on the kawashigi grid, seed 11:
+#:
+#:     US    carried and LOST  58 units  ~$1,430  {WHEAT 34, MILK 12, FERTILIZER 12}
+#:     TAPE  carried and LOST   7 units    ~$245  {WHEAT 7}
+#:
+#: and the tape spends NINE DROPs on d29 against our two. That is the whole difference: it walks its
+#: load in, we finish the season holding it.
+#:
+#: **The first attempt at (10, 29) recovered 7 of 58 units and was reverted**: a solved route
+#: stores work stops, `plan` appends the closing walk out of turns the tour did not spend, and with
+#: FEED/CARE still planned d29 had no slack to append into. `NO_UPKEEP_ON_THE_LAST_DAY` now frees
+#: those turns first, which is what this flag was waiting for.
+WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
 
-def _at_risk_tiles(tiles):
+#: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
+#:
+#: Selling costs no unit-turns -- a SELL is a market order, not a unit action -- so what the last day
+#: can sell is decided by what sits in `private["shed"]` when it starts, and the shed is filled for
+#: free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce taken on d28 is banked overnight
+#: at zero cost and sells all through d29. Produce taken ON d29 lands in a hand and that drop comes
+#: after the final turn, so it is discarded: the season currently ends with 51 sellable units, about
+#: $1,192, in the crew's hands.
+#:
+#: So "skipping this today destroys something tonight" is literally true of a ripe tile on d28, which
+#: is why it belongs here rather than in a prize. **A prize cannot reach a solved day at all** --
+#: `cover._apply_precomputed` seats a stop by `(tile, ops)` and the prize never enters -- while
+#: `at_risk` is what `solve_day.weight(j)` reads, so it survives the re-solve.
+#:
+#: カワシギ, ours/tape: d28 harvest 27/32, d29 harvest 27/19, d29 sell 93/148. He harvests harder on
+#: d28 and spends d29 selling. We back-load +10 harvests into d23-d29 while d0-d22 are level, and we
+#: are not short of turns on d28 -- 48 idle unit-turns against his 32.
+#: **MEASURED A NULL 2026-08-15 AND LEFT OFF.** Three ways: prize, at_risk, and at_risk plus a d28
+#: re-solve. All three byte-identical on the grid. d28 is not under-prioritising anything -- its
+#: solved route already seats every job with slack, two hands idle, and only 7 ripe units remain
+#: unharvested at dusk. And the planting rows are IDENTICAL to the tape (d25 9/9, d26 9/9, d27
+#: 11/11), so his crops do not ripen earlier than ours either. Whatever gives him d28 harvest 32 to
+#: our 27 and d29 19 to our 27, it is neither ranking nor planting date.
+BANK_THE_FIELD_ON_D28 = False
+
+#: The last day whose carried load is banked overnight; d29's own drop lands after the final turn.
+LAST_FREE_DROP_DAY = 28
+
+
+def _at_risk_tiles(tiles, day=None):
     """Tiles where skipping today's work destroys something tonight. Read off the board, not priced.
 
     `consecutive_unfed`/`consecutive_unwatered` are already 1 -- one more missed day and the animal
     walks off or the tile weeds. A pen fed yesterday, or a tile watered yesterday, can slip a day for
     free, which is precisely how the tape feeds 16 of 19 pens on day 19 and loses nothing.
+
+    On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
     """
     out = set()
+    banking = bool(BANK_THE_FIELD_ON_D28 and day is not None and day == LAST_FREE_DROP_DAY)
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
@@ -6155,6 +6360,8 @@ def _at_risk_tiles(tiles):
                 out.add((x, y))
             elif (WATER_AT_RISK and cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
+                out.add((x, y))
+            elif banking and int(cell.get("yield_units", 0) or 0) > 0:
                 out.add((x, y))
     return out
 
@@ -6393,6 +6600,30 @@ CARE_WHAT_YOU_STAND_ON = True
 #: rollover -- only late, and `_process_market` reads the shed, so late means unsold and then
 #: re-bought.
 WALK_THE_LOAD_HOME = True
+
+#: On the LAST day, a loaded hand abandons what is left of its route at the last hour that still
+#: reaches the shed. The runtime mirror of `cover.TRIM_HOME_DAYS`: the plan trims tails it can
+#: price, but the executor re-derives work at every stop, so a tour runs a turn or two past its
+#: costing and the planned walk starts too late -- the d29 trace shows u8 ending the season at
+#: (4,3), ONE tile from the shed, holding 11 units. Work given up here would have made produce the
+#: close discards anyway. Follows the `NO_UPKEEP_ON_THE_LAST_DAY` master switch.
+LAST_DAY_DEADLINE_WALK = True
+
+
+def must_walk_home_now(day, hour, pos, held, depots):
+    """The last turn a loaded hand can still bank its load: walk `dist` plus one turn to DROP.
+
+    `_drop_inventories_to_shed` runs after d29's final turn, when the market is gone, so a load
+    still in a hand at the close is discarded -- leaving later than this bound loses all of it.
+    Every earlier day banks the load in the sweep for free, so this must never fire there.
+    """
+    if not LAST_DAY_DEADLINE_WALK or not RT.upkeep_buys_nothing(day):
+        return False
+    if not any(v > 0 for v in (held or {}).values()):
+        return False
+    need = min(RT.dist(pos, t) for t in depots) + 1
+    return (TPD - hour) <= need
+
 
 #: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
 #:
@@ -7662,7 +7893,10 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         ops = next(([("PLACE", a, 0)] for a in _place_order()
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
-        ops = [("DIG", None, 0)]
+        # A DIG clears ground for a planting that must happen on a LATER day, so on the last day
+        # it is a turn spent to tidy up -- the d29 trace shows u4 digging (1,0) and (3,0) while
+        # 3 units strand in its hand. Same gate as FEED/CARE (`router.upkeep_buys_nothing`).
+        ops = [] if RT.upkeep_buys_nothing(day) else [("DIG", None, 0)]
     else:
         ops = []
     return [(o, i) for o, i, _p in ops]
@@ -8245,7 +8479,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         sub = _solve([plan_units[u] for u in live], nodes_for(set()),
                      [budget[u] for u in live], depots,
                      {k: load[u] for k, u in enumerate(live)}, supply=plan_supply,
-                     at_risk=_at_risk_tiles(tiles),
+                     at_risk=_at_risk_tiles(tiles, day),
                      pointless=_pointless_tiles(tiles, day, plants_left),
                      tiles=tiles, wanted=owed_sale, fund=short_of_cash, day=day)
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
@@ -8313,6 +8547,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # both surviving across turns because the stop object is the state.
         act = ["PASS"]
         at_shed = tuple(pos) in set(depots)
+        # **The last-day deadline.** See `must_walk_home_now`. Handled here, before the tour walk
+        # and before underfoot/thirsty can spend the turn: from this hour every remaining stop
+        # makes produce the close will discard, and the load in hand is the only job left.
+        if must_walk_home_now(day, hour, pos, inv, depots):
+            st["route"].clear()
+            if at_shed:
+                if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
+                    act = ["DROP"]
+            else:
+                home = min(depots, key=lambda t: RT.dist(pos, t))
+                m = _step_towards(pos, home, unlocked)
+                if m is not None:
+                    act = [m]
+            acts.append(act)
+            continue
 
         def underfoot():
             """The op worth doing on the tile this hand is STANDING on, or None.
@@ -8377,6 +8626,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     return ["FEED"]
             if (CARE_WHAT_YOU_STAND_ON and here.get("fed_today")
                     and not here.get("cared_today")
+                    and not RT.upkeep_buys_nothing(day)
                     and tuple(pos) not in cared_this_turn
                     and tuple(pos) not in working_tiles):
                 # Claimed on RETURN: both call sites consume a non-None `underfoot()`
