@@ -43,6 +43,13 @@ PLAN = importlib.import_module("kagg.plan")
 #: opening, and the first day the herd is large enough that a dropped FEED is not free.
 DAY = 10
 
+#: **The whole season, because scoping the invariant to one day hid a regression next to it.**
+#: The first version of this file asserted on `DAY` alone. It passed while
+#: `WALK_THE_LOAD_HOME_DAYS = (10, 11)` put FOUR tours on d11 over budget -- 29, 26, 25 and 24 turns
+#: against 23 -- and it took a separate season-wide sweep to find them. A tour that does not fit its
+#: day is wrong on every day, so the test says so on every day.
+LAST_DAY = 29
+
 
 @pytest.fixture(scope="module")
 def tours():
@@ -73,6 +80,8 @@ def tours():
             held = (carry or {}).get(u) or {}
             ship = COVER.turns(units[u], COVER.materialise(units[u], seq, held, dep, wanted,
                                                            deliver, rush, due=due))
+            # `deliver` is the caller's, not a constant: the melon days ask for a delivering tour
+            # and every other day does not, and the two materialise differently.
             seen.append(dict(day=cur["day"], unit=u, budget=budget[u], ships=ship,
                              feeds=[tuple(j.tile) for j in seq
                                     if any(o[0] == "FEED" for o in j.ops)]))
@@ -80,7 +89,7 @@ def tours():
 
     COVER.cover = spy
     try:
-        for t in range((DAY + 1) * 24):
+        for t in range((LAST_DAY + 1) * 24):
             o0, o1 = env.state[0].observation, env.state[1].observation
             cur["day"] = t // 24
             if t % 24 == 23:
@@ -102,13 +111,33 @@ def test_the_shipped_agent_never_asks_for_a_delivering_tour(tours):
         "budgets are 23-24 turns; a cutoff at or below that makes `deliver` True and this test moot")
 
 
-def test_every_tour_fits_the_day_it_was_planned_for(tours):
-    """The defect: work admitted at one price and walked at another."""
-    seen, _unfed = tours
-    over = [r for r in seen if r["ships"] > r["budget"]]
-    assert not over, "\n".join(
+def _over(seen, precomputed):
+    """Over-budget tours, split by whether the day came from `PRECOMPUTED_ROUTES`."""
+    days = set(COVER.PRECOMPUTED_ROUTES)
+    return [r for r in seen
+            if r["ships"] > r["budget"] and ((r["day"] in days) == precomputed)]
+
+
+def _report(over):
+    return "\n".join(
         f"  d{r['day']} u{r['unit']}: budget {r['budget']}, the tour it ships costs {r['ships']} "
         f"(+{r['ships'] - r['budget']}); FEED stops on it {r['feeds']}" for r in over)
+
+
+def test_every_greedy_tour_fits_the_day_it_was_planned_for(tours):
+    """The defect: work admitted at one price and walked at another."""
+    seen, _unfed = tours
+    assert not _over(seen, precomputed=False), _report(_over(seen, precomputed=False))
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN GAP, not fixed here. `cover._apply_precomputed` returns before the greedy's `c > cap` "
+    "check ever runs, so d12-d29 are not budget-checked at all. Seed 11 ships d14 u5 at 24/23, "
+    "d21 u12 at 32/23 and d27 u2 at 27/23. Strict, so this goes RED the moment it is fixed and "
+    "the marker has to be removed rather than quietly outliving the defect."))
+def test_every_precomputed_tour_fits_the_day_it_was_planned_for(tours):
+    seen, _unfed = tours
+    assert not _over(seen, precomputed=True), _report(_over(seen, precomputed=True))
 
 
 def test_no_animal_goes_unfed_on_the_day_the_packer_overruns(tours):

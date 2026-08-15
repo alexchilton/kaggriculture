@@ -162,10 +162,17 @@ DELIVER_CUTOFF_TURNS = 99
 #: closing trip out of turns the tour did NOT spend, so it can only ever use slack -- u0's eight
 #: spare turns against a seven-step walk to the shed.
 #:
-#: **Two days, not a lower cutoff.** The constant was tuned on the victor grid across d0-d16 and
-#: lowering it would reopen every one of those days. This is the smallest change that reaches the
-#: flush, and d0-d9 cannot move under it by construction.
-WALK_THE_LOAD_HOME_DAYS = (10, 11)
+#: **d10 ONLY, and d11 was measured OUT.** The first version was `(10, 11)` on the reasoning that
+#: the flush spans both days. It does not: with d10 delivering, the whole tail is already in the shed
+#: at d11 h00 and sells there, so d11 has nothing left to walk home -- and turning `deliver` on for it
+#: put FOUR of its tours over budget, 29/26/25/24 turns against 23. That regression passed unnoticed
+#: because the test asserted on d10 alone; it is now season-wide
+#: (`tests/test_a_day_is_packed_against_the_tour_it_will_walk.py`).
+#:
+#: **One day, not a lower cutoff.** `DELIVER_CUTOFF_TURNS` was tuned on the victor grid across
+#: d0-d16 and lowering it would reopen every one of those days. This is the smallest change that
+#: reaches the flush, and d0-d9 cannot move under it by construction.
+WALK_THE_LOAD_HOME_DAYS = (10,)
 
 
 def _at_risk_tiles(tiles):
