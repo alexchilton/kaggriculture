@@ -66,7 +66,8 @@ branch -- the failure this project calls a byte-identical null.
 """
 import base64
 import json
-import pathlib
+
+from .branch import Branch, count_tiles, opponent_seat
 
 #: The day the decision is READ. The opponent's melon tiles are visible from d0; d3 is the first day
 #: at which his commitment is settled, and it is two days before the first row that spends on melon.
@@ -191,55 +192,29 @@ B3_ROWS_B64 = (
 )
 
 
-def _b3_rows():
-    """`{day: row}` from `SPLIT_DAY` on, decoded fresh each call so a caller cannot mutate ours."""
-    if B3_ROWS_B64:
-        raw = json.loads(base64.b64decode(B3_ROWS_B64))
-    else:
-        raw = json.loads(pathlib.Path(SOURCE_SCHEDULE).read_text())
-    return {int(d): r for d, r in raw.items() if int(d) >= SPLIT_DAY}
+class MelonBranch(Branch):
+    """His strawberry season, taken when the opponent has committed to melon."""
+
+    decide_by_day = DECIDE_BY_DAY
+    split_day = SPLIT_DAY
+    decided_key = "melon_decided"
+    armed_key = "melon_armed"
+
+    def trigger(self, observation):
+        """The opponent holds `OPPONENT_MELON` or more MELON tiles.
+
+        Counts TILES rather than harvests: the earliest melon yield is day 10 and the decision is
+        taken on day 3, so what is visible then is what has been planted.
+        """
+        return count_tiles(observation, opponent_seat(observation),
+                           crop="MELON") >= OPPONENT_MELON
+
+    def rows(self):
+        return {int(d): r for d, r in json.loads(base64.b64decode(B3_ROWS_B64)).items()}
 
 
-def the_opponent_committed_to_melon(observation):
-    """His trigger: the opponent holds `OPPONENT_MELON` or more MELON tiles.
+BRANCH = MelonBranch()
 
-    Counts TILES rather than harvests, because the earliest melon yield is day 10 and the decision is
-    taken on day 3 -- what is visible on day 3 is what has been planted.
-    """
-    farms = observation.get("farms") or []
-    if len(farms) < 2:
-        return False
-    me = int(observation.get("player", 0) or 0)
-    opponent = farms[1 - me]
-    return sum(1 for row in (opponent.get("tiles") or []) for cell in row
-               if isinstance(cell, dict) and cell.get("crop") == "MELON") >= OPPONENT_MELON
-
-
-def install_the_strawberry_branch(schedule):
-    """Replace rows `SPLIT_DAY`..29 with the strawberry season's, in place. True if anything moved."""
-    moved = False
-    for day, row in _b3_rows().items():
-        target = schedule.get(day) if hasattr(schedule, "get") else None
-        if target is None:
-            continue
-        target.clear()
-        target.update(row)
-        moved = True
-    return moved
-
-
-def arm(schedule, state, observation, day):
-    """Decide once, on or after `DECIDE_BY_DAY`, and before `SPLIT_DAY` can spend.
-
-    Latched in `state` because his own melon purchase spans two days (d5 buys 3, d6 buys 5). A
-    re-read that changed its mind between them would buy half a row of each.
-    """
-    if state.get("melon_decided"):
-        return state.get("melon_armed", False)
-    if day < DECIDE_BY_DAY:
-        return False
-    state["melon_decided"] = True
-    state["melon_armed"] = bool(the_opponent_committed_to_melon(observation))
-    if state["melon_armed"]:
-        install_the_strawberry_branch(schedule)
-    return state["melon_armed"]
+the_opponent_committed_to_melon = BRANCH.trigger
+install_the_strawberry_branch = BRANCH.install
+arm = BRANCH.arm

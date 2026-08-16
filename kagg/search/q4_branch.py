@@ -54,6 +54,8 @@ underperforms.
 """
 import importlib
 
+from .branch import Branch
+
 #: Switched off ships the three-quadrant plan unchanged, and is byte-identical to not importing this.
 BRANCH_ON_THE_YARN_STORE = True
 
@@ -233,44 +235,43 @@ def _q4_rows():
     return {int(k): v for k, v in json.loads(base64.b64decode(Q4_ROWS_B64)).items()}
 
 
-def install_the_fourth_quadrant(schedule):
-    """Rewrite rows `SPLIT_DAY`..29 of `schedule` IN PLACE, and install the 100-tile routes.
+class Q4Branch(Branch):
+    """His four-quadrant season, taken when the town promises wool early.
 
-    In place because `make_agent` shares row objects with its caller and reads them live each turn.
-    Rebinding a row would be a no-op that looks exactly like a working branch -- the failure mode
-    this project calls a byte-identical null.
+    `install` does more than swap rows: the shipped routes were solved for the 75-tile board and
+    `cover._apply_precomputed` keys a stop on `(tile, ops)`, so on a 100-tile board they DROP rather
+    than adapt. The four-quadrant solve goes in with the rows or the branch plays unsolved days.
     """
-    rows = _q4_rows()
-    for day, row in rows.items():
-        if day < SPLIT_DAY:
-            continue
-        target = schedule.get(day) if hasattr(schedule, "get") else None
-        if target is None:
-            continue
-        target.clear()
-        target.update(row)
 
-    cover = importlib.import_module("kagg.search.cover")
-    q4 = importlib.import_module("kagg.search.solved_days_q4")
-    cover.UNSOLVE_DAYS = ()
-    cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
-                                    for u, seq in units.items()}
-                                for d, units in q4.SOLVED_DAYS.items()}
-    return True
+    decide_by_day = DECIDE_BY_DAY
+    split_day = SPLIT_DAY
+    decided_key = "q4_decided"
+    armed_key = "q4_armed"
+
+    def trigger(self, observation):
+        return the_town_promised_wool_early(observation)
+
+    def rows(self):
+        return _q4_rows()
+
+    def install(self, schedule):
+        moved = super().install(schedule)
+        cover = importlib.import_module("kagg.search.cover")
+        q4 = importlib.import_module("kagg.search.solved_days_q4")
+        cover.UNSOLVE_DAYS = ()
+        cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
+                                        for u, seq in units.items()}
+                                    for d, units in q4.SOLVED_DAYS.items()}
+        return moved
+
+
+BRANCH = Q4Branch()
+
+install_the_fourth_quadrant = BRANCH.install
 
 
 def arm(schedule, state, observation, day):
-    """Decide once, on or after `DECIDE_BY_DAY`, and before `SPLIT_DAY` can act.
-
-    `state` is any dict that persists across turns; the decision is recorded there so the schedule is
-    never mutated twice and never re-read after the split.
-    """
-    if not BRANCH_ON_THE_YARN_STORE or state.get("q4_decided"):
-        return state.get("q4_armed", False)
-    if day < DECIDE_BY_DAY:
+    """`BRANCH.arm`, gated by `BRANCH_ON_THE_YARN_STORE`."""
+    if not BRANCH_ON_THE_YARN_STORE:
         return False
-    state["q4_decided"] = True
-    state["q4_armed"] = bool(the_town_promised_wool_early(observation))
-    if state["q4_armed"]:
-        install_the_fourth_quadrant(schedule)
-    return state["q4_armed"]
+    return BRANCH.arm(schedule, state, observation, day)
