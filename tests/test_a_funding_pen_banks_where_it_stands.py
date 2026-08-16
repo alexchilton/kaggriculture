@@ -37,7 +37,6 @@ SHED = [(4, 4), (4, 5), (5, 4), (5, 5)]
 @pytest.fixture(autouse=True)
 def _flags(monkeypatch):
     """Shipped defaults, except the flag under test. The point is that this works ALONE."""
-    monkeypatch.setattr(DP, "BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY", True)
     monkeypatch.setattr(DP, "BANK_THE_ROWS_PRODUCE_WHILE_REAPING", False)
 
 

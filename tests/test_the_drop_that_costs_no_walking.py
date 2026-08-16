@@ -29,7 +29,6 @@ from kagg.search import cover as DP
 def _free_drop_only(monkeypatch):
     """The expensive arm OFF, this one ON. Both at once would prove nothing about either."""
     monkeypatch.setattr(DP, "DELIVER_SURPLUS_NOT_THE_ROW", False)
-    monkeypatch.setattr(DP, "DROP_WHERE_THE_TOUR_ALREADY_STANDS", True)
 
 
 def _drops(route):

@@ -239,11 +239,6 @@ RUSH_BANK_MIN = 4
 #: the drop can be free. That is a different change to this one and needs its own measurement.
 DELIVER_SURPLUS_NOT_THE_ROW = False
 
-#: Whether a tour DROPS what it is carrying at a depot it is already standing on -- zero detour,
-#: one turn. See the note where it fires. This is the cheap half of the delivery defect above: it
-#: never buys a walk, so it cannot take turns away from feeding the way the detour version did.
-DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
-
 #: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
 #: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
 #:
@@ -277,68 +272,6 @@ DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
 #: byte-identical d8. And the free drop is safe here by construction: it already refuses whenever
 #: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
 BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
-
-#: Whether two pens the day's row is WAITING ON may be stacked on the same hand.
-#:
-#: Day 8 of the Kawashigi tape. The two cows placed on day 0 open d8 holding six units each -- twelve
-#: milk, exactly his `SELL MILK 12`, and that sale funds the day: the row buys `WHEAT 17` on a $4
-#: dawn bank and the wheat feeds ten animals. His plan puts ONE HAND ON EACH ripe pen, read off the
-#: raw replay:
-#:
-#:     u4   h02 (4,4) PICKUP/WHEAT   h03 FEED   h04 CARE   h05 HARVEST   h06 PLACE/MILK
-#:     u2                                                  h04 HARVEST   h06 PLACE/MILK
-#:
-#: Ours puts both on u4, as jobs 0 and 1 of its tour -- both correctly flagged `funds`, both at the
-#: FRONT, so neither the flag nor the ordering is wrong. But that is eight turns of work back to
-#: back on one hand, so the second cow's milk cannot reach the shed before ~h08.
-#:
-#: **Two hours late fills exactly as much as thirteen.** Forcing the tape's own d8 orders on top of
-#: `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` was byte-identical to forcing them without it -- `sell
-#: 6/18`, `+ sold $524/$3,177` -- because `SELL MILK 12` at h05 found an empty shed either way. So
-#: the delivery rule cannot pay until the two harvests happen at the same time.
-#:
-#: `greedy` ranks on `(added turns, unit, tile, index)`, pure cheapest-insertion, so appending the
-#: second cow to the hand already standing on the first always wins. That is right for ordinary work
-#: -- its own docstring measures round-robin turning 776 idle turns into 742 extra moves -- and
-#: wrong for the two stops the day's cash depends on. This is therefore a PREFERENCE inside the
-#: existing ranking and never a refusal: a funding pen with nowhere else to go still gets placed, so
-#: it cannot leave one uncovered.
-ONE_HAND_PER_FUNDING_PEN = True
-
-#: Whether a pen that FUNDS the day banks its produce on the pen, the turn after it is harvested.
-#:
-#: `_refresh_pins` sites pens ON shed-access tiles, so a hand standing on a pen is already standing
-#: on the shed. Kawashigi never walks anywhere to bank the day-8 milk:
-#:
-#:     u4  h02 (4,4) PICKUP/WHEAT  h03 FEED  h04 CARE  h05 HARVEST  h06 PLACE/MILK
-#:                                                                      ^ same tile, next turn
-#:
-#: and `SELL MILK 12` is in that same order block -- the unit phase runs before `_process_market`
-#: (`:922` then `:928`), so it lands and sells in one turn.
-#:
-#: **Every existing delivery path banks on the way to the NEXT job.** They all compute
-#: `d = nearest(depots, pos, j.tile)` for the TRANSITION, so the stop is part of moving on and is
-#: gated on that move being free. Standing still is not a move, so none of them can express "bank
-#: here, now". On d8 that put the milk in the shed at h07 with `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`
-#: on and h11 without it, against a sale asked at h05.
-#:
-#: The two hours are the whole day. Measured on the forced-order run -- the tape's own d8 orders
-#: replayed on our board:
-#:
-#:     h05  bank $24  shed MILK 0  asked BWHEAx2 SMILKx12  -> ALL FAILED
-#:     h08  bank $24  shed MILK 0  asked BWHEAx2           -> FAILED
-#:     h10  bank $24  shed MILK 0  asked BWHEAx3           -> FAILED
-#:
-#: 9 wheat fill at h00 behind the fertilizer sale and 1 at h03; the other 7 fail on CASH, with the
-#: bank flat at $24 from h04 to midnight while the town holds 9,900+ wheat. Stock never binds.
-#: Forcing his orders without the milk is `buy_product 10/17` and `+ sold $524/$3,177` -- re-offering
-#: an order you cannot pay for changes nothing, which is why this is upstream of the wheat row.
-#:
-#: Costs ONE turn and no movement, and `_bank` prefers the quantified `PLACE` here on cost, so the
-#: herd's ration stays in the hand. Deliberately NOT gated on `reaping`, `DELIVER_MIN` or `free`:
-#: those all exist to stop a small load buying a WALK, and there is no walk.
-BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY = True
-
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -784,7 +717,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         reaping = (any(w.harvests() for w in work[i:])
                    
                    and not funding)
-        if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
+        if free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))
             held = collections.Counter()
@@ -861,11 +794,11 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # holding the herd's wheat on a day whose row sells wheat would otherwise bank at every pen.
         # Same shape as `funds` itself in `_solve` -- `any(owed[p] > 0 for p in j.gives)`.
         _earns = any((wanted or {}).get(p, 0) > 0 and q > 0 for p, q in j.gives.items())
-        if BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY and j.funds and pos in depots and _earns:
+        if j.funds and pos in depots and _earns:
             keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
             route.append(_bank(pos, held, keep))
             held = collections.Counter(keep)
-        elif (THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN and j.funds and _earns
+        elif (j.funds and _earns
                 and pos not in depots
                 and all(o == "HARVEST" for o, _i in j.ops)):
             # **The errand.** See `THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN`. Scoped to a job that is
@@ -1374,7 +1307,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # the value of these two stops is the HOUR they finish, not the walk they
                         # cost. It only ever discriminates between feasible slots, so a funding pen
                         # with nowhere else to go is still placed by the same pass.
-                        stacked = (ONE_HAND_PER_FUNDING_PEN and j.funds
+                        stacked = (j.funds
                                    and any(x.funds for x in routes[u]))
                         key = (stacked, got[0] - used[u], u, j.tile, got[1])
                         if best is None or key < best[0]:
@@ -1439,7 +1372,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # turns, and stacking the second funding pen back onto the hand already
                         # standing on the first always does -- which is how the spread was measured
                         # to survive `greedy` and then vanish before the tour was built.
-                        if (ONE_HAND_PER_FUNDING_PEN and j.funds and v != u
+                        if (j.funds and v != u
                                 and any(x.funds for x in routes[v])):
                             continue
                         gain = ((used[u] - got[0]) if v == u
@@ -1586,83 +1519,8 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     return routes, left
 
 
-#: Whether a ripe pen the day's row is WAITING ON offers its HARVEST as a separate job.
-#:
-#: `Job` is one tile and every op that tile wants, atomic to one hand. That is right for ordinary
-#: work and it is what makes the tape's day-8 plan inexpressible for us. He splits a ripe pen across
-#: two hands -- one tends it, another does nothing but harvest and run the milk to the shed:
-#:
-#:     his u0  h03 (4,3) FEED  h04 (4,3) CARE  h05 (4,3) COLLECT_FERT   <- never harvests it
-#:     his u2  h04 HARVEST                      h06 (4,4) PLACE/MILK     <- harvest only, then banks
-#:
-#: Ours bundles them, so the harvest is forced to happen FOURTH:
-#:
-#:     (3,4)  ['FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST']  4t
-#:
-#: Our d8 dawn, seed 11: bank $4, shed WHEAT 1 / FERTILIZER 7, ZERO hands -- all eleven hired during
-#: the day. Ripe cows at (3,4) and (4,4); shed-access tiles are (4,4), (4,5), (5,4), (5,5), so (4,4)
-#: is both a ripe cow and shed ground. Cow A is already banked at h03. Cow B at (3,4) cannot be:
-#: even as job 0 on a hand spawning at the shed at h01, four bundled ops put the harvest at ~h06 and
-#: the deposit at ~h08, against a sale asked at h05.
-#:
-#: **No reordering or route-pinning can beat that**, which is why hardcoding the visit sequence into
-#: `SOLVED_DAYS` changed nothing -- twice. The constraint is INSIDE one job, not between jobs. Split,
-#: the same hand does NORTH, HARVEST, SOUTH, PLACE and lands at h05.
-#:
-#: The tending job keeps `needs`, `at_risk` and therefore `required` (`REQUIRED_OPS` is `("FEED",)`),
-#: so the harvest-only job is neither. Harvesting before feeding is safe: the care bonus is applied
-#: at the day rollover (`kaggriculture.py:808-817`), not at the harvest.
-#:
-#: **SHIPPED FALSE: the split works and the follow-through does not, yet.** With it on, u2 and u4
-#: both HARVEST at h02 -- two hands on the ripe pens at once, which was structurally impossible
-#: before. But u2 then CARRIES its six milk instead of banking them, so the h03 sale we already
-#: had is lost. `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY` cannot help it, and the reason is geometry:
-#:
-#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
-#:     our ripe cows       (3,4) NOT shed ground     (4,4) IS shed ground
-#:
-#: Cow A banks on its own pen because the pen IS the shed. Cow B never can -- it needs a walk to a
-#: shed tile whoever harvests it. The tape has the same geometry (his cows are (4,3) and (4,4)) and
-#: solves it by making the harvest a dedicated ERRAND: HARVEST, walk, PLACE/MILK, nothing else.
-#: So the missing half is a delivery that follows a split harvest off-depot, not the split itself.
-#: Whether a hand that took a SPLIT funding harvest walks the produce straight to the shed.
-#:
-#: The one rule here that is deliberately a WALK. `SPLIT_THE_FUNDING_HARVEST` lets a second hand take
-#: a ripe pen's HARVEST alone, which is what the tape does -- but on its own that LOSES ground,
-#: because the hand then carries the milk: `DELIVER_MIN` exists to stop a small load buying a walk,
-#: `DROP_WHERE_THE_TOUR_ALREADY_STANDS` demands zero detour, and `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`
-#: demands the pen BE shed ground. Measured, seed 11, d8:
-#:
-#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
-#:     our ripe cows       (4,4) IS shed ground     (3,4) is NOT
-#:
-#: Cow A banks on its own pen at h03 for one turn and no walking. Cow B cannot, whoever harvests it.
-#: The tape has the same geometry -- his cows are (4,3) and (4,4) -- and answers it with a dedicated
-#: errand: `h04 HARVEST ... h06 (4,4) PLACE/MILK`, nothing else on that tour.
-#:
-#: The walk IS the point. The milk is the day's working capital: the row buys `WHEAT 17` on a $4 dawn
-#: bank to feed ten animals, and the forced-order run showed the whole afternoon failing on cash with
-#: the town holding 9,900 wheat. Every other rule prices the trip against the LOAD; this one prices
-#: it against the DAY.
-#:
-#: With `SPLIT_THE_FUNDING_HARVEST`, both cows land together at his own hour:
-#:
-#:     h01 u0 HARVEST   h03 u4 HARVEST   h05 u0 DROP + u4 DROP + SELL MILK 12   h06 bank $1,932
-#:
-#: against $13 in every arm before it. Milk alone is NOT the win -- `buy_product` stays 5/17 and
-#: the cash sits, because the wheat is still queued behind the seed at h01. Paired with
-#: `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY` it becomes d8 `buy_product 17/17`, `feed 9/10`,
-#: `care 9/10`, and the season cost falls from -$2,433 to -$299. The two only pay together.
-THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN = True
-
-
-SPLIT_THE_FUNDING_HARVEST = True
-
-
 def split_funding_harvest(jobs, wanted):
     """Ripe pens the row is waiting on, with their HARVEST offered as its own job."""
-    if not SPLIT_THE_FUNDING_HARVEST:
-        return jobs
     want = {p: q for p, q in (wanted or {}).items() if q > 0}
     if not want:
         return jobs

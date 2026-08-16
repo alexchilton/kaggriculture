@@ -33,11 +33,6 @@ import pytest
 DP = importlib.import_module("kagg.search.cover")
 
 
-@pytest.fixture(autouse=True)
-def _flag(monkeypatch):
-    monkeypatch.setattr(DP, "SPLIT_THE_FUNDING_HARVEST", True)
-
-
 def _pen(tile, ripe=True, at_risk=False):
     ops = [("FEED", "WHEAT"), ("CARE", None), ("COLLECT_FERTILIZER", None)]
     gives = {"FERTILIZER": 1}

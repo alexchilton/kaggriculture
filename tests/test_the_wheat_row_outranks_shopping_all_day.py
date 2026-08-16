@@ -38,12 +38,6 @@ import pytest
 SA = importlib.import_module("kagg.search.schedule_agent")
 
 
-@pytest.fixture(autouse=True)
-def _flags(monkeypatch):
-    monkeypatch.setattr(SA, "WHEAT_ROW_OUTRANKS_SHOPPING", True)
-    monkeypatch.setattr(SA, "WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY", True)
-
-
 def _d8_h01():
     """The real h01 order block, in the order the agent emits it."""
     return [["HIRE"], ["HIRE"],

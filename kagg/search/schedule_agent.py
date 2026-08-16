@@ -912,60 +912,6 @@ def _order_sells(orders):
     return out
 
 
-#: Whether the day's WHEAT row is queued ahead of the hires, animals and seeds at hour 0.
-#: See `_wheat_row_first`.
-WHEAT_ROW_OUTRANKS_SHOPPING = True
-
-
-#: Whether the feed row outranks the day's shopping in EVERY turn, not just hour 0.
-#:
-#: `_wheat_row_first`'s own argument has nothing to do with dawn: `_process_market` walks the slots
-#: in order and `_do_buy_product` re-checks the bank per unit (`kaggriculture.py:666-673`), so a
-#: late slot is paid out of whatever the earlier ones left. That holds on every turn of every day.
-#:
-#: Day 8 of the Kawashigi tape is decided at **h01**, and the hour-0 gate meant the block that
-#: mattered was returned untouched. The row asks `WHEAT 17`; we emit
-#:
-#:     h00  SELL FERTILIZER 6, HIRE x9                        -- no wheat order at all
-#:     h01  HIRE, HIRE, BUY_SEED WHEAT 5, BUY_SEED STRAWBERRY 4, BUY_PRODUCT WHEAT 13
-#:
-#: on a $440 bank, with $144 of hires and $450 of seed -- $400 of it STRAWBERRY at $100 a unit --
-#: sitting ahead of the wheat. $594 committed against $440, so ONE wheat clears.
-#:
-#: The tape puts the feed ahead of the seed in both of its spending turns:
-#:
-#:     h00  SELL FERTILIZER 6, HIRE x5, BUY_PRODUCT WHEAT 9, BUY_SEED WHEAT 3
-#:     h05  SELL MILK 12, BUY_ANIMAL SHEEP 1, HIRE, BUY_PRODUCT WHEAT 2, BUY_SEED STRAWBERRY 4
-#:
-#: d8 totals `buy_product 5/17` and it decomposes exactly: 0 at h00 (nothing asked), 1 at h01
-#: (starved by the seed), four singles at h03-h06 -- four because `state["ordered"]` credited all
-#: thirteen QUEUED at h01, leaving `owed = 17 - 13 = 4`. Then the asking stops while money arrives
-#: all afternoon. This flag addresses the middle term only.
-#:
-#: Changes no quantity and no bank estimate -- only which slot an already-emitted order sits in.
-#:
-#: **SHIPPED FALSE: it fixes d8's wheat row completely and pays for it with two hands.**
-#:
-#:     d8            on-pen     +all-day slot
-#:     buy_product     5/17         17/17     <- exact, first time
-#:     feed            6/10          8/10
-#:     care            6/10          8/10
-#:     hands          11/11          9/11     <- the price
-#:     exact cells   467/697       452/697   (-15)
-#:     d16 money      31,816        29,383   (-2,433)
-#:
-#: With the wheat ahead of the hires, the wheat takes the money and two HIREs fail silently
-#: (`_do_hire`, `kaggriculture.py:691`). Two hands fewer for the rest of the season, and weeds
-#: appear on d8, d9, d11, d15 and d16 because nothing is left to water with.
-#:
-#: The tape gets BOTH -- 11 hands and 17 wheat -- by SPLITTING the hires: 5 at h00 alongside
-#: `BUY_PRODUCT WHEAT 9`, both funded by the `SELL FERTILIZER 6` in an earlier slot of that same
-#: turn, then 5 at h01 and 1 at h05. We hire NINE at h00 and leave the wheat to h01, so whichever
-#: of the two is put first starves the other. The slot order is not the remaining defect; the
-#: hire distribution is. Turn this on again once the hires are spread.
-WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY = True
-
-
 def _wheat_row_first(orders, hour):
     """Hour 0's wheat buy, moved in front of HIRE / BUY_ANIMAL / BUY_SEED. SELLs stay put.
 
@@ -988,12 +934,8 @@ def _wheat_row_first(orders, hour):
     `mult * fib(hires_today)` on a per-DAY counter, so the crew costs the same wherever in the turn
     it sits, and a hire in slot 5 of hour 0 still works 23 turns.
     """
-    if not WHEAT_ROW_OUTRANKS_SHOPPING:
-        return orders
     # See `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY`: the slot argument above is true on
     # every turn, and d8 is decided at h01.
-    if hour != 0 and not WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY:
-        return orders
     first_spend = next((i for i, o in enumerate(orders)
                         if o and o[0] in ("HIRE", "BUY_ANIMAL", "BUY_SEED")), None)
     if first_spend is None:

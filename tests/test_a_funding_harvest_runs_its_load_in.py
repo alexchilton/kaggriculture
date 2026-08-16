@@ -35,12 +35,6 @@ DP = importlib.import_module("kagg.search.cover")
 SHED = [(4, 4), (4, 5), (5, 4), (5, 5)]
 
 
-@pytest.fixture(autouse=True)
-def _flags(monkeypatch):
-    monkeypatch.setattr(DP, "THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN", True)
-    monkeypatch.setattr(DP, "BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY", True)
-
-
 def _harvest(tile):
     """A split funding harvest: the HARVEST alone, carrying the row's produce."""
     j = DP.Job(tile, [("HARVEST", None)], gives={"MILK": 6}, products=frozenset({"MILK"}))

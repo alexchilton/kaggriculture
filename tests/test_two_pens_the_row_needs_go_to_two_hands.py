@@ -36,11 +36,6 @@ DP = importlib.import_module("kagg.search.cover")
 SHED = [(4, 4)]
 
 
-@pytest.fixture(autouse=True)
-def _flag_on(monkeypatch):
-    monkeypatch.setattr(DP, "ONE_HAND_PER_FUNDING_PEN", True)
-
-
 def _pen(tile, ripe=False):
     """A pen. A ripe one yields the product the row is waiting for, so it FUNDS the day."""
     ops = [("FEED", "WHEAT"), ("CARE", None), ("COLLECT_FERTILIZER", None)]
