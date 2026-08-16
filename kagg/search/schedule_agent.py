@@ -1668,7 +1668,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # here is the index they will occupy in `farm["hands"]` -- so the route built for phantom k is
     # already waiting for the real unit k when it appears an hour later.
     plan_units = list(units) + [tuple(p) for p in arriving]
-    budget = [max(0, TPD - hour - 0)] * len(plan_units)
+    budget = [max(0, TPD - hour)] * len(plan_units)
     # A hand bought in THIS turn's market phase cannot act in this turn's unit phase -- the unit
     # phase already ran. It works from `hour + 1`, so it is one turn poorer than everyone else.
     for k in range(len(units), len(plan_units)):
