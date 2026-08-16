@@ -1252,7 +1252,7 @@ def _emit(op, item):
     return [op]
 
 
-def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
+def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0):
     """The ops still worth doing at `tile`, **re-derived from the live board every turn**.
 
     This is the whole trick to committing to a tour without going back to predicting state. The route
@@ -1269,6 +1269,19 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         if cell is not None:
             return []
         if op == "PLANT":
+            # **A plant needs a turn left to water it, or it is a weed by dawn.** A new plant
+            # starts at `consecutive_unwatered = 1` (`reference:222`, "planting day counts as
+            # unwatered"), the dusk rollover adds one (`:781`) and `>= 2` turns the tile to WEED
+            # (`:783`). WATER is a separate turn and needs `kind == "PLANT"`, so it can only come
+            # AFTER the plant and only on the same day -- there is no watering the ground first.
+            #
+            # On the last turn of the day that water cannot exist, for any unit, on any route. So
+            # the plant is not a gamble that failed, it is a seed spent to create a weed, and the
+            # ground is then blocked for the season because PLANT needs EMPTY. Measured seed 11
+            # melon arm d6: `u4 PLANT/MELON` at h23 on (8,4) with 8 seeds in store, and the day
+            # ends `crop_MELON 12 weed 2` against the tape's `14` and `1`. One action, two cells.
+            if hour >= TPD - 1:
+                return []
             return [("PLANT", item)] if seeds.get(item, 0) > 0 else []
         return [("BUILD", item)]
     if not isinstance(cell, dict):
@@ -2150,7 +2163,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 act = [m]
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]
-            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price)
+            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price,
+                            hour=hour)
             if not ops:
                 # **Go back for the feed rather than abandon the animal you just placed.**
                 # `SERVE_THE_ANIMAL_IT_PLACES` hangs the FEED and CARE off the placement node, and
