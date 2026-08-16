@@ -50,9 +50,8 @@ He buys 8 melon seed after d0 -- 3 on d5, 5 on d6 -- and plants them on d6 and d
 becomes 20. The strawberry branch buys none. Everything from d9 on differs only as downstream
 drift: different money, therefore different sells. It is not a second decision.
 
-`SPLIT_DAY` is 5 rather than 3 because d3 and d4 carry no melon in either season; the first row that
-would spend on melon is d5. Installing from 5 keeps d3-d4 byte-identical and makes the change
-attributable on the per-day grid.
+`SPLIT_DAY` is 3, the day the decision is read. It was 5 -- the first row either season spends
+melon money on -- which left A3's `d3 seeds {CARROT: 1}` in place against B3's `{}`.
 
 ## Embedded, not read from disk
 
@@ -77,8 +76,15 @@ DECIDE_BY_DAY = 3
 #: Separates his own two populations with zero errors across 67 games.
 OPPONENT_MELON = 9
 
-#: The first day whose row is replaced. d3 and d4 are identical between the two seasons.
-SPLIT_DAY = 5
+#: The first day whose row is replaced.
+#:
+#: This was 5, on the argument that d3 and d4 carry no melon in either season. That is true of
+#: melon and false of the row: A3's d3 is `seeds {CARROT: 1}` and B3's is `{}`, so installing from
+#: 5 left a carrot seed the strawberry season does not buy. It showed as `BUY_SEED 1/0` at d3 and
+#: as a bank that diverged from his three days before any field action did -- `money 9/28` at d3,
+#: still 9/19 at d7. Dropping it is worth nothing on its own (measured +$20 in the melon arm over
+#: a full season, every op row identical), but the row has to be his or the comparison is not one.
+SPLIT_DAY = 3
 
 #: Where the rows came from, for anyone re-deriving the blob.
 SOURCE_REPLAY = "data/seed_scripts/kawashigi/92466371.json"
@@ -168,27 +174,33 @@ B3_ROWS_B64 = (
     "TUlMSyI6MjQsIlNUUkFXQkVSUlkiOjgsIldIRUFUIjoyMiwiV09PTCI6OH19LCIyOSI6eyJhbmltYWxzX2JvdWdodCI6e30s"
     "ImJ1aWxkcyI6MCwiYnV5cyI6e30sImNhcmVzIjowLCJmZWVkcyI6MCwiaGFuZHMiOjgsImhpcmVzIjo4LCJsYW5kIjowLCJt"
     "b25leV9kYXduIjoxMzk1MDguMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbXSwic2VlZHMiOnt9LCJzZWxscyI6eyJDQVJST1Qi"
-    "OjUsIkZFUlRJTElaRVIiOjksIk1JTEsiOjMwLCJTVFJBV0JFUlJZIjoyLCJXSEVBVCI6MTAyLCJXT09MIjo4fX0sIjUiOnsi"
-    "YW5pbWFsc19ib3VnaHQiOnsiQ09XIjoxfSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjoyfSwiY2FyZXMiOjYsImZlZWRz"
-    "Ijo2LCJoYW5kcyI6NCwiaGlyZXMiOjQsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjI1My4wLCJwbGFjZXMiOlsiQ09XIl0sInBs"
-    "YW50cyI6WyJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRzIjp7IlNU"
-    "UkFXQkVSUlkiOjR9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo1LCJXSEVBVCI6MTh9fSwiNiI6eyJhbmltYWxzX2JvdWdodCI6"
-    "e30sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6Nn0sImNhcmVzIjo2LCJmZWVkcyI6NiwiaGFuZHMiOjQsImhpcmVzIjo0"
-    "LCJsYW5kIjoxLCJtb25leV9kYXduIjo0NDYuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIlNUUkFXQkVSUlkiLCJTVFJBV0JF"
-    "UlJZIl0sInNlZWRzIjp7IkNBUlJPVCI6OCwiU1RSQVdCRVJSWSI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjUsIldPT0wi"
-    "OjEyfX0sIjciOnsiYW5pbWFsc19ib3VnaHQiOnsiQ09XIjoyLCJTSEVFUCI6Mn0sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVB"
-    "VCI6M30sImNhcmVzIjo5LCJmZWVkcyI6OSwiaGFuZHMiOjgsImhpcmVzIjo4LCJsYW5kIjowLCJtb25leV9kYXduIjoxNTQu"
-    "MCwicGxhY2VzIjpbIlNIRUVQIiwiQ09XIiwiQ09XIl0sInBsYW50cyI6WyJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSJdLCJz"
-    "ZWVkcyI6eyJTVFJBV0JFUlJZIjoxLCJXSEVBVCI6NH0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjZ9fSwiOCI6eyJhbmltYWxz"
-    "X2JvdWdodCI6e30sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6MTd9LCJjYXJlcyI6MTAsImZlZWRzIjoxMCwiaGFuZHMi"
-    "OjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjEzNi4wLCJwbGFjZXMiOlsiU0hFRVAiXSwicGxhbnRzIjpb"
-    "IldIRUFUIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiV0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVS"
-    "UlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNU"
-    "UkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRzIjp7IlNUUkFXQkVSUlkiOjExLCJXSEVBVCI6M30sInNlbGxzIjp7IkZF"
-    "UlRJTElaRVIiOjYsIk1JTEsiOjEyfX0sIjkiOnsiYW5pbWFsc19ib3VnaHQiOnsiQ09XIjoyfSwiYnVpbGRzIjowLCJidXlz"
-    "Ijp7IldIRUFUIjoxMn0sImNhcmVzIjoxMSwiZmVlZHMiOjExLCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9u"
-    "ZXlfZGF3biI6MTE5NC4wLCJwbGFjZXMiOlsiQ09XIiwiQ09XIl0sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIl0sInNlZWRz"
-    "Ijp7IldIRUFUIjoyfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6OSwiV0hFQVQiOjgsIldPT0wiOjh9fX0="
+    "OjUsIkZFUlRJTElaRVIiOjksIk1JTEsiOjMwLCJTVFJBV0JFUlJZIjoyLCJXSEVBVCI6MTAyLCJXT09MIjo4fX0sIjMiOnsi"
+    "YW5pbWFsc19ib3VnaHQiOnsiQ09XIjoxfSwiYnVpbGRzIjowLCJidXlzIjp7fSwiY2FyZXMiOjQsImZlZWRzIjo0LCJoYW5k"
+    "cyI6NSwiaGlyZXMiOjUsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjM4LjAsInBsYWNlcyI6WyJDT1ciXSwicGxhbnRzIjpbXSwi"
+    "c2VlZHMiOnt9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo0fX0sIjQiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjEs"
+    "ImJ1eXMiOnsiV0hFQVQiOjZ9LCJjYXJlcyI6NSwiZmVlZHMiOjUsImhhbmRzIjo1LCJoaXJlcyI6NSwibGFuZCI6MCwibW9u"
+    "ZXlfZGF3biI6MTQyLjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsi"
+    "V0hFQVQiOjd9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo0fX0sIjUiOnsiYW5pbWFsc19ib3VnaHQiOnsiQ09XIjoxfSwiYnVp"
+    "bGRzIjowLCJidXlzIjp7IldIRUFUIjoyfSwiY2FyZXMiOjYsImZlZWRzIjo2LCJoYW5kcyI6NCwiaGlyZXMiOjQsImxhbmQi"
+    "OjAsIm1vbmV5X2Rhd24iOjI1My4wLCJwbGFjZXMiOlsiQ09XIl0sInBsYW50cyI6WyJTVFJBV0JFUlJZIiwiU1RSQVdCRVJS"
+    "WSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRzIjp7IlNUUkFXQkVSUlkiOjR9LCJzZWxscyI6eyJGRVJUSUxJ"
+    "WkVSIjo1LCJXSEVBVCI6MTh9fSwiNiI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6"
+    "Nn0sImNhcmVzIjo2LCJmZWVkcyI6NiwiaGFuZHMiOjQsImhpcmVzIjo0LCJsYW5kIjoxLCJtb25leV9kYXduIjo0NDYuMCwi"
+    "cGxhY2VzIjpbXSwicGxhbnRzIjpbIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRzIjp7IkNBUlJPVCI6OCwiU1RS"
+    "QVdCRVJSWSI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjUsIldPT0wiOjEyfX0sIjciOnsiYW5pbWFsc19ib3VnaHQiOnsi"
+    "Q09XIjoyLCJTSEVFUCI6Mn0sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6M30sImNhcmVzIjo5LCJmZWVkcyI6OSwiaGFu"
+    "ZHMiOjgsImhpcmVzIjo4LCJsYW5kIjowLCJtb25leV9kYXduIjoxNTQuMCwicGxhY2VzIjpbIlNIRUVQIiwiQ09XIiwiQ09X"
+    "Il0sInBsYW50cyI6WyJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSJdLCJzZWVkcyI6eyJTVFJBV0JFUlJZIjoxLCJXSEVBVCI6"
+    "NH0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjZ9fSwiOCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MiwiYnV5cyI6"
+    "eyJXSEVBVCI6MTd9LCJjYXJlcyI6MTAsImZlZWRzIjoxMCwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5"
+    "X2Rhd24iOjEzNi4wLCJwbGFjZXMiOlsiU0hFRVAiXSwicGxhbnRzIjpbIldIRUFUIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwi"
+    "V0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIs"
+    "IlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRz"
+    "Ijp7IlNUUkFXQkVSUlkiOjExLCJXSEVBVCI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjYsIk1JTEsiOjEyfX0sIjkiOnsi"
+    "YW5pbWFsc19ib3VnaHQiOnsiQ09XIjoyfSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjoxMn0sImNhcmVzIjoxMSwiZmVl"
+    "ZHMiOjExLCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlfZGF3biI6MTE5NC4wLCJwbGFjZXMiOlsiQ09X"
+    "IiwiQ09XIl0sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjoyfSwic2VsbHMiOnsiRkVSVElM"
+    "SVpFUiI6OSwiV0hFQVQiOjgsIldPT0wiOjh9fX0="
 )
 
 
