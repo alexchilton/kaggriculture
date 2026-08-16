@@ -1156,8 +1156,6 @@ STEAL_FROM_DAY_MARGIN = 4
 #: wide enough to cover a late harvest.
 SELL_CARRY_DAYS = 3
 
-#: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
-SHED_CAPACITY = 100
 
 LAND_PRICES = R.LAND_PRICES
 
@@ -3220,108 +3218,11 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
         n += 1
     return n
 
-#: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
-SHED_CAPACITY = 100
 
-
-
-
-#: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
-#: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
-#: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
-#:
-#: Measured on Seb's tape, seed 11, by `scripts/when_the_crew_arrives.py`. He issues every HIRE at
-#: hour 0; we dribble two an hour across hours 0-3 and append them LAST, after SELL, LAND, ANIMAL,
-#: SEED and FEED have already spent the bank. Two costs, and they are independent:
-#:
-#:     ordering   day 6 we open on $711, want 8 hands, and go (0,$711) (0,$711) (1,$10) (1,$10)
-#:                (2,$5) (2,$5) (3,$0) (3,$0) -- the bank is gone by hour 1, spent on seed and feed
-#:                between our second hire and our third, so six of eight HIREs fail and the day is
-#:                worked by five hands. `_hire_cost` is `mult * fib(hires_today)` and `hires_today`
-#:                is a per-DAY counter, so the crew costs the same whenever it is bought. Dribbling
-#:                saves nothing and lets a later order empty the bank first.
-#:     the cap    two-a-turn is a proxy for a real trap: with the farmer on `(4,4)` the third hire of
-#:                a turn lands on `(5,5)`, whose only neighbours `(4,5)` and `(5,4)` are LOCKED while
-#:                we own NW alone, so it cannot move all day. But `LAND_ORDER = ["NE", "SW", "SE"]`
-#:                unlocks `(5,4)` -- that hand's escape square -- with the FIRST parcel, and the cap
-#:                then costs 12, 73, 12, 35 and 26 hand-turns on days 5-8 and 10 for nothing.
-#:
-#: A hand hired at hour 0 works 23 turns; the same hand at hour 4 works 19. Nothing downstream
-#: recovers a turn that was never available, which is why this sits ahead of every routing question.
-HIRE_FIRST = True
-
-#: Ops whose VALUE decays with the hour they are served, so the work appearing is itself a reason to
-#: replan. Empty disables the trigger and restores the old crew-change-or-idle rule exactly.
-#:
-#: PLACE is the whole list because what follows it is time-critical: an animal must be fed and cared
-#: for on the day it lands, and a FEED costs a shed round trip of about eight turns against a budget
-#: of `24 - hour - 1`. Placed at hour 18 it simply cannot be served. Nothing else on the board works
-#: that way -- a melon watered at hour 3 or hour 20 yields the same melon.
-#
-# **Re-enabled 2026-08-07, and the reason it was off has expired.** It measured NET NEGATIVE once
-# hiring was fixed -- 42 cells against 39 -- back when `build_nodes` offered a full-prize PLACE at
-# every empty pen regardless of how many animals were in the shed. An urgent replan on a phantom node
-# is an urgent replan onto nothing, so of course forcing more of them lost. `RT.SUPPLY_LEDGER` now
-# retires the duplicates the moment one unit claims the animal, so the trigger fires on real work.
-#
-# Measured on Seb's tape, seed 11, day 4: the cow reaches the shed at hour 2 and `plan_routes` is not
-# called again until a unit falls idle at hour 10, by which point the budget is 13 and the far pen at
-# (0,3) plus the walk home no longer fits. It sits in the shed to hour 23. The tape picks it up at
-# hour 2 and places at hour 15.
-URGENT_OPS = ()
-
-#: Whether an animal purchase may take the slot of the day's last HIRE when the turn's ten market
-#: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
-ANIMAL_OVER_HIRE = True
 
 #: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
 #: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
 SEED_BEFORE_LIVESTOCK = True
-
-#: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
-#: already is. See the note above the seed bill for the day-6 measurement.
-SELLS_FUND_THE_TURN = True
-
-
-#: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
-#: `PEN_NEAREST_DEPOT_FROM_DAY` needed, and for the same reason: the cost and the benefit are on
-#: different days. Re-swept 2026-08-07 against a 127-cell baseline, ungated:
-#:
-#:              d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF       7  6  4  7  7  7 11 15 13 12  18  20   127
-#:     margin 4  7  7  4  7  8  8 11  8 11 14  19  19   123
-#:
-#: Lowest total and DISQUALIFIED in order -- d1 6->7, d4 7->8, d5 7->8. But d7 15 -> 8 is the biggest
-#: single-day gain anything has produced, and d8 goes 13 -> 11, so stealing is unlocking something
-#: real once the crew is large. Early on a claim is worth honouring: the crew is small, every unit is
-#: committed, and taking a stop off one just moves the work.
-#:
-#: Gated, swept on the day threshold at margin 4:
-#:
-#:               d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF        7  6  4  7  7  7 11 15 13 12  18  20   127
-#:     from d6    7  6  4  7  7  7 11  8 11 14  19  19   120   <- taken
-#:     from d5    7  6  4  7  7  8 11  8 11 14  19  19   121   d5 regresses
-#:     from d4    7  6  4  7  8  8 11  8 11 14  19  19   122   d4 regresses
-#:     from d7    7  6  4  7  7  7 11 17 14 15  23  17   135
-#:     from d8    7  6  4  7  7  7 11 15 14 16  18  17   129
-#:
-#: d0-d6 byte-identical and d7 15 -> 8, the largest single-day gain measured in this project. It
-#: gives back 2 on d9 and 1 on d10; under an in-order metric the earliest day touched is what counts
-#: and that day improves by seven. Gating LATER than 6 is worse, not better -- d7 and d8 both make
-#: d7 itself worse -- so this is not "steal late", it is "steal once the crew outgrows the work".
-STEAL_FROM_DAY = 6
-STEAL_FROM_DAY_MARGIN = 4
-
-#: How many days an uncovered sell row stays offerable. **The backlog must expire.** Carrying it
-#: forever is not "cumulative", it is unbounded: on the old leader's plan the schedule asks to sell
-#: more than we ever produce, so the uncovered remainder grew every day and the offer pinned at the
-#: season's largest row on every turn from about day 19 -- byte-identical to the runaway `asked - sold`
-#: ledger it was meant to replace, and money -19,407 -> -30,262 against that tape. The measured bug is
-#: a ONE day slip (Seb's melons ripen a day after his `MELON: 18` row), so the window only has to be
-#: wide enough to cover a late harvest.
-SELL_CARRY_DAYS = 3
-
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 #:
