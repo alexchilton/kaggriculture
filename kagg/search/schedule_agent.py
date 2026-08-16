@@ -44,72 +44,6 @@ from . import router as RT
 
 
 
-#: Also treat a tile ONE dry day from becoming a WEED as at-risk, the way a pen one day from losing
-#: its animal already is.
-#:
-#: It is the same rule twice. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:786`)
-#: and `consecutive_unwatered >= 2` turns the tile into a WEED (line 753); in both cases missing ONE
-#: day is free and missing the second is total. Measured on seed 11 with weeds switched OFF -- so
-#: every WEED on the board is a crop we let die of thirst, not a spawn -- ours finished with 7
-#: against the tape's 0.
-#:
-#: **This is NOT the arm that measured -$2,804.** That one promoted every thirsty tile into the same
-#: mandatory pass as fourteen pens, and the note on it says exactly why it failed: "a pass holding
-#: fourteen pens AND every thirsty tile cannot triage". Here the animals keep their own pass and run
-#: first; thirsty tiles get a second one, ahead of ordinary work but behind every pen.
-#:
-#: **ON. The season-total A/B said otherwise and it was the wrong instrument -- see below.**
-#:
-#: Days 16-18 in isolation, seed 11, with WHEAT and FERTILIZER stocked so supply cannot be the
-#: constraint (`data/logs/d16_18_water_ab.log`). This asks only what DIED:
-#:
-#:     arm                     animals lost    tiles WEEDED
-#:     WATER_AT_RISK off                  0               4
-#:     WATER_AT_RISK on                   0               2
-#:     Seb, same three days               0               1
-#:
-#: Day 16 alone goes 3 weeded to 0. And the capacity was never the issue: that day had 17 tiles that
-#: HAD to be watered, we landed 26 waters, and three of the seventeen still died. We had the turns
-#: and watered the wrong tiles, which is exactly what this flag orders.
-#:
-#: The earlier season-total 2x2 below reported the opposite. It is kept because the numbers are real,
-#: but it cannot answer this question: a 30-day WEED count folds in every tile the SCHEDULE lets get
-#: thirsty in the first place, and those swamp the handful this ordering decides. A three-day window
-#: with supply held constant isolates the ordering; a season total measures the schedule.
-#:
-#: **The residual gap to the tape is upstream of here and is a cadence.** Arriving at day 16 he has
-#: EIGHT tiles that must be watered; we have seventeen. He waters on alternate days and never builds
-#: the debt, so he is never rescuing. He is not better at rescuing -- he never gets into the position.
-#:
-#: SUPERSEDED MEASUREMENT, kept so it is not re-run: six seeds, seat 0, weeds off, 2x2 against
-#: `FEED_DAYS` (`data/logs/feed_x_risk.log`) -- WEED tiles at season end:
-#:
-#:     FEED_DAYS   water at-risk    mean $    escapes    WEEDS
-#:             2            off    96,055          3       47
-#:             2             on    96,302          4       58
-#:             4            off    94,986          0       53
-#:             4             on    98,382          0       58
-#:
-#: More weeds on BOTH rows. The money edge on the last row is ~3% on six samples, inside this
-#: project's ~15% seed variance, and does not get to override a count moving the wrong way.
-#:
-#: **And the mechanism explains it.** `router.crop_ops` offers survival water ONLY at
-#: `consecutive_unwatered >= 1`, so this arm can only ever RESCUE and never PREVENT -- and a rescue
-#: competes for turns at the worst possible moment, displacing the ordinary waters that would have
-#: stopped the next tile getting thirsty at all. The tape does not rescue because it never needs to:
-#: it waters on a fixed alternate-day cadence (d0 17, d1 0, d2 17, d3 14) that holds every tile at 0
-#: or 1 and takes zero weeds through day 7.
-#:
-#: So the real REMAINING fix for watering is a CADENCE in the schedule, upstream of this file. This
-#: flag closes the half that is reachable from the day planner.
-WATER_AT_RISK = True
-
-#: Whether the final turn of a day is budgeted as workable. See the note in `_router_acts`.
-#: Off restores `TPD - hour - 1`, which silently discarded one turn per hand per day -- 13 hands over
-#: 29 days is ~377 unit-turns a season, and every tour that ended on a tile still holding produce lost
-#: its HARVEST to it.
-LAST_TURN_IS_WORKABLE = True
-
 #: Turns remaining at or below which the walk back to the shed stops being charged. See `_solve`.
 #:
 #: **99 as of 2026-08-11 -- i.e. the closing trip is never charged.** The tape makes 10 DROPs across
@@ -206,7 +140,7 @@ def _at_risk_tiles(tiles, day=None):
                 continue
             if cell.get("animal") and cell.get("consecutive_unfed", 0) >= 1:
                 out.add((x, y))
-            elif (WATER_AT_RISK and cell.get("kind") == "PLANT"
+            elif (cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
                 out.add((x, y))
             elif banking and int(cell.get("yield_units", 0) or 0) > 0:
@@ -314,22 +248,6 @@ PLAN_TODAYS_PURCHASES = True
 #: already ordered, instead of discarding the draw. See the block in the tour walker.
 WAIT_FOR_THE_MORNING_DELIVERY = True
 
-#: Whether a draw the shed could not fill is re-attempted at the tour's NEXT shed stop, instead of
-#: being discarded at the stop that came up short.
-#:
-#: This is the third answer to the same problem and the only one that is not a trade. The first --
-#: delete the want -- loses the job. The second, standing at the shed until the goods land, was
-#: measured twice on 2026-08-13 and lost the d6 land parcel both times; the block in the tour walker
-#: records both arms. This one neither waits nor gives up: the hand walks on and asks again when its
-#: route puts it back at the shed anyway, which costs the one PICKUP turn and no travel at all.
-#:
-#: It is what the tape does. Day 1 of kawashigi, seed 11: four pens against a dawn shed of three
-#: wheat, so he feeds three, banks and re-buys at h18, draws again at h19 and feeds the fourth at h21.
-#: We drew three at h00, deleted the fourth want at h01, and reached the last pen at h20 with an empty
-#: hand -- `COLLECT_FERTILIZER` alone, no FEED, and no CARE either, since CARE is only legal on a pen
-#: that has been fed.
-CARRY_THE_UNFILLED_DRAW_FORWARD = True
-
 #: Whether a draw for an ANIMAL the row buys today survives an empty shed at any hour, by moving
 #: itself -- and the placement it feeds -- one stop further down the tour.
 #:
@@ -355,40 +273,10 @@ THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
 
 HARVEST_WHAT_YOU_STAND_ON = True
 
-#: **A passer-by does not demolish a crop that is still growing.**
-#:
-#: `HARVEST_WHAT_YOU_STAND_ON` is deliberately harvest-only -- "watering a tile someone else is
-#: routed to merely moves the turn around". True every day but one. On a one-shot crop's `max_day`
-#: the water is not a turn moved around, it is a UNIT: `crop_ops` offers WATER while
-#: `in_window = (max_day + 1) // 2 <= age <= max_day`, inclusive at the top. So a hand crossing the
-#: tile takes a harvest off a crop with a unit still coming, and the routed hand that was going to
-#: water it arrives at bare ground.
-#:
-#: kawashigi, seed 11, d4 -- wheat's max_day, sown d0, all seven tiles at 3 units at dawn. Five are
-#: routed and go WATER-then-HARVEST for 4 apiece; (3,2) at h06 and (1,4) at h14 are taken underfoot
-#: and bank 3. 26 against the tape's 28, whose earliest harvest is h08, after its watering round.
-#: The gap never closes -- the wheat ledger holds it at 2 through d5 and d6, and d7 opens holding 0
-#: against his 1, which is `feed 8/9`.
-#:
-#: The test is `any(o == "WATER" ...)` and not a day comparison, because that is exactly the
-#: question: `crop_ops` offering a water on this tile today IS "it can still grow", for every crop
-#: and every window, without this rule needing its own copy of the yield arithmetic.
-#:
-#: **This is not the withheld harvest.** Gating `_one_shot_is_finished` on `watered_today` banks the
-#: same 28 and costs $19,595 -- a deferred harvest never clears its tile, never replants, and the
-#: herd starves (d8 animals 9 -> 0). See `docs/the_last_growing_days_water_2026-08-14.md`. Here the
-#: HARVEST stays legal the instant it is legal; only the passer-by stands down, leaving the tile to
-#: the routed hand that already emits WATER then HARVEST back to back.
-UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW = True
-
 #: Whether a hand standing beside an animal it just placed, with no wheat in hand, walks back to the
 #: shed for one and returns. See the block in the tour walker for the trace and for what the tape
 #: does. OFF drops the stop, which is what leaves a first-day animal unfed.
 FETCH_THE_FEED_AND_RETURN = True
-
-#: Whether a hand crossing a tile that holds a hungry animal feeds it, out of wheat it is carrying
-#: above what the rest of its own route needs. See the block in the tour walker.
-FEED_WHAT_YOU_STAND_ON = True
 
 #: Whether a hand crossing a pen it has already fed today also CAREs it.
 #:
@@ -489,12 +377,6 @@ NEVER_SELL_TODAYS_RATION = True
 #: against the larger. Both legs pay the spread, and no reserve arithmetic can be right and do that
 #: at the same time. `tests/test_we_never_sell_and_buy_the_same_good_in_one_turn.py`.
 NET_THE_TWO_LEGS = True
-
-#: Whether the dusk top-up counts wheat still in hands. It is swept into the shed at the rollover
-#: (`kaggriculture.py:812`), so at dusk it is wheat we own -- but only if the hand gets home, which
-#: is why this is re-measured alongside `WALK_THE_LOAD_HOME` rather than trusted from before it.
-TOPUP_COUNTS_HANDS = True
-
 
 def _arrivals(units, n):
     """Where the day's `n` hires will land, in the order `farm["hands"]` will hold them.
@@ -629,11 +511,6 @@ def _hires_this_turn(state, row, day, hour, money, shed=None, prices=None):
     return n
 
 
-#: Whether the dawn plan is told about a parcel this turn's market phase is CERTAIN to buy.
-#: Off restores the pre-2026-08-11 behaviour, where the day the board grows by half is planned
-#: against the board it had before.
-PLAN_THE_LAND_THAT_ARRIVES = True
-
 #: Whether a hire that would land walled-in is held back on a day that buys the parcel unlocking it.
 #: See the hire block. OFF restores hiring the whole `hands` row at dawn regardless.
 HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS = True
@@ -700,7 +577,7 @@ def _land_this_turn(sched, day, hour, unlocked, money, n_hires, prices=None):
     case is deliberately NOT predicted here. On the Victor schedule that is d6 -- $432 at dawn
     against a $1,000 parcel -- and it stays unplanned, which is the conservative direction.
     """
-    if not (PLAN_THE_LAND_THAT_ARRIVES and hour == 0):
+    if hour != 0:
         return None
     owned = len(unlocked) - 1
     if owned < 0 or owned >= len(LAND_PRICES):
@@ -1006,11 +883,6 @@ DUSK_FROM_DAY = 2
 #: one or two units at a time turns every such moment into a 1-turn DROP.
 MIN_OPPORTUNISTIC_DROP = 4
 
-#: Whether the opportunistic mid-tour DROP below runs at all. A flag rather than an edit because it
-#: was measured on final bank (-$8,292 over twelve seeds) and re-applied here without being measured
-#: again on the day-by-day trace -- so it must be switchable to be attributable.
-OPPORTUNISTIC_DROP = True
-
 #: Whether a unit standing at a depot delivers a load containing product today's SELL row still owes,
 #: ignoring the `own_route_needs_it` and `MIN_OPPORTUNISTIC_DROP` gates. A flag because the broad
 #: version of this ("drop any surplus at any shed visit") measured -$15,272 over twelve seeds, and the
@@ -1067,9 +939,7 @@ DELIVER_FERRY_MARGIN = 3
 
 def _trace_drop(sink, act, st, inv, shed, carried, tiles):
     """Name the first gate that refuses this drop. Pure observation; changes nothing."""
-    if not OPPORTUNISTIC_DROP:
-        gate = "flag off"
-    elif act[0] not in STEP:
+    if act[0] not in STEP:
         gate = f"not a STEP ({act[0]})"
     else:
         future_needs = collections.Counter()
@@ -1162,53 +1032,8 @@ PEN_NEAREST_DEPOT_FROM_DAY = 11
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
-#: Whether an order that does not fit the turn is UN-COUNTED, so it is retried, instead of being
-#: silently deleted while its bookkeeping stands.
-#:
-#: We appended freely and truncated at the end, so from day 11 every turn built 13-15 orders:
-#:
-#:     d11  n=14  {HIRE: 12, SELL: 2}      d13  n=15  {HIRE: 12, SELL: 3}
-#:     d12  n=14  {HIRE: 12, SELL: 2}      d14  n=13  {HIRE: 12, SELL: 1}
-#:
-#: Ten survived. The 2-5 lost HIREs still incremented `state["hired"]`, and every BUY_ANIMAL -- which
-#: the animal block appends LAST -- was deleted outright while `state["bought"]` and the bank were
-#: both charged for it. Both counters then read as satisfied, so neither was ever retried. The
-#: animal block's own comment is careful that "a failed order does not increment it (the `money >=`
-#: test guards that)"; truncation is a second way to fail that the guard cannot see.
-#:
-#: Measured on Seb's tape, seed 11: the schedule buys nine SHEEP across days 9-14 and we sent the env
-#: ZERO, herd stuck at the 2 we started with while nine pens stood empty and wheat we would have
-#: converted to wool piled to 63 units against his flat 19. Hires ran 2-6 short of his from day 10,
-#: which is the 23%-smaller crew and the late-season idle.
-#:
-#: HIRE is what spills, because deferring one inside a day is free -- `hires_today` is a per-DAY
-#: fibonacci counter, so 5+1+1 costs exactly the $33 that 7-at-once costs (measured, day 3). A
-#: deferred PLACE loses the day's feed and care with it, so the animal keeps the slot.
-FIT_ORDER_SLOTS = True
-
-
-#: Whether the turn's SELLs are ranked biggest-first among themselves before they are sent.
-#:
-#: `_process_market` walks slot `i` across BOTH players, so a sale in slot 1 trades only after every
-#: slot-0 sale has walked the book down -- the opponent's included. Which of our own sells goes first
-#: is therefore priced whenever the opponent is selling the same product, and we were emitting them
-#: in product-loop order, which is arbitrary with respect to size.
-#:
-#: Measured on Seb's tape, seed 11, day 5 hour 0 -- identical goods, identical eight hires:
-#:
-#:     ours  [SELL FERTILIZER 2, SELL WHEAT 17, 8x HIRE]   316 -> 925   (+663 net of $54 of hires)
-#:     tape  [SELL WHEAT 17, SELL FERTILIZER 2, 8x HIRE]   320 -> 965   (+699)
-#:
-#: $36 for putting a 2-unit sale ahead of a 17-unit one, and that is the entire day-6 dawn gap.
-#: Ranking is by `n * BASE_PRICE`, not by the live quote: the bases are what the router already plans
-#: against precisely because the ORDER they induce is stable while the quotes move.
-SELL_BIGGEST_FIRST = True
-
-
 def _order_sells(orders):
     """The same orders, with the SELLs ranked biggest-first among the slots they already occupy."""
-    if not SELL_BIGGEST_FIRST:
-        return orders
     at = [i for i, o in enumerate(orders) if o and o[0] == "SELL"]
     if len(at) < 2:
         return orders
@@ -1320,8 +1145,6 @@ def _wheat_row_first(orders, hour):
 
 def _fit_slots(orders, state):
     """The turn's orders, cut to what the env will actually accept, with the losers un-counted."""
-    if not FIT_ORDER_SLOTS:
-        return orders[:ORDER_SLOTS]
     if len(orders) <= ORDER_SLOTS:
         return list(orders)
     # Drop surplus HIREs from the LAST one backwards: slot order is load-bearing for everything else
@@ -1425,19 +1248,10 @@ URGENT_OPS = ()
 #: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
 ANIMAL_OVER_HIRE = True
 
-#: Whether the row-driven wheat order stands down on a turn that is also buying land. BUY_LAND sits
-#: in an earlier order slot and takes the bank with it, so the ration behind it fills nothing while
-#: still counting against the row. See the block in the market phase.
-SKIP_THE_RATION_ON_A_LAND_TURN = True
-
 #: Whether the schedule's `seeds` row is a FLOOR on what is offered, independent of how much ground
 #: today can actually plant. See the block in the market phase. Applies to the emission only; the
 #: reservation `seed_bill` stays pin-derived, which is what keeps d0's livestock intact.
 SEED_ROW_IS_A_FLOOR = True
-
-#: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
-#: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
-SEED_BEFORE_LIVESTOCK = True
 
 #: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
 #: already is. See the note above the seed bill for the day-6 measurement.
@@ -1638,39 +1452,8 @@ def _nearest_ground(order, tiles, taken, unlocked):
     return best
 
 
-#: **A bare pen takes the animal that is about to run out of days to bank its care bonus.**
-#:
-#: An animal's yield on its production day is `min(max_held, 1 + pending_care_bonus)`
-#: (`kaggriculture.py:814`), and the bonus is one per day the pen was fed AND cared, banked at each
-#: rollover. The window is relative to placement -- `days_since_first = next_day - placed_day -
-#: first_yield_day` (`:809`) -- so the days available to fill the cap is a constant per species:
-#:
-#:     GOOSE   first yield 4, cap 4   ->  slack 0, every day load-bearing
-#:     SHEEP   first yield 6, cap 6   ->  slack 0, every day load-bearing
-#:     COW     first yield 8, cap 6   ->  slack 2, it can miss two days and still milk six
-#:
-#: `_live_ops` chose by `next(... for a in R.ANIMAL_NAMES ...)`, and `ANIMAL_NAMES` is
-#: `["GOOSE", "COW", "SHEEP"]` -- so a unit holding cows and sheep places every COW first. COW and
-#: SHEEP are the only two sharing a structure, so this ordering decides nothing else.
-#:
-#: Day 0 on the kawashigi board buys COW 2 + SHEEP 2 and one hand does all four pens; it has turns
-#: for two FEED/CARE pairs. It placed `h07 COW, h12 COW, h17 SHEEP, h20 SHEEP` and served the cows,
-#: whose d8 milk the schedule feeds on d1-d6 anyway. Both sheep banked four bonus days instead of
-#: five and sheared `1 + 4 = 5`, so the d6 row's `WOOL 12` shipped as 10 -- `sell 15/17`.
-#:
-#: This is the site that BINDS the species. The pin already names one per pen
-#: (`_refresh_pins` writes `("BUILD", animal, cost)`) and the router chains a `("PLACE", item, ...)`
-#: off it (`router.py:1358`), but the route is a visit ORDER and `_live_ops` re-derives the work
-#: from the live board at the stop, so the plan's answer is discarded here. Four plan-time fixes --
-#: the pin order, the PLACE prize, the router's standing-pen branch, and `want_animals` -- were each
-#: measured byte-identical for exactly that reason.
-PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK = True
-
-
 def _place_order():
     """Animals in the order a bare pen should take them: least slack first, `ANIMAL_NAMES` on ties."""
-    if not PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK:
-        return list(R.ANIMAL_NAMES)
     return sorted(R.ANIMAL_NAMES,
                   key=lambda a: R.ANIMALS[a]["first_yield_day"] - R.ANIMALS[a]["max_held"])
 
@@ -1742,9 +1525,6 @@ def _eta_along(start, route):
         pos = n.tile
     return out
 
-
-#: **Seed rows are offered in the order the day's own plan needs them.** See `_seed_need_order`.
-SEED_ROWS_FOLLOW_THE_PLAN = True
 
 #: **A committed PLANT stop reached before its seed is bought goes to the back of the tour.**
 #: Ordering the seed rows by need (above) can only decide which crop is bought FIRST; it cannot
@@ -1822,12 +1602,6 @@ def _claimed_tiles(units, routes, idle, margin):
         if soonest + margin >= eta:
             busy.add(tile)
     return busy
-
-
-#: **A shed-access cell is plantable on any day the schedule owes no pen.** See the block in
-#: `_refresh_pins` that reads this. `router.field_order` reserves those four cells permanently; this
-#: releases them for the days between one pen and the next.
-PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 
 
 #: **Dig a weed when the day's own planting row cannot find ground.**
@@ -1987,7 +1761,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # go while (4,5) sits empty. The schedule builds 15 pens; twelve are standing by d8 and the next
     # is **d21**. `plant 9/11`, and `water 38/41` because each of those plantings owes a water.
     plant_order = order
-    if PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED and have >= want_pens:
+    if have >= want_pens:
         plant_order = list(order) + [c for c in R.shed_access_tiles() if _owned(c, unlocked)]
     # **Smallest outstanding ask first.** `want` is CUMULATIVE and a Counter iterates in insertion
     # order, so WHEAT -- first seen on d0, and standing at 139 for the season -- claimed every empty
@@ -2058,7 +1832,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # here is the index they will occupy in `farm["hands"]` -- so the route built for phantom k is
     # already waiting for the real unit k when it appears an hour later.
     plan_units = list(units) + [tuple(p) for p in arriving]
-    budget = [max(0, TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1))] * len(plan_units)
+    budget = [max(0, TPD - hour - 0)] * len(plan_units)
     # A hand bought in THIS turn's market phase cannot act in this turn's unit phase -- the unit
     # phase already ran. It works from `hour + 1`, so it is one turn poorer than everyone else.
     for k in range(len(units), len(plan_units)):
@@ -2337,8 +2111,6 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             just sets `cared_today` (`kaggriculture.py:511-517`) -- against one extra unit of
             product on the next production day.
             """
-            if not FEED_WHAT_YOU_STAND_ON:
-                return None
             here = tiles[pos[1]][pos[0]]
             if not (isinstance(here, dict) and "animal" in here):
                 # **A ripe crop underfoot is the same defect as a hungry pen underfoot**, and this
@@ -2365,8 +2137,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                                   tile=tuple(pos))
                 # See `UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW`. A water still on offer means
                 # the tile has a unit left in it, and this hand is forbidden to water.
-                if (UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW
-                        and any(o == "WATER" for o, _a, _v in ops)):
+                if any(o == "WATER" for o, _a, _v in ops):
                     return None
                 if any(o == "HARVEST" for o, _a, _v in ops):
                     cared_this_turn.add(tuple(pos))
@@ -2531,8 +2302,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     node.pick[item] -= take
                     if node.pick[item] <= 0:
                         del node.pick[item]
-                    elif (CARRY_THE_UNFILLED_DRAW_FORWARD and hour == 0
-                          and item in _bought_today):
+                    elif hour == 0 and item in _bought_today:
                         # **The other half of the morning delivery.** See
                         # `CARRY_THE_UNFILLED_DRAW_FORWARD`. `WAIT_FOR_THE_MORNING_DELIVERY` covers a
                         # draw that gets NOTHING at hour 0 -- but a draw that gets SOME of what it
@@ -2737,9 +2507,6 @@ RESERVATION_SLIP = 0.10
 #: missing half, and it is Alex's framing -- once the bank covers the day the timing is free money,
 #: while it does not the timing IS the purchase.
 LATE_SELL_BIAS = True
-#: Whether an unfunded shopping list buys the day out of the hold above. Without it `LATE_SELL_BIAS`
-#: is the flat rule that was measured as a loss and left off.
-LATE_SELL_YIELDS_TO_DEMAND = True
 LATE_SELL_FROM_HOUR = 16
 #: **The hold above is justified by a drain that MELON does not have.** `LATE_SELL_BIAS`'s own
 #: docstring gives the reason for waiting: the price "recovers as the shops restock every 4 steps".
@@ -4526,7 +4293,7 @@ def make_agent(schedule, me=0, router=True):
         # not scope per category, and over-selling by one turn on a funded day is a far cheaper error
         # than under-funding a $1,000 parcel. If that proves too blunt, the fix is a per-category
         # remainder, not a tolerance.
-        unfunded = LATE_SELL_YIELDS_TO_DEMAND and (money + pending) < _days_bill(row)
+        unfunded = (money + pending) < _days_bill(row)
         for prod in SELLABLE:
             have = int(shed.get(prod, 0))
             # What the EVICTION may reach, which is `have` for everything except wheat. See
@@ -5192,7 +4959,7 @@ def make_agent(schedule, me=0, router=True):
             # (`:666-673`) and stops, exactly as the per-order form did.
             want = 0
             for _ in range(max(0, qty - state["bought"][a])):
-                if money < R.ANIMALS[a]["cost"] + (seed_bill if SEED_BEFORE_LIVESTOCK else 0):
+                if money < R.ANIMALS[a]["cost"] + seed_bill:
                     continue
                 # The slot is charged once, for the first head of this species.
                 if want == 0 and len(orders) >= (10 if ANIMAL_OVER_HIRE else 8):
@@ -5238,8 +5005,7 @@ def make_agent(schedule, me=0, router=True):
         # measurement: the price order buys the crop the plan reaches at h5 and starves the one it
         # reaches at h2. A crop with no PLANT stop in any committed tour sorts last, which is where
         # the old rule already put anything the day was not about to plant.
-        _need = (_seed_need_order(units, state.get("routes") or {})
-                 if SEED_ROWS_FOLLOW_THE_PLAN else {})
+        _need = _seed_need_order(units, state.get("routes") or {})
         for crop, qty in sorted(emit_seed.items(),
                                 key=lambda kv: (_need.get(kv[0], 1 << 30),
                                                 -RT.SEED_COST.get(kv[0], 0) * int(kv[1]))):
@@ -5459,7 +5225,7 @@ def make_agent(schedule, me=0, router=True):
         #
         # Skipped rather than resized: the turn a parcel clears is not a turn that can also feed the
         # herd, and holding the order costs nothing because the row is re-offered every turn.
-        if SKIP_THE_RATION_ON_A_LAND_TURN and any(o and o[0] == "BUY_LAND" for o in orders):
+        if any(o and o[0] == "BUY_LAND" for o in orders):
             short = 0
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
@@ -5502,7 +5268,7 @@ def make_agent(schedule, me=0, router=True):
             carried_now = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
             unfed_now = sum(1 for r in tiles for c in r
                             if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
-            spare = max(0, carried_now - unfed_now) if TOPUP_COUNTS_HANDS else 0
+            spare = max(0, carried_now - unfed_now)
             gap = (alive + arriving) - int(shed.get("WHEAT", 0)) - spare
             gap = min(gap, FEED_TURN_CAP, int(money // quote))
             # **And never past what the day's own `buys` row still owes.** The top-up reads the shed
