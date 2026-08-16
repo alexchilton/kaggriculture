@@ -14,3 +14,7 @@ wandb/
 .pytest_cache/
 data/*
 !data/README.md
+
+# coverage artefacts
+.coverage
+.coverage.*

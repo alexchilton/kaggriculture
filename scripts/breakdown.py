@@ -308,6 +308,11 @@ SHED_MARKET_OPS = ("SELL", "BUY_PRODUCT", "BUY_ANIMAL")
 MARKET_FILL_OPS = ("SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL", "HIRE", "BUY_LAND")
 
 
+#: The `Fills` object from the most recent `run`, for callers that need the TURN of a fill rather
+#: than the day's count. Set at the end of `run`; `None` before the first one.
+LAST_FILLS = None
+
+
 def run(make0, opp, seed, weeds, stop_day=None, economy=None, shops=None):
     from kaggle_environments import make
 
@@ -413,6 +418,13 @@ def run(make0, opp, seed, weeds, stop_day=None, economy=None, shops=None):
     # misreading: `money` at d12 is the result of d11, so the d10 land purchase showed up a column
     # late and a step change got attributed to the wrong day twice.
     _cm.__exit__(None, None, None)
+    # **The fills object outlives the run, so the cadence gate can read the TURN of each fill.**
+    # `run` returns counts per day; `fills.events` carries `(seat, op, item, price, day, hour)` per
+    # unit, which is a different measurement -- two hires in one turn and two hires eight hours
+    # apart aggregate identically and are different days. Stashed rather than returned so the
+    # four-value signature every caller unpacks stays exactly as it is.
+    global LAST_FILLS
+    LAST_FILLS = fills
     # A fill whose farm could not be resolved to a seat is dropped rather than guessed, so a nonzero
     # count here means the seat map is broken and every market row is understated. It must be zero.
     if fills.unattributed:
