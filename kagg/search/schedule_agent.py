@@ -353,10 +353,6 @@ CARRY_THE_UNFILLED_DRAW_FORWARD = True
 #: If the hand has no other work the want is dropped as before, so no hand ever idles on this.
 THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
 
-#: Whether the wheat row's money guard prices n units on the BOOK's curve rather than at n times the
-#: one price the observation publishes. See the block at the guard for the day-1 arithmetic.
-SIZE_THE_RATION_ON_THE_CURVE = True
-
 HARVEST_WHAT_YOU_STAND_ON = True
 
 #: **A passer-by does not demolish a crop that is still growing.**
@@ -469,18 +465,6 @@ def must_walk_home_now(day, hour, pos, held, depots):
     need = min(RT.dist(pos, t) for t in depots) + 1
     return (TPD - hour) <= need + LAST_DAY_WALK_SLACK
 
-
-#: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
-#:
-#: **Left ON, and the alternative is measured, not assumed.** It disagrees with `DUSK_FEED_TOPUP`,
-#: which counts the shed and nothing else, and that disagreement is what has d4 sell the shed bare
-#: at h19/h22/h23 and buy it straight back. Turning it OFF makes the two agree and is worse on every
-#: axis that matters: d4 `sell 41/55 -> 23/55`, d10 `feed 7/12 -> 2/12`, season money at d16
-#: $9,975 -> $9,487, and the churn does not go away -- it moves to d5-d7 and grows from 9 turns to
-#: 15. A reserve that holds back a whole day's feed stops the day selling at all.
-#:
-#: The churn is real and is netted at order assembly instead: see `NET_THE_TWO_LEGS`.
-RESERVE_COUNTS_WHEAT_IN_HANDS = True
 
 #: Whether the wheat every hungry animal needs TODAY is withheld from the market unconditionally,
 #: rather than being released against a purchase the row merely plans.
@@ -1446,10 +1430,6 @@ ANIMAL_OVER_HIRE = True
 #: still counting against the row. See the block in the market phase.
 SKIP_THE_RATION_ON_A_LAND_TURN = True
 
-#: Whether the dusk feed top-up is capped by what the day's `buys` row still owes. A day with no
-#: `buys` row is unaffected -- there the top-up formula is the only rule there is.
-TOPUP_STAYS_INSIDE_THE_ROW = True
-
 #: Whether the schedule's `seeds` row is a FLOOR on what is offered, independent of how much ground
 #: today can actually plant. See the block in the market phase. Applies to the emission only; the
 #: reservation `seed_bill` stays pin-derived, which is what keeps d0's livestock intact.
@@ -1865,68 +1845,6 @@ PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
 
 
-#: **A pen is reserved for a placement the schedule still owes, not for the Nth entry in a list.**
-#:
-#: `_refresh_pins` labelled a pen `wanted[have]`, where `wanted` is the cumulative `places` rows and
-#: `have` is the number of pens that exist. Those are different quantities and the schedule does not
-#: align them day by day -- d6 builds two pens and places nothing, d7 places three animals and builds
-#: two pens -- so through d7 it wants 10 pens against 9 placements, the index runs off the end of the
-#: list, and the loop takes its hardcoded `"COW"` default. The label then outlives the pin by design,
-#: so a pen mislabelled on the day its ground was chosen stays mislabelled.
-#:
-#: Measured on the kawashigi board, seed 11, d7 dawn. The row is `places = [SHEEP, COW, COW]` and
-#: `animals_bought = {COW: 2, SHEEP: 1}`; all three fill, `buy_animal 3/3`:
-#:
-#:     pen_for      {(5,4): COW, (6,4): COW, (6,3): COW, (5,2): COW}
-#:     nodes        four PLACE COW, no PLACE SHEEP anywhere
-#:     crew.cover   supply COW 2 -> keeps (5,4) (6,4), drops (6,3) (5,2)
-#:
-#: Two cows go in, the sheep is never picked up by anybody and sits in the shed until dusk:
-#: `place 2/3`, `animals 8/9`, and `feed 6/9` after it, since an animal in the shed cannot be fed.
-#:
-#: What the pens should be reserved for is on the board already: the cumulative `places` rows minus
-#: the animals standing in pens. At that moment that is `SHEEP 1, COW 2` -- exactly the shed. So the
-#: outstanding row is spent over the reserved-but-empty pens in siting order, nearest ground first,
-#: which is the same rule the siting itself uses.
-#:
-#: This is NOT the value ranking `router.py` rejected at -$5,676. That scored each species by
-#: `cost + remaining` and let the better one win a tie, which reallocates pastures the schedule never
-#: asked to reallocate. This ranks nothing and prefers nothing: it reads the schedule's own ordered
-#: rows and subtracts what the board has already realised.
-PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING = True
-
-
-#: **Sowing keeps back the ground the pens still to come will need.**
-#:
-#: Pens and crops draw from the same pool: `_next_ground(order, tiles, taken)` returns the first
-#: square in `field_order` that is neither built on nor pinned, and `field_order` is sorted by
-#: distance from the shed. Sowing runs after the BUILD loop in the same call, so day 0 takes the
-#: whole inner ring for crops and the pens the schedule builds on d2 and d4 get whatever is left.
-#:
-#: Read off Kawashigi's raw replay (seat 0 -- `farms[1]` of our own run is Yusuke Hayashi, not him):
-#:
-#:     d2  KAWASHIGI  pens 4  crops 19  free 2  ->  (4,2)d2  (2,4)d2
-#:         OURS       pens 4  crops 19  free 2  ->  (1,0)d7  (0,0)d8
-#:     d4  KAWASHIGI  pens 5  crops 19  free 1  ->  (4,2)d2     5th pen on (2,4), distance 2
-#:         OURS       pens 4  crops 19  free 1                  5th pen on (0,0), distance 8
-#:
-#: Same pen count, same crop count, same number of free squares, and the two day-0 pen blocks have
-#: the same Manhattan sum. The ONLY difference is which two squares stay open. He sows outward and
-#: keeps the inner ring; we sow the inner ring and keep the corner, so our d2 and d4 pens land at
-#: distance 7 and 8. A FEED is a shed round trip, so those two cost 14 and 16 turns of walking
-#: before any work, and d7 reads `feed 6/9` with 48 idle turns.
-#:
-#: **The horizon is the next land purchase, not the season.** Reserving for every pen the schedule
-#: ever builds would hold ten squares out of twenty-one on day 0 and push the whole planting to the
-#: rim. A parcel reopens near ground, so only the pens that have to fit on ground we already own are
-#: the ones sowing owes anything to -- d2 and d4 here, which is two, which is exactly what he keeps.
-#:
-#: A reserved square is a preference and never a loss: if sowing runs out of ordinary ground it takes
-#: the reserved squares rather than leave a planting unsown, because a crop in the ground today beats
-#: a pen sited well in two days.
-PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL = True
-
-
 def _pens_due_before_more_land(sched, day):
     """How many pens the schedule builds after `day` but before it buys its next parcel."""
     nxt = min((d for d in sorted(sched)
@@ -2007,25 +1925,21 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # and pens are sited nearest-ground-first, so spending the outstanding row over its existing
     # keys hands the earliest placements to the closest pens -- the siting rule, unchanged.
     todo, took = [], 0
-    if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
-        todo = _outstanding_places(sched, day, tiles)
-        for t in list(pen_for):
-            if took >= len(todo):
-                break
-            a = todo[took]
-            took += 1
-            pen_for[t] = a
-            # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
-            # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
-            # disagreeing about the same tile.
-            if t in pins and pins[t][0] == "BUILD":
-                pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
+    todo = _outstanding_places(sched, day, tiles)
+    for t in list(pen_for):
+        if took >= len(todo):
+            break
+        a = todo[took]
+        took += 1
+        pen_for[t] = a
+        # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
+        # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
+        # disagreeing about the same tile.
+        if t in pins and pins[t][0] == "BUILD":
+            pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
     while have < want_pens:
-        if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
-            a = todo[took] if took < len(todo) else "COW"
-            took += 1
-        else:
-            a = wanted[have] if have < len(wanted) else "COW"
+        a = todo[took] if took < len(todo) else "COW"
+        took += 1
         # A pen ON a shed-access cell runs its whole daily loop -- draw feed, feed, care, collect,
         # harvest -- without a single move, so those four cells are worth more than any field tile.
         spot = next((tuple(c) for c in PEN_SPOTS
@@ -2092,13 +2006,12 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # See `PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL`. Held nearest-first,
     # because that is the ground a pen is worth more on and the ground sowing is about to take.
     sow_order = plant_order
-    if PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL:
-        owed_later = _pens_due_before_more_land(sched, day)
-        if owed_later > 0:
-            free_now = [t for t in plant_order
-                        if t not in taken and tiles[t[1]][t[0]] is None]
-            held = set(free_now[:owed_later])
-            sow_order = [t for t in plant_order if t not in held]
+    owed_later = _pens_due_before_more_land(sched, day)
+    if owed_later > 0:
+        free_now = [t for t in plant_order
+                    if t not in taken and tiles[t[1]][t[0]] is None]
+        held = set(free_now[:owed_later])
+        sow_order = [t for t in plant_order if t not in held]
 
     for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
         qty = want[crop]
@@ -3338,39 +3251,6 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
         split[pick] += 1
         headroom[pick] -= per_animal[pick]
     return split
-
-
-#: **HERD_SPLIT_IS_A_SEASON_DECISION -- the split decides the MIX; the schedule decides the ORDER.**
-#:
-#: `_place_animals` used to hand `_herd_split` the herd accumulated through **today** and then use
-#: its answer as today's cumulative target. That makes one function decide two different things, and
-#: it gets the second one wrong: every branch of the split fills a species to a cap before it gives
-#: anything to the other, so on a schedule that interleaves them the later species is deferred to
-#: the end of the herd regardless of which days its rows sit on.
-#:
-#: Measured on the kawashigi board, seed 11, FILLS not offers. His `animals_bought` rows ARE his
-#: recorded order stream -- `d0 COW2 SHEEP2, d3 COW1, d5 COW1, d7 COW2 SHEEP1, d8 SHEEP1, d9 COW2,
-#: d11 COW2` -- so any divergence here is ours. Cumulative bought at dusk:
-#:
-#:                ours          his tape
-#:     d5         C4 / S2       C4 / S2       identical to here
-#:     d7         C6 / S2       C6 / S3       his d7 row is COW 2 + SHEEP 1
-#:     d8         C8 / S2       C6 / S4       his d8 row is SHEEP 1
-#:     d9         C10 / S2      C8 / S4
-#:     d11        C10 / S4      C10 / S4      the totals reconcile, four days late
-#:
-#: The MIX was never in dispute. YARN_STORE lands on this board at d12 -- the fourth draw, outside
-#: `WOOL_SHOP_DRAW_LIMIT` -- so `WOOL_SHOP_SETS_THE_HERD` pins COW at `WOOL_SHOP_NO_YARN_COW = 10`
-#: and the split returns COW 10 / SHEEP 4, which is exactly what the schedule asks for. Only the
-#: order moved, and the order is what the sells depend on: two sheep that arrive on d11 instead of
-#: d7 and d8 shear nothing into the d8-d10 wool rows, and a sheep's first yield is 6 days out.
-#:
-#: So the split is asked about the SEASON, once, and its answer is spent along the schedule's own
-#: rows in day order -- a head keeps its scheduled species while that species has season allowance
-#: left, and flips only when it does not. On a board whose shops genuinely say all-cow the allowance
-#: runs out at the first sheep row and every later one still becomes a cow, so the adaptivity the
-#: flag was built for is untouched; what is removed is the reordering it was never asked for.
-HERD_SPLIT_IS_A_SEASON_DECISION = True
 
 
 def _herd_through_day(sched, day, split):
@@ -4768,8 +4648,7 @@ def make_agent(schedule, me=0, router=True):
                 # reserve that protects it -- `will_buy` is that purchase -- so d4 h00 read
                 # `6 - (1*6 - 0 - 1) = 1` sellable out of a shed that was exactly tight.
                 reserve = feed_days(day) * (alive + arriving) - drawn - will_buy
-                if RESERVE_COUNTS_WHEAT_IN_HANDS:
-                    reserve -= carried_wheat
+                reserve -= carried_wheat
                 # **TODAY'S dinner is never released against a purchase that has not cleared.**
                 # See `NEVER_SELL_TODAYS_RATION`. `will_buy` is a forecast, and the terms above can
                 # net the reserve to nothing on the strength of it: `seb1326` d6, row `buys WHEAT 7`,
@@ -5260,17 +5139,13 @@ def make_agent(schedule, me=0, router=True):
             # `HERD_SPLIT_IS_A_SEASON_DECISION`.** Handing the split today's partial herd made it
             # decide the buying ORDER as well as the mix, and its cows-first fill deferred every
             # floating sheep to the end of the herd.
-            if HERD_SPLIT_IS_A_SEASON_DECISION:
-                _season = collections.Counter()
-                for dd in sched:
-                    for a, qty in (sched[dd].get("animals_bought") or {}).items():
-                        _season[a] += int(qty)
-                _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
-                _through = _herd_through_day(sched, day, _s)
-                want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
-            else:
-                _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
-                want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
+            _season = collections.Counter()
+            for dd in sched:
+                for a, qty in (sched[dd].get("animals_bought") or {}).items():
+                    _season[a] += int(qty)
+            _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
+            _through = _herd_through_day(sched, day, _s)
+            want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue
@@ -5565,18 +5440,15 @@ def make_agent(schedule, me=0, router=True):
         # `market.inventory` is `shared: True` in the observation spec, so this is the real book and
         # not a guess. Falls back to the flat divide if the env is not importable, which is what
         # `market_price` already does.
-        if SIZE_THE_RATION_ON_THE_CURVE:
-            _book = int(((obs.get("market") or {}).get("inventory") or {}).get("WHEAT", 0) or 0)
-            _purse, _n = money, 0
-            while _n < short:
-                _unit = market_price("WHEAT", _book - _n)
-                if _unit > _purse:
-                    break
-                _purse -= _unit
-                _n += 1
-            short = _n
-        else:
-            short = min(short, int(money // quote))
+        _book = int(((obs.get("market") or {}).get("inventory") or {}).get("WHEAT", 0) or 0)
+        _purse, _n = money, 0
+        while _n < short:
+            _unit = market_price("WHEAT", _book - _n)
+            if _unit > _purse:
+                break
+            _purse -= _unit
+            _n += 1
+        short = _n
         # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
         # is QUEUED, and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race
         # still closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn
@@ -5645,10 +5517,9 @@ def make_agent(schedule, me=0, router=True):
             #
             # A day with no `buys` row keeps the top-up unbounded: there the formula is the only rule
             # there is.
-            if TOPUP_STAYS_INSIDE_THE_ROW:
-                row_buys = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
-                if row_buys > 0:
-                    gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
+            row_buys = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
+            if row_buys > 0:
+                gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
             if gap > 0:
                 orders.append(["BUY_PRODUCT", "WHEAT", gap])
                 topup_orders.add(id(orders[-1]))

@@ -285,19 +285,6 @@ YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 #: `tests/test_the_pen_holds_the_animal_it_was_built_for.py::test_a_reservation_the_shed_cannot_fill_falls_back_rather_than_stalling`.
 PEN_KEEPS_ITS_ANIMAL = True
 
-#: Whether a tour that ends on a YIELDING node reserves the walk back to the nearest depot.
-#:
-#: The tour is otherwise costed as an OPEN route -- walk plus service from where the unit stands,
-#: nothing for getting back -- which is correct for a tile that only consumes and wrong for one that
-#: yields. Measured on Seb's tape, seed 11, day 3: our u4 collects a fertilizer, its tour ends at
-#: hour 17 seven steps out, the return leg turns it home on hour 18 and it walks into dusk without
-#: arriving. `sell 4/5`, day-4 dawn bank $388 against his $482, and $388 does not buy a $400 cow.
-#:
-#: This is a RESERVE, not work: it is charged against the budget at every acceptance test and never
-#: added to `cost`, so it shortens a tour rather than booking turns the unit does not spend. Off
-#: restores the open route exactly.
-RETURN_LEG = True
-
 #: Cost an insertion as a CLOSED tour -- `delta + homeward(after) - homeward(before)` -- rather than
 #: charging a flat return reserve at acceptance. It is the textbook closed-tour marginal and it is
 #: exact at every insertion position, not only when the node lands at the current end of the route,
@@ -341,12 +328,6 @@ HOMEWARD_DROP_TURNS = 0
 #: correcting the estimate the way `docs/idle_at_h10_2026-08-07.md` proposed -- inflating costs is
 #: not a route to it. Anything that adds a stop has to EARN its turns, not be handed them.
 DEPOT_NODE_EXTRA_SERVICE = 0
-
-#: Whether the shed's stock of an animal is a budget shared across units, the way turns already are.
-#: See the note in `plan_routes`. Off restores the pre-2026-08-07 behaviour, where one COW and three
-#: empty pens produced three full-prize PLACE nodes and two units were sent to fetch the same animal.
-SUPPLY_LEDGER = True
-
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -876,20 +857,6 @@ def produces_tonight(cell, day):
     return a["interval"] <= 0 or since % a["interval"] == 0
 
 
-#: Whether a FEED is offered only when it buys something. See the note in `animal_ops`.
-#:
-#: **OFF since 2026-08-11: the cadence was calibrated on Seb's tape and we are matching Victor's.**
-#: The mechanism's reasoning is sound and its evidence is real -- production never reads `fed_today`,
-#: so on a non-payout night a feed buys only survival. It is simply not what THIS tape does. Victor
-#: feeds every animal every day: 5, 0, 5, 5, 5, 6, 7, 10, 12, 12, 12, 12 against a herd that reaches
-#: twelve, with d1 the only zero and that a two-unit, 47-turn day where neither side feeds.
-#:
-#: Ours tracked him exactly to d6 and broke at d7 -- `FEED_CADENCE_FROM_DAY`, not a coincidence.
-#: `feed 8/10` there and `7/12 9/12 8/12 9/12` after, with CARE mirroring it cell for cell because
-#: `animal_ops` offers CARE only on a pen it is feeding.
-#: Whether a pen placed TODAY is skipped for FEED. Independent of the cadence rule below: this one
-#: is about a ration that provably buys nothing, not about feeding less often. See `will_be_fed`.
-SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES = True
 #: Feeds still available to pens that arrived TODAY. Set per turn by the agent from the schedule's
 #: `feeds` row; see `will_be_fed`. Module-level so the predicate stays a pure function of the cell.
 ARRIVAL_FEED_REMAINING = 0
@@ -932,7 +899,7 @@ def will_be_fed(cell, day):
     #
     # Those two rations are the reason d1 opens on one wheat, makes three separate shed trips with
     # a single unit, and leaves (3,4) unfed while idling h22-h23 one step away.
-    if SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES and int(cell.get("placed_day", -1)) == int(day):
+    if int(cell.get("placed_day", -1)) == int(day):
         # **How many of today's arrivals get fed is the TAPE's number, not a rule of ours.**
         # `ARRIVAL_FEED_REMAINING` is set once per turn by the agent from the day's `feeds` row
         # minus the pens that were already standing, and counted down off the board (`fed_today` on
