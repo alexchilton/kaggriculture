@@ -184,30 +184,6 @@ DELIVER_CUTOFF_TURNS = 99
 WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
 
-#: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
-#:
-#: Selling costs no unit-turns -- a SELL is a market order, not a unit action -- so what the last day
-#: can sell is decided by what sits in `private["shed"]` when it starts, and the shed is filled for
-#: free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce taken on d28 is banked overnight
-#: at zero cost and sells all through d29. Produce taken ON d29 lands in a hand and that drop comes
-#: after the final turn, so it is discarded: the season currently ends with 51 sellable units, about
-#: $1,192, in the crew's hands.
-#:
-#: So "skipping this today destroys something tonight" is literally true of a ripe tile on d28, which
-#: is why it belongs here rather than in a prize. **A prize cannot reach a solved day at all** --
-#: `cover._apply_precomputed` seats a stop by `(tile, ops)` and the prize never enters -- while
-#: `at_risk` is what `solve_day.weight(j)` reads, so it survives the re-solve.
-#:
-#: カワシギ, ours/tape: d28 harvest 27/32, d29 harvest 27/19, d29 sell 93/148. He harvests harder on
-#: d28 and spends d29 selling. We back-load +10 harvests into d23-d29 while d0-d22 are level, and we
-#: are not short of turns on d28 -- 48 idle unit-turns against his 32.
-#: **MEASURED A NULL 2026-08-15 AND LEFT OFF.** Three ways: prize, at_risk, and at_risk plus a d28
-#: re-solve. All three byte-identical on the grid. d28 is not under-prioritising anything -- its
-#: solved route already seats every job with slack, two hands idle, and only 7 ripe units remain
-#: unharvested at dusk. And the planting rows are IDENTICAL to the tape (d25 9/9, d26 9/9, d27
-#: 11/11), so his crops do not ripen earlier than ours either. Whatever gives him d28 harvest 32 to
-#: our 27 and d29 19 to our 27, it is neither ranking nor planting date.
-BANK_THE_FIELD_ON_D28 = False
 
 #: The last day whose carried load is banked overnight; d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = 28
@@ -223,7 +199,7 @@ def _at_risk_tiles(tiles, day=None):
     On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
     """
     out = set()
-    banking = bool(BANK_THE_FIELD_ON_D28 and day is not None and day == LAST_FREE_DROP_DAY)
+    banking = False
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
@@ -380,30 +356,6 @@ THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
 #: Whether the wheat row's money guard prices n units on the BOOK's curve rather than at n times the
 #: one price the observation publishes. See the block at the guard for the day-1 arithmetic.
 SIZE_THE_RATION_ON_THE_CURVE = True
-#: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
-#: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
-#: **A hand with an exhausted route walks to a crop that becomes a WEED tonight.**
-#:
-#: CLAUDE.md records "the day is planned ONCE, at hour 0. No replan, no urgency, no idle top-up",
-#: and that is right about REPLANNING -- nothing here re-solves the day. This is the narrowest
-#: possible exception: a hand that was going to emit PASS, and a tile that is one dry day from being
-#: destroyed. It cannot displace planned work, because it only ever runs on a turn already lost.
-#:
-#: Measured on ladder replay `93183652`, our own agent, 2026-08-15:
-#:
-#:     total PASS turns in the season                                847
-#:     PASS turns while a crop was ONE DAY from becoming a weed      773   (91%)
-#:     weed births on our farm                                        40   (26 STRAWBERRY, 14 WHEAT)
-#:     further turns spent on DIG cleaning them up                    58
-#:
-#: **Zero of the 40 came from `_spawn_weeds`**, even though the ladder runs the env default
-#: `weedSpawnChance = 0.005` -- every one was a standing crop we failed to water, turning at h00.
-#: So this is not defending against the RNG, it is not throwing away tiles we already paid to seed
-#: and plant. A WATER is one turn; the weed costs the tile, its whole remaining yield, and a DIG.
-#:
-#: The idle mass is d7-d18 (74, 69, 62, 72 turns on d8, d9, d11, d12) and nearly gone by d19, so
-#: this is a mid-game rule that runs out of fuel exactly when the crew saturates.
-THIRSTY_CROP_PULLS_AN_IDLE_HAND = False
 
 HARVEST_WHAT_YOU_STAND_ON = True
 
@@ -2822,96 +2774,6 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 # so the animal goes in without a second trip.
                 pins.pop(node.tile, None)
             break
-
-        # ----------------------------------------------------- the four mechanisms that used to be here
-        # DELETED, and this is the point of the rebuild rather than a side effect of it. There were
-        # four ways produce reached the shed, and not one of them was a plan:
-        #
-        #   the deliver ferry        divert a WALKING unit home if it had slack
-        #   the opportunistic drop   dump the load on any incidental depot visit
-        #   DELIVER_THE_SELL_ROW     dump it if the row still wanted any of it
-        #   the return leg           walk home once the tour had run out
-        #
-        # Every one fired off whatever tile a unit happened to be standing on, none could act before
-        # the goods existed, and between them they carried day 6's wool from h10 to h19 while the
-        # bank sat on $20. `cover.materialise` now schedules the shed trip as a STOP -- before the
-        # jobs that need a draw, after the harvest that fills the hand, and at the end of the tour --
-        # so the executor above simply walks it.
-        #
-        # `DELIVER_THE_SELL_ROW` is also the exact defect that cost day 4 every one of its feeds. It
-        # tested only "does the row still want this", never "does my own route still need it", and
-        # its comment gave a reason -- DROP is all-or-nothing, so a mixed load cannot shed its wool
-        # without its wheat -- that is correct right up until WHEAT is itself the thing being sold.
-        # Day 4 sells `WHEAT: 28`, so eight wheat drawn for eight pens read as $200 of goods the
-        # market was waiting for: PICKUP 2, DROP 12, FEED 0, CARE 0, and eight animals unfed. The
-        # surplus rule that replaces it lives in `cover.materialise`, where the route is known.
-        #
-        # `tests/test_the_whole_day_is_planned_including_the_drop.py` pins both halves.
-        #
-        # ------------------------------------------------------------------ the return leg, restored
-        # **The fourth one above comes back, and only the fourth one.** The other three fired off
-        # whatever tile a unit stood on and competed with the plan for turns. This one fires only
-        # when the plan has nothing left to say: the tour is finished, the hand is full, and the
-        # alternative on this exact turn is PASS. It cannot take a turn from a job because there is
-        # no job left to take it from.
-        #
-        # It is the back half of the tape's day. 91422988 d4 h15-h23 is Seb's entire crew turning
-        # round and walking to (4,4) -- u0 spends eight consecutive turns carrying twelve wheat and
-        # doing nothing else -- arriving in four waves that DROP and sell 5, 12, 12 and 20 wheat plus
-        # 6 fertilizer, which is the schedule row for the day to the unit. Ours, same hours: u1 and
-        # u5 standing at (1,1) and (2,0) holding eight wheat each from h19 to dusk while the market
-        # bought 6 wheat at h18, 6 at h21 and 6 at h23 against a shed the harvest never reached.
-        #
-        # `cover.plan` declines the closing stop on five of six tours that day, and is right to: the
-        # trip costs 7 turns and 5 are spare, and `_drop_inventories_to_shed` (`kaggriculture.py:812`)
-        # empties every hand at the rollover regardless. Nothing is LOST by declining it. It is only
-        # late -- and late is the entire difference, because `_process_market` reads the shed, so a
-        # load that lands at the rollover is a load the day could not sell and then paid to replace.
-        #
-        # Walking five of the six steps and not arriving is worth nothing today, but it is worth
-        # nothing either way; the unit was passing. On the days it does arrive it is worth the sell.
-        # **A hand with nothing left to do walks to the crop that dies tonight.**
-        # See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`. Placed after `WALK_THE_LOAD_HOME` deliberately:
-        # carrying a load to the shed is worth a sale today, and this is worth a tile tomorrow, so
-        # the load wins the tie. Both only ever fire on a hand that was already passing.
-        if THIRSTY_CROP_PULLS_AN_IDLE_HAND and act == ["PASS"]:
-            best = None
-            for _y, _r in enumerate(tiles):
-                for _x, _c in enumerate(_r):
-                    if not (isinstance(_c, dict) and _c.get("crop")):
-                        continue
-                    # Dies at the next h00: `consecutive_unwatered` already counts yesterday, and
-                    # `_daily_refresh_plants` increments again for a day that ends unwatered, so
-                    # `>= 1 and not watered_today` is exactly "one more dry day and it is a WEED"
-                    # (`kaggriculture.py:777-782`, then the `>= 2` branch at `:771`).
-                    if _c.get("watered_today"):
-                        continue
-                    if int(_c.get("consecutive_unwatered", 0) or 0) < 1:
-                        continue
-                    _t = (_y, _x)
-                    # `working_tiles` is a hand standing on its own next stop; it will be offered
-                    # this tile's ops anyway. `thirsty_claimed` stops two idle hands converging on
-                    # one tile, which would spend two turns to save one.
-                    if _t in thirsty_claimed or _t in working_tiles:
-                        continue
-                    if not _owned(_t, unlocked):
-                        continue
-                    _d = RT.dist(pos, _t)
-                    if best is None or _d < best[0]:
-                        best = (_d, _t)
-            if best is not None:
-                _d, _t = best
-                if _d == 0:
-                    thirsty_claimed.add(_t)
-                    act = ["WATER"]
-                else:
-                    _m = _step_towards(pos, _t, unlocked)
-                    if _m is not None:
-                        # Claimed on the WALK, not on arrival: a second hand must not start the same
-                        # journey. If this one is interrupted tomorrow the claim is gone with the
-                        # turn, so nothing is stranded.
-                        thirsty_claimed.add(_t)
-                        act = [_m]
 
         if WALK_THE_LOAD_HOME and act == ["PASS"] and any(v > 0 for v in inv.values()):
             if at_shed:

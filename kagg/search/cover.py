@@ -105,6 +105,13 @@ YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 #: fed yesterday, may slip; missed yesterday, may not.
 REQUIRED_OPS = ("FEED",)
 
+#: Whether a tile one dry night from weeding is covered BEFORE a pen that was fed yesterday.
+#:
+#: `REQUIRED_OPS` above argues that a pen fed yesterday can slip a day for free while one that
+#: missed yesterday cannot. The same logic applies to tiles, and the pass order contradicted it:
+#: the routine feeds went first and the dying tiles took what was left.
+AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP = False
+
 #: Whether a job the greedy could not place gets a second chance by displacing one that is placed.
 #: Off leaves the plain cheapest-insertion greedy, which is what makes the repair attributable --
 #: and what a test asserts against, so a green suite with it disabled fails loudly instead of quietly.
@@ -367,38 +374,6 @@ DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
 #: DROP 9 15 17 19`, where he banks with three collections still ahead. See `Job.harvests()`.
 BANK_ONLY_AFTER_THE_LAST_HARVEST = True
 
-#: Whether a hand banks mid-tour anyway on a day that cannot pay its own bill yet.
-#:
-#: `BANK_ONLY_AFTER_THE_LAST_HARVEST` above is read off days where the harvest is REVENUE -- it can
-#: wait for dusk because nothing that day depends on it. It is wrong on a day where the harvest is
-#: WORKING CAPITAL, and d10 of the Victor tape is that day. Measured, seed 11, with the seed rows
-#: reordered by need:
-#:
-#:     h6   HARVEST 6 melon                       melon in shed: 0
-#:     h7   6 melon in hand, bank $16
-#:     h10 h11 h12 h13   four strawberry stops reached, strawberry seed 0, bank $16
-#:     h20  DROP x2 -- first melon to reach the shed all day
-#:     h21  bank $16 -> $1,943, buy STRAWBERRY 12, every stop already walked
-#:
-#: Thirty melon rode around in hands from h6 to h20 while the day's own seed went unbought. The tape
-#: does the opposite and its row says so plainly: `SELL MELON 6` at h12/h15/h17/h20/h22 against
-#: `BUY_SEED STRAWBERRY` at h12/h13/h15 -- it banks five times through the day, each sale funding the
-#: next seed block. "Harvest all day, bank at dusk" is not what he plays on a day he has to finance.
-#:
-#: `rush` is the existing short-of-cash signal `_solve` already computes and passes here, so this adds
-#: no new notion of poverty -- it lets the cheap drop (`DROP_WHERE_THE_TOUR_ALREADY_STANDS`, zero
-#: detour, one turn) fire while harvests remain, and ONLY then. The detour drop is untouched: a day
-#: this short of money cannot afford a 12-turn ferry either, which is the whole finding of
-#: `DELIVER_MIN` and the d4 water row.
-#: **REVERTED 2026-08-11, same day it was written.** It never reached d10 -- `rush` was False there
-#: (`_days_bill` priced seed at $0, fixed separately) and every melon harvest is the LAST job on its
-#: tour, so no rule in `materialise`'s loop has a later job to insert a delivery before. What it did
-#: reach was d6, where the extra drops shifted the cash timing and one `BUY_PRODUCT WHEAT` stopped
-#: filling: `buy_product 5/5 -> 4/5`, one wheat short in the shed from d7 dawn onwards and never
-#: recovered. Days match IN ORDER, so buying +$113 on d6-d13 money with a d6 op regression is a loss.
-#:
-#: Left False rather than deleted only until the d6 row is re-confirmed green; delete it then.
-BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
 
 #: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
 #: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
@@ -942,7 +917,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
                    and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
         reaping = (BANK_ONLY_AFTER_THE_LAST_HARVEST
                    and any(w.harvests() for w in work[i:])
-                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush)
+                   
                    and not funding)
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
                 and not reaping:
@@ -1152,9 +1127,6 @@ RESERVE_FROM_DAY = 10
 #: 162/231`. Season money at d16 goes $9,975 -> $8,821.
 RESERVE_DAYS = frozenset({2, 3}) | frozenset(range(RESERVE_FROM_DAY, 30))
 
-#: Whether the greedy ranks an insertion by the tour plus its walk home rather than the tour alone.
-#: Unlike `RESERVE_DAYS` this never refuses a job -- it only changes WHICH hand gets it.
-RANK_BY_THE_TRIP_HOME = False
 
 #: Days it applies. d4 is the day it exists for: 28 wheat and 4 fertilizer in hands at dusk against
 #: a row asking for 49 and 6.
@@ -1358,7 +1330,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
 
     #: Whether `slot` ranks candidate positions by the tour INCLUDING its trip home. See the note
     #: in `slot`. Scoped to the same day set as the hard reserve plus the days that strand produce.
-    rank_home = bool(RANK_BY_THE_TRIP_HOME and wanted and day in RANK_HOME_DAYS)
+    rank_home = False
 
     def cost(u, work):
         # **The closing shed trip is NOT charged while the work is being packed, and that is
@@ -1609,8 +1581,23 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     # `required` cannot express that and drops the same animal twice.
     greedy([j for j in left if j.at_risk and j.required])        # an animal that dies tonight
     greedy([j for j in left if j.funds])                          # the day's shopping list, unpaid
-    greedy([j for j in left if j.required and not j.at_risk])     # the rest of the herd
-    greedy([j for j in left if j.at_risk and not j.required])     # a tile that weeds tonight
+    if AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP:
+        # **A tile that weeds tonight is an asset lost outright; a pen fed yesterday can slip a day
+        # for free.** That is this file's own argument for `at_risk`, applied to the other half of
+        # the board. Ordered the other way, a routine feed took the turn and the tile died: measured
+        # on live ladder games 2026-08-16, (8,4) STRAWBERRY died d9 last watered d6, (9,1) WHEAT and
+        # (9,2) STRAWBERRY died d11 last watered d8, and the same coordinates die across independent
+        # games and seeds. At d8 dusk eight tiles sat one night from death while sixteen others were
+        # watered.
+        #
+        # NOT the d28 null recorded at `schedule_agent.BANK_THE_FIELD_ON_D28`: that measured RIPE
+        # tiles on a SOLVED day with two hands idle and slack in the route. These are DRY tiles on
+        # d7-d11, which are unsolved and turn-constrained.
+        greedy([j for j in left if j.at_risk and not j.required])  # a tile that weeds tonight
+        greedy([j for j in left if j.required and not j.at_risk])  # the rest of the herd
+    else:
+        greedy([j for j in left if j.required and not j.at_risk])  # the rest of the herd
+        greedy([j for j in left if j.at_risk and not j.required])  # a tile that weeds tonight
     greedy([j for j in left if not j.required and not j.at_risk])
 
     # ----------------------------------------------------------------------------------- compact

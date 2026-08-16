@@ -117,67 +117,6 @@ CRITICAL = 1_000_000
 #: ANIMALS STANDING IN PENS per day, never on cells or money alone.
 FEED_IS_CRITICAL_WHEN_AT_RISK = True
 
-#: **Whether a one-shot crop on its LAST SAFE DAY is CRITICAL, exactly as a hungry pen is.**
-#:
-#: `_decay_plants` (`reference/kaggriculture.py:752`) runs on **every step**, not at the rollover:
-#: a one-shot crop past `max_lifespan_step = (planted_day + max_yield_day + 1) * 24` loses one unit
-#: every two steps and becomes a WEED at zero. `_one_shot_is_finished` legalises the HARVEST at
-#: `age >= max_day`. So the safe window is exactly ONE DAY WIDE, for every one-shot crop -- wheat
-#: legal at age 4 and decaying from age 5 h00, melon legal at 12 and decaying from 13.
-#:
-#: Water does not extend it. `max_lifespan_step` is fixed when the crop is planted
-#: (`kaggriculture.py:224`) and nothing updates it for a one-shot. This is an expiry date, not
-#: thirst, and it is the second weed source -- the first being `consecutive_unwatered >= 2`.
-#:
-#: **`cover.py` contains ZERO references to `max_lifespan_step`**, and `cover` is what decides the
-#: visit ORDER. So a harvest with four hours to live was ranked identically to one with all day and
-#: landed wherever insertion was cheapest. Measured on seed 11 against the kawashigi tape, weeds
-#: off so nothing is random:
-#:
-#:     died     tile     crop  planted  safe day   job built that day            seated
-#:     17/h05  (0,7)    WHEAT       12        16   [WATER, HARVEST, PLANT, ...]  False
-#:     25/h07  (8,4)    WHEAT       20        24   [WATER, HARVEST, HARVEST,..]  False
-#:     28/h09  (1,2)    WHEAT       23        27   [WATER, HARVEST, HARVEST,..]  False
-#:
-#: **Eleven of sixteen had a HARVEST job built on the safe day and it was not seated.** The job
-#: exists and loses the auction -- a ranking failure, not a missing job and not a turn shortage.
-#: Pricing it at `CRITICAL` is the same handle `FEED_IS_CRITICAL_WHEN_AT_RISK` uses for the pen that
-#: loses its animal tonight, and it puts the stop in `cover`'s first greedy pass.
-#:
-#: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
-#: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
-#: whole fix has to sit on the day before, which is what `age >= max_day` selects.
-#: **BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY -- d28 is the last harvest that banks itself.**
-#:
-#: Selling costs no unit-turns: a SELL is a market order in `_process_market`, not a unit action. So
-#: what the last day can sell is decided entirely by what sits in `private["shed"]` when it starts,
-#: and the shed is filled for free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce
-#: harvested on d28 is banked overnight at zero cost and is sellable all through d29. Produce
-#: harvested ON d29 lands in a hand, and that drop comes after the final turn, so it is discarded.
-#:
-#: This is how カワシギ takes the last two days without ever planning a delivery (ours/tape):
-#:
-#:     closing week   harvest      sell    drop     pass
-#:     d28             27/32     103/92     2/0    48/32
-#:     d29             27/19      93/148    3/9    30/56
-#:
-#:     harvest d0-d22   ours 201   tape 204     level
-#:     harvest d23-d29  ours 195   tape 185     we back-load +10
-#:
-#: He harvests 32 on d28 to our 27, the overnight drop banks it, and d29 becomes a selling day --
-#: 148 units to our 93. We back-load into the one day where delivery is not free, and the season
-#: ends with 51 sellable units, about $1,192, stranded in hands.
-#:
-#: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
-#: crew is standing around; the harvest is simply not ranked high enough to be seated.
-#:
-#: **A behavioral null on this board, ON anyway, and both halves are deliberate.** Three shapes
-#: (prize, at_risk, at_risk + re-solve) measured byte-identical on the grid: d28's solved route
-#: already seats every job with slack, so the promotion changes no seating today. It is ON because
-#: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
-#: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
-#: (an opponent, a lost hand) needs the ranking to already say so.
-BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False
 
 #: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
@@ -316,62 +255,7 @@ DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
 #: so anything still in a hand at dusk is unsold -- it arrives overnight, a turn too late.
 YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
-#: Whether a pen's YIELDING ops are served BEFORE its consuming ones, rather than after.
-#:
-#: A stop's ops run in list order, and `animal_ops` built them in the order the rules are written:
-#: FEED, CARE, COLLECT_FERTILIZER, HARVEST. That puts the two ops that produce something sellable
-#: last, so a pen visited at dawn does not yield until its fourth turn.
-#:
-#: Measured on Seb's tape, seed 11, day 6 -- the same pen, the same four ops, opposite order:
-#:
-#:     tape  F  h0 HARVEST  h1 COLLECT_FERTILIZER  h2 DROP  h3 PICKUP  h5 FEED  h6 CARE
-#:     ours  u3 h3 FEED     h4 CARE  h5 COLLECT_FERTILIZER  h6 HARVEST  h7 walk  h8 DROP
-#:
-#: Six wool either way. His are in the shed at hour 2 and pay for that turn's BUY_SEED; ours are in
-#: a hand until hour 8. Day 6's entire gap is one $800 strawberry order placed at hour 1 against a
-#: $296 bank, and an hour-2 sale of that wool covers it.
-#:
-#: **TRIED AND REVERTED 2026-08-07.** It is the right reading of the tape and it does not help,
-#: because the hour it saves is not the hour that is missing. Measured, days 0-6, ours minus tape:
-#: d2 4 -> 8 cells, d3 7 -> 8, money newly diverging on d2 and d3, and **day 6 unchanged at 14**.
-#:
-#: The reason it cannot work on its own: his farmer HARVESTs at hour 0 because the sheep pen IS the
-#: depot tile (4,4). Ours is at (3,4), and the unit that serves it is doing a PICKUP at (4,4) on
-#: hour 1 and does not stand on the pen until hour 3. Re-ordering the ops moves the yield from that
-#: unit's 4th turn to its 1st -- hour 3 rather than hour 6 -- which is still three hours past the
-#: hour-2 sale that pays for the strawberry. The lever is WHERE the pen is, not what order it is
-#: served in; `build_tiles` is in `TAPE_ONLY` and stripped, so we choose our own tiles and chose a
-#: worse one.
-YIELD_FIRST = False
 
-#: Whether the FOUR shed-access cells pick their animal by the size of one harvest, instead of by
-#: position in `R.ANIMAL_NAMES` -- which is `["GOOSE", "COW", "SHEEP"]`, so a COW takes any shared
-#: PASTURE whenever both are in the shed at once.
-#:
-#: Deliberately NOT the reverted global tie-break a few lines below. That one value-ranked EVERY
-#: pasture and measured -$5,676 on the 12-seed ladder, because the season wants 8 COW to 6 SHEEP and
-#: a same-turn ranking reallocates far more pens than the one it was diagnosed on. This ranks only
-#: the four cells where a harvest can be DROPPED without moving, which is a property no field tile
-#: has at any price. The rest of the board keeps the fixed order untouched.
-#:
-#: Measured on Seb's tape, seed 11, day 6 -- identical boards, one different occupant:
-#:
-#:     (4,4)  ours {'kind': 'PASTURE', 'animal': 'COW'}     our SHEEP sits at (3,4)
-#:     (4,4)  tape {'kind': 'PASTURE', 'animal': 'SHEEP'}
-#:
-#: A full load is 6 WOOL at $200 against 6 MILK at $160, and his farmer takes it at hour 0 and drops
-#: it at hour 2 without a step -- which is what pays for day 6's $800 strawberry order.
-#: **TRIED AND REVERTED 2026-08-07.** Measured, days 0-6, cells ours-minus-tape per day:
-#: d2 4 -> 6, d3 7 -> 8, d4 7 -> 9, d5 7 -> 8, d6 14 -> 15; 52 -> 59 total. Worse on every day it
-#: touched and it did not even fix the day it was built for.
-#:
-#: So the narrowing argument above is sound and still insufficient: WHICH animal ends up on (4,4) is
-#: not a free choice made at that cell. It is decided days earlier by what the schedule has bought
-#: and by SHEEP `first_yield_day` 6 against COW's 8, and forcing the sheep there re-times the whole
-#: herd. Same shape of failure as the global tie-break it was distinguished from -- a same-turn
-#: ranking cannot see a season's allocation -- which is the third time that has been measured here.
-#: Whatever puts his sheep on the depot cell is upstream of `build_nodes`, in the buy/place order.
-DEPOT_PEN_BY_LOAD = False
 
 #: **A pen is placed with the animal it was BUILT for.**
 #:
@@ -832,8 +716,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        last_free = (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
-                     and day is not None and day == LAST_FREE_DROP_DAY)
+        last_free = False
         if (last_free
                 or (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
                     and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
@@ -1010,7 +893,6 @@ SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES = True
 #: Feeds still available to pens that arrived TODAY. Set per turn by the agent from the schedule's
 #: `feeds` row; see `will_be_fed`. Module-level so the predicate stays a pure function of the cell.
 ARRIVAL_FEED_REMAINING = 0
-FEED_ONLY_WHEN_IT_BUYS_SOMETHING = False
 
 #: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
 #: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
@@ -1062,8 +944,7 @@ def will_be_fed(cell, day):
         # No predicate on the animal reproduces that -- "feed everything" and "feed only what is
         # producing" were both measured, and both lose.
         return ARRIVAL_FEED_REMAINING > 0
-    if not FEED_ONLY_WHEN_IT_BUYS_SOMETHING or day < FEED_CADENCE_FROM_DAY:
-        return True
+    return True
     if cell.get("consecutive_unfed", 0) >= 1:
         return True
     a = ANIMALS[cell["animal"]]
@@ -1178,15 +1059,7 @@ def animal_ops(cell, day, have_wheat):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
         prize = cell["yield_units"] * price
-        if (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
-                and day is not None and day == LAST_FREE_DROP_DAY):
-            prize += CRITICAL          # last night this milk or wool can bank itself for free
         out.append(("HARVEST", None, prize))
-    if YIELD_FIRST:
-        # Stable, so COLLECT_FERTILIZER still precedes HARVEST and FEED still precedes CARE. Built
-        # in rule order above because the CARE prize is conditional on FEED being served; only the
-        # SERVICE order changes here, never which ops the pen is offered.
-        out.sort(key=lambda o: o[0] not in YIELDING)
     return out
 
 
@@ -1453,9 +1326,6 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 # days) is real; ranking every tie by same-turn value is not the fix for it.
                 ops = []
                 order = list(R.ANIMAL_NAMES)
-                if DEPOT_PEN_BY_LOAD and tile in SHED_SET:
-                    order = sorted(order, key=lambda a: -(
-                        BASE_PRICE[ANIMALS[a]["product"]] * ANIMALS[a]["max_held"]))
                 # **The pen remembers what it was built for.** See `PEN_KEEPS_ITS_ANIMAL`. This is
                 # not the value rank rejected above: it ranks nothing, it reads back the assignment
                 # `_refresh_pins` already made from the schedule's own ordered `places` row. A pen
