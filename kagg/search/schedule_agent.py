@@ -39,6 +39,7 @@ import collections
 import itertools
 
 from . import cover as DP
+from . import melon_branch as _MB
 from . import q4_branch as _Q4
 from . import router as RT
 
@@ -3195,44 +3196,6 @@ SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT") + tupl
 FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 
 
-#: **Give up melon to an opponent already committed to it, and take strawberry instead.**
-#:
-#: Measured across all sixteen downloaded カワシギ games, 2026-08-15. His strawberry/melon split has
-#: exactly two states and the total is ALWAYS 54:
-#:
-#:     STRAW 34 / MELON 20     10 games        STRAW 42 / MELON 12      6 games
-#:
-#: Every game buys `MELON 12` on d0. The whole decision is one binary +8, executed `d5:+3 d6:+5`,
-#: paid for with 8 fewer strawberry. It separates 16/16 on the opponent, and the reason is visible on
-#: the board he can see when he makes it:
-#:
-#:     researchstudio.site   d5: MELON 9, WHEAT 7                -> holds at MELON 12, STRAW 42
-#:     the other three       d5: MELON 5, STRAWBERRY 3, WHEAT 6  -> tops up to MELON 20, STRAW 34
-#:
-#: **Melon is the one crop no shop buys** -- the eight demand lists at `kaggriculture.py:91-98` carry
-#: wheat, carrot, tomato, strawberry, egg, milk and wool, and never melon. So melon's price is set by
-#: nothing except how much the two farms dump into the town book, while strawberry has four shops
-#: bidding for it. An opponent on nine melon tiles is going to flood that book; the eight tiles are
-#: worth more in a crop somebody is buying.
-#:
-#: This corrects C-23 in `docs/REGISTER.md`, which reverted the `STRAWBERRY<->MELON` swap because it
-#: "produces an identical 54/4 split on every board -- a pair with one board-independent member
-#: cannot adapt". That is true of `SHOP_ADAPT_CROPS` and is the wrong reason to close the question:
-#: the signal was never the shop draw. It is the opponent, and it is not board-independent at all.
-#:
-#: The count is kept exactly and only the crop is re-decided, which is `_adapt_crops`' rule and keeps
-#: the tour shape untouched. Latched once, on the first day at or after `MELON_YIELD_FROM_DAY`, so d5
-#: and d6 cannot disagree.
-MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT = True
-
-#: d5, because that is the day he acts. The first shop unlocks at d2h23 in all sixteen games, so he
-#: has two and a half days of information; the fork is at d5 and completes on d6.
-MELON_YIELD_FROM_DAY = 3
-
-#: Between the two observed opponent states -- 9 melon tiles fires, 5 does not -- and no closer than
-#: that, because those are the only two values the sixteen games contain.
-MELON_YIELD_OPPONENT_MELON = 9
-
 
 #: **Turn late WHEAT plantings into CARROT / TOMATO.** Sweepable integers: how many wheat plant
 #: stops, from `LATE_CROP_FROM_DAY` onward, are re-crewed to each.
@@ -3329,34 +3292,6 @@ def _wheat_to(row, crop, budget):
     """Back-compat shim: `_recrew` with WHEAT as the source. Kept so the two integer knobs below,
     and the tests that pin them, keep working unchanged."""
     return _recrew(row, "WHEAT", crop, budget)
-
-
-def _melon_to_strawberry(row):
-    """One day's row with its MELON moved into STRAWBERRY. The count and the ORDER are kept exactly.
-
-    The two rows have different shapes and both matter. `seeds` is a `{crop: qty}` dict -- the day's
-    shopping list, priced by `RT.SEED_COST`. `plants` is an ordered LIST of crop names, one entry per
-    stop, and the order is the planting order the tour is built from, so a melon entry is rewritten
-    in place rather than counted and re-appended. Shipped d6, for instance, is
-    `seeds {'STRAWBERRY': 3, 'MELON': 5, 'CARROT': 7}` against `plants ['MELON', 'MELON']`.
-
-    Writing this against a dict `plants` cost a build: `dict(['MELON', 'MELON'])` raises, the bundle
-    returned a null reward in the mirror gate, and the unit tests stayed green because they had been
-    written against the same wrong shape. `test_the_shipped_schedules_own_rows_survive_the_swap`
-    exists so the shape cannot drift out from under this again.
-    """
-    seeds = dict(row.get("seeds") or {})
-    plants = list(row.get("plants") or [])
-    if int(seeds.get("MELON", 0) or 0) <= 0 and "MELON" not in plants:
-        return row
-    out = dict(row)
-    n = int(seeds.pop("MELON", 0) or 0)
-    if n > 0:
-        seeds["STRAWBERRY"] = int(seeds.get("STRAWBERRY", 0) or 0) + n
-        out["seeds"] = seeds
-    if "MELON" in plants:
-        out["plants"] = ["STRAWBERRY" if c == "MELON" else c for c in plants]
-    return out
 
 
 def make_agent(schedule, me=0, router=True):
@@ -3457,22 +3392,11 @@ def make_agent(schedule, me=0, router=True):
             # what the `seeds` row must be netted against. See `SEED_ROW_IS_A_FLOOR`.
             state["seeds_dawn"] = collections.Counter(seeds)
 
-            # **Read the opponent's melon commitment once, then hold the answer.**
-            # See `MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT`. Latched rather than re-read, because his
-            # own decision spans two days (`d5:+3 d6:+5`) and a split answer would buy half a row of
-            # each. `sched[day]` is replaced with a rewritten COPY -- `make_agent` shallow-copies the
-            # outer dict but shares every row with the caller, so mutating a row in place would leak
-            # the swap into the next game built from the same schedule object.
-            if MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT and day >= MELON_YIELD_FROM_DAY:
-                if state.get("melon_yield") is None and len(farms) > 1:
-                    _opp = farms[1 - me]
-                    state["melon_yield"] = sum(
-                        1 for _r in (_opp.get("tiles") or []) for _c in _r
-                        if isinstance(_c, dict) and _c.get("crop") == "MELON"
-                    ) >= MELON_YIELD_OPPONENT_MELON
-                if state.get("melon_yield"):
-                    sched[day] = _melon_to_strawberry(sched.get(day) or {})
-                    row = sched[day]
+            # **The leader's melon branch, as the season he actually recorded for that board.**
+            # See `kagg/search/melon_branch.py`. Decided once at d3 off the opponent's melon tiles
+            # and installed from d5, which is the first row either season spends melon money on.
+            if _MB.arm(sched, state, obs, day):
+                row = sched.get(day) or row
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a

@@ -18,6 +18,7 @@ Usage:
 import argparse
 import json
 import math
+import random
 import sys
 import time
 from collections import defaultdict
@@ -162,13 +163,15 @@ def aggregate_opponent(fills, seat=0):
 # ---------------------------------------------------------------------------
 
 class Profile:
-    __slots__ = ("name", "start", "end", "ops", "yields", "fert_use", "wheat_use", "cash_cost")
+    __slots__ = ("name", "start", "end", "ops", "moves", "yields", "fert_use", "wheat_use",
+                 "cash_cost")
 
     def __init__(self, name, start):
         self.name = name
         self.start = start
         self.end = start
         self.ops = defaultdict(float)       # day -> work ops
+        self.moves = defaultdict(float)     # day -> tile visits (geometry walk model)
         self.yields = defaultdict(lambda: defaultdict(float))  # day -> product -> units
         self.fert_use = defaultdict(float)  # day -> units
         self.wheat_use = defaultdict(float)
@@ -206,24 +209,28 @@ def oneshot_profile(crop, fert, d0):
     p = Profile(f"{crop.lower()}{'_f' if fert else '_u'}@{d0}", d0)
     p.end = d0 + ha
     p.ops[d0] += 1                                  # PLANT
+    p.moves[d0] += 1
     p.cash_cost[d0] += cd["seed"]
     for a in waters:
         p.ops[d0 + a] += 1
+        p.moves[d0 + a] += 1
     for a in ferts:
-        p.ops[d0 + a] += 1
+        p.ops[d0 + a] += 1                          # FERTILIZE rides the watering visit
         p.fert_use[d0 + a] += 1
     p.ops[d0 + ha] += 1                             # HARVEST
+    p.moves[d0 + ha] += 1
     p.yields[d0 + ha][crop] += yld
     return p
 
 
-def ongoing_profile(crop, fert, d0):
+def ongoing_profile(crop, fert, d0, daily_water=False):
     cd = CROPS[crop]
     fy, iv, ymax = cd["first_yield_day"], cd["interval"], cd["max_yield"]
     if d0 + fy > LAST:
         return None
     p = Profile(f"{crop.lower()}{'_f' if fert else '_u'}@{d0}", d0)
     p.ops[d0] += 1
+    p.moves[d0] += 1
     p.cash_cost[d0] += cd["seed"]
     # production evenings (end of day cur, credited morning cur+1)
     prod_evenings = []
@@ -251,13 +258,14 @@ def ongoing_profile(crop, fert, d0):
             # cover as many upcoming production evenings as possible
             ferts.append(day)
             fert_until = day + 2
-        if unwatered >= 1 or want:
+        if unwatered >= 1 or want or daily_water:
             waters.add(day)
             unwatered = 0
         else:
             unwatered += 1
     for day in waters:
         p.ops[day] += 1
+        p.moves[day] += 1
     for day in ferts:
         p.ops[day] += 1
         p.fert_use[day] += 1
@@ -274,11 +282,13 @@ def ongoing_profile(crop, fert, d0):
             held = 0
     for morning, units in harvest_days:
         p.ops[morning] += 1
+        p.moves[morning] += 1
         p.yields[morning][crop] += units
     # dig to free the tile after the plant decays
     dig_day = last_ev + 2
     if dig_day <= LAST:
         p.ops[dig_day] += 1
+        p.moves[dig_day] += 1
         p.end = dig_day
     else:
         p.end = LAST
@@ -293,6 +303,7 @@ def animal_profile(species, d0):
     p = Profile(f"{species.lower()}@{d0}", d0)
     p.end = LAST                       # pen occupies the tile for the rest of the season
     p.ops[d0] += 3                     # BUILD + PICKUP animal + PLACE
+    p.moves[d0] += 1                   # one pen visit; pickup happens at the shed at dawn
     p.cash_cost[d0] += a["cost"]
     # last production evening within the season
     last_ev = None
@@ -307,6 +318,7 @@ def animal_profile(species, d0):
     pending, held = 0, 0
     for day in range(d0, last_ev + 1):
         p.ops[day] += 1 + PICKUP_SHARE            # FEED (+ amortised pickup)
+        p.moves[day] += 1                         # one pen visit; feed/care/harvest ride it
         p.wheat_use[day] += 1
         dsf = (day + 1) - d0 - fy
         produced = dsf >= 0 and dsf % iv == 0     # evening production, credited morning day+1
@@ -339,12 +351,15 @@ CROP_VARIANTS = [
 START_DAYS = list(range(0, 6)) + list(range(6, DAYS, 2))
 
 
-def build_profiles():
+def build_profiles(daily_water=False):
     crop_profiles = {}     # (crop, fert, d0) -> Profile
     for crop, fert in CROP_VARIANTS:
-        builder = ongoing_profile if CROPS[crop]["ongoing"] else oneshot_profile
+        ongoing = CROPS[crop]["ongoing"]
         for d0 in START_DAYS:
-            pr = builder(crop, fert, d0)
+            if ongoing:
+                pr = ongoing_profile(crop, fert, d0, daily_water=daily_water)
+            else:
+                pr = oneshot_profile(crop, fert, d0)
             if pr is not None and any(u for ym in pr.yields.values() for u in ym.values()):
                 crop_profiles[(crop, fert, d0)] = pr
     animal_profiles = {}
@@ -560,7 +575,14 @@ class Model:
         return val, res.x
 
 
-def build_model(crop_profiles, animal_profiles, slots, wheat_price, fert_price):
+# Geometry walk model: each worked tile costs 1 move per visit (serpentine adjacency),
+# and each active unit pays a fixed dawn-out + dusk-home transit.  The mean Manhattan
+# distance from a shed-access corner to a tile of its quadrant is exactly 4.0
+# (E|dx| + E|dy| over a 5x5 from the corner), so out + home = 8 moves per unit-day.
+TRANSIT_MOVES = 8.0
+
+
+def build_model(crop_profiles, animal_profiles, slots, wheat_price, fert_price, walk="flat"):
     m = Model()
     x = {}                      # (crop, fert, d0) -> var (cycles started)
     for key, pr in crop_profiles.items():
@@ -605,15 +627,28 @@ def build_model(crop_profiles, animal_profiles, slots, wheat_price, fert_price):
         m.constr(occ, -np.inf, 25.0)
 
         lab = defaultdict(float)
-        for key, pr in crop_profiles.items():
-            if pr.ops.get(d):
-                lab[x[key]] += pr.ops[d] * (1 + LAMBDA_WALK)
-        for key, pr in animal_profiles.items():
-            if pr.ops.get(d):
-                lab[y[key]] += pr.ops[d] * (1 + LAMBDA_WALK)
-        lab[fcol[d]] += 1.0 * (1 + LAMBDA_WALK)
-        lab[h[d]] -= TURNS
-        m.constr(lab, -np.inf, TURNS)   # main farmer contributes 24
+        if walk == "flat":
+            for key, pr in crop_profiles.items():
+                if pr.ops.get(d):
+                    lab[x[key]] += pr.ops[d] * (1 + LAMBDA_WALK)
+            for key, pr in animal_profiles.items():
+                if pr.ops.get(d):
+                    lab[y[key]] += pr.ops[d] * (1 + LAMBDA_WALK)
+            lab[fcol[d]] += 1.0 * (1 + LAMBDA_WALK)
+            per_unit = TURNS
+        else:                            # "geom": ops + tile-visit moves + unit transit
+            for key, pr in crop_profiles.items():
+                load = pr.ops.get(d, 0.0) + pr.moves.get(d, 0.0)
+                if load:
+                    lab[x[key]] += load
+            for key, pr in animal_profiles.items():
+                load = pr.ops.get(d, 0.0) + pr.moves.get(d, 0.0)
+                if load:
+                    lab[y[key]] += load
+            lab[fcol[d]] += 1.0          # collection rides the daily pen visit
+            per_unit = TURNS - TRANSIT_MOVES
+        lab[h[d]] -= per_unit
+        m.constr(lab, -np.inf, per_unit)   # main farmer contributes one unit
 
     # cash prefix: sum of net flows through day d >= -3000
     flow = [defaultdict(float) for _ in range(DAYS)]
@@ -755,6 +790,250 @@ def describe_solution(xvec, handles, crop_profiles, animal_profiles, slots):
 
 
 # ---------------------------------------------------------------------------
+# pass 2 -- shared helpers, attribution, per-draw policy, best response
+# ---------------------------------------------------------------------------
+
+def random_draw(seed):
+    """A shop draw sampled the way the env draws it: 8 instances at days 3,6,...,24,
+    uniform over sorted(SHOPS) WITH replacement (reference _end_of_day)."""
+    rng = random.Random(seed)
+    return [(3 * (k + 1), rng.choice(sorted(KG.SHOPS))) for k in range(8)]
+
+
+def draw_label(draw):
+    counts = defaultdict(int)
+    for _, s in draw:
+        counts[s] += 1
+    return ",".join(f"{s.split('_')[0]}{'' if n == 1 else 'x' + str(n)}"
+                    for s, n in sorted(counts.items()))
+
+
+def solve_base(crop_profiles, animal_profiles, opp_net, drain, gap, tl, walk, t0):
+    """Base MILP + one wheat-buy price feedback pass.  Returns everything the bands
+    and checks need."""
+    slots = {p: slot_table(p, opp_net, drain) for p in PRODUCTS}
+    wp = day_price_series("WHEAT", opp_net, drain)
+    fp = day_price_series("FERTILIZER", opp_net, drain)
+    model, handles = build_model(crop_profiles, animal_profiles, slots, wp, fp, walk=walk)
+    zstar, xvec = model.solve(time_limit=tl, mip_gap=gap)
+    wb = np.array([xvec[v] for v in handles["wbuy"]])
+    if wb.sum() > 100:
+        wp2 = day_price_series("WHEAT", opp_net, drain, own_extra=-wb)
+        model, handles = build_model(crop_profiles, animal_profiles, slots, wp2, fp, walk=walk)
+        z2, xvec = model.solve(time_limit=tl, mip_gap=gap)
+        print(f"    [feedback] wheat bought {wb.sum():.0f}, "
+              f"price end ${wp[-1]:.0f}->${wp2[-1]:.0f}, Z ${zstar:,.0f}->${z2:,.0f}")
+        zstar = z2
+    print(f"    [base] Z* = ${zstar:,.0f}  [{time.time()-t0:.0f}s]")
+    return model, handles, slots, zstar, xvec
+
+
+def compute_bands(model, handles, items, tols, zstar, range_tl):
+    bands = {}
+    for tol in tols:
+        floor = (1 - tol) * zstar - 1
+        for item in items:
+            expr = item_expr(handles, item)
+            vals = []
+            for sense in ("min", "max"):
+                try:
+                    v, _ = model.solve(sense=sense, obj_override=expr, floor=floor,
+                                       time_limit=range_tl, relax=True)
+                except RuntimeError:
+                    v = float("nan")
+                vals.append(v)
+            bands[(item, tol)] = tuple(vals)
+    return bands
+
+
+def band_table(bands, items, tols, base=None, leader=None):
+    lines = []
+    hdr = f"    {'item':<11}" + (f" {'base':>5}" if base else "")
+    for tol in tols:
+        hdr += f"  {format(tol, '.1%') + ' band':>16}"
+    if leader:
+        hdr += f"  {'leader':>7}"
+    lines.append(hdr)
+    for item in items:
+        row = f"    {item:<11}"
+        if base:
+            row += f" {base[item][0] if isinstance(base[item], tuple) else base[item]:>5}"
+        for tol in tols:
+            lo, hi = bands[(item, tol)]
+            row += f"  {'[' + format(lo, '.1f') + ', ' + format(hi, '.1f') + ']':>16}"
+        if leader:
+            ref = leader.get(item)
+            row += f"  {ref if ref is not None else '-':>7}"
+        lines.append(row)
+    return "\n".join(lines)
+
+
+def solution_load(xvec, handles, crop_profiles, animal_profiles, walk):
+    """Implied ops / moves / capacity usage of a solution, for validation."""
+    ops = np.zeros(DAYS)
+    moves = np.zeros(DAYS)
+    harv = np.zeros(DAYS)
+    for key, pr in crop_profiles.items():
+        n = xvec[handles["x"][key]]
+        if n < 1e-6:
+            continue
+        for day, o in pr.ops.items():
+            ops[day] += o * n
+        for day, mv in pr.moves.items():
+            moves[day] += mv * n
+        for day, ym in pr.yields.items():
+            harv[day] += sum(ym.values()) * n
+    for key, pr in animal_profiles.items():
+        n = xvec[handles["y"][key]]
+        if n < 1e-6:
+            continue
+        for day, o in pr.ops.items():
+            ops[day] += o * n
+        for day, mv in pr.moves.items():
+            moves[day] += mv * n
+        for day, ym in pr.yields.items():
+            harv[day] += sum(ym.values()) * n
+    units = np.array([1 + xvec[handles["h"][d]] for d in range(DAYS)])
+    for d in range(DAYS):
+        ops[d] += xvec[handles["fcol"][d]]
+    if walk == "geom":
+        moves_total = moves + TRANSIT_MOVES * units
+    else:
+        moves_total = ops * LAMBDA_WALK
+    return {"ops": ops.sum(), "moves": moves_total.sum(),
+            "ratio": moves_total.sum() / max(ops.sum(), 1.0),
+            "unit_days": units.sum(), "peak_harvest": harv.max()}
+
+
+def extract_fills(xvec, handles, slots):
+    """Our net per-day book impact, for best-response iteration."""
+    net = {p: np.zeros(DAYS) for p in PRODUCTS}
+    for p in PRODUCTS:
+        for k, var in enumerate(handles["u"][p]):
+            q = xvec[var]
+            if q > 1e-6:
+                net[p][slots[p]["days"][k]] += q
+    for d in range(DAYS):
+        net["WHEAT"][d] -= xvec[handles["wbuy"][d]]
+        net["FERTILIZER"][d] -= xvec[handles["fbuy"][d]]
+    return net
+
+
+ITEMS = list(CROPS) + list(ANIMALS)
+LEADER_PIN = {"MELON": 20, "STRAWBERRY": 34}
+
+
+def leader_pin_check(model, zstar, handles, tl, t0):
+    extra = [(item_expr(handles, it), q, q) for it, q in LEADER_PIN.items()]
+    try:
+        zc, _ = model.solve(time_limit=tl, mip_gap=1e-3, extra_rows=extra)
+        drop = 1 - zc / zstar
+        print(f"    [pin] MELON=20,STRAW=34: Z ${zc:,.0f} drop {drop:.2%}  "
+              f"[{time.time()-t0:.0f}s]")
+        return drop
+    except RuntimeError as e:
+        print(f"    [pin] no solution within limit ({e})")
+        return float("nan")
+
+
+def mode_attrib(args, leader_net, unlock_days, t0):
+    """Items 2-4 one at a time against a recomputed pass-1 baseline, S1 actual draw."""
+    drain = drain_schedule(unlock_days, "actual")
+    tols = [0.001, 0.01, 0.05]
+    variants = [
+        ("V0 pass1-baseline", dict(daily=False, walk="flat", gap=2e-3, tl=150)),
+        ("V1 tight-gap", dict(daily=False, walk="flat", gap=args.base_gap, tl=args.time_limit)),
+        ("V2 daily-water", dict(daily=True, walk="flat", gap=2e-3, tl=150)),
+        ("V3 geom-walk", dict(daily=False, walk="geom", gap=2e-3, tl=150)),
+        ("V4 combined", dict(daily=True, walk="geom", gap=args.base_gap, tl=args.time_limit)),
+    ]
+    widths = {}
+    for vname, cfg in variants:
+        print(f"\n=== attrib {vname} (daily_water={cfg['daily']}, walk={cfg['walk']}, "
+              f"gap={cfg['gap']}, tl={cfg['tl']}) ===")
+        cp, ap_ = build_profiles(daily_water=cfg["daily"])
+        model, handles, slots, zstar, xvec = solve_base(
+            cp, ap_, leader_net, drain, cfg["gap"], cfg["tl"], cfg["walk"], t0)
+        base = describe_solution(xvec, handles, cp, ap_, slots)
+        load = solution_load(xvec, handles, cp, ap_, cfg["walk"])
+        print(f"    mix: " + ", ".join(f"{c}={base[c][0]}" for c in CROPS) + "; " +
+              ", ".join(f"{a}={base[a][0]}" for a in ANIMALS) +
+              f"; hands {base['HANDS_MEAN']:.1f}")
+        print(f"    load: work {load['ops']:.0f} moves {load['moves']:.0f} "
+              f"ratio {load['ratio']:.3f} (tape 1.254) unit-days {load['unit_days']:.0f} "
+              f"peak daily harvest {load['peak_harvest']:.0f} (shed cap 100)")
+        bands = compute_bands(model, handles, ITEMS, tols, zstar, args.range_time_limit)
+        print(band_table(bands, ITEMS, tols, base=base, leader=LEADER_REF))
+        for tol in tols:
+            widths[(vname, tol)] = {it: bands[(it, tol)][1] - bands[(it, tol)][0]
+                                    for it in ITEMS}
+    print("\n=== attrib summary: 1% band widths per variant ===")
+    hdr = f"    {'item':<11}" + "".join(f" {v[:12]:>13}" for v, _ in variants)
+    print(hdr)
+    for it in ITEMS:
+        print(f"    {it:<11}" + "".join(f" {widths[(v, 0.01)][it]:>13.1f}"
+                                        for v, _ in variants))
+
+
+def mode_policy(args, leader_net, unlock_days, t0):
+    """Per-draw clairvoyant optimum + bands with the combined model."""
+    cp, ap_ = build_profiles(daily_water=True)
+    draws = [] if args.skip_actual else [("actual-92498144", unlock_days)]
+    for i in range(args.draws):
+        d = random_draw(args.draw_seed + i)
+        draws.append((f"rng{args.draw_seed + i}", d))
+    tols = [0.001, 0.01]
+    rows = []
+    for dname, draw in draws:
+        print(f"\n=== draw {dname}: {draw_label(draw)} ===")
+        drain = drain_schedule(draw, "actual")
+        print("    season town drain: " +
+              ", ".join(f"{p}={drain[p].sum():.0f}" for p in PRODUCTS if drain[p].sum() > 0))
+        model, handles, slots, zstar, xvec = solve_base(
+            cp, ap_, leader_net, drain, args.base_gap, args.time_limit, "geom", t0)
+        base = describe_solution(xvec, handles, cp, ap_, slots)
+        bands = compute_bands(model, handles, ITEMS, tols, zstar, args.range_time_limit)
+        print("    mix: " + ", ".join(f"{c}={base[c][0]}" for c in CROPS) + "; " +
+              ", ".join(f"{a}={base[a][0]}" for a in ANIMALS))
+        print(band_table(bands, ITEMS, tols, base=base, leader=LEADER_REF))
+        drop = leader_pin_check(model, zstar, handles, 300, t0)
+        rows.append((dname, draw_label(draw), zstar, base, bands, drop))
+    print("\n=== policy table (per draw: optimal mix, melon/straw 1% band, 20/34 pin cost) ===")
+    print(f"    {'draw':<16} {'Z*':>9}  {'W':>3} {'C':>3} {'T':>3} {'S':>3} {'M':>3} "
+          f"{'G':>3} {'Co':>3} {'Sh':>3}  {'MELON 1%':>13} {'STRAW 1%':>13} {'pin':>7}")
+    for dname, lbl, zstar, base, bands, drop in rows:
+        mlo, mhi = bands[("MELON", 0.01)]
+        slo, shi = bands[("STRAWBERRY", 0.01)]
+        print(f"    {dname:<16} {zstar:>9,.0f}  "
+              f"{base['WHEAT'][0]:>3} {base['CARROT'][0]:>3} {base['TOMATO'][0]:>3} "
+              f"{base['STRAWBERRY'][0]:>3} {base['MELON'][0]:>3} {base['GOOSE'][0]:>3} "
+              f"{base['COW'][0]:>3} {base['SHEEP'][0]:>3}  "
+              f"{'[' + format(mlo, '.0f') + ',' + format(mhi, '.0f') + ']':>13} "
+              f"{'[' + format(slo, '.0f') + ',' + format(shi, '.0f') + ']':>13} "
+              f"{drop:>7.1%}")
+        print(f"        shops: {lbl}")
+
+
+def mode_br(args, leader_net, unlock_days, t0):
+    """Best-response iteration: opponent supply <- our previous optimum's fills."""
+    cp, ap_ = build_profiles(daily_water=True)
+    drain = drain_schedule(unlock_days, "actual")
+    opp = {p: leader_net[p].copy() for p in PRODUCTS}
+    for it in range(args.br_iters):
+        print(f"\n=== best-response iteration {it} "
+              f"(opp melon {opp['MELON'].sum():.0f}, straw {opp['STRAWBERRY'].sum():.0f}, "
+              f"milk {opp['MILK'].sum():.0f}) ===")
+        model, handles, slots, zstar, xvec = solve_base(
+            cp, ap_, opp, drain, args.base_gap, args.time_limit, "geom", t0)
+        base = describe_solution(xvec, handles, cp, ap_, slots)
+        print("    mix: " + ", ".join(f"{c}={base[c][0]}" for c in CROPS) + "; " +
+              ", ".join(f"{a}={base[a][0]}" for a in ANIMALS))
+        print("    sold: " + ", ".join(f"{p}={base['SOLD'][p]:.0f}" for p in PRODUCTS
+                                       if base["SOLD"][p] > 0.5))
+        opp = extract_fills(xvec, handles, slots)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -764,6 +1043,15 @@ def main():
     ap.add_argument("--quick", action="store_true", help="scenario 1 only, 5%% ranges only")
     ap.add_argument("--time-limit", type=float, default=180.0)
     ap.add_argument("--range-time-limit", type=float, default=60.0)
+    ap.add_argument("--mode", choices=["scenarios", "attrib", "policy", "br"],
+                    default="scenarios")
+    ap.add_argument("--base-gap", type=float, default=5e-4,
+                    help="mip_rel_gap for pass-2 base solves")
+    ap.add_argument("--draws", type=int, default=5, help="random draws in policy mode")
+    ap.add_argument("--draw-seed", type=int, default=11)
+    ap.add_argument("--br-iters", type=int, default=4)
+    ap.add_argument("--skip-actual", action="store_true",
+                    help="policy mode: only the random draws (resume after a kill)")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -790,7 +1078,13 @@ def main():
     print("[drain] season totals (units the town removes):",
           {p: round(drain[p].sum()) for p in PRODUCTS})
 
-    leader_net = opp["net"]
+    leader_net = {p: opp["net"][p] for p in PRODUCTS}
+    if args.mode != "scenarios":
+        {"attrib": mode_attrib, "policy": mode_policy, "br": mode_br}[args.mode](
+            args, leader_net, unlock_days, t0)
+        print(f"\n[done] total {time.time()-t0:.0f}s")
+        return
+
     scenarios = [("S1 opp=leader", {p: leader_net[p] for p in PRODUCTS}),
                  ("S2 opp=zero", {p: np.zeros(DAYS) for p in PRODUCTS}),
                  ("S3 opp=2x leader", {p: 2.0 * leader_net[p] for p in PRODUCTS})]

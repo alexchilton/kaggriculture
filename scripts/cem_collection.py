@@ -30,6 +30,8 @@ sys.path.insert(0, ".")
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
+from kagg.search import melon_branch as _MB
+
 
 def run(seed, v, solved, opponent):
     from kaggle_environments import make
@@ -43,7 +45,9 @@ def run(seed, v, solved, opponent):
     fork, melon, tomato, carrot, straw_off, geese = v
     shifts = [("WHEAT", "MELON", melon), ("WHEAT", "TOMATO", tomato),
               ("WHEAT", "CARROT", carrot), ("STRAWBERRY", "WHEAT", straw_off)]
-    A.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT = bool(fork)
+    # The boolean flag is gone: the branch is chosen by the opponent-melon THRESHOLD.
+    # 0 makes every opponent qualify, 99 none. See kagg/search/melon_branch.py.
+    _MB.OPPONENT_MELON = 0 if fork else 99
     A.CROP_TILE_SHIFTS = tuple((a, b, int(n)) for a, b, n in shifts if n > 0)
     A.LATE_CROP_FROM_DAY = 12
     A.HERD_GEESE = int(geese)

@@ -8,7 +8,7 @@ Every bound is pinned by `tests/test_the_allocation_dials_reach_the_tiles_they_c
 them is a guess, and two of them are not what a reading of the docstrings would suggest.
 
     dial   name                                     range   what fixes the bound
-    fork   MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT   0..1    a flag
+    fork   melon_branch   0..1    a flag
     m      WHEAT -> MELON      tiles                0..24   wheat stops in d12..d17
     t      WHEAT -> TOMATO     tiles                0..14   wheat stops left before d18
     c      WHEAT -> CARROT     tiles                0..24   wheat stops left before d26
@@ -18,7 +18,7 @@ them is a guess, and two of them are not what a reading of the docstrings would 
 **`CROP_TILE_SHIFTS` cannot reduce melon.** The schedule plants melon on d0, d6 and d7 only, and
 `LATE_CROP_FROM_DAY` is 12, so a `MELON -> WHEAT` shift moves exactly zero tiles. A search told to
 "tune the melon tile count" through this dial can only ever add. That is why the **melon fork** is
-in the space: `MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT` converts the d6/d7 melon rows to strawberry
+in the space: `melon_branch` converts the d6/d7 melon rows to strawberry
 once the opponent shows 7+ melon tiles, and turning it off is the only reachable way to hold
 MELON 20 / STRAWBERRY 34 -- which is Kawashigi's own allocation, and the direction today's sweep
 pointed (`STRAWBERRY->WHEAT x4` +$3,647, `WHEAT->MELON x2` +$2,499).
@@ -83,6 +83,8 @@ import time
 
 sys.path.insert(0, ".")
 
+from kagg.search import melon_branch as _MB
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 WORK = REPO / "data" / "cem"
 
@@ -131,7 +133,7 @@ def vector_body(v, solved=True):
     # still truthy and would enter the shift branch, so filtering keeps "no shifts" literally that.
     shifts = tuple((a, b, int(n)) for a, b, n in shifts if n > 0)
     lines = [
-        f"A.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT = {bool(fork)}",
+        f"_MB.OPPONENT_MELON = {0 if fork else 99}",
         f"A.CROP_TILE_SHIFTS = {shifts!r}",
         "A.LATE_CROP_FROM_DAY = 12",
         f"A.HERD_GEESE = {int(geese)}",

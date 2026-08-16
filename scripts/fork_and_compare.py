@@ -53,17 +53,24 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 #: `(src, dst, tiles)` triples. Isolation first, then combinations of whatever moved.
 CONFIGS = {
-    "baseline":             (),
-    "straw->wheat 8":       (("STRAWBERRY", "WHEAT", 8),),
-    "straw->carrot 8":      (("STRAWBERRY", "CARROT", 8),),
-    "straw->tomato 8":      (("STRAWBERRY", "TOMATO", 8),),
-    "wheat->carrot 8":      (("WHEAT", "CARROT", 8),),
-    "wheat->tomato 8":      (("WHEAT", "TOMATO", 8),),
-    "wheat->carrot 16":     (("WHEAT", "CARROT", 16),),
-    "melon->wheat 8":       (("MELON", "WHEAT", 8),),
-    # combinations of the single shifts, because the crops compete for the same crew turns
-    "straw->wheat+wheat->carrot": (("STRAWBERRY", "WHEAT", 8), ("WHEAT", "CARROT", 8)),
-    "straw->carrot+wheat->tomato": (("STRAWBERRY", "CARROT", 8), ("WHEAT", "TOMATO", 8)),
+    "baseline":            (),
+    # **Tomato, in isolation at four depths.** No top player grows it -- Kawashigi, Emon xu and
+    # Yura are zero across 40+ games -- so its book is uncontested, and the 2026-08-15 note says it
+    # becomes viable in ~50% of games. Both facts argue for testing it; the second says expect half
+    # the seeds to show nothing.
+    #
+    # TOMATO is ONGOING: first yield d+8, then daily to 4 units. Planted after ~d18 it cannot
+    # complete a cycle, so the fork must be early enough to leave a planting window.
+    "wheat->tomato 4":     (("WHEAT", "TOMATO", 4),),
+    "wheat->tomato 8":     (("WHEAT", "TOMATO", 8),),
+    "wheat->tomato 16":    (("WHEAT", "TOMATO", 16),),
+    "straw->tomato 8":     (("STRAWBERRY", "TOMATO", 8),),
+    # the comparison crops, so tomato is judged against an alternative use of the same tiles
+    "wheat->carrot 8":     (("WHEAT", "CARROT", 8),),
+    "straw->wheat 8":      (("STRAWBERRY", "WHEAT", 8),),
+    # combinations -- the crops compete for the same crew turns, so isolation is not additive
+    "tomato 8 + carrot 8": (("WHEAT", "TOMATO", 8), ("WHEAT", "CARROT", 8)),
+    "straw->wheat + tomato 8": (("STRAWBERRY", "WHEAT", 8), ("WHEAT", "TOMATO", 8)),
 }
 
 
