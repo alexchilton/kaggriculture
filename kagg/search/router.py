@@ -210,34 +210,6 @@ CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells again
 
 SERVICE_ROUND = 10
 
-#: `FILLING_WATER` -- the water that takes a one-shot crop to `max_yield` also offers its HARVEST.
-#:
-#: **This is the day-10 melon, and it was never a delivery fault.** Measured on Seb's tape, seed 11,
-#: day 10, weeds off (`scripts/when_the_melon_fills.py`), the hour each of the three ripe MELON tiles
-#: first reads 6/6 and so becomes harvestable at all:
-#:
-#:     SEB   (4,2)=h6   (3,1)=h9   (4,1)=h9        -> SELL 12 @h13, SELL 6 @h15, 0 in shed at dawn
-#:     OURS  (2,0)=h15  (1,0)=h16  (0,0)=h18       -> harvested h17/h19/h20, 18 in shed at dawn
-#:
-#: Both sides wake with the same three tiles at **5/6**. MELON is a one-shot, and
-#: `_one_shot_is_finished` refuses HARVEST while `room > 0` -- correctly, since HARVEST demolishes
-#: the tile. So the harvest could not have happened earlier than the fill on either side, and ours
-#: lands one to three turns after it. The HARVEST is prompt; the WATER is seven hours late. Seven
-#: previous arms moved the delivery leg, which is two steps downstream of this.
-#:
-#: The water is late because of its price. An in-window one-shot water is priced at the single unit
-#: of yield it adds, $250. An out-of-window survival water on an immature melon is priced at
-#: `_crop_remaining`, the whole tile, $1,250-$1,500. So the planner ranked insurance on a tile that
-#: cannot yield for two more days five times above the one water that unlocks same-day money, and
-#: `plan_routes` -- prize-sorted, `prize / cost`-scored -- put it at dusk.
-#:
-#: That price is right for a water with room to spare and wrong for the LAST one, which is the only
-#: thing between the tile and its whole harvest. When the water fills the tile, the node offers the
-#: HARVEST too: `_live_ops` re-derives at the tile, so the unit waters, and next turn `room == 0`
-#: makes `_one_shot_is_finished` true and the same stop emits the HARVEST. No new mechanism -- the
-#: crew already does exactly this back-to-back pair, and this only makes the planner see it coming.
-FILLING_WATER = True
-
 #: Ops whose item really is drawn at the shed. `BUILD` is here because the unit may as well carry the
 #: animal on the same trip and PLACE it the turn after the pen goes up.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
@@ -454,33 +426,6 @@ def _animal_remaining(cell, day):
     return max(0, days_left) // a["interval"] * price
 
 
-#: Water a tile that is NOT at risk, so the field stops coming due all on one day.
-#:
-#: The alternate-day rule (`consecutive_unwatered >= 1`) is correct per tile and synchronises the
-#: field in aggregate: everything watered on d11 falls due together on d13. Measured on seed 11,
-#: tiles on the brink at dawn against tiles rescued -- d12 has 15 due and 136 idle turns and still
-#: loses 2; d15 has 34 due, 2 idle turns in the entire day, and loses 6. The trough has turns going
-#: spare while the spike cannot cover its backlog.
-#:
-#: **Priced at a fraction of the survival water, never level with it.** A tile that weeds tonight is
-#: an asset lost outright; a top-up is a convenience. At equal price a spike day spends its turns on
-#: tiles that were never at risk.
-#: **MEASURED AND OFF.** It does what it was built for and loses the season doing it. Seed 11,
-#: tape 91422988, final bank: baseline $79,905 with 16 tiles starved; with this on, $63,645 with 5
-#: starved. Stacked on the crew planner for d0-d3 it is $91,943 -> $62,284. Brink misses over
-#: d0-d20 fall 13 -> 4 and the board carries zero dry tiles from d27 -- the rule is not broken, the
-#: tiles are simply worth less than the turns it takes to save them.
-#:
-#: The argument for switching it on was that the earlier `>= 0` widening had been rejected for
-#: reasons that had expired (wrong tape, measured only over d0-d7 where 17 tiles fit in a day). That
-#: argument was wrong on its own terms: the trough day's idle turns are not free, because spending
-#: them puts the hand somewhere else when the next spike lands.
-#: **Water half the SAFE tiles each day, alternating, instead of none of them.**
-#:
-#: A tile watered yesterday cannot weed tonight, so the survival rule skips it entirely -- which is
-#: why d3 emitted 7 waters against the leader's 14. See the note at the emission.
-WATER_ROTATION = True
-
 TOP_UP_SAFE_TILES = False
 #: Not before day 7. Seventeen tiles fit inside one day with room to spare, Seb waters alternate days
 #: there and takes zero weeds doing it, and d0-d6 is matched to the tape op for op.
@@ -565,7 +510,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # goes red on precisely that. Certain money today and contingent value tomorrow are
                 # not the same $1,500, and this node is the only place the difference is expressible.
                 gain = 2 if fertilized else 1
-                if FILLING_WATER and age >= info["first"] and gain >= room:
+                if age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
         elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
               and not upkeep_buys_nothing(day)):
@@ -595,7 +540,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
-        elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
+        elif (tile is not None and not cell["watered_today"]
               and (tile[0] + tile[1] + day) % 2 == 0
               and not upkeep_buys_nothing(day)):
             # Same last-day gate as the survival water above: the alternation only exists to keep
@@ -1086,18 +1031,6 @@ class Node:
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
 
 
-#: **Serve the animal on the turn it is placed, instead of discovering it a turn later.**
-#: A PLACE node also carries the FEED and CARE that animal needs today. Ships ON: the alternative
-#: is that the ops only come into existence once the animal is standing on the tile, which is a
-#: board the dawn plan never sees, and the day is fully deterministic so there is nothing to
-#: discover. See the note at the PLACE branch for the d0 measurement.
-SERVE_THE_ANIMAL_IT_PLACES = True
-
-#: Whether a pinned BUILD carries the PLACE (and its FEED and CARE) for the animal the pin was made
-#: for, so the pen is built and filled by one chain in one plan. OFF restores the old behaviour: the
-#: placement cannot be seen until a later turn finds the pen already standing, which needs a replan.
-BUILD_THEN_PLACE = True
-
 #: Whether a pinned PLANT carries the WATER (and FERTILIZE) the seed will need the moment it is in
 #: the ground. Same defect and same shape as `BUILD_THEN_PLACE`: without it the dawn plan cannot see
 #: the 17 waters day 0 creates for itself, and only a replan finds them.
@@ -1304,7 +1237,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         # depot draw for the wheat as part of the same tour.
                         price = BASE_PRICE[ANIMALS[a]["product"]]
                         ops = [("PLACE", a, served)]
-                        if SERVE_THE_ANIMAL_IT_PLACES and TPD - hour - 1 >= SERVICE_ROUND:
+                        if TPD - hour - 1 >= SERVICE_ROUND:
                             ops.append(("FEED", "WHEAT", MANDATORY + price))
                             ops.append(("CARE", None, price))
                         break
@@ -1360,7 +1293,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
         # the schedule's own ordered row and through the same siting rules as every other pen. So
         # the placement IS geometry -- it is decided where the pasture is decided -- and all this
         # does is let the node say so.
-        if BUILD_THEN_PLACE and op == "BUILD" and item in ANIMALS and chain_left[item] > 0:
+        if op == "BUILD" and item in ANIMALS and chain_left[item] > 0:
             chain_left[item] -= 1
             served = ANIMALS[item]["cost"] + _animal_remaining(
                 {"animal": item, "placed_day": day}, day)
@@ -1373,7 +1306,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
             # Priced exactly as the standing-pen branch prices them, so a fresh pen's dinner does
             # not outbid an existing animal's. A BUILD costs a turn before the PLACE can start, so
             # the service round needs one more turn of headroom here than it does there.
-            if SERVE_THE_ANIMAL_IT_PLACES and TPD - hour - 2 >= SERVICE_ROUND:
+            if TPD - hour - 2 >= SERVICE_ROUND:
                 price = BASE_PRICE[ANIMALS[item]["product"]]
                 later.append(("FEED", "WHEAT", MANDATORY + price))
                 later.append(("CARE", None, price))

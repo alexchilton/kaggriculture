@@ -209,34 +209,6 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
-#: Whether a hand already standing at the shed, holding produce today's row wants AND items later
-#: jobs need, drops the lot and draws the latter straight back -- instead of carrying the produce to
-#: the end of the tour because the drop cannot be selective. See the block in `materialise`.
-REDRAW_RATHER_THAN_CARRY = True
-
-#: Whether that re-draw refuses when the thing it means to draw back is on today's SELL row.
-#:
-#: **The re-draw is planned as a certainty and is not one.** `_process_market` runs AFTER the unit
-#: phase in the same turn (`kaggriculture.py:922` then `:928`), so the drop lands in the shed and the
-#: turn's SELL orders lift it out again before the hand comes back. On this board the row's produce
-#: and the herd's dinner are the same commodity, which is what makes it reachable at all.
-#:
-#: Measured, seed 11 day 4, Seb's tape. The herd hand banks one fertilizer at h6 and sheds three
-#: wheat with it -- `DROP` is all-or-nothing (`kaggriculture.py:333`) -- then asks for three back at
-#: h8 and gets one, because that turn's row sold `WHEAT 1` and `FERTILIZER 1`. The shed then reads
-#: empty from h9 to h18, so `FETCH_THE_FEED_AND_RETURN` cannot rescue it either: its gate is
-#: `shed["WHEAT"] > 0`. The cow placed at `(3,3)` at h14 is never fed and never cared for.
-#:
-#: Seb does not make the trip. Same day, same board, same purchases (6 wheat in the shed at dawn and
-#: 1 bought -- he is NOT better supplied): he draws the whole shed at dawn across two carriers,
-#: sends a third hand out with the cow, and emits no DROP at all before h18. See
-#: `docs/how_seb_feeds_the_herd.md`.
-#:
-#: Narrowed, not switched off. The day-1 case `REDRAW_RATHER_THAN_CARRY` was added for -- fertilizer
-#: held from h5 to h16, four units sold for $2 less than the tape -- has nothing owed ahead that the
-#: row also sells, so it still fires.
-REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE = True
-
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
 #:
@@ -271,38 +243,6 @@ DELIVER_SURPLUS_NOT_THE_ROW = False
 #: one turn. See the note where it fires. This is the cheap half of the delivery defect above: it
 #: never buys a walk, so it cannot take turns away from feeding the way the detour version did.
 DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
-
-#: **Harvest all day, bank at dusk.** No mid-tour DROP while the tour still has produce to take.
-#:
-#: Read off Seb's own actions on day 4 of both tapes -- fourteen harvests each time, and not one
-#: DROP until the harvesting was finished:
-#:
-#:     seb (interval 12)  HARVEST 4 6 7 8 9 11 12 12 13 14 15 15 15 17   DROP 20 20 21 22 23
-#:     seb1326 (24)       HARVEST 4 6 8 9 10 11 11 13 14 14 14 14 15 18  DROP 18 21 21 21 22 23 23
-#:
-#: The env rebalance moved the sweep earlier and made it longer -- seven drops from h18 rather than
-#: five from h20, because at `townCenterSellInterval` 24 the town absorbs less per tick -- and left
-#: the ordering rule untouched. His algorithm did not change; the volume it has to move did.
-#:
-#: Ours on `seb1326` day 4 dropped at h14 and h16, sold those part-loads for $282 and $507, then
-#: took its LAST drop at h21 while still harvesting at h21, h21 and h22 -- so that produce was in
-#: hand when the day closed. The row asked `WHEAT 49, FERTILIZER 6`; we filled 27 and 3, and the
-#: bank finished the day at $73 against his $1,107.
-#:
-#: All three mid-tour drop paths are gated on this, because the defect is in none of them
-#: individually: each is locally reasonable and none looked AHEAD for produce still to come.
-#: The closing drop is deliberately NOT gated -- it runs after every job by construction, and it is
-#: what this rule funnels the whole day's load into.
-#:
-#: **NARROWED 2026-08-10 to HARVEST only.** It was written against `Job.yields()`, and `YIELDING` is
-#: `("HARVEST", "COLLECT_FERTILIZER")` -- so a day whose only production is fertilizer could not bank
-#: until its last pen was walked. Day 5 of `seb1326`, seed 11, held $17 from h03 to h19 with four
-#: fertilizer in the crew's hands, re-offering a $100 strawberry seed on every one of those turns; it
-#: arrived at h21 and was still in the bag at dusk. The tape gates on HARVEST and nothing else --
-#: `d4 HARVEST 5..19 / DROP 19 22 22 22 23` against `d6 COLLECT_FERTILIZER 3 4 6 8 10 11 14 /
-#: DROP 9 15 17 19`, where he banks with three collections still ahead. See `Job.harvests()`.
-BANK_ONLY_AFTER_THE_LAST_HARVEST = True
-
 
 #: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
 #: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
@@ -827,8 +767,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # `REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`. The drop and the day's SELL orders hit the same
         # shed on the same turn and the market goes second, so banking the herd's wheat on a day whose
         # row sells wheat does not cost a turn -- it costs the feed.
-        contested = (REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE
-                     and any(wanted.get(p, 0) > 0 for p, q in after[i].items() if q > 0))
+        contested = (any(wanted.get(p, 0) > 0 for p, q in after[i].items() if q > 0))
         # **Is there still a harvest ahead on this tour?** See `BANK_ONLY_AFTER_THE_LAST_HARVEST`.
         # `work[i:]` includes the job about to be walked to, which is right: a drop planned on the
         # way TO a harvest is as early as one planned between two.
@@ -842,8 +781,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # fourteen wheat harvests meet a `WHEAT 49` row and the dusk rule is exactly right.
         funding = (BANK_THE_ROWS_PRODUCE_WHILE_REAPING and rush
                    and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
-        reaping = (BANK_ONLY_AFTER_THE_LAST_HARVEST
-                   and any(w.harvests() for w in work[i:])
+        reaping = (any(w.harvests() for w in work[i:])
                    
                    and not funding)
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
@@ -851,7 +789,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
             route.append(Depot(d, drop=True))
             held = collections.Counter()
             pos = d
-        elif (REDRAW_RATHER_THAN_CARRY and free and spare > 0 and owed_ahead and not contested
+        elif (free and spare > 0 and owed_ahead and not contested
               and not reaping
               and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items())):
             # **A hand standing at the shed holding the row's produce should bank it and take its
