@@ -111,17 +111,8 @@ MANDATORY = 100_000
 #: actual thing: losing the animal is not a bigger prize, it is a different kind of event.
 CRITICAL = 1_000_000
 
-#: Whether a pen one missed day from losing its animal is CRITICAL rather than merely mandatory.
-#: A flag so the arm stays attributable, and because this repo records four separate occasions where
-#: an animal verdict turned out to be a measurement artifact. Any accepted version must be judged on
-#: ANIMALS STANDING IN PENS per day, never on cells or money alone.
-FEED_IS_CRITICAL_WHEN_AT_RISK = True
-
-
 #: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
-
-HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
 
 #: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
 #: so an ungated version WOULD re-rank d4 -- inside the d0-d8 window that is matched to the tape op
@@ -256,34 +247,6 @@ DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
 YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
 
-
-#: **A pen is placed with the animal it was BUILT for.**
-#:
-#: This is the "upstream of `build_nodes`, in the buy/place order" the note above ends on, and it
-#: turns out to be one line of bookkeeping rather than a new ranking. `_refresh_pins` already sites
-#: pens one at a time against the schedule's ORDERED `places` row and stamps each with an animal --
-#: `pins[spot] = ("BUILD", a, cost)`. The near ground is pinned first, so the row's order already
-#: decides who gets the short walk. Seb's day-0 row is `['SHEEP', 'SHEEP', 'COW', 'COW']` and his
-#: board reads exactly that. The assignment was being made correctly and then thrown away: the
-#: instant the pen is BUILT the tile stops being `None`, `_refresh_pins` pops the pin, and the
-#: animal is re-derived here from `R.ANIMAL_NAMES = ["GOOSE", "COW", "SHEEP"]` -- so COW wins every
-#: PASTURE. Measured, seed 11, weeds off, at day 1 dawn:
-#:
-#:     Seb   SHEEP@(4,4)d0  SHEEP@(4,3)d1  COW@(3,3)d2  COW@(2,3)d3    sheep walk 0 + 1 = 1
-#:     ours  COW@(4,4)d0    SHEEP@(3,4)d1  COW@(2,4)d2  SHEEP@(1,4)d3  sheep walk 1 + 3 = 4
-#:
-#: Both blocks sum to 22 from the depot, so no SITING rule can close this -- it is not a shape
-#: problem. `PEN_SPOTS`, `PEN_NEAREST_DEPOT` and `PEN_NEAREST_DEPOT_FROM_DAY` all move WHERE a pen
-#: goes and none of them can move WHICH animal ends up in it.
-#:
-#: It is not the value tie-break rejected in `build_nodes` either, which cost **-$5,676** on the
-#: 12-seed ladder. That one ranked animals by same-turn worth and so could not see that the season
-#: wants 8 COW against 6 SHEEP; this one ranks nothing and reads back a decision the schedule
-#: already made. The failure mode they share -- refusing an available animal while waiting for a
-#: better one -- is excluded by construction: an unfillable reservation falls straight through to
-#: the old order, pinned by
-#: `tests/test_the_pen_holds_the_animal_it_was_built_for.py::test_a_reservation_the_shed_cannot_fill_falls_back_rather_than_stalling`.
-PEN_KEEPS_ITS_ANIMAL = True
 
 #: Cost an insertion as a CLOSED tour -- `delta + homeward(after) - homeward(before)` -- rather than
 #: charging a flat return reserve at acceptance. It is the textbook closed-tour marginal and it is
@@ -699,8 +662,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # whole, and on any day after it while something is still left to save.
         last_free = False
         if (last_free
-                or (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
-                    and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                or (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
                     and age >= _last_safe_age(info))):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
@@ -720,7 +682,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     # DIG, and halved for the same reason: clearing ground is worth what goes into it, and only if
     # something does. Victor digs 30 spent strawberries from d19 on and replants behind them; we hold
     # the dead tiles and `plant` falls to 3/16 by d23 while `sell` collapses.
-    if (DIG_A_SPENT_ONGOING_CROP and info["ongoing"]
+    if (info["ongoing"]
             and int(cell.get("max_lifespan_step", -1)) >= 0):
         best = max((plant_prize(c, day) for c in R.CROPS), default=0)
         if best > 0:
@@ -1014,7 +976,7 @@ def animal_ops(cell, day, have_wheat):
             # A hungry pen is one missed day from the animal escaping outright
             # (`reference/kaggriculture.py:804`), which is irreversible: the structure survives, the
             # animal does not, and nothing on the board buys it back the same day. See `CRITICAL`.
-            floor = CRITICAL if (hungry and FEED_IS_CRITICAL_WHEN_AT_RISK) else MANDATORY
+            floor = CRITICAL if hungry else MANDATORY
             prize = floor + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
             out.append(("FEED", "WHEAT", prize))
             fed = True
@@ -1140,10 +1102,6 @@ BUILD_THEN_PLACE = True
 #: the ground. Same defect and same shape as `BUILD_THEN_PLACE`: without it the dawn plan cannot see
 #: the 17 waters day 0 creates for itself, and only a replan finds them.
 PLANT_THEN_WATER = True
-
-#: Whether an ongoing crop that has produced its lifetime maximum is offered a DIG, so the
-#: ground it is sitting on can be replanted. See the note in `crop_ops`.
-DIG_A_SPENT_ONGOING_CROP = True
 
 #: Whether a stop that HARVESTS a one-shot crop also carries the PLANT its cleared tile can take.
 #: Third instance of the same shape as `BUILD_THEN_PLACE` and `PLANT_THEN_WATER`, and the same shape
@@ -1299,7 +1257,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 # with no reservation, or one the shed cannot fill, falls through to `order`
                 # untouched -- a preference, never a lock, because a lock is what left a SHEEP idle
                 # in the shed for three days.
-                want = (pen_for or {}).get(tile) if PEN_KEEPS_ITS_ANIMAL else None
+                want = (pen_for or {}).get(tile)
                 if want in order and ANIMALS[want]["structure"] == kind:
                     order = [want] + [a for a in order if a != want]
                 for a in order:

@@ -209,27 +209,6 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
-#: **Batching under `DELIVER_MIN` is only coherent when a later delivery exists.** The constant's
-#: own justification is that a small load "rides to the end of the tour, which ends at the shed
-#: anyway" -- and on the shipped day that clause is false: `DELIVER_CUTOFF_TURNS` is 99, so the
-#: closing trip is never charged, and a tour whose remaining stops never stand on a shed-access
-#: tile has NO further chance to bank anything. Whatever it holds of today's row at that point is
-#: stranded by construction and reaches the shed only via the overnight sweep, after the market has
-#: closed.
-#:
-#: Day 6, seed 11, kawashigi grid: the hand shearing (4,3) took 4 WOOL against a row asking 12,
-#: then fed the cows at (0,0) and (1,0) and sat there from h09. The row sold 10/17 with the wool in
-#: its pocket all afternoon. Forcing the closing trip instead was a measured null -- that tour had
-#: spent 21 turns of 23 and the walk home costs 8 -- so the only delivery that can exist for it is
-#: this ferry, priced into the greedy like any other stop.
-#:
-#: Scoped tightly: only when the closing trip is uncharged (`deliver` False), only for a positive
-#: load of the ROW's produce (`load` already counts nothing else while
-#: `DELIVER_SURPLUS_NOT_THE_ROW` is False), and only when neither the current position nor any
-#: remaining stop is a depot tile -- a tour that still touches one is owned by the zero-detour
-#: rules, whose refusals (`REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`) are measured and must stand.
-SHIP_WHAT_NO_LATER_STOP_CAN_BANK = True
-
 #: Whether a hand already standing at the shed, holding produce today's row wants AND items later
 #: jobs need, drops the lot and draws the latter straight back -- instead of carrying the produce to
 #: the end of the tour because the drop cannot be selective. See the block in `materialise`.
@@ -257,32 +236,6 @@ REDRAW_RATHER_THAN_CARRY = True
 #: held from h5 to h16, four units sold for $2 less than the tape -- has nothing owed ahead that the
 #: row also sells, so it still fires.
 REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE = True
-
-#: Whether a shed stop banks only the SURPLUS, with `PLACE`, rather than dumping the whole hand with
-#: `DROP` and drawing the ration straight back.
-#:
-#: `DROP` is all-or-nothing (`kaggriculture.py:333`), so a herd tour that wants to bank one fertilizer
-#: has to bin the wheat its next pens are about to eat and spend a second turn replacing it. Every
-#: comment in this file that says "the drop takes the wheat with it, so the same stop draws back
-#: everything still ahead" is describing that second turn.
-#:
-#: There is a one-turn version and it is the same op the leader uses. `PLACE <item> <n>` on a
-#: shed-adjacent tile is a QUANTIFIED shed drop (`kaggriculture.py:381-395`): n of ONE item into the
-#: shed, the rest of the hand untouched. Kawashigi's day 1 emits no `DROP` at all -- his single bank
-#: of the day is `PLACE FERTILIZER` at h18.
-#:
-#: Measured on day 1, seed 11, kawashigi tape. The farmer works alone on 24 turns and his tour priced
-#: at 18: `Shed[WHEATx3] (4,4)pen Shed[DROP+WHEATx2] (4,3)pen Shed[DROP+WHEATx1] (2,4)pen`. The fourth
-#: pen `(3,4)` priced at **25 in every position** and went uncovered -- one turn over -- while two of
-#: those eighteen turns were spent re-drawing wheat the same stop had just binned. `feed 3/4` and
-#: `care 3/4` on the day, and that is the head of the chain: the sheep miss a production night, d6
-#: shears 9 where the tape shears 12, and d7 cannot afford its third animal.
-#:
-#: It is chosen on COST, never by preference -- `_bank` returns whichever of the two stops is cheaper,
-#: so a hand with three products to bank and nothing owed ahead still DROPs, which is one turn against
-#: three. And never for an animal: `PLACE` on a built empty pen puts the beast IN it
-#: (`kaggriculture.py:370-378`), and pens sit on shed-access tiles by design.
-BANK_THE_SURPLUS_NOT_THE_HAND = True
 
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
@@ -643,8 +596,6 @@ def _bank(tile, held, need, critical=False):
     tiles -- so the selective drop is not selective for livestock, it is a placement.
     """
     drop = Depot(tile, drop=True, pick=need, critical=critical)
-    if not BANK_THE_SURPLUS_NOT_THE_HAND:
-        return drop
     if any(q > 0 and i in R.ANIMALS for i, q in held.items()):
         return drop
     give = collections.Counter({i: q - need.get(i, 0) for i, q in held.items()
@@ -937,7 +888,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # on a depot tile, there is nothing to batch FOR -- the load is stranded by construction.
         # The `due` clock is deliberately not consulted for it: `tail` prices a closing drop that
         # `deliver=False` never plans, so "the tour delivers in time on its own" is fiction here.
-        stranded = (SHIP_WHAT_NO_LATER_STOP_CAN_BANK and not deliver and load > 0
+        stranded = (not deliver and load > 0
                     and pos not in depots
                     and all(tuple(w.tile) not in depots for w in work[i:]))
         if not reaping and (stranded or (load >= DELIVER_MIN and (
@@ -1028,55 +979,6 @@ def draws(route):
             out += stop.pick
     return out
 
-
-#: Whether a PLACE is pinned to the hand that builds its pen. See the block in `cover`'s greedy
-#: commit for the mechanism and the day-0 trace. OFF lets the two land on different hands, which
-#: silently drops the placement.
-PLACE_FOLLOWS_ITS_BUILD = True
-
-#: **End a tour at the shed when that tour will HARVEST something today's row is selling.**
-#:
-#: Not the blanket reserve -- that one charges every tour that ends holding anything, was measured at
-#: HARVEST 325 -> 301 and PASS 834 -> 956, and is a loss. This fires only on the tours that produce a
-#: product the day's `sells` row names, which on a typical day is two or three of thirteen.
-#:
-#: It has to key on `Job.products` and not on `Job.gives`: `gives` is the predicted QUANTITY and is
-#: empty whenever `yield_units` is still 0 at dawn, which is the normal state of a crop that ripens
-#: during the day. That is exactly the case this exists for -- 12 melons harvested h12-h15 on d10 and
-#: carried to h23 with the row asking for 18 and the shed empty all day.
-RESERVE_THE_TRIP_FOR_TODAYS_HARVEST = True
-
-#: **Whether the packer may only price a tour the caller is going to ask for.**
-#:
-#: `cover.cost` is what the greedy admits on. On `RESERVE_DAYS` it prices the sequence as
-#: `materialise(deliver=True, wanted_only=True)` -- a tour ending in one closing walk to the shed.
-#: The shipped agent never asks for that tour: `_solve` sets
-#: `deliver = max(budget) > DELIVER_CUTOFF_TURNS` with the cutoff at 99 against budgets of 23-24, so
-#: `deliver` is always False and the closing walk is never planned.
-#:
-#: Pricing it anyway measures a tour that does not exist, and measures it CHEAP: with no walk home,
-#: `materialise` inserts MID-TOUR shed trips instead so the load is not stranded past market close,
-#: and those are not in the delivering tour. Seed 11, day 10, unit 9, one sequence priced both ways:
-#:
-#:     deliver=True, wanted_only=True   21 turns  SHED -> (7,4) -> (6,4) -> (6,3) -> (5,3) -> SHED
-#:     deliver=False                    29 turns  SHED -> (7,4) -> SHED -> (6,4) -> SHED -> (6,3) -> (5,3)
-#:
-#: Budget 23. The packer admitted 21 turns and the day walked 29, so the last two stops were never
-#: reached -- both FEEDs. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:817`), and
-#: the ladder loses tile (6,4) on day 11 that way in 93186363, 93237183 and 93239838.
-#:
-#: **Measured ON, and it is NOT a clean win, which is why it is a flag and not an edit.** Seed 11
-#: against the kawashigi tape, d0-d8 byte-identical either way:
-#:
-#:     feed d10  11/12 -> 12/12      harvest d9-d29  -15 -> -19
-#:     feed d11  13/14 -> 14/14      place   d9-d29  -29 -> -31
-#:     sell d9-d29  -108 -> -62      idle    d9-d29 +406 -> +452
-#:
-#: It closes the starvation -- 0 stranded FEEDs and 0 unfed animals from d8 on, against 3 and 2 --
-#: and it costs the melon day: `sell d10 86/91 -> 57/91`, `drop d10 8 -> 4`, and NO melon reaches
-#: the shed during d10 at all, because the over-long tours were what banked it mid-day. The freed
-#: turns are not re-spent: u3 and u6 finish d10 at 0 of 23 with nothing assigned.
-PRICE_THE_TOUR_THE_CALLER_WILL_WALK = True
 
 #: First day the reserve may fire. **d0-d6 is deliberately untouched -- Alex's instruction, and the
 #: measurement agrees**: without the reserve those days are exact on `harvest 14/14`, `water 17/17`
@@ -1351,8 +1253,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         # (`kaggriculture.py:817`), so the same overrun two days running is a $400 asset gone and a
         # pasture idle for the rest of the season. Seen on the ladder in 93186363, 93237183 and
         # 93239838, each losing tile (6,4) on day 11.
-        if ((deliver or not PRICE_THE_TOUR_THE_CALLER_WILL_WALK)
-                and RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS):
+        if deliver and wanted and day in RESERVE_DAYS:
             return turns(units[u], materialise(units[u], work, load(u), depots, wanted, True, rush,
                                                wanted_only=True, due=due))
         return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush,
@@ -1377,17 +1278,16 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     # position after it. Placements still compete for turns on their merits; they just compete on
     # the one hand that can actually serve them.
     build_at = {}
-    if PLACE_FOLLOWS_ITS_BUILD:
-        for j in jobs:
-            if any(o == "BUILD" for o, _i in j.ops):
-                build_at[tuple(j.tile)] = j
+    for j in jobs:
+        if any(o == "BUILD" for o, _i in j.ops):
+            build_at[tuple(j.tile)] = j
 
     def slot(u, j, base, limit=None):
         """Cheapest position for `j` in unit `u`'s `base` sequence within `limit` turns, `(cost, i)`."""
         if j.only is not None and j.only != u:
             return None
         first = 0
-        if PLACE_FOLLOWS_ITS_BUILD and any(o == "PLACE" for o, _i in j.ops):
+        if any(o == "PLACE" for o, _i in j.ops):
             b = build_at.get(tuple(j.tile))
             if b is not None and b is not j:
                 if b not in base:
