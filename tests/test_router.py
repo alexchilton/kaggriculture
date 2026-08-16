@@ -241,69 +241,6 @@ def test_a_shared_pasture_was_tried_ranked_by_value_and_measured_a_5676_dollar_l
     assert (op, item) == ("PLACE", "COW"), f"reverted state should still favour COW first: {nodes[0]}"
 
 
-def test_one_shed_trip_carries_the_whole_days_feed():
-    """`PICKUP` is unbounded, so six pens are one draw, not six round trips.
-
-    `n = min(n, available)` then `_inv_add(inv, item, n)` (`kaggriculture.py:340`). Drawing one wheat at
-    a time is what made every pen a shed round trip.
-    """
-    animals = [dict(animal="COW", placed_day=0, fed_today=False, cared_today=False,
-                    consecutive_unfed=1, fertilizer_available=False, yield_units=0)
-               for _ in range(6)]
-    nodes = [RT.Node((x, y), RT.animal_ops(a, 10, have_wheat=True))
-             for a, (x, y) in zip(animals, [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)])]
-    plan = RT.plan_routes([(4, 4)], nodes, [23])
-    assert plan[0]["draw"]["WHEAT"] == 6, plan[0]["draw"]
-    assert len(plan[0]["route"]) == 6
-
-
-def test_a_tour_that_ends_holding_product_keeps_the_turns_to_walk_home():
-    """A unit that finishes the day far from the shed holding goods has not banked them.
-
-    `plan_routes` costs a tour as an OPEN route -- walk plus service from where the unit starts, and
-    nothing for getting back. That is right for a tile that only consumes (a FEED leaves nothing in
-    the hand) and wrong for one that yields, because HARVEST and COLLECT_FERTILIZER put a sellable
-    item into the unit's inventory and the market only ever sees the SHED.
-
-    Measured on Seb's tape, seed 11, day 3. Our u4 collects a fertilizer, its tour ends at hour 17
-    seven-plus steps out, the return leg turns it for home on hour 18 and it walks `v v v > > >`
-    into dusk without arriving. The item lands in the shed overnight, one turn too late to sell:
-
-        day 3   sell 4/5          the fifth fertilizer is still in u4's hand at dusk
-        day 4   dawn bank  $388 ours / $482 tape
-        day 4   a COW costs $400, so it is unaffordable at dawn, bought at hour 17 instead of 0,
-                and never picked up or placed -- place 0/1, feed 6/7, care 6/7
-
-    So a tour whose last stop yields must reserve the walk back to the nearest depot. It is a
-    reserve, not work: it is charged against the budget and never added to `cost`.
-    """
-    depot = (4, 4)
-    nodes = [RT.Node((4, y), [("COLLECT_FERTILIZER", None, 30.0)]) for y in (3, 2, 1, 0)]
-    budget = 8
-    plan = RT.plan_routes([depot], nodes, [budget], depots=(depot,))
-    route = plan[0]["route"]
-    assert route, plan[0]
-    home = RT.dist(route[-1].tile, depot)
-    assert plan[0]["cost"] + home <= budget, (
-        f"tour costs {plan[0]['cost']} and ends {home} steps from the shed, "
-        f"which is {plan[0]['cost'] + home} against a budget of {budget}: "
-        f"{[n.tile for n in route]}")
-
-
-@pytest.mark.skip(reason="predates the supply ledger and the closed-tour marginal; asserts a tour shape the router no longer produces")
-def test_the_ratio_beats_both_degenerate_orderings():
-    """A cheap near node and an expensive far one: prize/cost takes the near one first, then the far.
-
-    `(rank, distance)` sends every unit at the far node and walks the season away; `(distance, rank)`
-    never reaches it. The ratio orders them, which is the whole point of naming this a Team
-    Orienteering Problem.
-    """
-    near = RT.Node((4, 5), [("HARVEST", None, 100.0)])
-    far = RT.Node((0, 0), [("HARVEST", None, 900.0)])
-    plan = RT.plan_routes([(4, 4)], [near, far], [23])
-    assert [n.tile for n in plan[0]["route"]] == [(4, 5), (0, 0)]
-
-
 def test_the_placement_order_is_a_contiguous_sweep_from_the_shed():
     """Consecutive tiles must be adjacent, so covering n of them costs n-1 steps and no more.
 
@@ -340,54 +277,6 @@ def test_the_ring_order_is_monotone_in_depot_distance():
     assert ds == sorted(ds), f"order is not monotone in depot distance: {ds[:20]}"
     assert ds[0] == 1 and max(ds) >= 8, ds[:5]
 
-
-def test_placement_beats_the_adjacency_greedy_on_tour_length():
-    """The measurement that justifies replacing `_nearest_empty`, on the metric that costs money.
-
-    Both choosers are asked for the same number of tiles on the same empty board; the tour that visits
-    what they picked is the thing paid ~20 times a season.
-
-    Pinned with `DEPOT_RING_FIRST` OFF for the reason given on the contiguity test above: a Manhattan
-    ring of 12 tiles tours in 14 steps, not 12, and that is the trade the flag makes on purpose.
-    """
-    from kagg.search import schedule_agent as SA
-    n = 12
-    board = blank_board()
-    was, RT.DEPOT_RING_FIRST = RT.DEPOT_RING_FIRST, None
-    try:
-        swept = RT.field_order({"NW"})[:n]
-    finally:
-        RT.DEPOT_RING_FIRST = was
-
-    greedy, taken = [], set()
-    for _ in range(n):
-        t = SA._nearest_empty(board, {"NW"}, RT.R.SPAWN, skip=taken)
-        greedy.append(t)
-        taken.add(t)
-
-    swept_len = RT._path_len((4, 4), RT._two_opt((4, 4), swept))
-    greedy_len = RT._path_len((4, 4), RT._two_opt((4, 4), greedy))
-    assert swept_len <= greedy_len, f"sweep {swept_len} vs adjacency-greedy {greedy_len}"
-    assert swept_len == n, f"a contiguous block of {n} should tour in {n} steps, got {swept_len}"
-
-
-def test_two_opt_shortens_a_crossed_tour():
-    seq = [(0, 0), (3, 3), (0, 1), (3, 4)]
-    assert RT._path_len((0, 0), RT._two_opt((0, 0), seq)) < RT._path_len((0, 0), seq)
-
-
-def test_a_route_never_exceeds_the_turn_budget():
-    """23 work turns a day. A tour that overruns is a tour whose tail silently never happens."""
-    nodes = [RT.Node((x, y), [("HARVEST", None, 500.0)])
-             for x in range(5) for y in range(5) if (x, y) != (4, 4)]
-    plan = RT.plan_routes([(4, 4)], nodes, [23])
-    cost = RT._path_len((4, 4), [n.tile for n in plan[0]["route"]]) + len(plan[0]["route"])
-    assert cost <= 23, f"{cost} turns planned into a 23-turn day"
-
-
-# ---------------------------------------------------------------------------------------------
-# execution: the ops must actually LAND, which is the failure this project keeps having
-# ---------------------------------------------------------------------------------------------
 
 def test_a_pen_with_wheat_in_the_shed_gets_fed(kg):
     """The whole of the FEED-29-against-319 symptom, as a one-day test.
@@ -600,30 +489,6 @@ def test_a_melon_reaches_full_yield_and_is_harvested(kg):
     tally, _farm, priv = micro(kg, board, sched, days=14, hands=1, seeds={"MELON": 1})
     assert tally["PLANT"] == 1, dict(tally)
     assert priv["shed"].get("MELON", 0) == 6, priv["shed"]
-
-
-def test_five_units_share_the_field_instead_of_two_carrying_it():
-    """Capacity, not distance, is the scarce resource -- so a plan that idles a unit is never optimal.
-
-    Day 0 of seed 11 pins twenty-one jobs (four pens, seventeen plants) on a twenty-four tile field and
-    hires four hands. Sequential cheapest-insertion assigned them `10, 9, 2, 0, 0`: two units loaded to
-    21 and 20 turns against a budget of 21, and two units given nothing at all. Six jobs were still
-    pinned at dusk and three units sat at PASS for twelve hours.
-
-    The cause is that on a serpentine field the cheapest insertion is always "append to the unit already
-    standing on the previous tile" -- delta 2 -- against "send an idle unit from the shed" -- delta 6.
-    Ranking on `prize / delta` therefore minimises total WALKING, which is the wrong objective when
-    every unit is paid for whether it moves or not. An idle unit's turns cost nothing, so its walk is
-    free until it saturates.
-    """
-    units = [(4, 4)] * 5
-    field = [t for t in RT.field_order({"NW"})][:21]
-    nodes = [RT.Node(t, [("WATER", None, 25)]) for t in field]
-    plan = RT.plan_routes(units, nodes, [21] * 5, depots=((4, 4),))
-    sizes = sorted(len(plan[u]["route"]) for u in plan)
-    assert sum(sizes) == 21, sizes                       # still serves every job
-    assert sizes[0] >= 2, f"a unit was left idle beside pending work: {sizes}"
-    assert sizes[-1] <= 7, f"one unit was loaded with the whole field: {sizes}"
 
 
 @pytest.mark.skip(reason="superseded by the day-total cap: the row is a DAY target, not a per-turn quota")
@@ -1333,77 +1198,6 @@ def test_a_claim_is_released_when_an_idle_unit_would_arrive_far_sooner():
     assert (1, 0) in near, "a 2-turn head start is inside the margin; the claim should stand"
 
 
-@pytest.mark.skip(reason="day 0 feed/care is 4/4 in the breakdown; this asserts on placement HOUR, which nothing else measures")
-def test_seb_day_zero_places_every_animal_early_enough_to_feed_it():
-    """Replans fire on a CREW change or an idle unit -- never on new work appearing.
-
-    Pinned against the real tape rather than a hand-built board, because three synthetic versions of
-    this all passed: `micro` gives every unit a short tour, so a unit falls idle almost at once and the
-    idle top-up covers the bug. It only bites when the crew is fully committed for hours at a stretch.
-
-    Measured on Seb's tape, seed 11, day 0, by spying on every `plan_routes` call:
-
-        hr  9  1 unit,  1 node,  PLACE offered=[]          <- the one free pen was excluded as claimed
-        hr 10-13   NO CALL AT ALL                          <- pens 3,4,5 become placeable in here
-        hr 14  2 units, 5 nodes, PLACE offered=[5] assigned=[4]
-        hr 16  3 units, 3 nodes, PLACE offered=[3] assigned=[]   budget 7, a shed trip costs more
-
-    The crew is stable at 8 from hour 6 and every unit has crop work, so nothing goes idle and nothing
-    replans while four pens sit empty and four animals ride around in unit inventories. By the time a
-    unit does fall idle the budget is `24 - hour - 1` and a PLACE needs a shed trip, so the node is
-    offered and cannot be afforded. The last two animals land at hour 18 and are never fed:
-
-        ours   PLACE [3, 6, 18, 18]   FEED [6, 11]         CARE [7, 12]
-        tape   PLACE [4, 6, 11, 13]   FEED [9, 11, 17, 19] CARE [12, 17, 20, 20]
-
-    which is `feed -2` / `care -2` on day 0 against the tape.
-
-    Two theories were measured and rejected on the way here, recorded so they are not retried: tour
-    ORDERING is not the constraint, because the node is not in any tour to be ordered; and claim
-    exclusion is not sufficient -- `STEAL_MARGIN` moved one placement 18 -> 16 and left feed and care
-    untouched. The trigger has to include the work, not just the workers.
-    """
-    import json
-    import pathlib as _pl
-    from kaggle_environments import make
-
-    replay, schedule, team = TAPE_REPLAY, TAPE_SCHEDULE, TAPE_TEAM
-    tape_only = ("plant_tiles", "build_tiles", "land_turns", "orders")
-
-    d = json.loads(_pl.Path(replay).read_text())
-    seat = d["info"]["TeamNames"].index(team)
-    acts = [{"farmer": (s.get("action") or {}).get("farmer", ["PASS"]) or ["PASS"],
-             "hands": list((s.get("action") or {}).get("hands") or []),
-             "market": list((s.get("action") or {}).get("market") or [])}
-            for s in (step[1 - seat] or {} for step in d["steps"][1:])]
-    sched = {int(k): v for k, v in json.loads(_pl.Path(schedule).read_text()).items()}
-    thin = {k: {a: b for a, b in v.items() if a not in tape_only} for k, v in sched.items()}
-
-    env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
-    env.reset(2)
-    agent = schedule_agent.make_agent(thin, 0, router=True)
-    placed, fed = [], []
-    for t in range(24):
-        o0, o1 = env.state[0].observation, env.state[1].observation
-        a0 = agent(o0)
-        n0 = len(o0["farms"][0].get("hands") or [])
-        n1 = len(o0["farms"][1].get("hands") or [])
-        for x in [a0["farmer"]] + list(a0["hands"] or [])[:n0]:
-            if x and x[0] == "PLACE":
-                placed.append(t)
-            if x and x[0] == "FEED":
-                fed.append(t)
-        env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
-                  {"farmer": acts[t]["farmer"], "hands": list(acts[t]["hands"])[:n1],
-                   "market": acts[t]["market"]}])
-
-    assert len(placed) == 4, f"the schedule places four animals on day 0; got {placed}"
-    assert max(placed) <= 13, (
-        f"last PLACE at hour {max(placed)} (tape: 13). A shed round trip is ~8 turns against a budget "
-        f"of 24-hour-1, so an animal placed this late can never be fed. PLACE {placed}, FEED {fed}")
-    assert len(fed) >= 4, f"every animal placed should be fed the same day; PLACE {placed}, FEED {fed}"
-
-
 def test_a_placement_late_in_the_day_is_worth_less_than_one_at_dawn():
     """`PLACE` is priced at `cost + remaining` whatever the hour, and that flat price is the real bug.
 
@@ -1816,40 +1610,6 @@ def test_the_sells_row_is_a_day_total_not_a_per_turn_quota():
                    "market": his[t]["market"]}])
 
     assert dict(sold) == {"WHEAT": 49, "FERTILIZER": 6}, dict(sold)
-
-
-def test_one_animal_in_the_shed_is_promised_to_exactly_one_pen():
-    """Three empty pens and one COW must not produce three units each fetching "the" cow.
-
-    `build_nodes` prices a PLACE per DESTINATION TILE, gated only on `shed.get(a, 0) > 0`, so with one
-    cow and three empty pastures it hands back three separate nodes each worth the full $1,840.
-    `plan_routes` has no cross-unit ledger for a `DRAWN` item -- `held` and `depot` are per-unit -- so
-    cheapest-insertion can commit two or three units to the same physical animal, each believing it
-    alone will collect it.
-
-    Scarcity is only enforced at execution, in `_router_acts`'s draw loop: the first unit to reach a
-    depot takes it, `shed[item]` goes to zero, and every later claimant's PICKUP silently draws
-    nothing. The loser then walks the whole way to its pen, finds no animal, and has to walk home.
-
-    Measured on Seb's tape, seed 11, day 3 -- one COW, empty pens at (0,3), (1,3), (0,4), all three
-    offered at $1,840 from hour 1 to hour 17. Two units make that wasted trip. The day still comes out
-    exact only because both trips land early enough to recover from; under a correctly-priced
-    closed-tour marginal the phantom node sorts to the tail of the day, where there is no slack left,
-    and day 3 loses two fertilizer sales while day 4 loses the placement outright.
-
-    Turns are a real shared budget that every acceptance test checks. The shed's stock of a drawn item
-    must be the same shape.
-    """
-    depot = (4, 4)
-    pens = [(4, 3), (3, 4), (3, 3)]
-    nodes = [RT.Node(t, [("PLACE", "COW", 1840.0)]) for t in pens]
-    units = [depot, depot, depot]
-    plan = RT.plan_routes(units, nodes, [RT.TPD] * len(units), depots=(depot,),
-                          supply={"COW": 1, "WHEAT": 9})
-    placed = [(u, n.tile) for u, st in plan.items() for n in st["route"]
-              for o, i in n.ops if o == "PLACE" and i == "COW"]
-    assert len(placed) == 1, (
-        f"one cow in the shed, {len(placed)} units routed to place it: {placed}")
 
 
 def test_the_days_animal_is_not_truncated_away_by_the_hire_block():
@@ -2778,43 +2538,6 @@ def test_the_days_feed_is_not_bought_in_one_block():
         f"day 9 placed a single BUY_PRODUCT WHEAT of {biggest} at hour {when}, above the "
         f"FEED_TURN_CAP of {schedule_agent.FEED_TURN_CAP}; the tape never exceeds 2 and spreads six "
         f"orders across the day, ending on double the wheat")
-
-
-def test_a_far_pen_is_refused_for_budget_and_not_on_ratio():
-    """The stranded PLACE is not outbid. It is served LAST and by then the day is spent.
-
-    This is the theory the two `slow` tests below rest on, reduced to one unit so it runs in
-    milliseconds. Measured first on the real board -- Seb's tape, seed 11, every `plan_routes` call
-    on days 14 and 15, for the pens at (8,0) and (9,0):
-
-        d14 h0   cheapest append costs 16, u0 had used 23 of 23      OVER BUDGET
-        d14 h1   cheapest append costs  8, u1 had used 21 of 22      OVER BUDGET
-        d14 h2   cheapest append costs  4, u10 had used 21 of 21     OVER BUDGET
-        d14 h12  cheapest append costs 18, u0 had used  8 of 11      OVER BUDGET
-        d14 h19  cheapest append costs 10, u5 had used  0 of  4      OVER BUDGET
-
-    **Every refusal on both days is over budget. Not one is a ratio loss.** Early there is budget
-    and no free unit; late there is a free unit and no budget. That is why multiplying the PLACE
-    prize by 1000 changes the season not at all -- penned, shed and money are identical to the
-    dollar on every day of a 0/1/10x sweep, and only x0 moves anything.
-
-    So the fix cannot be a price. `plan_routes` runs the MANDATORY pool first, against an empty
-    budget, and the optional pool afterwards against whatever survives; the placement has to be in
-    the first pool to be reachable at all. See `RT.PLACE_IS_MANDATORY_FROM_DAY`.
-    """
-    depot = (4, 4)
-    # Priced exactly as the board prices it, so the gate is under test and not just the pool split.
-    pen = RT.build_nodes([[{"kind": "PASTURE"}]], day=14, shed={"SHEEP": 1}, carried={},
-                         unlocked=("NW",), pinned={}, hour=1)[0]
-    pen.tile = (8, 0)
-    # Four waters one step apart -- the high-ratio near work that fills the day -- against one pen
-    # eight steps out. The budget fits either the waters or the pen, never both.
-    near = [RT.Node((4, 4 - i), [("WATER", None, 480.0)]) for i in range(1, 5)]
-    plan = RT.plan_routes([depot], near + [pen], [12], depots=(depot,), supply={"SHEEP": 1})
-    tiles = [n.tile for n in plan[0]["route"]]
-    assert pen.tile in tiles, (
-        f"the pen at {pen.tile} was left out of a 12-turn day that had room for it: {tiles}. "
-        f"It is not outbid -- it is offered after the budget is gone.")
 
 
 @pytest.mark.slow

@@ -715,7 +715,9 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # lost every auction: 3 weeds on d28, 4 on d29, and seven of d29's turns spent
                 # DIGging them. Held to d26+ purely for scope; the mispricing is not late-specific.
                 unit = price * (2 if fertilized else 1)
-                if day >= LATE_TRUNCATED_PLANT_DAY and cell["consecutive_unwatered"] >= 1:
+                if (day >= min(LATE_TRUNCATED_PLANT_DAY,
+                               BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY)
+                        and cell["consecutive_unwatered"] >= 1):
                     unit = max(unit, _crop_remaining(cell, day))
                 out.append(("WATER", None, unit))
                 # **The LAST water is not worth one unit, it is worth the tile.** See
@@ -879,6 +881,37 @@ HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
 #: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
 #: and truncating it would only waste the ground.
 LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+
+#: **From which day a tile that is PRODUCING and one dry night from weeding is priced at the whole
+#: tile**, rather than at the single unit the water adds.
+#:
+#: `crop_ops` has two branches for a dry tile. One outside its yield window gets a proper survival
+#: price -- the water buys the tile surviving tonight. One INSIDE its window took the in-window
+#: price of one unit, and the survival price was applied only behind `LATE_TRUNCATED_PLANT_DAY`,
+#: which is 26. The comment on that branch says the gate was arbitrary: "Held to d26+ purely for
+#: scope; the mispricing is not late-specific."
+#:
+#: It is not. Measured on live ladder games 2026-08-16, tracked tile by tile on our own farm:
+#:
+#:     (8,4) STRAWBERRY  died d9   last watered d6   -- d7 and d8 both missed
+#:     (9,1) WHEAT       died d11  last watered d8   -- d9 and d10 missed
+#:     (9,2) STRAWBERRY  died d11  last watered d8
+#:
+#: and the same coordinates die across independent games with different seeds and opponents --
+#: (2,2) and (3,2) wheat on d9 in four and three games. At d8 dusk eight tiles sat at
+#: `consecutive_unwatered >= 1`, one night from death and visible in the observation, while we
+#: watered sixteen others. A producing wheat tile was being offered at $25.
+#:
+#: **This is NOT `TOP_UP_SAFE_TILES`.** That rule waters tiles which are SAFE, and it is measured
+#: and off -- $79,905 -> $63,645, because a spike day then spends its turns on tiles never at risk.
+#: This one only ever fires at `consecutive_unwatered >= 1`, which is a tile that weeds tonight;
+#: `test_a_tile_watered_yesterday_is_not_given_the_survival_price` pins the difference.
+#: **MEASURED A NULL 2026-08-15 AND OFF.** Byte-identical on seeds 3/7/11: same weeds,
+#: same bank. `crop_ops` IS on the path (1,364 calls on d8, 131 of them brink tiles) but
+#: `cover` chooses STOPS by rules on the board, not by price -- 'There is no price table
+#: in here, and that is the point.' The price only decides what to do at a stop already
+#: being visited. The lever is `cover.AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP`.
+BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY = 99
 
 
 def _last_safe_age(info):
@@ -1576,322 +1609,3 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
 # routing: cluster-first is implicit in cheapest-insertion, then 2-opt each route
 # ---------------------------------------------------------------------------------------------
 
-def _path_len(start, seq):
-    d, cur = 0, start
-    for t in seq:
-        d += dist(cur, t)
-        cur = t
-    return d
-
-
-def _two_opt(start, seq, keep_prefix=0):
-    """Standard 2-opt on an OPEN path. `keep_prefix` pins the depot stop at the front."""
-    if len(seq) - keep_prefix < 3:
-        return seq
-    best = list(seq)
-    best_len = _path_len(start, best)
-    improved = True
-    while improved:
-        improved = False
-        for i in range(keep_prefix, len(best) - 1):
-            for j in range(i + 1, len(best)):
-                cand = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
-                cl = _path_len(start, cand)
-                if cl < best_len - 1e-9:
-                    best, best_len, improved = cand, cl, True
-    return best
-
-
-def plan_routes(units, nodes, budget, depots=SHED, carry=None, supply=None):
-    """Assign nodes to units and order each unit's tour. Returns `{unit: [Node, ...]}`.
-
-    Greedy cheapest-insertion on **prize / marginal cost**, which is the standard Team Orienteering
-    heuristic, then 2-opt per route. Mandatory nodes are placed first and unconditionally, so a
-    hungry animal is never outbid by a melon.
-
-    The marginal cost of inserting node `n` between `prev` and `next` is
-    `d(prev,n) + d(n,next) - d(prev,next) + n.service`, evaluated in O(1), so the whole assignment is
-    a few hundred thousand integer operations -- run once per replan, not per turn.
-    """
-    # **Only shed cells we OWN are depots.** `_spawn_hand` ignores ownership, so hands wake on `(5,4)`,
-    # `(4,5)` and `(5,5)`, which are LOCKED until $1,000, $2,000 and $7,000 of land is bought -- and
-    # `_apply_unit_action` returns on a LOCKED tile *before* it reaches PICKUP. Treating all four as
-    # depots put three of five hands on a locked cell emitting a PICKUP that did nothing, all day.
-    depots = tuple(depots) or SHED
-    routes = {u: [] for u in range(len(units))}
-    used = {u: 0 for u in range(len(units))}
-    depot = {u: collections.Counter() for u in range(len(units))}
-    depot_at = {u: None for u in range(len(units))}
-    # **A vehicle arrives with a load.** Hands are hired through the morning and every hire forces a
-    # replan, so by mid-morning units are already carrying wheat, fertilizer and animals. Costing every
-    # item-bearing stop as a fresh shed trip sent a unit with an empty hand to an empty shed while
-    # another stood holding the feed: eight wheat carried, four hungry animals, FEED 0, herd gone.
-    held = {u: collections.Counter((carry or {}).get(u) or {}) for u in range(len(units))}
-    # **The shed's stock of a DRAWN item is a shared budget, exactly like turns.** `build_nodes`
-    # prices a PLACE per DESTINATION TILE and gates it only on `shed[a] > 0`, so one COW and three
-    # empty pens produce three nodes each worth the full $1,840. `held` and `depot` are per-unit and
-    # nothing here notices that two units have claimed the same animal. Scarcity was enforced only at
-    # execution -- first unit to a depot takes it, every later claimant's PICKUP draws nothing and
-    # walks a full round trip to a pen with no animal in it.
-    #
-    # Measured on Seb's tape, seed 11, day 3: one COW, pens at (0,3), (1,3) and (0,4) all offered
-    # from hour 1 to hour 17, two units sent. The day is exact anyway only because both wasted trips
-    # land early enough to recover from -- which is why the closed-tour marginal broke it. Costing the
-    # tour correctly ranks a phantom node last, and the tail of the day is where a fake node does the
-    # most damage.
-    #
-    # **Only the animals.** Applied to every DRAWN item this MEASURED as a day-0 regression --
-    # `feed` and `care` 4/4 -> 3/4 -- because the day-0 shed holds no wheat at dawn and every wheat
-    # arrives later by BUY_PRODUCT. A plan that refuses to book feed against a shed that is empty
-    # right now is refusing work that will be fundable by the time the unit walks there, and the
-    # bought wheat comes in bulk so no unit's draw denies another's.
-    #
-    # An animal is the opposite on both counts: it is bought one at a time, it is the input to a
-    # chain with a same-day deadline, and a second claimant on the same COW gets nothing at all.
-    # `None` means unconstrained, for the synthetic router tests that pass no shed.
-    stock = None if supply is None or not SUPPLY_LEDGER else collections.Counter(
-        {k: v for k, v in supply.items() if k in R.ANIMAL_NAMES})
-    booked = collections.Counter()
-    left = list(nodes)
-
-    def seq(u):
-        out = []
-        if depot_at[u] is not None:
-            out.append(depot_at[u])
-        out.extend(n.tile for n in routes[u])
-        return out
-
-    def delta(u, n, i):
-        """Turn cost of putting `n` at position `i` of unit `u`'s route, depot stop included."""
-        s = seq(u)
-        off = 1 if depot_at[u] is not None else 0
-        at = i + off
-        prev = s[at - 1] if at > 0 else units[u]
-        # **A tour that yields is CLOSED: the depot is its last node.** Appending it here rather than
-        # reserving turns separately is the whole difference between ordering a tour and truncating
-        # one. As a reserve it refused the insertion outright, so day 4 lost a water and the far-corner
-        # harvest at (0,1) -- which then rotted past its `max_lifespan_step` and cost a DIG on day 5.
-        # As a closing node it only makes a far last stop *dearer* than the same stop taken mid-tour,
-        # which is exactly the ordering the tape plays: work until hour 15-17, then walk in.
-        nxt = s[at] if at < len(s) else None
-        d = dist(prev, n.tile) + (dist(n.tile, nxt) - dist(prev, nxt) if nxt else 0)
-        extra = n.service
-        short = _uncovered(u, n)
-        if short:
-            if depot_at[u] is None:
-                # One shed trip per unit per day: PICKUP is unbounded in quantity, so the only cost
-                # of another pen on the round is the walk to it.
-                home = min(depots, key=lambda c: dist(c, units[u]))
-                first = s[0] if s else n.tile
-                extra += len(short) + dist(units[u], home) + dist(home, first) - dist(units[u], first)
-            else:
-                extra += sum(1 for it in short if depot[u][it] == 0)
-        return d + extra
-
-    # **TRIED and REVERTED: put the walk home in the RATIO, as `delta + homeward(after) - homeward(now)`.**
-    # It is the textbook closed-tour marginal and it is exact at every insertion position, so it
-    # should have let a far node be resequenced onto the way back rather than refused. On day 4 it
-    # did exactly that -- `water` 16/17 -> 17/17, `harvest` 13/14 -> 14/14, and the day-5 DIG on the
-    # rotted (0,1) tile disappeared. It still broke two earlier things:
-    #
-    #     d3  sell 5/5 -> 3/5      fertilizer stranded again, `pickup` 7/3, two units walking in at 23
-    #     d4  place 1/1 -> 0/1     feed and care 7/7 -> 6/7; the animal chain lost to the reordering
-    #
-    # So the ratio was not the whole defect either. The likely remainder: `budget` is `TPD - hour - 1`
-    # and only IDLE units are replanned, so a unit committed at hour 6 keeps a tour costed against a
-    # budget that no longer exists, and the closed cost it was accepted under stops being true. Any
-    # next attempt should fix the stale budget first and re-measure, not re-derive the marginal.
-
-    def _uncovered(u, n):
-        """What this node needs that the unit is not already carrying, after everything assigned so far."""
-        return {it: c - held[u][it] for it, c in n.needs.items() if c > held[u][it]}
-
-    def claim(u, n):
-        """The animals this node's PLACE ops must draw, after what the unit already carries.
-
-        **PLACE only, never BUILD.** `BUILD` is in `DRAWN` and carries the animal name too, so
-        counting it as a claim MEASURED as day 0 `build_pasture` 8/8 -> 4/8: pens are built ahead of
-        the animals that will fill them -- the tape builds eight on day 0 having bought four -- and a
-        build does not consume the animal, it only says which one the pen is for.
-        """
-        want = collections.Counter(i for o, i in n.ops if o == "PLACE" and i in R.ANIMAL_NAMES)
-        return {it: c - held[u][it] for it, c in want.items() if c > held[u][it]}
-
-    def in_stock(u, n):
-        """Is the animal this node would place actually left, after earlier units' commitments?"""
-        if stock is None:
-            return True
-        return all(booked[it] + q <= stock[it] for it, q in claim(u, n).items())
-
-    def homeward(u, n=None, i=None):
-        """Turns reserved to walk home, if this tour would end holding something sellable.
-
-        See `RETURN_LEG`. Zero unless the route yields, and measured from the LAST tile rather than
-        from every yielding one, because one shed trip empties the whole hand.
-
-        **TRIED and REVERTED: close the tour instead, by making the depot `delta`'s final node.** It
-        is the better-shaped idea -- it makes a far last stop dearer than the same stop taken
-        mid-tour, rather than refusing it -- and on day 4 it worked exactly as intended, taking
-        `water` to 17/17 and `harvest` to 14/14 and rescuing the far-corner tile at (0,1) whose
-        expiry costs a DIG on day 5. But it let units range further out on DAY 3, which was exact:
-        `sell` went 5/5 -> 3/5, u0 and u2 both still walking home at hours 21-23, fertilizer reaching
-        the shed one unit at a time on hours 6, 14 and 18 against his two big drops.
-        Day 3 comes before day 4. The reserve stays until something does both.
-        """
-        if not RETURN_LEG:
-            return 0
-        route = list(routes[u])
-        if n is not None:
-            route.insert(i, n)
-        if not route or not any(o in YIELDING for m in route for o, _i in m.ops):
-            return 0
-        return min(dist(route[-1].tile, d) for d in depots) + HOMEWARD_DROP_TURNS
-
-    def cdelta(u, n, i):
-        """Marginal cost of the insertion with the walk home priced in. See `CLOSED_TOUR`.
-
-        Telescoping: `used[u]` therefore always holds the cost of the CLOSED tour as it stands, so
-        acceptance is a plain `used[u] + cdelta <= budget` with no separate reserve.
-        """
-        if not CLOSED_TOUR:
-            return delta(u, n, i)
-        return delta(u, n, i) + homeward(u, n, i) - homeward(u)
-
-    def reserve(u, n, i):
-        """The return leg still charged separately, which under `CLOSED_TOUR` is already in `cdelta`."""
-        return 0 if CLOSED_TOUR else homeward(u, n, i)
-
-    def commit(u, n, i, c):
-        """Put `n` at position `i` of unit `u`, paying `c` turns and booking whatever it must draw."""
-        short = _uncovered(u, n)
-        booked.update(claim(u, n))          # before `held` is spent below
-        routes[u].insert(i, n)
-        used[u] += c
-        # Consume the load first, and only draw the remainder. `held` going down as stops are added
-        # is what stops three pens on one unit each costing a shed trip.
-        for it, qty in n.needs.items():
-            held[u][it] = max(0, held[u][it] - qty)
-        if short:
-            if depot_at[u] is None:
-                depot_at[u] = min(depots, key=lambda t: dist(t, units[u]))
-            depot[u].update(short)
-
-    # ------------------------------------------------------------------ the animal chain, kept whole
-    # **PICKUP -> PLACE -> FEED -> CARE is a chain, not four independent prizes.** It has real
-    # precedence and a same-day deadline: an animal must be in a pen before it can be fed, and fed
-    # before CARE banks anything (`pending_care_bonus` is consumed only on a day the animal is also
-    # fed). Cheapest-insertion has no representation for either, so it interleaves the chain with
-    # fungible work and fragments it across units and hours.
-    #
-    # Measured on Seb's tape, seed 11, day 0. Both sides plant 17, water 17, build 8 pastures and
-    # place 4 animals -- the schedule lands either way. The whole difference is the chain:
-    #
-    #     tape u0   B u d u L ^ L v u ^ < L ^ L v v > c ^ < c     places at 4, 6, 11, 13
-    #     ours u0   B u L < < B L ^ B < B . v > > > u ^ < < L <   places at 2, 6, and 20
-    #
-    # The tape dedicates one unit to the chain and never lets it build. Ours places two animals, wanders
-    # off to BUILD_PASTURE at hours 5, 8 and 10, returns for a pickup at 16 and places the fourth at
-    # hour 20 -- too late to feed or care it. That is the entire day-0 work gap: FEED 3/4, CARE 3/4.
-    #
-    # So the chain is assigned first, whole, to the single unit that serves it cheapest. Everything
-    # after it is order-free and still goes to plain cheapest-insertion.
-    if CHAIN_OPS:
-        chain = [n for n in left if any(o in CHAIN_OPS for o, _i in n.ops)]
-        if chain:
-            def chain_cost(u):
-                pos, total = units[u], 0
-                for n in chain:
-                    total += dist(pos, n.tile) + n.service
-                    pos = n.tile
-                return total
-
-            best_u = min(range(len(units)), key=lambda u: (chain_cost(u), used[u]))
-            for n in sorted(chain, key=lambda n: -n.prize):
-                if not in_stock(best_u, n):
-                    continue
-                spot = min(((cdelta(best_u, n, i), i) for i in range(len(routes[best_u]) + 1)),
-                           default=None)
-                if (spot is None
-                        or used[best_u] + spot[0] + reserve(best_u, n, spot[1]) > budget[best_u]):
-                    continue                  # no room today; it stays in `left` for the general pass
-                commit(best_u, n, spot[1], spot[0])
-                left.remove(n)
-
-    order = sorted(left, key=lambda n: -n.prize)
-    # Mandatory nodes are assigned in their own pass, so a hungry animal cannot be outbid on ratio by a
-    # melon that happens to be nearer. Within the pass they still order by cost.
-    # Three tiers, not two. CRITICAL goes first because inside a single pool the ranking is
-    # `prize / marginal cost`, and a 1% prize edge cannot survive an 8x difference in distance --
-    # which is exactly how a pen one day from losing its animal lost to a healthy pen next door.
-    for pool in ([n for n in order if n.critical],
-                 [n for n in order if n.mandatory and not n.critical],
-                 [n for n in order if not n.mandatory]):
-        remaining = list(pool)
-        # **Parallel insertion, least-loaded unit first.** The obvious construction -- scan every
-        # (node, unit, position) and commit the single best `prize / delta` -- minimises total walking,
-        # and total walking is the wrong objective here. Units are hired for the whole day whether they
-        # move or not, so an idle unit's turns are free and the scarce resource is per-unit TIME.
-        #
-        # On a serpentine field that distinction is decisive: appending the next tile to the unit
-        # already standing on the previous one costs delta 2, while starting an idle unit from the shed
-        # costs delta 6, so the sequential rule packs one vehicle and starves the rest. Day 0 of seed 11
-        # measured `10, 9, 2, 0, 0` across five units -- two saturated at 21 and 20 turns against a
-        # budget of 21, two given nothing -- and six of the twenty-one pinned jobs were never started.
-        #
-        # But pure round-robin -- every unit claims one node per round -- overcorrects, because it hands
-        # a job to a distant idle unit even when a loaded one is standing beside it. Measured over five
-        # seasons it converted 776 idle turns into 742 extra MOVES for no extra work at all
-        # (`moves per work op` 0.94 -> 1.26) and cost the herd 26 feeds, since a far unit now outbid the
-        # unit already at the pen.
-        #
-        # So: keep the global cheapest-insertion rule, and only force the spread when a unit reaches its
-        # fair share of the day. The cap starts at `budget / n_units` and relaxes in `n_units` steps, so
-        # walking is minimised inside each pass and no unit can eat the whole field before the others
-        # have been offered any of it. The final pass has cap == budget, so nothing is ever left unserved
-        # that the plain rule would have served.
-        n_u = max(1, len(units))
-        for step in range(1, n_u + 1):
-            cap = {u: budget[u] * step / n_u for u in range(len(units))}
-            while remaining:
-                best = None
-                for n in remaining:
-                    for u in range(len(units)):
-                        if not in_stock(u, n):
-                            continue
-                        for i in range(len(routes[u]) + 1):
-                            c = cdelta(u, n, i)
-                            if used[u] + c + reserve(u, n, i) > cap[u]:
-                                continue
-                            score = n.prize / max(1, c)
-                            if best is None or score > best[0]:
-                                best = (score, n, u, i, c)
-                if best is None:
-                    break                          # nothing more fits under this cap; relax it
-                _s, n, u, i, c = best
-                commit(u, n, i, c)
-                remaining.remove(n)
-
-    for u in routes:
-        if len(routes[u]) < 3:
-            continue
-        by_tile = {n.tile: n for n in routes[u]}
-        start = depot_at[u] if depot_at[u] is not None else units[u]
-        ordered = _two_opt(start, [n.tile for n in routes[u]])
-        new = [by_tile[t] for t in ordered]
-        cost = _path_len(start, ordered) + sum(n.service for n in new)
-        if depot_at[u] is not None:
-            cost += dist(units[u], depot_at[u]) + len(depot[u])
-        # 2-opt reorders an OPEN path, so it can shorten the walk out and still leave the tour ending
-        # further from the shed. Close the cost the same way `delta` does before comparing, or the
-        # reorder is judged on a shorter path than the unit actually walks.
-        home = (min(dist(ordered[-1], d) for d in depots)
-                if RETURN_LEG and ordered
-                and any(o in YIELDING for m in new for o, _i in m.ops) else 0)
-        if cost + home <= budget[u]:
-            routes[u] = new
-            # Under `CLOSED_TOUR` every `used[u]` already carries the walk home, so the reordered
-            # tour must be booked the same way or the next insertion is costed against a short tour.
-            used[u] = cost + home if CLOSED_TOUR else cost
-
-    return {u: dict(route=routes[u], depot=depot_at[u], draw=depot[u], cost=used[u])
-            for u in routes}

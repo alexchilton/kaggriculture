@@ -42,18 +42,6 @@ from . import cover as DP
 from . import q4_branch as _Q4
 from . import router as RT
 
-#: Solve the day as a COVERING problem -- cover every job the board offers -- instead of as a prize
-#: auction. See `kagg/search/cover.py` for the argument; the short version is that we know the board
-#: in advance, we know every job it will want, and Seb's tape proves a day of it is coverable, so
-#: "which job is worth most" is a question the day does not actually pose.
-#:
-#: `router.build_nodes` still decides WHICH jobs exist -- that half is derived from the reference's
-#: own mechanics and is worth keeping. What is dropped is `prize`, `MANDATORY` and `CRITICAL`: the
-#: ranking, which is the half that measured wrong (-$34,816 over 12 seasons when a local search got
-#: BETTER at it, `data/logs/planner_ab3.log`).
-#:
-#: Off restores `router.plan_routes` exactly.
-COVER_PLANNER = True
 
 
 #: Also treat a tile ONE dry day from becoming a WEED as at-risk, the way a pen one day from losing
@@ -894,8 +882,6 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     the row says what the market is waiting for, and both are readable at dawn. See
     `cover.materialise`.
     """
-    if not COVER_PLANNER:
-        return RT.plan_routes(units, nodes, budget, depots, carry, supply=supply)
     jobs = [j for j in DP.from_nodes(nodes, tiles) if j.tile not in pointless]
     at_risk = set(at_risk)
     owed = collections.Counter({p: q for p, q in (wanted or {}).items() if q > 0})
