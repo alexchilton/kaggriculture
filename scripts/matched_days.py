@@ -26,7 +26,7 @@ import collections
 import json
 import pathlib
 
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 
 
 def _plants(obs):
@@ -55,7 +55,7 @@ def one_day(day, use_ours, seed=11, flags=()):
     for name, value in flags:
         setattr(SA, name, value)
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 

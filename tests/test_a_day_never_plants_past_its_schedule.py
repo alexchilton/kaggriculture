@@ -13,7 +13,7 @@ Cumulative, not per-day.  A pen the schedule ordered on d5 that the crew could n
 is late, not extra, and a per-day cap would delete real backlog -- which is exactly what a
 per-day seed cap did when it was tried: byte-identical on d0-d6 and -$2,682 by d16.
 
-Read against `TAPES["seb"]` (90494364), the same tape as the day-matching gate.  Written down
+Read against `TAPES[B.DEFAULT_TAPE]` (90494364), the same tape as the day-matching gate.  Written down
 because the first draft of this file measured against `91422988` instead, and a ceiling test read
 off the wrong ceiling passes for no reason at all.
 """

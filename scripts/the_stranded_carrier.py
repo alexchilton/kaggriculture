@@ -12,11 +12,11 @@ and cannot DROP there -- worth stating because the first pass at this got that w
 import json, pathlib, sys
 sys.path.insert(0, ".")
 from kagg.search import schedule_agent as SA
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 from kaggle_environments import make
 
 DAY = 6
-replay, schedule, team = TAPES["seb"]
+replay, schedule, team = TAPES[DEFAULT_TAPE]
 sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
 thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 

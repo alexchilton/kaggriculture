@@ -119,9 +119,9 @@ def test_the_pen_nearest_the_shed_holds_a_sheep_by_the_end_of_day_zero():
     from kaggle_environments import make
 
     from kagg.search import schedule_agent as SA
-    from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+    from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     assert (sched[0].get("places") or [])[0] == "SHEEP", "the row this test rests on changed"
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}

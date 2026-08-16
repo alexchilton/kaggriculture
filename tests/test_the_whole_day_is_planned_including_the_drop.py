@@ -166,9 +166,9 @@ def test_day_four_feeds_the_herd_even_though_the_row_is_selling_wheat():
     a comment.
     """
     from kaggle_environments import make
-    from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+    from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     assert sched[4]["sells"].get("WHEAT"), "day 4 no longer sells wheat; this test needs a new day"
@@ -208,7 +208,7 @@ def test_the_wool_reaches_the_shed_before_the_cows_are_bought():
     from kaggle_environments import make
     from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 

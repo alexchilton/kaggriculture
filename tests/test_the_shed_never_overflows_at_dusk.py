@@ -21,7 +21,7 @@ import pathlib
 import pytest
 
 from kagg.search import schedule_agent as SA
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 
 pytestmark = pytest.mark.slow
 
@@ -32,7 +32,7 @@ def _discarded(seed=11, days=30):
     """(day, units lost) for every dusk where the hands held more than the shed could take."""
     from kaggle_environments import make
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 

@@ -63,9 +63,9 @@ from kagg.search import schedule_agent as SA
 
 @pytest.fixture
 def tape():
-    from scripts.breakdown import TAPES, TAPE_ONLY
+    from scripts.breakdown import TAPES, TAPE_ONLY, DEFAULT_TAPE
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     return replay, thin, team

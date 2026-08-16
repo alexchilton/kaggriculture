@@ -18,7 +18,7 @@ import sys
 sys.path.insert(0, ".")
 
 from kagg.search import schedule_agent
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 
 
 def trace(make0, opp, seed, weeds, prod, d0, d1):
@@ -52,7 +52,7 @@ def trace(make0, opp, seed, weeds, prod, d0, d1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tape", default="seb", choices=sorted(TAPES))
+    ap.add_argument("--tape", default=DEFAULT_TAPE, choices=sorted(TAPES))
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--prod", default="MILK")

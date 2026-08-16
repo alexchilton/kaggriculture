@@ -24,7 +24,7 @@ import pathlib
 import pytest
 
 from kagg.search import schedule_agent as SA
-from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
+from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy, DEFAULT_TAPE
 
 pytestmark = pytest.mark.slow
 
@@ -36,7 +36,7 @@ def _unintentional(seed=11, days=30):
     """(day, tile, crop) for every tile that weeded while the plan still wanted it."""
     from kaggle_environments import make
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
 
@@ -97,7 +97,7 @@ def test_the_metric_excludes_ground_we_walked_away_from_on_purpose():
     """
     from kaggle_environments import make
 
-    replay, schedule, team = TAPES["seb"]
+    replay, schedule, team = TAPES[DEFAULT_TAPE]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     env = make("kaggriculture", configuration={"seed": 11, "weedSpawnChance": 0.0}, debug=True)
