@@ -1,29 +1,45 @@
-"""One test per day: d0 through d6, ours against Seb's tape, op for op.
+"""ONE TEST PER CELL: every gated row, every day, ours against the tape.
 
-**Why per day and not one test for the week.** A week total hides a trade: day 0 gaining two feeds
-while day 6 loses two sells nets to zero and reads as "no change". Days also compound -- a pen not
-built on day 0 is an animal not producing for the rest of the season -- so the rule is that days
-match IN ORDER, and a regression on d0 must not be payable out of d6. Separate test ids make that
-visible in the report instead of in a total.
+This replaced a version that ran d0-d6 against Seb's tape with one test per DAY. Two things were
+wrong with that, and both cost real time.
 
-Driven by `scripts/breakdown.run`, the same function behind
-`scripts/breakdown.py --module schedule_agent --days 7`, so this file and that table cannot
-disagree about what was measured. Market rows there are EXACT FILLS read per unit from
-`_commit_unit` via `kagg/analysis/fills.py` -- never offers, which the agent re-posts every turn.
+**It stopped at d6.** The agent plays all 30 days off the schedule, and the days actually losing are
+d6-d13 -- `water 17/33` on d8, melon short on every day from d6, `plant 6/9` on d8. A gate that stops
+at d6 cannot see any of it.
 
-Exempt rows, and why each is exempt rather than merely inconvenient:
+**One test per day names the day, not the defect.** A day failed as
+`test_the_day_matches_the_tape[8]` with twelve rows inside the assertion message, so the report said
+"d8 is broken" and the broken cell had to be read out of a string. One test per (day, row) fails as
+`test_the_row_matches_the_tape[water-8]` -- the name of the actual defect -- and a fresh regression
+on one row cannot hide inside a day that was already red.
 
-    PICKUP / DROP   tour SHAPE. One hand carrying four wheat and another carrying one is the same
-                    four feeds. The ops those trips serve are not exempt and are checked here.
-    PASS            the residual of everything else, so it fails twice for one cause.
-    the compass     we work the board westward and the tape southward. Not a defect, and nothing
-                    downstream reads it.
+## What gates, and what cannot
 
-Every other op the day emits is checked, plus the board at dusk: money, tiles owned, pens, standing
-crops and the herd.
+The tape column is NOT the tape's own game. `breakdown.run` replays the recorded actions against
+**us**, and both seats sell into one shared market inventory, so four quantities are ours-dependent
+by construction and cannot be held to equality however good the agent gets:
+
+    money              the replayed tape's bank parts from its real one at d4: it buys a parcel on
+                       $718 in its own game and is REFUSED at $683 against us
+    SELL, BUY_PRODUCT  one book, drained per unit in lockstep between the seats
+                       (`_process_market`), so any day we both sell the same product has
+                       ours-dependent fills on BOTH sides
+    owned              inherits the money problem the day a land purchase is refused
+
+Those four are `xfail(strict=False)`: they run, they are reported, they never gate. Everything else
+is exact, with no tolerance -- not even a dollar, and never a threshold added to make this pass.
+
+`PICKUP`, `DROP` and `PASS` are absent because they are tour SHAPE: one hand carrying four wheat and
+another carrying one is the same four feeds. `PASS` is the residual of everything else and would fail
+a second time for a cause already counted.
+
+`BUY_SEED`, `BUY_ANIMAL`, `BUY_LAND` and `HIRE` DO gate. They are spent from our own bank on a turn
+we choose, so a mismatch is ours.
+
+    python -u -m pytest tests/test_each_day_matches_the_tape.py -q
 """
-import collections
 import importlib
+import json
 import pathlib
 import sys
 
@@ -33,77 +49,87 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 SEED = 11
-WEEDS = 0.0
-DAYS = 7
+#: **The ladder value, not zero.** `_spawn_weeds` fires on empty ground at 0.005 in a real game, so
+#: a grid run at 0.0 is a different board and hides every DIG the tape has to make.
+WEEDS = 0.005
+DAYS = 30
+TAPE = "kawashigi"
 MODULE = "kagg.search.schedule_agent"
-PLAN = "90494364"
 
-#: Tour shape, not work. See the module docstring.
-EXEMPT = ("PICKUP", "DROP", "PASS")
+#: Ops the day emits. Tour shape is deliberately absent -- see the module docstring.
+GATED_OPS = ("PLANT", "WATER", "HARVEST", "FEED", "CARE", "COLLECT_FERTILIZER", "DIG",
+             "BUILD_PASTURE", "BUILD_COOP", "PLACE", "FERTILIZE",
+             "BUY_SEED", "BUY_ANIMAL", "BUY_LAND", "HIRE")
 
-#: Ops the day emits, in the order the table prints them.
-CHECKED = ("PLANT", "WATER", "HARVEST", "FEED", "CARE", "COLLECT_FERTILIZER", "DIG",
-           "BUILD_PASTURE", "BUILD_COOP", "PLACE", "FERTILIZE",
-           "SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL", "BUY_LAND", "HIRE")
+#: Dusk board rows that are ours alone.
+GATED_BOARD = ("pen", "weed", "hands",
+               "crop_WHEAT", "crop_MELON", "crop_STRAWBERRY", "crop_TOMATO", "crop_CARROT",
+               "an_COW", "an_SHEEP", "an_GOOSE")
 
-#: Dusk board rows. `money` is the one every later day inherits.
-BOARD = ("money", "owned", "pen", "weed",
-         "crop_WHEAT", "crop_MELON", "crop_STRAWBERRY", "crop_TOMATO", "crop_CARROT",
-         "an_COW", "an_SHEEP", "an_GOOSE")
+#: Reported, never gating. The reason for each is in the module docstring, and none of them is
+#: "it was inconvenient".
+CONTAMINATED = ("money", "owned", "SELL", "BUY_PRODUCT")
 
 
-@pytest.fixture(scope="module")
-def measured():
-    """`(ours, tape)` -- each a list of `(board, ops)` per day, straight from `breakdown.run`."""
-    import json
+@pytest.fixture(scope="session")
+def season():
+    """`(ours, tape)` for all `DAYS`, played ONCE for the whole session.
 
+    Session-scoped deliberately: every assertion below is arithmetic on a table already computed,
+    and paying for two 720-turn seasons per test id would make the gate too slow to keep, which is
+    how a gate stops being run.
+    """
     import breakdown as B
 
-    replay, schedule, team = B.TAPES["seb"]
+    replay, schedule, team = B.TAPES[TAPE]
     raw = json.loads((REPO / schedule).read_text())
     sched = {int(k): {kk: vv for kk, vv in r.items() if kk not in B.TAPE_ONLY}
              for k, r in raw.items()}
     B.schedule_agent = SA = importlib.import_module(MODULE)
 
-    # `run` needs one day beyond the last day compared: column d is the board at the END of day d.
+    # `run` needs one day beyond the last compared: column d is the board at the END of day d.
     horizon = DAYS + 1
     opp = lambda: B.tape_policy(str(REPO / replay), team, 1)      # noqa: E731
 
     def ours():
-        a = SA.make_agent(sched, 0, router=True)
+        a = SA.make_agent(sched, 0)
         return lambda o, t: a(o)
 
-    a_days, a_ops = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
-    b_days, b_ops = B.run(lambda: B.tape_policy(str(REPO / replay), team, 0), opp,
-                          SEED, WEEDS, stop_day=horizon)
+    # `run` returns FOUR things -- `days[1:], ops, cash, days[0]`. The cash ledger and the dawn
+    # snapshot are not read here; unpacking only two is a ValueError, which is how this arrived.
+    a_days, a_ops, _a_cash, _a_dawn = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
+    b_days, b_ops, _b_cash, _b_dawn = B.run(lambda: B.tape_policy(str(REPO / replay), team, 0), opp,
+                                            SEED, WEEDS, stop_day=horizon)
     return (a_days, a_ops), (b_days, b_ops)
 
 
-@pytest.mark.parametrize("day", range(DAYS))
-def test_the_day_matches_the_tape(measured, day):
+def _cell(measured, day, row):
+    """`(ours, tape)` for one cell. Ops live in the op counters, board rows in the day snapshots."""
     (a_days, a_ops), (b_days, b_ops) = measured
-    bad = []
+    if row.isupper():
+        return a_ops[day][row], b_ops[day][row]
+    return a_days[day].get(row, 0), b_days[day].get(row, 0)
 
-    for op in CHECKED:
-        if op in EXEMPT:
-            continue
-        got, want = a_ops[day][op], b_ops[day][op]
-        if got != want:
-            bad.append(f"    {op.lower():22s} {got:>5} / {want:<5}")
 
-    for row in BOARD:
-        got, want = a_days[day].get(row, 0), b_days[day].get(row, 0)
-        # **Exact, and no tolerance -- not even a dollar.** d2 reading 657 against 659 is a
-        # difference, and a rule that calls it identical would also swallow the $295 fertilizer
-        # shortfall that produced it before the delivery fix. A bank gap is never local either: it
-        # decides whether the next day's land, animal or seed clears at all.
-        if got != want:
-            bad.append(f"    {row:22s} {got:>5} / {want:<5}")
+@pytest.mark.parametrize("day", range(DAYS))
+@pytest.mark.parametrize("row", GATED_OPS + GATED_BOARD)
+def test_the_row_matches_the_tape(season, day, row):
+    """Exact, no tolerance.
 
-    assert not bad, (
-        f"day {day} does not match the tape (ours / tape):\n" + "\n".join(bad)
-        + f"\n\n  Reproduce: python -u scripts/breakdown.py --module {MODULE.rsplit('.', 1)[-1]}"
-          f" --days {DAYS}\n"
-          "  Days match IN ORDER: an earlier day's failure is the one to fix, because every later\n"
-          "  day inherits its board and its bank."
-    )
+    Days match IN ORDER -- every later day inherits this one's board and bank -- so fix the lowest
+    failing day first and ignore the rest until it is green. A change that fixes d8 and breaks d4 is
+    a regression however good the week looks.
+    """
+    ours, tape = _cell(season, day, row)
+    assert ours == tape, f"d{day} {row}: ours {ours} / tape {tape}"
+
+
+@pytest.mark.xfail(strict=False,
+                   reason="ours-dependent by construction: the tape is replayed against US and both "
+                          "seats drain one shared market book. Reported so a change stays visible, "
+                          "never gating. See the module docstring.")
+@pytest.mark.parametrize("day", range(DAYS))
+@pytest.mark.parametrize("row", CONTAMINATED)
+def test_the_contaminated_row_is_reported(season, day, row):
+    ours, tape = _cell(season, day, row)
+    assert ours == tape, f"d{day} {row}: ours {ours} / tape {tape}"

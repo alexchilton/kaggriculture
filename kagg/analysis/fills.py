@@ -47,17 +47,33 @@ class Fills:
     def __init__(self):
         #: (player, op, item) -> [prices], one entry per UNIT
         self._rows = collections.defaultdict(list)
+        #: Every fill again, with the TURN it landed on: one dict per unit, in commit order.
+        #:
+        #: Kept BESIDE `_rows` rather than folded into it, deliberately. `_agg` reads `len(prices)`
+        #: and sums them, and every grid in this repo quotes those counts; changing that shape to
+        #: carry a turn would put the existing numbers at risk to add a new one.
+        #:
+        #: The turn is its own measurement. A day that buys the same things as the tape eight hours
+        #: later is a different day: `HIRE` costs `mult * fib(hires_today)` on a per-DAY counter, and
+        #: the SELL that funds it must settle in the same turn or earlier -- which is how the tape
+        #: hires ten hands at h1-h2 from a five dollar bank while we reach nine hands late on $4.
+        self.events = []
+        #: `(day, hour)` of the turn being committed, refreshed once per turn in `bind_farms` from
+        #: the same live observation `_process_market` is about to commit against.
+        self.at = (None, None)
         self._farm_ids = {}
         #: fills whose farm was not in the current map -- must stay 0, see the module docstring
         self.unattributed = 0
 
-    def bind_farms(self, farms):
+    def bind_farms(self, farms, at=None):
         """Rebuild `id(farm dict) -> seat` from the list `_process_market` is about to commit against.
 
         Called once per turn rather than once per episode: the observation objects do not survive a
         step, so a map built at episode start resolves nothing.
         """
         self._farm_ids = {id(f): i for i, f in enumerate(farms)}
+        if at is not None:
+            self.at = at
 
     def _seat(self, farm):
         return self._farm_ids.get(id(farm))
@@ -68,6 +84,18 @@ class Fills:
             self.unattributed += 1
             return
         self._rows[(seat, op, item)].append(price)
+        day, hour = self.at
+        self.events.append(dict(seat=seat, op=op, item=item, price=price, day=day, hour=hour))
+
+    def at_turn(self, player, op=None):
+        """Every recorded fill for `player`, as `(day, hour, op, item, price)`, in commit order.
+
+        The cadence gate reads this. It is a LIST, not a count: two hires in one turn and two hires
+        eight hours apart aggregate identically and are different days.
+        """
+        return [(e["day"], e["hour"], e["op"], e["item"], e["price"])
+                for e in self.events
+                if e["seat"] == player and (op is None or e["op"] == op)]
 
     def _agg(self, player, op, product=None):
         units = 0
@@ -160,7 +188,13 @@ def record_fills(env=None):
 
     def process_market(state, env_):
         # The live list, re-read exactly as `_process_market` itself re-reads it.
-        fills.bind_farms(state[0].observation.farms)
+        #
+        # The turn comes from the SAME observation, for the same reason the farm map does: the
+        # observation objects do not survive a step, so anything cached outside this call is stale
+        # by the time a commit lands. `_process_market` runs after the unit phase within the turn
+        # (`kaggriculture.py:922` then `:928`), so day/hour here is the turn being committed.
+        obs = state[0].observation
+        fills.bind_farms(obs.farms, at=(int(obs.get("day", 0) or 0), int(obs.get("hour", 0) or 0)))
         return original_market(state, env_)
 
     kg._commit_unit = commit
