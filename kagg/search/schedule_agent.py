@@ -4100,11 +4100,11 @@ MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT = True
 
 #: d5, because that is the day he acts. The first shop unlocks at d2h23 in all sixteen games, so he
 #: has two and a half days of information; the fork is at d5 and completes on d6.
-MELON_YIELD_FROM_DAY = 5
+MELON_YIELD_FROM_DAY = 3
 
 #: Between the two observed opponent states -- 9 melon tiles fires, 5 does not -- and no closer than
 #: that, because those are the only two values the sixteen games contain.
-MELON_YIELD_OPPONENT_MELON = 7
+MELON_YIELD_OPPONENT_MELON = 9
 
 
 #: **Turn late WHEAT plantings into CARROT / TOMATO.** Sweepable integers: how many wheat plant
