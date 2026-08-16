@@ -594,7 +594,18 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # water and then nothing -- 3 weeds by d28, 4 by d29, and seven of d29's turns spent
                 # DIGging our own dead tiles.
                 out.append(("WATER", None, price))
-            elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
+            elif tile is not None and not upkeep_buys_nothing(day):
+                # **The same parity alternation the one-shot branch above already ships.** Without
+                # it an ongoing crop has three gates and all three are shut for its first nine days:
+                # `produces_tomorrow` needs `age + 1 >= info["first"]`, which is 10 for STRAWBERRY,
+                # and `TOP_UP_SAFE_TILES` was a measured-off flag. So a strawberry could only ever be
+                # offered water on the day `consecutive_unwatered >= 1` and tonight's rollover weeds
+                # it -- no margin, and a safe tile returns `[]` so `build_nodes` emits no node at all
+                # and `cover` cannot choose to visit it early.
+                #
+                # NOT `TOP_UP_SAFE_TILES`, which held this slot and measured $79,905 -> $63,645:
+                # that offered EVERY safe tile from a fixed day and doubled the load. Parity offers
+                # HALF and flips daily, so no tile is skipped twice running.
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
