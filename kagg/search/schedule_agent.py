@@ -842,7 +842,31 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
 #: Two cells out of 150, with d1 6->7 and d2 4->7 going backwards. So the early-day move diffs are
 #: NOT downstream of where the pens are, and any future "his layout is better" argument has to beat
 #: this number rather than restate the geometry.
-PEN_SPOTS = ()
+#:
+#: **That verdict expired, and the reason it expired is the point.** It measured MOVES, and moves
+#: are genuinely unchanged -- 22 Manhattan from the shed either way. What it could not measure is
+#: WHICH SPECIES ends up on which tile, because at the time `_live_ops` re-decided that itself by
+#: global species rank and ignored `pen_for` entirely; the ground could not have carried an
+#: assignment even if it had been sited correctly. With the executor reading the reservation, the
+#: ORDER these tiles are taken in is what maps the schedule's `places` row onto ground.
+#:
+#: We already reach the same six tiles by d5. We take them in a different order, so the row
+#: `['SHEEP','COW','SHEEP','COW']` lands inverted -- our sheep on `(3,4) (4,4)`, his on `(4,3)
+#: (3,3)` -- and four of six pens hold the wrong animal.
+#:
+#: Op counts are blind to it. A HARVEST on a sheep and on a cow are both `HARVEST 1`, so the grid
+#: reads `HARVEST 5/5` while one hand carries wool and the other milk. Replaying his d8 onto our
+#: board, `u2 HARVEST @ (3,4)` finds SHEEP where his finds COW, both his `PLACE MILK 6` move zero
+#: units, and the `SELL MILK 12` in that same basket -- funding his eleventh hire and ten
+#: strawberry seeds -- no-ops on an empty shed. That is a market defect with a geometric cause,
+#: which is exactly the axis the move-count measurement above cannot see.
+#:
+#: Read off both his replays, which agree tile for tile and hour for hour: this is a fixed opening,
+#: not a reaction to the board. NOT from `build_tiles`, which contradicts both (see above).
+#: Ordered, because the order is the assignment. Everything past `(4,2)` is NE ground and simply
+#: waits for `_owned`.
+PEN_SPOTS = ((4, 3), (4, 4), (3, 3), (3, 4), (2, 4), (4, 2),
+             (5, 3), (5, 4), (6, 4), (6, 3))
 
 
 #: Alex's narrowing, and the numbers say it is the right one: the damage and the benefit are on
@@ -1252,7 +1276,7 @@ def _emit(op, item):
     return [op]
 
 
-def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0):
+def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0, pen_for=None):
     """The ops still worth doing at `tile`, **re-derived from the live board every turn**.
 
     This is the whole trick to committing to a tour without going back to predicting state. The route
@@ -1293,7 +1317,33 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0):
     elif "animal" in cell:
         ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
     elif kind in ("PASTURE", "COOP"):
-        ops = next(([("PLACE", a, 0)] for a in _place_order()
+        # **The pen takes the animal the schedule ordered for it.** `_refresh_pins` reads the row's
+        # ordered `places` -- d0 is `['SHEEP','COW','SHEEP','COW']` -- and reserves a tile per entry
+        # in `pen_for`. `router.build_nodes` has honoured that reservation since `PEN_KEEPS_ITS_ANIMAL`;
+        # the executor did not, and re-decided by `_place_order()`, a global species rank that never
+        # sees the row. SHEEP outranks COW there, so a hand holding both placed sheep every time and
+        # the row's alternation was lost: we laid `SHEEP,SHEEP,COW,COW` against the tape's
+        # `SHEEP,COW,SHEEP,COW`.
+        #
+        # Same six animals, same counts, different TILES -- and the tiles are what the season reads:
+        #
+        #     ours   SHEEP (2,4) (3,4)   COW (4,4) (4,3) (3,3) (4,2)
+        #     tape   SHEEP (4,3) (3,3)   COW (4,4) (3,4) (2,4) (4,2)
+        #
+        # Produce is harvested into the HAND, not the shed, and only a shed-adjacent DROP or
+        # `PLACE item n` banks it (`reference:394`). His milking cows sit along the shed row so two
+        # hands PLACE 6 milk each on d8 h5 and one `SELL MILK 12` clears it in the same turn; ours
+        # run away from the shed and the same 12 units split into h5 and h9. At d6 the same swap put
+        # wool in his hand and milk in ours, and the sell that funded his BUY_LAND no-oped for us.
+        #
+        # A preference, never a lock -- same rule as `build_nodes`. A pen with no reservation, or one
+        # this hand cannot fill, falls through to `_place_order()` untouched, because a lock is what
+        # left a SHEEP idle in the shed for three days.
+        order = _place_order()
+        want = (pen_for or {}).get(tile)
+        if want in order:
+            order = [want] + [a for a in order if a != want]
+        ops = next(([("PLACE", a, 0)] for a in order
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
         # A DIG clears ground for a planting that must happen on a LATER day, so on the last day
@@ -1488,13 +1538,45 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # See `PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING`. `pen_for` is insertion-ordered
     # and pens are sited nearest-ground-first, so spending the outstanding row over its existing
     # keys hands the earliest placements to the closest pens -- the siting rule, unchanged.
-    todo, took = [], 0
     todo = _outstanding_places(sched, day, tiles)
+    # **A reservation is sticky while its species is still owed.** Re-labelling every tile from the
+    # outstanding row each call re-derives the whole map from whatever has been placed so far, so a
+    # hand that reaches its pens out of siting order silently rewrites the ones behind it.
+    #
+    # Measured on d0. The row is `['SHEEP','COW','SHEEP','COW']` and `PEN_SPOTS` sites
+    # `(4,3) (4,4) (3,3) (3,4)`, giving SHEEP COW SHEEP COW correctly at hour 0. One unit carries
+    # all four animals and walks `(3,4) (4,4) (4,3) (3,3)` -- the fourth pen first. Its COW lands on
+    # `(3,4)`, `_outstanding_places` drops a COW from the row, and the next refresh re-labels the
+    # three survivors from `[SHEEP, SHEEP, COW]` in insertion order: `(4,4)` flips COW -> SHEEP and
+    # `(3,3)` flips SHEEP -> COW. Two of six pens hold the wrong animal because of a walk order.
+    #
+    # Sticky keeps what the ground was chosen for and spends the row only on tiles that have no
+    # claim yet. The siting rule above is untouched, and a reservation whose species is no longer
+    # owed still falls through to be re-labelled -- that is what `PENS_ARE_RESERVED_FOR_THE_
+    # PLACEMENTS_STILL_OUTSTANDING` is for, and it is the case that matters when a placement is
+    # dropped rather than merely reordered.
+    pool = collections.Counter(todo)
+    sticky = {}
     for t in list(pen_for):
-        if took >= len(todo):
+        a = pen_for[t]
+        if pool[a] > 0:
+            pool[a] -= 1
+            sticky[t] = a
+    #: The row's leftovers, still in row order, for the pens nobody has claimed.
+    spare, left = [], collections.Counter(pool)
+    for a in todo:
+        if left[a] > 0:
+            left[a] -= 1
+            spare.append(a)
+    took = 0
+    for t in list(pen_for):
+        if t in sticky:
+            a = sticky[t]
+        elif took < len(spare):
+            a = spare[took]
+            took += 1
+        else:
             break
-        a = todo[took]
-        took += 1
         pen_for[t] = a
         # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
         # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
@@ -1502,7 +1584,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
         if t in pins and pins[t][0] == "BUILD":
             pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
     while have < want_pens:
-        a = todo[took] if took < len(todo) else "COW"
+        a = spare[took] if took < len(spare) else "COW"
         took += 1
         # A pen ON a shed-access cell runs its whole daily loop -- draw feed, feed, care, collect,
         # harvest -- without a single move, so those four cells are worth more than any field tile.
@@ -2164,7 +2246,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]
             ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price,
-                            hour=hour)
+                            hour=hour, pen_for=state.get("pen_for") or {})
             if not ops:
                 # **Go back for the feed rather than abandon the animal you just placed.**
                 # `SERVE_THE_ANIMAL_IT_PLACES` hangs the FEED and CARE off the placement node, and
@@ -3349,18 +3431,40 @@ def make_agent(schedule, me=0, router=True):
         _row_feeds = int((sched.get(day, {}) or {}).get("feeds", 0) or 0)
         if _row_feeds > 0:
             _arrived = _arrived_fed = _standing = 0
+            #: The earliest first production among today's arrivals that are STILL UNFED, which is
+            #: what `will_be_fed` spends the allowance on. Read off the same sweep so the two
+            #: numbers can never describe different boards. Unfed only: once the sheep have taken
+            #: their feeds the cows become the earliest still waiting and the rest of the allowance
+            #: reaches them in the same day.
+            #:
+            #: **The row counts too, not just the board.** d0 places `SHEEP COW SHEEP COW` and our
+            #: route lays the cows first, at h6 and h11, with the sheep not reaching the ground
+            #: until h16 and h19. A board-only read sees one COW at h7, calls it the earliest
+            #: arrival there is, and hands it the allowance eight hours before the sheep that
+            #: needed it exist. So the pens the row has still to fill today count as arrivals: they
+            #: are as certain as the ones already standing, the schedule named both.
+            _soonest = None
+            for _a in _outstanding_places(sched, day, tiles):
+                _y = R.ANIMALS[_a]["first_yield_day"]
+                _soonest = _y if _soonest is None else min(_soonest, _y)
             for _r in tiles:
                 for _c in _r:
                     if not (isinstance(_c, dict) and _c.get("animal")):
                         continue
                     if int(_c.get("placed_day", -1)) == day:
                         _arrived += 1
-                        _arrived_fed += 1 if _c.get("fed_today") else 0
+                        if _c.get("fed_today"):
+                            _arrived_fed += 1
+                        else:
+                            _y = R.ANIMALS[_c["animal"]]["first_yield_day"]
+                            _soonest = _y if _soonest is None else min(_soonest, _y)
                     else:
                         _standing += 1
             RT.ARRIVAL_FEED_REMAINING = max(0, _row_feeds - _standing - _arrived_fed)
+            RT.ARRIVAL_FEED_EARLIEST_YIELD = _soonest
         else:
             RT.ARRIVAL_FEED_REMAINING = 0
+            RT.ARRIVAL_FEED_EARLIEST_YIELD = None
         money = float(farm["money"])
         unlocked = set(farm.get("unlocked_quadrants") or ["NW"])
         row = sched.get(day, {})

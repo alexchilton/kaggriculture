@@ -779,6 +779,11 @@ def produces_tonight(cell, day):
 #: `feeds` row; see `will_be_fed`. Module-level so the predicate stays a pure function of the cell.
 ARRIVAL_FEED_REMAINING = 0
 
+#: The earliest `first_yield_day` among the pens that arrived TODAY and are still unfed. Set beside
+#: `ARRIVAL_FEED_REMAINING` once per turn by the agent, from the same board read. `None` means "no
+#: preference", which is what a board with no unfed arrivals should say. See `will_be_fed`.
+ARRIVAL_FEED_EARLIEST_YIELD = None
+
 #: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
 #: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
 #: -- and the cycling starts at d5 (4 of 7) and is unmistakable by d7 (3 of 17).
@@ -828,7 +833,30 @@ def will_be_fed(cell, day):
         # places one and feeds none of it, d5 places one and feeds it, d7 places three and feeds two.
         # No predicate on the animal reproduces that -- "feed everything" and "feed only what is
         # producing" were both measured, and both lose.
-        return ARRIVAL_FEED_REMAINING > 0
+        #
+        # **The allowance is a budget, so WHICH arrival spends it matters as much as how many.**
+        # It was first-come-first-served in route order, and on d0 our route reaches the two COWs
+        # before the two SHEEP, so the cows took both feeds. Measured at d6 dawn:
+        #
+        #     ours   SHEEP yield 5  bonus 1     COW yield 0  bonus 6
+        #     tape   SHEEP yield 6  bonus 1     COW yield 0  bonus 5
+        #
+        # The cow bonus is waste. `_daily_refresh_animals` pays `min(max_held, 1 + bonus)` on the
+        # first production night; a COW reaches that at the d7 -> d8 rollover with 8 nights to bank
+        # the 5 it can use, so it caps whatever happens on d0. A SHEEP reaches it at d5 -> d6 with
+        # only 6 nights for the same 5, so a night it misses early is a unit of wool it never gets.
+        # We shear 5 where he shears 6, on both sheep, which is `SELL 15/17` on d6 and the money
+        # that settles his d6 BUY_LAND.
+        #
+        # `ARRIVAL_FEED_EARLIEST_YIELD` is the earliest `first_yield_day` among the pens that
+        # arrived today and are still unfed, set beside the count by the same block in
+        # `schedule_agent` and off the same board read, so it needs no state of its own. An arrival
+        # with a later first production waits its turn; if it is the only species arriving it is
+        # the earliest and nothing changes.
+        return (ARRIVAL_FEED_REMAINING > 0
+                and (ARRIVAL_FEED_EARLIEST_YIELD is None
+                     or ANIMALS[cell["animal"]]["first_yield_day"]
+                     <= ARRIVAL_FEED_EARLIEST_YIELD))
     return True
     if cell.get("consecutive_unfed", 0) >= 1:
         return True

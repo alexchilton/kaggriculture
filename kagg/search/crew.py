@@ -274,8 +274,27 @@ def _pack(unit_pos, run, held, depots, budget, wanted, rush, share=None, due=Non
 
 #: Order the ops of one tile must be taken in. A pen is BUILT, then FILLED, then FED -- all on the
 #: same square, and nothing else in the plan orders them. Lower sorts first.
-OP_ORDER = {"BUILD": 0, "PLACE": 1, "FEED": 2, "CARE": 3, "COLLECT_FERTILIZER": 4,
-            "HARVEST": 5, "PLANT": 6, "WATER": 7}
+#:
+#: **HARVEST moved ahead of the upkeep, and it did NOT do what it was written for.** Only two
+#: orderings on a square are real: PLACE needs a pen already built, and CARE is offered only on a
+#: pen already fed (`router.animal_ops`). HARVEST has no such tie -- `reference/kaggriculture.py:446`
+#: tests `yield_units > 0` and nothing else, and `yield_units` is written once, by
+#: `_daily_refresh_animals:827`, at the night rollover. The produce is standing on the pen at dawn
+#: and today's feed pays into tonight, so taking it first is free.
+#:
+#: It was written to get d6's wool to market on the top rung, and it does not. Measured, seed 11,
+#: strawberry arm, `weeds 0.0`, before and after:
+#:
+#:     first SELL/WOOL   h11 both      revenue  2,315 both      (tape: h04, 2,464)
+#:
+#: The hour a loaded pen is REACHED is not set by this map. `_tile_rank` (the MINIMUM over a job's
+#: ops) feeds `at[t].sort` in `cover` below, which orders tiles WITHIN a run that has already been
+#: assigned; it does not decide which run a unit walks first. Look there before editing this again.
+#:
+#: Kept only because the d0-d8 grid moves one cell towards the tape and none away -- d6
+#: `PLACE 0/2 -> 1/2`, everything else byte-identical.
+OP_ORDER = {"BUILD": 0, "PLACE": 1, "HARVEST": 2, "FEED": 3, "CARE": 4,
+            "COLLECT_FERTILIZER": 5, "PLANT": 6, "WATER": 7}
 
 
 def _tile_rank(job):
