@@ -6932,6 +6932,8 @@ can produce. `scripts/build_schedule.py` generates it; `scripts/schedule_ladder.
 
 import collections
 import itertools
+import json
+import pathlib
 
 from . import cover as DP
 from . import melon_branch as _MB
@@ -10333,6 +10335,69 @@ def _wheat_to(row, crop, budget):
     return _recrew(row, "WHEAT", crop, budget)
 
 
+#: Which days are played from the tape instead of planned. A DAY SET, not a prefix count: d0-d5 are
+#: ours. That is not a limitation to work around, it is what makes the handover legal -- our own
+#: d0-d5 already tracks the tape to within a few dollars (`money` closes 13/16, 168/171, 44/42, 3/1,
+#: 113/111, 43/43), so the board the tape's d6 actions assume is the board we hand it. The further
+#: back a replay starts the less true that is.
+#: `resolve_days.py` and `breakdown.py` both read this, so the routes are solved for the trajectory
+#: we actually play.
+REPLAY_OPENING_DAYS = ()
+
+#: The tape the opening comes from, keyed on which branch armed. Must be the tape the plan rows in
+#: force were read off, or the handover lands on a board those rows do not describe -- and by d6 the
+#: melon branch (d3) and the quadrant branch (d6) have both latched, so which tape is correct is
+#: already determined when the first replayed turn arrives.
+#: Keyed `(melon_armed, q4_armed)`. **Both latches, not just q4.** `melon_branch` decides on d3 and
+#: replaces rows from d3; `q4_branch` decides on d6 and replaces rows from d9. Only the q4 ROUTE
+#: table starts at d12 -- its plan rows are live inside any d5-d11 replay window, so a single tape
+#: keyed on one latch replays the wrong season's actions on the other arm.
+REPLAY_OPENING_TAPE = {
+    (False, False): ("data/seed_scripts/kawashigi/92498144.json", "カワシギ"),
+    (True, False): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
+    (False, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
+    # No four-quadrant STRAWBERRY game has been identified. The strawberry three-quadrant tape is
+    # the closer of the two available: it at least agrees about which crop is in the ground, which is
+    # what the hand actions address, where the q4 tape agrees only about the parcel count.
+    (True, True): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
+}
+
+#: The two species the herd split may exchange, derived rather than written down so it cannot go stale
+#: if a third animal is ever added. Both are PASTURE, which is the whole reason a swap is safe inside a
+#: replay: the pen, the walk and the route stop are identical and only the species token differs.
+_PASTURE = tuple(a for a in R.ANIMAL_NAMES if R.ANIMALS[a]["structure"] == "PASTURE")
+
+
+def _replay_opening(days, tape=None, team=None):
+    """`{step: (farmer, hands, market)}` for every turn of every day in `days`, from the tape's seat.
+
+    Keyed on absolute step, so the days need not be contiguous and need not start at 0.
+
+    **Returns `[]` when the tape is not on disk, deliberately.** The submission bundle carries no
+    `data/` tree; it embeds its own `_OPENING` list in the epilogue. A missing file here must
+    degrade to a planned opening, never raise -- an exception on the first observation is a
+    submission that banks the $3,000 start and nothing else.
+    """
+    if tape is None:
+        tape, team = REPLAY_OPENING_TAPE[(False, False)]
+    path = pathlib.Path(tape)
+    if not days or not path.exists():
+        return {}
+    wanted = set(days)
+    d = json.loads(path.read_text())
+    seat = d["info"]["TeamNames"].index(team)
+    out = {}
+    # `steps[0]` is the reset state and carries no action, so step N's action is `steps[N + 1]`.
+    for step, frame in enumerate(d["steps"][1:]):
+        if step // 24 not in wanted:
+            continue
+        a = (frame[seat] or {}).get("action") or {}
+        out[step] = (a.get("farmer") or ["PASS"],
+                     list(a.get("hands") or []),
+                     list(a.get("market") or []))
+    return out
+
+
 def make_agent(schedule, me=0, router=True):
     """`agent(obs, config) -> action`.
 
@@ -11524,6 +11589,10 @@ def make_agent(schedule, me=0, router=True):
                 for a, qty in (sched[dd].get("animals_bought") or {}).items():
                     _season[a] += int(qty)
             _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
+            # Published so a replayed day can re-label the tape's heads to the same target. The
+            # season target is a property of the shop draw, not of who is driving the turn, so
+            # there is one answer and both callers must read it rather than compute their own.
+            state["herd_split"] = dict(_s)
             _through = _herd_through_day(sched, day, _s)
             want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
         for a, qty in want_total.items():
@@ -11981,7 +12050,117 @@ def make_agent(schedule, me=0, router=True):
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
 
-    return agent
+    if not REPLAY_OPENING_DAYS:
+        return agent
+
+    # **The tape supplies the unit actions and the SELL cadence. The buying stays ours.** The planner
+    # is still driven on every replayed turn and its unit answer thrown away, so its pins, pen
+    # reservations and `uncovered` sell ledger are warm at the handover and no row is recorded as
+    # missed. That is the same construction `scripts/breakdown.py --handover` uses, and it is why
+    # neither needs the `start_day` parameter that `fa96ace` deleted with the predecessor agent.
+    #
+    # **Why the buys are not the tape's.** Both of our allocation decisions -- the melon/strawberry
+    # arm and the COW/SHEEP split -- are taken around d3-d6 and then EXPRESSED as purchases on the
+    # replayed days. Handing those to the tape as well silently discards both. Measured on seed 11
+    # with the whole market replayed, ours/tape at d12: `melon 15/8` against 7 normally,
+    # `strawb 24/34` against 33, `wheat 22/15` against 15. The strawberry season never installed and
+    # the melon it should have cleared stood all season.
+    #
+    # It lives HERE rather than in the submission bundler because `scripts/resolve_days.py` drives
+    # this module: a route solved without the opening is solved for a trajectory we no longer play,
+    # and `PRECOMPUTED_ROUTES` is keyed on `(tile, ops)` state, not on geometry.
+    # Both arms' openings, loaded once. Which one applies is read off the q4 latch at the first
+    # replayed turn -- by then `_Q4.arm` has decided, since `DECIDE_BY_DAY = 6` and the first
+    # replayed day is 6.
+    openings = {key: _replay_opening(REPLAY_OPENING_DAYS, *tape)
+                for key, tape in REPLAY_OPENING_TAPE.items()}
+
+    def replayed(obs, config=None):
+        # Snapshot before driving the planner, because a replayed turn throws its answer away and
+        # must not keep its side effects on the purchase counter -- see below.
+        bought_before = dict(state["bought"])
+        live = agent(obs, config)
+        step = int(obs.get("step", 0) or 0)
+        # Both latches, read through the branches' OWN `armed_key` rather than a string written here.
+        # A hand-written `"branch_armed"` pinned the melon latch False -- nothing writes that name,
+        # `MelonBranch.armed_key` is `"melon_armed"` -- so the strawberry tape was unreachable by
+        # construction and the strawberry arm silently replayed his melon season.
+        opening = openings[(bool(state.get(_MB.BRANCH.armed_key)),
+                            bool(state.get(_Q4.BRANCH.armed_key)))]
+        if step not in opening:
+            return live
+        # **`state["bought"]` must count what the TAPE ordered, not what the discarded planner would
+        # have.** It is a purchase-INTENT counter, incremented where the `BUY_ANIMAL` row is queued,
+        # and on a replayed turn that row is never sent. Left alone it hands d12 a herd nobody
+        # bought, and `_herd_split` anchors on it, so the species target drifts with it.
+        state["bought"].clear()
+        state["bought"].update(bought_before)
+
+        farmer, hands, market = opening[step]
+        me_ = int(obs.get("player", me) or 0)
+        farms_ = obs.get("farms") or []
+        # Truncated to the hands this farm owns: the reference ignores a surplus unit action for
+        # movement and work but still COUNTS it in the atomic-PLANT rule, so sending more than we
+        # own blocks plants no real agent could block.
+        owned = len((farms_[me_] if len(farms_) > me_ else {}).get("hands") or [])
+        priv_ = obs.get("private") or {}
+        shed_ = collections.Counter(priv_.get("shed") or {})
+        invs_ = priv_.get("inventories") or []
+
+        # **The COUNT and the TURN stay the tape's; only the species is ours.** COW and SHEEP both
+        # live on a PASTURE (`routines.ANIMALS`), so re-labelling a head moves no pen, no walk and no
+        # route stop -- the board shape the whole replay depends on is untouched. What does move is
+        # the bill, $400 against $500, so a swap can be refused on a thin bank like any other order.
+        #
+        # This is NOT the earlier "keep our own buys" experiment, which measured -$35,022 by sending
+        # his hands to water tiles our purchases never created. Here every purchase he makes is still
+        # made, on his turn, in his quantity.
+        split = state.get("herd_split") or {}
+        acts = [list(farmer)] + [list(h) for h in hands[:owned]]
+        for i, a in enumerate(acts):
+            if len(a) < 2 or a[1] not in _PASTURE:
+                continue
+            if a[0] == "PICKUP":
+                # Take what the shed actually holds. The purchase this pickup was written for may
+                # have been re-labelled, or refused on the extra $100 a swap costs.
+                if not shed_[a[1]]:
+                    alt = next((s for s in _PASTURE if s != a[1] and shed_[s]), None)
+                    if alt:
+                        a[1] = alt
+                shed_[a[1]] -= 1
+            elif a[0] == "PLACE":
+                # Place what the unit is CARRYING. The PICKUP happened turns earlier and already
+                # settled the species, so the inventory answers it and no ledger is needed.
+                held = collections.Counter(invs_[i] if i < len(invs_) else {})
+                if not held[a[1]]:
+                    alt = next((s for s in _PASTURE if s != a[1] and held[s]), None)
+                    if alt:
+                        a[1] = alt
+
+        # **The rest of the market is the tape's, sells included.** Keeping our own sell cadence
+        # while replaying his unit actions is the pairing that broke: his hands harvest into a book
+        # our own offers had already walked down.
+        orders = []
+        for o in market:
+            o = list(o)
+            if split and len(o) > 2 and o[0] == "BUY_ANIMAL" and o[1] in _PASTURE:
+                # One head at a time against the target, so a row of two cows can come back split.
+                for _ in range(int(o[2])):
+                    a = o[1]
+                    if state["bought"][a] >= int(split.get(a, 0)):
+                        alt = next(s for s in _PASTURE if s != a)
+                        if state["bought"][alt] < int(split.get(alt, 0)):
+                            a = alt
+                    state["bought"][a] += 1
+                    if orders and orders[-1][0] == "BUY_ANIMAL" and orders[-1][1] == a:
+                        orders[-1][2] += 1
+                    else:
+                        orders.append(["BUY_ANIMAL", a, 1])
+                continue
+            orders.append(o)
+        return {"farmer": acts[0], "hands": acts[1:], "market": orders}
+
+    return replayed
 '''
 _PLAN_JSON = r'''{
 "0": {
