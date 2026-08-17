@@ -934,7 +934,7 @@ from .solved_days import SOLVED_DAYS                                          # 
 #: turns. `_end_of_day` delivers d28's load to the shed overnight for free. He never plans a d29
 #: delivery because he does not need one. We back-load 10 harvests into d23-d29 (195 against his
 #: 185) while d0-d22 are level (201 against 204). Move the work to d28 and the delivery is free.
-UNSOLVE_DAYS = ()
+UNSOLVE_DAYS = (29,)
 
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
