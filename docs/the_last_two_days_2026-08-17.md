@@ -18,11 +18,14 @@ It measured a null originally because d28 is a SOLVED day with slack, so promoti
 the at-risk set changed no route.
 Deleted; the deadline belongs in the price, not in that set.
 
-**The stranded-load gap is CLOSED.**
+**The stranded-load gap is CLOSED, on this grid.**
 `test_the_season_does_not_end_with_the_crew_holding_sellable_goods` was `xfail(strict=True)` over 51
-units (~$1,192).
+units (~$1,192), on the kawashigi tape, seed 11.
 It went XPASS: the marker did its job and reported the day had landed.
 d29 `drop` is now 9/9 against the tape.
+**This does not generalise.** Measured over 30 real ladder games, we leave 22.8 units/game
+uncollected at season end against 3.0 for opponents. Zero-stranded is a seed-11 result, not a
+season-end guarantee.
 `NO_UPKEEP_ON_THE_LAST_DAY` freed the turns and `cover.MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE` reseated
 the reduced stop; both halves the old note asked for.
 Marker removed so a regression is a plain failure.

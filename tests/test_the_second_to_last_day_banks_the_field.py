@@ -7,25 +7,18 @@ runs inside `_end_of_day`. So produce harvested on d28 is banked overnight at ze
 sellable all through d29; produce harvested ON d29 lands in a hand, and that drop comes after the
 final turn (`tests/test_the_last_day_puts_its_load_in_the_shed.py`).
 
-That is how カワシギ wins the last two days without ever planning a delivery:
+That used to cost us the last two days: an earlier grid showed d28 harvest at 27 against a 32-unit
+tape, the shortfall carrying into d29 as 51 stranded, unsellable units (~$1,192).
+That back-loading is now closed -- see `docs/the_last_two_days_2026-08-17.md`.
+The live grid (2026-08-17) matches the tape on both days:
 
-    closing week   harvest      sell    drop     pass      ours/tape
-    d28             27/32     103/92     2/0    48/32
-    d29             27/19      93/148    3/9    30/56
+    closing week   harvest      ours/tape
+    d28             32/32
+    d29             19/19
 
-    harvest d0-d22   ours 201   tape 204     level
-    harvest d23-d29  ours 195   tape 185     we back-load +10
-
-He harvests 32 on d28 to our 27, the overnight drop banks it, and d29 becomes a selling day -- 148
-units to our 93 with 56 PASS turns. We back-load into the one day where delivery is not free, and
-the season ends with 51 sellable units, about $1,192, stranded in the crew's hands.
-
-**And we are not short of turns on d28: the grid shows 48 idle unit-turns there against his 32.**
-The work is available and the crew is standing around; the harvest simply is not ranked highly
-enough to be seated.
-
-This pins the pricing, not the routing. It says a ripe tile on d28 must outrank ordinary work,
-because tomorrow that produce cannot be banked. It does not say which hand goes where.
+This test now guards against a regression, not a live defect. It pins the pricing, not the
+routing: a ripe tile on d28 must outrank ordinary work, because tomorrow that produce cannot be
+banked. It does not say which hand goes where.
 """
 import importlib
 

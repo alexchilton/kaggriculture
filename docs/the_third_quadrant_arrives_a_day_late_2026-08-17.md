@@ -1,5 +1,11 @@
 # The third quadrant arrives a day late
 
+**SUPERSEDED 2026-08-17.**
+The land-timing story below was the day's opening theory and was not the day's finding.
+For the measured, current position, see `docs/the_last_two_days_2026-08-17.md`.
+The measurements below stand as a record; do not act on the "Next test, untried" section without
+re-checking it against the newer doc first.
+
 Measured 2026-08-17 on 19 ladder replays in `data/seed_scripts/ladder_2026-08-17/`.
 Scripts: `scripts/where_the_day_went.py`, logs under `data/logs/*_2026-08-17.log`.
 
