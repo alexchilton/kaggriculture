@@ -254,10 +254,27 @@ class Q4Branch(Branch):
     def rows(self):
         return _q4_rows()
 
-    def install(self, schedule):
-        moved = super().install(schedule)
+    #: The four-quadrant solve for each crop mix. A route is keyed on `(tile, ops)`, so the
+    #: strawberry season cannot use the melon season's routes any more than a 100-tile board can
+    #: use a 75-tile board's -- the stops simply fail to match and drop, which is the failure this
+    #: class's own docstring describes. Handing the melon set to a strawberry board left the whole
+    #: of d9-d29 effectively unsolved on that branch.
+    SOLVE_FOR_MELON = "kagg.search.solved_days_q4"
+    SOLVE_FOR_STRAWBERRY = "kagg.search.solved_days_straw_q4"
+
+    def install(self, schedule, state=None):
+        moved = super().install(schedule, state)
         cover = importlib.import_module("kagg.search.cover")
-        q4 = importlib.import_module("kagg.search.solved_days_q4")
+        from . import melon_branch as MB
+        straw = bool((state or {}).get(MB.BRANCH.armed_key))
+        name = self.SOLVE_FOR_STRAWBERRY if straw else self.SOLVE_FOR_MELON
+        try:
+            q4 = importlib.import_module(name)
+        except ImportError:
+            # The strawberry four-quadrant solve may not exist yet. Falling back to the melon set
+            # is what shipped before this branch existed, so it is no worse -- but say nothing
+            # clever about it: an unsolved day is a day the greedy plays.
+            q4 = importlib.import_module(self.SOLVE_FOR_MELON)
         cover.UNSOLVE_DAYS = ()
         cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
                                         for u, seq in units.items()}

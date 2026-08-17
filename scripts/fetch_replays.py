@@ -18,13 +18,14 @@ Run:  .venv/bin/python -u scripts/fetch_replays.py 80 2>&1 | tee data/logs/fetch
 """
 
 import json
+import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-OUT = Path("data")
+OUT = Path(os.environ.get("OUT_DIR", "data"))
 INDEX = "kaggle/kaggriculture-episodes-index"
 # Newest first: the later day has the stronger field, so its episodes are the better teachers.
 #
@@ -34,14 +35,13 @@ INDEX = "kaggle/kaggriculture-episodes-index"
 # 1.32.7 hinge change. Episodes from before 2026-08-08 describe a different economy and are not
 # teachers, they are noise. `kaggle datasets list -s kaggriculture-episodes-2026-08` lists what
 # actually exists; update this before every pull rather than trusting it.
-DATASETS = ("kaggle/kaggriculture-episodes-2026-08-14",
-            "kaggle/kaggriculture-episodes-2026-08-13",
-            "kaggle/kaggriculture-episodes-2026-08-12")
+DATASETS = ("kaggle/kaggriculture-episodes-2026-08-16",
+            "kaggle/kaggriculture-episodes-2026-08-15")
 
 # A replay is only worth keeping if the winner played well. `contrarian` banks ~$51k and the pair in
 # 89197802 banked $106k and $113k, so this keeps the ones with something to teach and discards the
 # ones that would just dilute the dataset.
-MIN_WINNER_BANK = 60_000.0
+MIN_WINNER_BANK = float(os.environ.get("MIN_WINNER_BANK", 60_000.0))
 
 
 def existing_ids():

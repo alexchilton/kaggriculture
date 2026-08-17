@@ -45,6 +45,15 @@ def main():
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--weeds", type=float, default=0.0)
     ap.add_argument("--module", default="schedule_agent")
+    #: **Which BOARD to dump.** A route is keyed on `(tile, ops)` by `cover._apply_precomputed`, so
+    #: a set solved for one board drops rather than adapts on another -- `q4_branch`'s own docstring
+    #: says so for 75 tiles against 100. The same holds for the crop mix: the strawberry season and
+    #: the melon season put different crops on different tiles from d5. Four boards exist (melon/
+    #: straw x three/four quadrants) and only the two melon ones have ever been solved.
+    ap.add_argument("--arm", choices=("melon", "straw"), default="melon",
+                    help="straw arms the strawberry branch (melon_branch); melon holds it quiet")
+    ap.add_argument("--q4", action="store_true",
+                    help="force the four-quadrant branch on, whatever the town draws")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -54,6 +63,13 @@ def main():
                                      "data/seed_scripts/kawashigi/schedule.json", "カワシギ"))
     SA = importlib.import_module("kagg.search." + args.module)
     B.schedule_agent = SA
+    from kagg.search import melon_branch as _MB
+    from kagg.search import q4_branch as _Q4
+    # The tape's own opponent does not hold nine melon at d3, so the strawberry branch would stay
+    # quiet and `--arm straw` would silently dump the melon board. 0 arms on any opponent, 99 none.
+    _MB.OPPONENT_MELON = 0 if args.arm == "straw" else 99
+    if args.q4:
+        _Q4.BRANCH.trigger = lambda observation: True
 
     replay, schedule, team = B.TAPES[args.tape]
     sched = _PLAN.load(args.schedule or schedule)

@@ -1719,8 +1719,15 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
     # so everything below is unchanged. Imported here and not at module scope because `crew` imports
     # this module. `crew.ACTIVE_UNTIL_DAY` is 0 until a day's grid says otherwise.
     from . import crew as CREW
-    assign = (CREW.cover if day is not None and (day < CREW.ACTIVE_UNTIL_DAY
-                                                or day in getattr(CREW, 'ACTIVE_EXTRA_DAYS', ()))
+    # **A solved day is routed by the planner that can read the solution.** `PRECOMPUTED_ROUTES` is
+    # consulted only inside `cover` -- `crew.py` does not contain the name -- so a route solved for a
+    # day the crew planner owns is written, loaded, and never read. That is the byte-identical null
+    # this repo has shipped three times (`CHAIN_OPS` under an unreachable `COVER_PLANNER`,
+    # `SOLVED_DAYS` against the name the code actually read, `RESERVATION_SLIP`). Inert while every
+    # solved day is d12+, and the guard is what makes solving an early day mean something.
+    assign = (CREW.cover if day is not None and day not in PRECOMPUTED_ROUTES
+              and (day < CREW.ACTIVE_UNTIL_DAY
+                   or day in getattr(CREW, 'ACTIVE_EXTRA_DAYS', ()))
               else cover)
     work, left = assign(units, jobs, budget, depots, carry, supply, deliver, wanted, day, rush, due)
     out = {}

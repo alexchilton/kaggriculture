@@ -29,8 +29,19 @@ sys.path.insert(0, "scripts")
 
 import breakdown as B
 
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
 TPD = 24
+#: Movement and idling, hidden by default because they are tour shape rather than work.
+#: `--moves` shows them, and the distinction they carry is the one the op counts cannot: an hour
+#: with no work op is either a unit WALKING to its next stop or a unit PASSing because its tour is
+#: finished. Those two say opposite things about whether a day ran out of turns or ran out of jobs.
 SKIP = {"PASS", "NORTH", "SOUTH", "EAST", "WEST"}
+
+#: The leader's two seasons. He plays a MELON board or a STRAWBERRY board off the same opening,
+#: decided at d3 on the opponent's melon count; see `kagg/search/melon_branch.py`.
+MELON_SEASON = "data/seed_scripts/kawashigi/92498144.json"
+STRAWBERRY_SEASON = "data/seed_scripts/kawashigi/92466371.json"
 
 
 def positions(obs, seat):
@@ -41,7 +52,7 @@ def positions(obs, seat):
     return out
 
 
-def trace(make0, opp, seed, weeds, economy, day):
+def trace(make0, opp, seed, weeds, economy, day, skip=SKIP):
     """`{hour: [(unit, op, arg, tile), ...]}` plus the market orders, for one day of one policy."""
     from kaggle_environments import make
     env = make("kaggriculture", configuration=dict(economy or {}, seed=seed,
@@ -63,7 +74,7 @@ def trace(make0, opp, seed, weeds, economy, day):
             if h == 0:
                 money["dawn"] = float(o0["farms"][0]["money"])
             for u, a in enumerate([a0["farmer"]] + list(a0["hands"] or [])[:n0]):
-                if a and a[0] not in SKIP:
+                if a and a[0] not in skip:
                     ops[h].append((u, a[0], (a[1] if len(a) > 1 else None),
                                    at[u] if u < len(at) else None))
             for o in (a0.get("market") or []):
@@ -95,22 +106,39 @@ def main():
     ap.add_argument("--day", type=int, default=0)
     ap.add_argument("--only", default="", help="comma-separated ops to show, e.g. PLACE,FEED")
     ap.add_argument("--market", action="store_true", help="also print the market orders")
+    ap.add_argument("--moves", action="store_true",
+                    help="show PASS and the four moves too. An hour with no work op is a unit "
+                         "walking or a unit idle, and only this tells them apart.")
+    ap.add_argument("--arm", choices=("melon", "straw"), default=None,
+                    help="which branch to trace. 'melon' holds the branch quiet and compares "
+                         "against his MELON season; 'straw' arms it and compares against his "
+                         "STRAWBERRY season. Omitted, the tape is whatever --tape names.")
     args = ap.parse_args()
 
     only = {s.strip().upper() for s in args.only.split(",") if s.strip()}
     B.schedule_agent = importlib.import_module("kagg.search." + args.module)
 
     replay, schedule, team = B.TAPES[args.tape]
+    if args.arm:
+        # The branch is forced rather than waited for, exactly as `melon_branch_grid.py` does it:
+        # the tape's own opponent does not hold nine melon at d3, so the trigger would stay quiet
+        # and the straw arm would trace the melon season. 0 arms on any opponent, 99 on none.
+        from kagg.search import melon_branch as _MB
+        _MB.OPPONENT_MELON = 0 if args.arm == "straw" else 99
+        # Ours plays the SHIPPED schedule in both arms -- the branch is what rewrites the rows.
+        # Only the TAPE column and the economy change, to the season that arm is meant to land.
+        replay = str(REPO / (STRAWBERRY_SEASON if args.arm == "straw" else MELON_SEASON))
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in B.TAPE_ONLY} for d, r in sched.items()}
     economy = B.env_config(replay)
     opp = lambda: B.tape_policy(replay, team, 1)
 
+    skip = frozenset() if args.moves else SKIP
     his, his_ord, his_money = trace(lambda: B.tape_policy(replay, team, 0), opp,
-                                    args.seed, args.weeds, economy, args.day)
+                                    args.seed, args.weeds, economy, args.day, skip)
     mine = lambda: (lambda a: (lambda o, t: a(o)))(
         B.schedule_agent.make_agent(thin, 0, router=True))
-    ours, our_ord, our_money = trace(mine, opp, args.seed, args.weeds, economy, args.day)
+    ours, our_ord, our_money = trace(mine, opp, args.seed, args.weeds, economy, args.day, skip)
 
     row = sched.get(args.day, {})
     print(f"day {args.day}   seed {args.seed}   tape {args.tape}")

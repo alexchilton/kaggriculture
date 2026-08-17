@@ -28,7 +28,11 @@ from kagg.search import melon_branch as _MB          # noqa: E402
 B3 = "data/seed_scripts/kawashigi/92466371.json"   # his strawberry season
 A3 = "data/seed_scripts/kawashigi/92498144.json"   # his melon season
 TEAM = "カワシギ"
-ROWS = ("PLANT", "WATER", "HARVEST", "FEED", "CARE", "COLLECT_FERTILIZER", "DIG",
+#: `WATER` counts ACTIONS SUBMITTED. A second water on a tile the same day returns immediately
+#: (`reference/kaggriculture.py:434`), so it costs the turn and changes nothing. `water_tiles` is
+#: the row that means something: how many DISTINCT tiles were served. Measured d6, the two sides
+#: read 17/19 on `WATER` and 16/16 on `water_tiles`.
+ROWS = ("PLANT", "WATER", "water_tiles", "HARVEST", "FEED", "CARE", "COLLECT_FERTILIZER", "DIG",
         "BUILD_PASTURE", "PLACE", "BUY_SEED", "BUY_ANIMAL", "BUY_LAND", "HIRE", "SELL",
         "crop_MELON", "crop_STRAWBERRY", "crop_WHEAT", "weed", "pen", "hands", "money")
 
@@ -57,14 +61,36 @@ def main():
     opp = lambda: B.tape_policy(replay, TEAM, 1)                      # noqa: E731
     economy, shops = B.env_config(replay), B.recorded_shops(replay)
 
+    # Positions are read from the SAME observation the action was built from -- not the previous
+    # turn's, which is `day_ops.py`'s replay convention and is one turn stale for a live policy.
+    def watch(policy, into):
+        def step(o, t):
+            act = policy(o, t)
+            farm = o["farms"][0]
+            at = [tuple(farm.get("farmer") or (4, 4))]
+            for h in (farm.get("hands") or []):
+                at.append(tuple(h if isinstance(h, (list, tuple)) else h.get("pos", (4, 4))))
+            n = len(farm.get("hands") or [])
+            for u, a in enumerate([act["farmer"]] + list(act.get("hands") or [])[:n]):
+                if a and a[0] == "WATER" and u < len(at):
+                    into.setdefault(t // 24, set()).add(at[u])
+            return act
+        return step
+
+    o_water, t_water = {}, {}
+
     def ours():
         agent = SA.make_agent(sched, 0)
-        return lambda o, t: agent(o)
+        return watch(lambda o, t: agent(o), o_water)
 
     o_d, o_ops, _c, _dd = B.run(ours, opp, a.seed, a.weeds, stop_day=a.days + 1,
                                 economy=economy, shops=shops)
-    t_d, t_ops, _c2, _dd2 = B.run(lambda: B.tape_policy(replay, TEAM, 0), opp, a.seed, a.weeds,
+    t_d, t_ops, _c2, _dd2 = B.run(lambda: watch(B.tape_policy(replay, TEAM, 0), t_water),
+                                  opp, a.seed, a.weeds,
                                   stop_day=a.days + 1, economy=economy, shops=shops)
+    for x in range(a.days + 1):
+        o_d[x]["water_tiles"] = len(o_water.get(x, ()))
+        t_d[x]["water_tiles"] = len(t_water.get(x, ()))
 
     which = ("92466371, his STRAWBERRY season, $147,059" if a.arm == "straw"
              else "92498144, his MELON season, $149,998")

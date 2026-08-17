@@ -62,7 +62,43 @@ MODULES = (
     # the branch raises `ModuleNotFoundError` on the 15% of games that arm it, which is a crash in
     # a minority of games rather than an obvious one.
     ("kagg.search.solved_days_q4", "kagg/search/solved_days_q4.py"),
+    # **The two STRAWBERRY solves, and the import check cannot see that they are needed.**
+    # `melon_branch.install` and `q4_branch.install` reach them through
+    # `importlib.import_module(self.SOLVE_FOR_STRAWBERRY)` -- a string, invisible to the AST walk
+    # in `_check_imports` -- and both catch `ImportError` and carry on with the MELON routes. So a
+    # bundle without these builds clean, passes every check, and plays the strawberry season on
+    # routes solved for a board with different crops on different tiles from d5, where
+    # `cover._apply_precomputed` keys a stop on `(tile, ops)` and the stops simply drop.
+    #
+    # That is the silent-regression shape this file's own docstring is about, one level deeper: not
+    # "the wrong agent shipped" but "the right agent shipped with a quarter of its plan missing".
+    #
+    # **Both are OUT of the bundle as of 2026-08-16, and the reason is measured, not cautious.**
+    # All four boards were re-solved that evening at 60s/day in day order, giving the strawberry
+    # boards their own routes for the first time (1,234 and 1,528 stops). Rematched over 97 real
+    # ladder games -- our live agent in our own seat, each opponent's RECORDED actions in theirs, on
+    # the game's own `info.seed` so the shop draw is fixed -- the fresh solve was WORSE:
+    #
+    #     current code + committed routes    66/97 wins
+    #     current code + the fresh solve     63/97 wins
+    #
+    # Same code, only the routes differing. A third measurement agreeing with two earlier ones (a
+    # -$4,600 season on seed 11, and a confounded 63 vs 71 before the boards were isolated). The
+    # files are kept out of the tree rather than shipped and hoped for; `melon_branch.install` and
+    # `q4_branch.install` already catch `ImportError` and fall through to the melon routes, which is
+    # what these 66/97 were measured with.
+    #
+    # This is NOT a verdict that a strawberry solve is worthless -- the arm demonstrably plays its
+    # late season on routes that cannot match, and that is a real defect. It is a verdict that THIS
+    # solve, at THIS budget, loses. Re-solving needs its own measurement before it ships.
     ("kagg.search.cover", "kagg/search/cover.py"),
+    # **Before both branch modules, which import `Branch` from it at module scope.** A leaf: it
+    # imports nothing from `kagg`. Its absence is what made this builder refuse to run at all --
+    # `q4_branch.py: imports ['kagg.search.branch'], which the bundle does not carry`.
+    ("kagg.search.branch", "kagg/search/branch.py"),
+    # **Before `schedule_agent`, which does `from . import melon_branch as _MB` at module scope.**
+    # This is the d3 melon/strawberry decision; without it the bundle cannot import.
+    ("kagg.search.melon_branch", "kagg/search/melon_branch.py"),
     # **Before `schedule_agent`, which imports it at module scope.** Its rows are embedded in the
     # module itself: a submission has no `data/` directory to read them from.
     ("kagg.search.q4_branch", "kagg/search/q4_branch.py"),

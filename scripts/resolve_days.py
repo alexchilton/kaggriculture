@@ -131,10 +131,39 @@ def main():
     ap.add_argument("--tape", default="kawashigi")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--seconds", type=float, default=300.0, help="solver budget PER DAY")
+    #: **Solve on a board with NO random weeds, and that is deliberate.** `weedSpawnChance` drives
+    #: spawns on EMPTY tiles only; crops still weed from two dry nights either way. Solving at the
+    #: ladder's 0.005 bakes THIS SEED's weeds into the route as DIG stops that exist on no other
+    #: seed -- and `solved_days.py`'s docstring says these routes carry across seeds precisely
+    #: because the board is a pure function of coordinates and the only RNG is the weed spawn and
+    #: the shop draw. The solver would then spend turns planning around work that will not exist,
+    #: and `_apply_precomputed` drops the stop while the tour stays shaped around it.
+    #:
+    #: Measured on d6: solving at 0.0 and at 0.005 produced an IDENTICAL route -- 29/29 seated,
+    #: 87 turns, same per-unit assignment, same 229,843 tour evaluations. So this costs nothing
+    #: today and protects the cross-seed property.
+    ap.add_argument("--weeds", type=float, default=0.0,
+                    help="weedSpawnChance for the fixture dump. 0.0 keeps the route seed-free.")
     ap.add_argument("--module", default="schedule_agent")
+    #: **Which of the four boards to solve.** `_apply_precomputed` keys a stop on `(tile, ops)`, so
+    #: a route solved on one board DROPS rather than adapts on another -- `q4_branch` says so for
+    #: 75 tiles against 100, and the same holds for the crop mix, since the strawberry season and
+    #: the melon season put different crops on different tiles from d5. Only the two melon boards
+    #: have ever been solved; `q4_branch.install` hands the melon four-quadrant routes to a
+    #: strawberry four-quadrant board, where they cannot match.
+    ap.add_argument("--arm", choices=("melon", "straw"), default="melon")
+    ap.add_argument("--q4", action="store_true", help="solve the four-quadrant board")
+    ap.add_argument("--target", default=None,
+                    help="module file to write, e.g. kagg/search/solved_days_straw_q4.py. "
+                         "Defaults to solved_days.py -- always set it for a non-melon board.")
     ap.add_argument("--log", default="data/logs/resolve_days.log")
     args = ap.parse_args()
 
+    global TARGET
+    if args.target:
+        TARGET = REPO / args.target
+        if not TARGET.exists():
+            TARGET.write_text('"""placeholder"""\n\nSOLVED_DAYS = {\n}\n')
     days = [int(d) for d in args.days.split(",") if d.strip()]
     logpath = REPO / args.log
     logpath.parent.mkdir(parents=True, exist_ok=True)
@@ -148,15 +177,18 @@ def main():
         log.write(f"resolve_days {days} tape={args.tape} seed={args.seed} "
                   f"seconds={args.seconds}\n")
         for day in days:
-            fixture = FIXTURES / f"day_{day}_{args.tape}.json"
-            route = REPO / "data" / "logs" / f"route_d{day}_{args.tape}.json"
+            tag = f"{args.tape}_{args.arm}" + ("_q4" if args.q4 else "")
+            fixture = FIXTURES / f"day_{day}_{tag}.json"
+            route = REPO / "data" / "logs" / f"route_d{day}_{tag}.json"
             route.parent.mkdir(parents=True, exist_ok=True)
 
             print(f"\n{'=' * 70}\n=== day {day}\n{'=' * 70}", flush=True)
             # 1. Dump the fixture the SHIPPED planner sees today, with every earlier day installed.
             _run([sys.executable, "-u", "scripts/dump_day_jobs.py", "--day", str(day),
                   "--tape", args.tape, "--seed", str(args.seed), "--module", args.module,
-                  "--out", str(fixture.relative_to(REPO))], log)
+                  "--weeds", str(args.weeds), "--arm", args.arm]
+                 + (["--q4"] if args.q4 else [])
+                 + ["--out", str(fixture.relative_to(REPO))], log)
             # 2. Solve it.
             _run([sys.executable, "-u", "scripts/solve_day.py", str(fixture.relative_to(REPO)),
                   "--seconds", str(args.seconds), "--dump-route", str(route.relative_to(REPO))],

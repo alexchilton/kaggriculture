@@ -52,10 +52,15 @@ class Branch:
         """`{day: row}` for `split_day` onwards. A fresh dict each call, so callers cannot mutate."""
         raise NotImplementedError
 
-    def install(self, schedule):
+    def install(self, schedule, state=None):
         """Replace rows from `split_day` on, in place. True if anything moved.
 
         In place because the caller shares the row objects; see the module docstring.
+
+        `state` is the agent's per-game dict, passed so a branch can see what ELSE armed. Only
+        `q4_branch` uses it, and it needs it: the four-quadrant solve it installs depends on the
+        crop mix, because `cover._apply_precomputed` keys a stop on `(tile, ops)` and the melon
+        season and the strawberry season put different crops on different tiles from d5.
         """
         moved = False
         for day, row in self.rows().items():
@@ -78,7 +83,7 @@ class Branch:
         state[self.decided_key] = True
         state[self.armed_key] = bool(self.trigger(observation))
         if state[self.armed_key]:
-            self.install(schedule)
+            self.install(schedule, state)
         return state[self.armed_key]
 
 

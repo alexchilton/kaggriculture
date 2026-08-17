@@ -11,7 +11,7 @@ import json
 import sys
 import types
 
-_ORDER = ['kagg.economics.production', 'kagg.search.routines', 'kagg.search.solved_days', 'kagg.search.solved_days_q4', 'kagg.search.cover', 'kagg.search.q4_branch', 'kagg.search.crew', 'kagg.search.router', 'kagg.search.schedule_agent']
+_ORDER = ['kagg.economics.production', 'kagg.search.routines', 'kagg.search.solved_days', 'kagg.search.solved_days_q4', 'kagg.search.cover', 'kagg.search.branch', 'kagg.search.melon_branch', 'kagg.search.q4_branch', 'kagg.search.crew', 'kagg.search.router', 'kagg.search.schedule_agent']
 _PACKAGES = ['kagg', 'kagg.economics', 'kagg.search']
 _SOURCES = {}
 _SOURCES['kagg.economics.production'] = r'''"""What a single tile actually produces over a season.
@@ -1987,6 +1987,13 @@ YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 #: fed yesterday, may slip; missed yesterday, may not.
 REQUIRED_OPS = ("FEED",)
 
+#: Whether a tile one dry night from weeding is covered BEFORE a pen that was fed yesterday.
+#:
+#: `REQUIRED_OPS` above argues that a pen fed yesterday can slip a day for free while one that
+#: missed yesterday cannot. The same logic applies to tiles, and the pass order contradicted it:
+#: the routine feeds went first and the dying tiles took what was left.
+AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP = False
+
 #: Whether a job the greedy could not place gets a second chance by displacing one that is placed.
 #: Off leaves the plain cheapest-insertion greedy, which is what makes the repair attributable --
 #: and what a test asserts against, so a green suite with it disabled fails loudly instead of quietly.
@@ -2005,30 +2012,6 @@ REPAIR = True
 #: the remainders, and the insertion pass that follows can then spend them. Coverage never drops,
 #: which is also why it terminates -- total cost is bounded below and strictly decreases.
 COMPACT = True
-
-#: Whether a hand that can REACH work nobody else can may be emptied to afford it.
-#:
-#: `COMPACT` pools the leftovers but only on a strict fall in TOTAL turns, and that is the wrong
-#: currency. The fair-share cap two hundred lines below is justified on the opposite principle --
-#: "an idle unit's turns are free and the scarce resource is per-unit TIME, not total walking" --
-#: so a move that raises total walking while lowering the MAXIMUM is exactly the trade the day
-#: wants, and is exactly the one `COMPACT` refuses.
-#:
-#: Measured on Victor's d12, seed 11. Four ripe tiles sit uncovered in the north-east corner --
-#: (8,0), (9,0), (8,1), (9,1), each WATER,HARVEST,PLANT, four turns of work apiece. u7 walks six
-#: squares to the (9,2) pen and six back every day and all four lie on that path, so inserting them
-#: into u7 costs +1, 0, 0 and -1 turns of TRAVEL. They are free to reach. What u7 has not got is the
-#: sixteen turns of WORK, and the day's spare turns are elsewhere:
-#:
-#:     slack  u0:-3  u1:11  u2:4  u3:2  u4:7  u5:7  u6:2  u7:-3  u8:-5  u9:0  u10:3
-#:     36 spare unit-turns, largest single pool 11, sixteen needed on ONE hand
-#:
-#: u9 is the other hand that reaches the corner cheaply, and its whole day is (7,0) then nine moves
-#: to (0,2) -- one lone tile that u8 is already working the squares around. Shedding it frees 13.
-#:
-#: `REPAIR` cannot do this: it displaces exactly ONE job, and one is not enough to free sixteen
-#: turns. This displaces as many as it takes, and only commits if the job actually seats.
-MAKE_ROOM = True
 
 #: How many hands to try emptying for one job, cheapest to reach first, and how many stops may be
 #: shed from one hand. Both bound the work: this pass is O(jobs x hands x stops x moves) in `slot`,
@@ -2108,81 +2091,6 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
-#: **Batching under `DELIVER_MIN` is only coherent when a later delivery exists.** The constant's
-#: own justification is that a small load "rides to the end of the tour, which ends at the shed
-#: anyway" -- and on the shipped day that clause is false: `DELIVER_CUTOFF_TURNS` is 99, so the
-#: closing trip is never charged, and a tour whose remaining stops never stand on a shed-access
-#: tile has NO further chance to bank anything. Whatever it holds of today's row at that point is
-#: stranded by construction and reaches the shed only via the overnight sweep, after the market has
-#: closed.
-#:
-#: Day 6, seed 11, kawashigi grid: the hand shearing (4,3) took 4 WOOL against a row asking 12,
-#: then fed the cows at (0,0) and (1,0) and sat there from h09. The row sold 10/17 with the wool in
-#: its pocket all afternoon. Forcing the closing trip instead was a measured null -- that tour had
-#: spent 21 turns of 23 and the walk home costs 8 -- so the only delivery that can exist for it is
-#: this ferry, priced into the greedy like any other stop.
-#:
-#: Scoped tightly: only when the closing trip is uncharged (`deliver` False), only for a positive
-#: load of the ROW's produce (`load` already counts nothing else while
-#: `DELIVER_SURPLUS_NOT_THE_ROW` is False), and only when neither the current position nor any
-#: remaining stop is a depot tile -- a tour that still touches one is owned by the zero-detour
-#: rules, whose refusals (`REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`) are measured and must stand.
-SHIP_WHAT_NO_LATER_STOP_CAN_BANK = True
-
-#: Whether a hand already standing at the shed, holding produce today's row wants AND items later
-#: jobs need, drops the lot and draws the latter straight back -- instead of carrying the produce to
-#: the end of the tour because the drop cannot be selective. See the block in `materialise`.
-REDRAW_RATHER_THAN_CARRY = True
-
-#: Whether that re-draw refuses when the thing it means to draw back is on today's SELL row.
-#:
-#: **The re-draw is planned as a certainty and is not one.** `_process_market` runs AFTER the unit
-#: phase in the same turn (`kaggriculture.py:922` then `:928`), so the drop lands in the shed and the
-#: turn's SELL orders lift it out again before the hand comes back. On this board the row's produce
-#: and the herd's dinner are the same commodity, which is what makes it reachable at all.
-#:
-#: Measured, seed 11 day 4, Seb's tape. The herd hand banks one fertilizer at h6 and sheds three
-#: wheat with it -- `DROP` is all-or-nothing (`kaggriculture.py:333`) -- then asks for three back at
-#: h8 and gets one, because that turn's row sold `WHEAT 1` and `FERTILIZER 1`. The shed then reads
-#: empty from h9 to h18, so `FETCH_THE_FEED_AND_RETURN` cannot rescue it either: its gate is
-#: `shed["WHEAT"] > 0`. The cow placed at `(3,3)` at h14 is never fed and never cared for.
-#:
-#: Seb does not make the trip. Same day, same board, same purchases (6 wheat in the shed at dawn and
-#: 1 bought -- he is NOT better supplied): he draws the whole shed at dawn across two carriers,
-#: sends a third hand out with the cow, and emits no DROP at all before h18. See
-#: `docs/how_seb_feeds_the_herd.md`.
-#:
-#: Narrowed, not switched off. The day-1 case `REDRAW_RATHER_THAN_CARRY` was added for -- fertilizer
-#: held from h5 to h16, four units sold for $2 less than the tape -- has nothing owed ahead that the
-#: row also sells, so it still fires.
-REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE = True
-
-#: Whether a shed stop banks only the SURPLUS, with `PLACE`, rather than dumping the whole hand with
-#: `DROP` and drawing the ration straight back.
-#:
-#: `DROP` is all-or-nothing (`kaggriculture.py:333`), so a herd tour that wants to bank one fertilizer
-#: has to bin the wheat its next pens are about to eat and spend a second turn replacing it. Every
-#: comment in this file that says "the drop takes the wheat with it, so the same stop draws back
-#: everything still ahead" is describing that second turn.
-#:
-#: There is a one-turn version and it is the same op the leader uses. `PLACE <item> <n>` on a
-#: shed-adjacent tile is a QUANTIFIED shed drop (`kaggriculture.py:381-395`): n of ONE item into the
-#: shed, the rest of the hand untouched. Kawashigi's day 1 emits no `DROP` at all -- his single bank
-#: of the day is `PLACE FERTILIZER` at h18.
-#:
-#: Measured on day 1, seed 11, kawashigi tape. The farmer works alone on 24 turns and his tour priced
-#: at 18: `Shed[WHEATx3] (4,4)pen Shed[DROP+WHEATx2] (4,3)pen Shed[DROP+WHEATx1] (2,4)pen`. The fourth
-#: pen `(3,4)` priced at **25 in every position** and went uncovered -- one turn over -- while two of
-#: those eighteen turns were spent re-drawing wheat the same stop had just binned. `feed 3/4` and
-#: `care 3/4` on the day, and that is the head of the chain: the sheep miss a production night, d6
-#: shears 9 where the tape shears 12, and d7 cannot afford its third animal.
-#:
-#: It is chosen on COST, never by preference -- `_bank` returns whichever of the two stops is cheaper,
-#: so a hand with three products to bank and nothing owed ahead still DROPs, which is one turn against
-#: three. And never for an animal: `PLACE` on a built empty pen puts the beast IN it
-#: (`kaggriculture.py:370-378`), and pens sit on shed-access tiles by design.
-BANK_THE_SURPLUS_NOT_THE_HAND = True
-
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
 #:
@@ -2212,75 +2120,6 @@ RUSH_BANK_MIN = 4
 #: pens sit on shed-access tiles by design, so a herd tour stands on a depot at most of its stops and
 #: the drop can be free. That is a different change to this one and needs its own measurement.
 DELIVER_SURPLUS_NOT_THE_ROW = False
-
-#: Whether a tour DROPS what it is carrying at a depot it is already standing on -- zero detour,
-#: one turn. See the note where it fires. This is the cheap half of the delivery defect above: it
-#: never buys a walk, so it cannot take turns away from feeding the way the detour version did.
-DROP_WHERE_THE_TOUR_ALREADY_STANDS = True
-
-#: **Harvest all day, bank at dusk.** No mid-tour DROP while the tour still has produce to take.
-#:
-#: Read off Seb's own actions on day 4 of both tapes -- fourteen harvests each time, and not one
-#: DROP until the harvesting was finished:
-#:
-#:     seb (interval 12)  HARVEST 4 6 7 8 9 11 12 12 13 14 15 15 15 17   DROP 20 20 21 22 23
-#:     seb1326 (24)       HARVEST 4 6 8 9 10 11 11 13 14 14 14 14 15 18  DROP 18 21 21 21 22 23 23
-#:
-#: The env rebalance moved the sweep earlier and made it longer -- seven drops from h18 rather than
-#: five from h20, because at `townCenterSellInterval` 24 the town absorbs less per tick -- and left
-#: the ordering rule untouched. His algorithm did not change; the volume it has to move did.
-#:
-#: Ours on `seb1326` day 4 dropped at h14 and h16, sold those part-loads for $282 and $507, then
-#: took its LAST drop at h21 while still harvesting at h21, h21 and h22 -- so that produce was in
-#: hand when the day closed. The row asked `WHEAT 49, FERTILIZER 6`; we filled 27 and 3, and the
-#: bank finished the day at $73 against his $1,107.
-#:
-#: All three mid-tour drop paths are gated on this, because the defect is in none of them
-#: individually: each is locally reasonable and none looked AHEAD for produce still to come.
-#: The closing drop is deliberately NOT gated -- it runs after every job by construction, and it is
-#: what this rule funnels the whole day's load into.
-#:
-#: **NARROWED 2026-08-10 to HARVEST only.** It was written against `Job.yields()`, and `YIELDING` is
-#: `("HARVEST", "COLLECT_FERTILIZER")` -- so a day whose only production is fertilizer could not bank
-#: until its last pen was walked. Day 5 of `seb1326`, seed 11, held $17 from h03 to h19 with four
-#: fertilizer in the crew's hands, re-offering a $100 strawberry seed on every one of those turns; it
-#: arrived at h21 and was still in the bag at dusk. The tape gates on HARVEST and nothing else --
-#: `d4 HARVEST 5..19 / DROP 19 22 22 22 23` against `d6 COLLECT_FERTILIZER 3 4 6 8 10 11 14 /
-#: DROP 9 15 17 19`, where he banks with three collections still ahead. See `Job.harvests()`.
-BANK_ONLY_AFTER_THE_LAST_HARVEST = True
-
-#: Whether a hand banks mid-tour anyway on a day that cannot pay its own bill yet.
-#:
-#: `BANK_ONLY_AFTER_THE_LAST_HARVEST` above is read off days where the harvest is REVENUE -- it can
-#: wait for dusk because nothing that day depends on it. It is wrong on a day where the harvest is
-#: WORKING CAPITAL, and d10 of the Victor tape is that day. Measured, seed 11, with the seed rows
-#: reordered by need:
-#:
-#:     h6   HARVEST 6 melon                       melon in shed: 0
-#:     h7   6 melon in hand, bank $16
-#:     h10 h11 h12 h13   four strawberry stops reached, strawberry seed 0, bank $16
-#:     h20  DROP x2 -- first melon to reach the shed all day
-#:     h21  bank $16 -> $1,943, buy STRAWBERRY 12, every stop already walked
-#:
-#: Thirty melon rode around in hands from h6 to h20 while the day's own seed went unbought. The tape
-#: does the opposite and its row says so plainly: `SELL MELON 6` at h12/h15/h17/h20/h22 against
-#: `BUY_SEED STRAWBERRY` at h12/h13/h15 -- it banks five times through the day, each sale funding the
-#: next seed block. "Harvest all day, bank at dusk" is not what he plays on a day he has to finance.
-#:
-#: `rush` is the existing short-of-cash signal `_solve` already computes and passes here, so this adds
-#: no new notion of poverty -- it lets the cheap drop (`DROP_WHERE_THE_TOUR_ALREADY_STANDS`, zero
-#: detour, one turn) fire while harvests remain, and ONLY then. The detour drop is untouched: a day
-#: this short of money cannot afford a 12-turn ferry either, which is the whole finding of
-#: `DELIVER_MIN` and the d4 water row.
-#: **REVERTED 2026-08-11, same day it was written.** It never reached d10 -- `rush` was False there
-#: (`_days_bill` priced seed at $0, fixed separately) and every melon harvest is the LAST job on its
-#: tour, so no rule in `materialise`'s loop has a later job to insert a delivery before. What it did
-#: reach was d6, where the extra drops shifted the cash timing and one `BUY_PRODUCT WHEAT` stopped
-#: filling: `buy_product 5/5 -> 4/5`, one wheat short in the shed from d7 dawn onwards and never
-#: recovered. Days match IN ORDER, so buying +$113 on d6-d13 money with a d6 op regression is a loss.
-#:
-#: Left False rather than deleted only until the d6 row is re-confirmed green; delete it then.
-BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
 
 #: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
 #: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
@@ -2315,68 +2154,6 @@ BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
 #: byte-identical d8. And the free drop is safe here by construction: it already refuses whenever
 #: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
 BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
-
-#: Whether two pens the day's row is WAITING ON may be stacked on the same hand.
-#:
-#: Day 8 of the Kawashigi tape. The two cows placed on day 0 open d8 holding six units each -- twelve
-#: milk, exactly his `SELL MILK 12`, and that sale funds the day: the row buys `WHEAT 17` on a $4
-#: dawn bank and the wheat feeds ten animals. His plan puts ONE HAND ON EACH ripe pen, read off the
-#: raw replay:
-#:
-#:     u4   h02 (4,4) PICKUP/WHEAT   h03 FEED   h04 CARE   h05 HARVEST   h06 PLACE/MILK
-#:     u2                                                  h04 HARVEST   h06 PLACE/MILK
-#:
-#: Ours puts both on u4, as jobs 0 and 1 of its tour -- both correctly flagged `funds`, both at the
-#: FRONT, so neither the flag nor the ordering is wrong. But that is eight turns of work back to
-#: back on one hand, so the second cow's milk cannot reach the shed before ~h08.
-#:
-#: **Two hours late fills exactly as much as thirteen.** Forcing the tape's own d8 orders on top of
-#: `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` was byte-identical to forcing them without it -- `sell
-#: 6/18`, `+ sold $524/$3,177` -- because `SELL MILK 12` at h05 found an empty shed either way. So
-#: the delivery rule cannot pay until the two harvests happen at the same time.
-#:
-#: `greedy` ranks on `(added turns, unit, tile, index)`, pure cheapest-insertion, so appending the
-#: second cow to the hand already standing on the first always wins. That is right for ordinary work
-#: -- its own docstring measures round-robin turning 776 idle turns into 742 extra moves -- and
-#: wrong for the two stops the day's cash depends on. This is therefore a PREFERENCE inside the
-#: existing ranking and never a refusal: a funding pen with nowhere else to go still gets placed, so
-#: it cannot leave one uncovered.
-ONE_HAND_PER_FUNDING_PEN = True
-
-#: Whether a pen that FUNDS the day banks its produce on the pen, the turn after it is harvested.
-#:
-#: `_refresh_pins` sites pens ON shed-access tiles, so a hand standing on a pen is already standing
-#: on the shed. Kawashigi never walks anywhere to bank the day-8 milk:
-#:
-#:     u4  h02 (4,4) PICKUP/WHEAT  h03 FEED  h04 CARE  h05 HARVEST  h06 PLACE/MILK
-#:                                                                      ^ same tile, next turn
-#:
-#: and `SELL MILK 12` is in that same order block -- the unit phase runs before `_process_market`
-#: (`:922` then `:928`), so it lands and sells in one turn.
-#:
-#: **Every existing delivery path banks on the way to the NEXT job.** They all compute
-#: `d = nearest(depots, pos, j.tile)` for the TRANSITION, so the stop is part of moving on and is
-#: gated on that move being free. Standing still is not a move, so none of them can express "bank
-#: here, now". On d8 that put the milk in the shed at h07 with `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`
-#: on and h11 without it, against a sale asked at h05.
-#:
-#: The two hours are the whole day. Measured on the forced-order run -- the tape's own d8 orders
-#: replayed on our board:
-#:
-#:     h05  bank $24  shed MILK 0  asked BWHEAx2 SMILKx12  -> ALL FAILED
-#:     h08  bank $24  shed MILK 0  asked BWHEAx2           -> FAILED
-#:     h10  bank $24  shed MILK 0  asked BWHEAx3           -> FAILED
-#:
-#: 9 wheat fill at h00 behind the fertilizer sale and 1 at h03; the other 7 fail on CASH, with the
-#: bank flat at $24 from h04 to midnight while the town holds 9,900+ wheat. Stock never binds.
-#: Forcing his orders without the milk is `buy_product 10/17` and `+ sold $524/$3,177` -- re-offering
-#: an order you cannot pay for changes nothing, which is why this is upstream of the wheat row.
-#:
-#: Costs ONE turn and no movement, and `_bank` prefers the quantified `PLACE` here on cost, so the
-#: herd's ration stays in the hand. Deliberately NOT gated on `reaping`, `DELIVER_MIN` or `free`:
-#: those all exist to stop a small load buying a WALK, and there is no walk.
-BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY = True
-
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -2574,8 +2351,6 @@ def _bank(tile, held, need, critical=False):
     tiles -- so the selective drop is not selective for livestock, it is a placement.
     """
     drop = Depot(tile, drop=True, pick=need, critical=critical)
-    if not BANK_THE_SURPLUS_NOT_THE_HAND:
-        return drop
     if any(q > 0 and i in R.ANIMALS for i, q in held.items()):
         return drop
     give = collections.Counter({i: q - need.get(i, 0) for i, q in held.items()
@@ -2807,8 +2582,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # `REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`. The drop and the day's SELL orders hit the same
         # shed on the same turn and the market goes second, so banking the herd's wheat on a day whose
         # row sells wheat does not cost a turn -- it costs the feed.
-        contested = (REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE
-                     and any(wanted.get(p, 0) > 0 for p, q in after[i].items() if q > 0))
+        contested = (any(wanted.get(p, 0) > 0 for p, q in after[i].items() if q > 0))
         # **Is there still a harvest ahead on this tour?** See `BANK_ONLY_AFTER_THE_LAST_HARVEST`.
         # `work[i:]` includes the job about to be walked to, which is right: a drop planned on the
         # way TO a harvest is as early as one planned between two.
@@ -2822,16 +2596,15 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # fourteen wheat harvests meet a `WHEAT 49` row and the dusk rule is exactly right.
         funding = (BANK_THE_ROWS_PRODUCE_WHILE_REAPING and rush
                    and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
-        reaping = (BANK_ONLY_AFTER_THE_LAST_HARVEST
-                   and any(w.harvests() for w in work[i:])
-                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush)
+        reaping = (any(w.harvests() for w in work[i:])
+                   
                    and not funding)
-        if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
+        if free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))
             held = collections.Counter()
             pos = d
-        elif (REDRAW_RATHER_THAN_CARRY and free and spare > 0 and owed_ahead and not contested
+        elif (free and spare > 0 and owed_ahead and not contested
               and not reaping
               and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items())):
             # **A hand standing at the shed holding the row's produce should bank it and take its
@@ -2868,7 +2641,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # on a depot tile, there is nothing to batch FOR -- the load is stranded by construction.
         # The `due` clock is deliberately not consulted for it: `tail` prices a closing drop that
         # `deliver=False` never plans, so "the tour delivers in time on its own" is fiction here.
-        stranded = (SHIP_WHAT_NO_LATER_STOP_CAN_BANK and not deliver and load > 0
+        stranded = (not deliver and load > 0
                     and pos not in depots
                     and all(tuple(w.tile) not in depots for w in work[i:]))
         if not reaping and (stranded or (load >= DELIVER_MIN and (
@@ -2903,11 +2676,11 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # holding the herd's wheat on a day whose row sells wheat would otherwise bank at every pen.
         # Same shape as `funds` itself in `_solve` -- `any(owed[p] > 0 for p in j.gives)`.
         _earns = any((wanted or {}).get(p, 0) > 0 and q > 0 for p, q in j.gives.items())
-        if BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY and j.funds and pos in depots and _earns:
+        if j.funds and pos in depots and _earns:
             keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
             route.append(_bank(pos, held, keep))
             held = collections.Counter(keep)
-        elif (THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN and j.funds and _earns
+        elif (j.funds and _earns
                 and pos not in depots
                 and all(o == "HARVEST" for o, _i in j.ops)):
             # **The errand.** See `THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN`. Scoped to a job that is
@@ -2960,55 +2733,6 @@ def draws(route):
     return out
 
 
-#: Whether a PLACE is pinned to the hand that builds its pen. See the block in `cover`'s greedy
-#: commit for the mechanism and the day-0 trace. OFF lets the two land on different hands, which
-#: silently drops the placement.
-PLACE_FOLLOWS_ITS_BUILD = True
-
-#: **End a tour at the shed when that tour will HARVEST something today's row is selling.**
-#:
-#: Not the blanket reserve -- that one charges every tour that ends holding anything, was measured at
-#: HARVEST 325 -> 301 and PASS 834 -> 956, and is a loss. This fires only on the tours that produce a
-#: product the day's `sells` row names, which on a typical day is two or three of thirteen.
-#:
-#: It has to key on `Job.products` and not on `Job.gives`: `gives` is the predicted QUANTITY and is
-#: empty whenever `yield_units` is still 0 at dawn, which is the normal state of a crop that ripens
-#: during the day. That is exactly the case this exists for -- 12 melons harvested h12-h15 on d10 and
-#: carried to h23 with the row asking for 18 and the shed empty all day.
-RESERVE_THE_TRIP_FOR_TODAYS_HARVEST = True
-
-#: **Whether the packer may only price a tour the caller is going to ask for.**
-#:
-#: `cover.cost` is what the greedy admits on. On `RESERVE_DAYS` it prices the sequence as
-#: `materialise(deliver=True, wanted_only=True)` -- a tour ending in one closing walk to the shed.
-#: The shipped agent never asks for that tour: `_solve` sets
-#: `deliver = max(budget) > DELIVER_CUTOFF_TURNS` with the cutoff at 99 against budgets of 23-24, so
-#: `deliver` is always False and the closing walk is never planned.
-#:
-#: Pricing it anyway measures a tour that does not exist, and measures it CHEAP: with no walk home,
-#: `materialise` inserts MID-TOUR shed trips instead so the load is not stranded past market close,
-#: and those are not in the delivering tour. Seed 11, day 10, unit 9, one sequence priced both ways:
-#:
-#:     deliver=True, wanted_only=True   21 turns  SHED -> (7,4) -> (6,4) -> (6,3) -> (5,3) -> SHED
-#:     deliver=False                    29 turns  SHED -> (7,4) -> SHED -> (6,4) -> SHED -> (6,3) -> (5,3)
-#:
-#: Budget 23. The packer admitted 21 turns and the day walked 29, so the last two stops were never
-#: reached -- both FEEDs. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:817`), and
-#: the ladder loses tile (6,4) on day 11 that way in 93186363, 93237183 and 93239838.
-#:
-#: **Measured ON, and it is NOT a clean win, which is why it is a flag and not an edit.** Seed 11
-#: against the kawashigi tape, d0-d8 byte-identical either way:
-#:
-#:     feed d10  11/12 -> 12/12      harvest d9-d29  -15 -> -19
-#:     feed d11  13/14 -> 14/14      place   d9-d29  -29 -> -31
-#:     sell d9-d29  -108 -> -62      idle    d9-d29 +406 -> +452
-#:
-#: It closes the starvation -- 0 stranded FEEDs and 0 unfed animals from d8 on, against 3 and 2 --
-#: and it costs the melon day: `sell d10 86/91 -> 57/91`, `drop d10 8 -> 4`, and NO melon reaches
-#: the shed during d10 at all, because the over-long tours were what banked it mid-day. The freed
-#: turns are not re-spent: u3 and u6 finish d10 at 0 of 23 with nothing assigned.
-PRICE_THE_TOUR_THE_CALLER_WILL_WALK = True
-
 #: First day the reserve may fire. **d0-d6 is deliberately untouched -- Alex's instruction, and the
 #: measurement agrees**: without the reserve those days are exact on `harvest 14/14`, `water 17/17`
 #: and `feed 7/7`, and with it d4 falls to `harvest 10/14`, `water 12/17`, `feed 6/7`. The opening is
@@ -3034,9 +2758,6 @@ RESERVE_FROM_DAY = 10
 #: 162/231`. Season money at d16 goes $9,975 -> $8,821.
 RESERVE_DAYS = frozenset({2, 3}) | frozenset(range(RESERVE_FROM_DAY, 30))
 
-#: Whether the greedy ranks an insertion by the tour plus its walk home rather than the tour alone.
-#: Unlike `RESERVE_DAYS` this never refuses a job -- it only changes WHICH hand gets it.
-RANK_BY_THE_TRIP_HOME = False
 
 #: Days it applies. d4 is the day it exists for: 28 wheat and 4 fertilizer in hands at dusk against
 #: a row asking for 49 and 6.
@@ -3180,10 +2901,71 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
 
     seated = {id(j) for work in routes.values() for j in work}
     left = [j for j in jobs if id(j) not in seated]
+    # **A hand is never given more tour than its day can walk.** See `_trim_to_the_day`. The stops
+    # this releases join `left`, so they go through the same at-risk-first insertion as everything
+    # else rather than sitting past the end of a tour nobody priced.
+    left += _trim_to_the_day(routes, units, budget, depots, carry, wanted, deliver, rush, due)
     if left:
         left = _insert_leftovers(routes, left, units, budget, depots, carry, wanted, deliver, rush,
                                  due)
     return routes, left
+
+
+def _trim_to_the_day(routes, units, budget, depots, carry, wanted, deliver, rush, due):
+    """Drop the tail of any seated tour that costs more turns than the unit has. Returns the drops.
+
+    **A hand is never given more tour than its day can walk.**
+
+    Every other seating path in this file already obeys that rule: `slot`/`claim` price a job
+    against `budget[u]` before taking it, and `_insert_leftovers` prices each insertion the same
+    way. `_apply_precomputed` is the exception -- it seats the solved stops by name and prices
+    nothing, which `TRIM_HOME_DAYS`' note above states outright. A day is 24 turns whether or not
+    anyone counted them, so the surplus stops do not happen; they are simply never reached, and
+    nothing reports it. `PRECOMPUTED_MISSES` records a stop the board could not FILL and has no
+    entry for a stop that was seated and then never walked to.
+
+    Measured on tape `kawashigi`, seed 11, `weedSpawnChance` 0.005 (`data/logs/over_budget_-
+    kawashigi_s11.log`): ten tours across d16-d28 are planned past the day, u3 on d23 by ten turns,
+    and eleven WATER stops sit past the cut. The tiles those waters name are the tiles that weed
+    that same night -- (1,4) and (0,4) on d16, (0,5) on d19, (6,2) on d26, (8,7) on d27. A
+    STRAWBERRY is `ongoing`, so a tile at `consecutive_unwatered == 1` has exactly one water
+    between it and a WEED, and that water was being planned into turns nobody had.
+
+    Trimming from the END is not a preference, it is what the runtime already does -- the tour is
+    walked in order and stops when the turns run out. The difference is that a released stop is now
+    VISIBLE: it joins `left`, and `_insert_leftovers` sorts `left` at-risk first, so a water on a
+    tile that dies tonight is re-seated on whichever hand still has slack instead of being
+    abandoned on the hand that ran out.
+
+    **TRIED AND REVERTED: give up the last SLIPPABLE stop rather than the last one**, so a tile one
+    dry night from weeding outranks a stop that only costs a day's delay. The clause is not dead --
+    on seed 11 it fires on 2 of the 13 over-budget tours and picks a different stop
+    (`data/logs/does_slip_fire_s11.log`) -- and it is a MEASURED NULL: the acceptance gates return
+    a byte-identical failing set (359 failed, 542 passed, 115 xfailed, 35 xpassed) and the season
+    weeds exactly the same nine tiles on exactly the same days. The reason is that the released
+    stop goes to `_insert_leftovers` either way, and that already sorts at-risk first, so the
+    ordering was being applied twice. Reverted per protocol; recorded so it is not re-derived.
+
+    This does not decide what to give up when the day is genuinely too full. That was already
+    `_insert_leftovers`' job; this only makes it reachable on a solved day.
+    """
+    dropped = []
+    for u, seq in routes.items():
+        held = (carry or {}).get(u) or {}
+
+        def fits(work):
+            tour = materialise(units[u], list(work), held, depots, wanted, deliver, rush, due=due)
+            return tour is not None and turns(units[u], tour) <= budget[u]
+
+        if fits(seq):
+            continue
+        # `deliver` is the same question `plan` asks of the finished tour, so a tour trimmed here
+        # is trimmed against the cost model it will actually be charged at.
+        keep = list(seq)
+        while keep and not fits(keep):
+            dropped.append(keep.pop())
+        routes[u] = keep
+    return dropped
 
 
 def _insert_leftovers(routes, left, units, budget, depots, carry, wanted, deliver, rush, due):
@@ -3240,7 +3022,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
 
     #: Whether `slot` ranks candidate positions by the tour INCLUDING its trip home. See the note
     #: in `slot`. Scoped to the same day set as the hard reserve plus the days that strand produce.
-    rank_home = bool(RANK_BY_THE_TRIP_HOME and wanted and day in RANK_HOME_DAYS)
+    rank_home = False
 
     def cost(u, work):
         # **The closing shed trip is NOT charged while the work is being packed, and that is
@@ -3285,8 +3067,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         # (`kaggriculture.py:817`), so the same overrun two days running is a $400 asset gone and a
         # pasture idle for the rest of the season. Seen on the ladder in 93186363, 93237183 and
         # 93239838, each losing tile (6,4) on day 11.
-        if ((deliver or not PRICE_THE_TOUR_THE_CALLER_WILL_WALK)
-                and RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS):
+        if deliver and wanted and day in RESERVE_DAYS:
             return turns(units[u], materialise(units[u], work, load(u), depots, wanted, True, rush,
                                                wanted_only=True, due=due))
         return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush,
@@ -3311,17 +3092,16 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     # position after it. Placements still compete for turns on their merits; they just compete on
     # the one hand that can actually serve them.
     build_at = {}
-    if PLACE_FOLLOWS_ITS_BUILD:
-        for j in jobs:
-            if any(o == "BUILD" for o, _i in j.ops):
-                build_at[tuple(j.tile)] = j
+    for j in jobs:
+        if any(o == "BUILD" for o, _i in j.ops):
+            build_at[tuple(j.tile)] = j
 
     def slot(u, j, base, limit=None):
         """Cheapest position for `j` in unit `u`'s `base` sequence within `limit` turns, `(cost, i)`."""
         if j.only is not None and j.only != u:
             return None
         first = 0
-        if PLACE_FOLLOWS_ITS_BUILD and any(o == "PLACE" for o, _i in j.ops):
+        if any(o == "PLACE" for o, _i in j.ops):
             b = build_at.get(tuple(j.tile))
             if b is not None and b is not j:
                 if b not in base:
@@ -3470,7 +3250,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # the value of these two stops is the HOUR they finish, not the walk they
                         # cost. It only ever discriminates between feasible slots, so a funding pen
                         # with nowhere else to go is still placed by the same pass.
-                        stacked = (ONE_HAND_PER_FUNDING_PEN and j.funds
+                        stacked = (j.funds
                                    and any(x.funds for x in routes[u]))
                         key = (stacked, got[0] - used[u], u, j.tile, got[1])
                         if best is None or key < best[0]:
@@ -3491,8 +3271,23 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     # `required` cannot express that and drops the same animal twice.
     greedy([j for j in left if j.at_risk and j.required])        # an animal that dies tonight
     greedy([j for j in left if j.funds])                          # the day's shopping list, unpaid
-    greedy([j for j in left if j.required and not j.at_risk])     # the rest of the herd
-    greedy([j for j in left if j.at_risk and not j.required])     # a tile that weeds tonight
+    if AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP:
+        # **A tile that weeds tonight is an asset lost outright; a pen fed yesterday can slip a day
+        # for free.** That is this file's own argument for `at_risk`, applied to the other half of
+        # the board. Ordered the other way, a routine feed took the turn and the tile died: measured
+        # on live ladder games 2026-08-16, (8,4) STRAWBERRY died d9 last watered d6, (9,1) WHEAT and
+        # (9,2) STRAWBERRY died d11 last watered d8, and the same coordinates die across independent
+        # games and seeds. At d8 dusk eight tiles sat one night from death while sixteen others were
+        # watered.
+        #
+        # NOT the d28 null recorded at `schedule_agent.BANK_THE_FIELD_ON_D28`: that measured RIPE
+        # tiles on a SOLVED day with two hands idle and slack in the route. These are DRY tiles on
+        # d7-d11, which are unsolved and turn-constrained.
+        greedy([j for j in left if j.at_risk and not j.required])  # a tile that weeds tonight
+        greedy([j for j in left if j.required and not j.at_risk])  # the rest of the herd
+    else:
+        greedy([j for j in left if j.required and not j.at_risk])  # the rest of the herd
+        greedy([j for j in left if j.at_risk and not j.required])  # a tile that weeds tonight
     greedy([j for j in left if not j.required and not j.at_risk])
 
     # ----------------------------------------------------------------------------------- compact
@@ -3520,7 +3315,7 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # turns, and stacking the second funding pen back onto the hand already
                         # standing on the first always does -- which is how the spread was measured
                         # to survive `greedy` and then vanish before the tour was built.
-                        if (ONE_HAND_PER_FUNDING_PEN and j.funds and v != u
+                        if (j.funds and v != u
                                 and any(x.funds for x in routes[v])):
                             continue
                         gain = ((used[u] - got[0]) if v == u
@@ -3639,112 +3434,36 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
             tused[v] = vc
         return None
 
-    if MAKE_ROOM:
-        moved = True
-        while moved and left:
-            moved = False
-            for j in sorted(left, key=lambda j: (not (j.at_risk and j.required), not j.funds,
-                                                 not j.required, not j.at_risk, j.tile)):
-                reach = sorted((r, u) for u, r in
-                               ((u, _reach(u, j)) for u in range(len(units))
-                                if (j.only is None or j.only == u) and affordable(claim(u, j)))
-                               if r is not None)
-                for _r, u in reach[:MAKE_ROOM_HANDS]:
-                    room = _make_room(u, j)
-                    if room is None:
-                        continue
-                    trial, tused = room
-                    for v in range(len(units)):
-                        if trial[v] != routes[v]:
-                            routes[v], used[v] = trial[v], tused[v]
-                            touch(v)
-                    booked.update(claim(u, j))
-                    left.remove(j)
-                    moved = True
-                    break
-                if moved:
-                    break                              # `left` has changed; rescan it
+    moved = True
+    while moved and left:
+        moved = False
+        for j in sorted(left, key=lambda j: (not (j.at_risk and j.required), not j.funds,
+                                             not j.required, not j.at_risk, j.tile)):
+            reach = sorted((r, u) for u, r in
+                           ((u, _reach(u, j)) for u in range(len(units))
+                            if (j.only is None or j.only == u) and affordable(claim(u, j)))
+                           if r is not None)
+            for _r, u in reach[:MAKE_ROOM_HANDS]:
+                room = _make_room(u, j)
+                if room is None:
+                    continue
+                trial, tused = room
+                for v in range(len(units)):
+                    if trial[v] != routes[v]:
+                        routes[v], used[v] = trial[v], tused[v]
+                        touch(v)
+                booked.update(claim(u, j))
+                left.remove(j)
+                moved = True
+                break
+            if moved:
+                break                              # `left` has changed; rescan it
 
     return routes, left
 
 
-#: Whether a ripe pen the day's row is WAITING ON offers its HARVEST as a separate job.
-#:
-#: `Job` is one tile and every op that tile wants, atomic to one hand. That is right for ordinary
-#: work and it is what makes the tape's day-8 plan inexpressible for us. He splits a ripe pen across
-#: two hands -- one tends it, another does nothing but harvest and run the milk to the shed:
-#:
-#:     his u0  h03 (4,3) FEED  h04 (4,3) CARE  h05 (4,3) COLLECT_FERT   <- never harvests it
-#:     his u2  h04 HARVEST                      h06 (4,4) PLACE/MILK     <- harvest only, then banks
-#:
-#: Ours bundles them, so the harvest is forced to happen FOURTH:
-#:
-#:     (3,4)  ['FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST']  4t
-#:
-#: Our d8 dawn, seed 11: bank $4, shed WHEAT 1 / FERTILIZER 7, ZERO hands -- all eleven hired during
-#: the day. Ripe cows at (3,4) and (4,4); shed-access tiles are (4,4), (4,5), (5,4), (5,5), so (4,4)
-#: is both a ripe cow and shed ground. Cow A is already banked at h03. Cow B at (3,4) cannot be:
-#: even as job 0 on a hand spawning at the shed at h01, four bundled ops put the harvest at ~h06 and
-#: the deposit at ~h08, against a sale asked at h05.
-#:
-#: **No reordering or route-pinning can beat that**, which is why hardcoding the visit sequence into
-#: `SOLVED_DAYS` changed nothing -- twice. The constraint is INSIDE one job, not between jobs. Split,
-#: the same hand does NORTH, HARVEST, SOUTH, PLACE and lands at h05.
-#:
-#: The tending job keeps `needs`, `at_risk` and therefore `required` (`REQUIRED_OPS` is `("FEED",)`),
-#: so the harvest-only job is neither. Harvesting before feeding is safe: the care bonus is applied
-#: at the day rollover (`kaggriculture.py:808-817`), not at the harvest.
-#:
-#: **SHIPPED FALSE: the split works and the follow-through does not, yet.** With it on, u2 and u4
-#: both HARVEST at h02 -- two hands on the ripe pens at once, which was structurally impossible
-#: before. But u2 then CARRIES its six milk instead of banking them, so the h03 sale we already
-#: had is lost. `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY` cannot help it, and the reason is geometry:
-#:
-#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
-#:     our ripe cows       (3,4) NOT shed ground     (4,4) IS shed ground
-#:
-#: Cow A banks on its own pen because the pen IS the shed. Cow B never can -- it needs a walk to a
-#: shed tile whoever harvests it. The tape has the same geometry (his cows are (4,3) and (4,4)) and
-#: solves it by making the harvest a dedicated ERRAND: HARVEST, walk, PLACE/MILK, nothing else.
-#: So the missing half is a delivery that follows a split harvest off-depot, not the split itself.
-#: Whether a hand that took a SPLIT funding harvest walks the produce straight to the shed.
-#:
-#: The one rule here that is deliberately a WALK. `SPLIT_THE_FUNDING_HARVEST` lets a second hand take
-#: a ripe pen's HARVEST alone, which is what the tape does -- but on its own that LOSES ground,
-#: because the hand then carries the milk: `DELIVER_MIN` exists to stop a small load buying a walk,
-#: `DROP_WHERE_THE_TOUR_ALREADY_STANDS` demands zero detour, and `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`
-#: demands the pen BE shed ground. Measured, seed 11, d8:
-#:
-#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
-#:     our ripe cows       (4,4) IS shed ground     (3,4) is NOT
-#:
-#: Cow A banks on its own pen at h03 for one turn and no walking. Cow B cannot, whoever harvests it.
-#: The tape has the same geometry -- his cows are (4,3) and (4,4) -- and answers it with a dedicated
-#: errand: `h04 HARVEST ... h06 (4,4) PLACE/MILK`, nothing else on that tour.
-#:
-#: The walk IS the point. The milk is the day's working capital: the row buys `WHEAT 17` on a $4 dawn
-#: bank to feed ten animals, and the forced-order run showed the whole afternoon failing on cash with
-#: the town holding 9,900 wheat. Every other rule prices the trip against the LOAD; this one prices
-#: it against the DAY.
-#:
-#: With `SPLIT_THE_FUNDING_HARVEST`, both cows land together at his own hour:
-#:
-#:     h01 u0 HARVEST   h03 u4 HARVEST   h05 u0 DROP + u4 DROP + SELL MILK 12   h06 bank $1,932
-#:
-#: against $13 in every arm before it. Milk alone is NOT the win -- `buy_product` stays 5/17 and
-#: the cash sits, because the wheat is still queued behind the seed at h01. Paired with
-#: `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY` it becomes d8 `buy_product 17/17`, `feed 9/10`,
-#: `care 9/10`, and the season cost falls from -$2,433 to -$299. The two only pay together.
-THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN = True
-
-
-SPLIT_THE_FUNDING_HARVEST = True
-
-
 def split_funding_harvest(jobs, wanted):
     """Ripe pens the row is waiting on, with their HARVEST offered as its own job."""
-    if not SPLIT_THE_FUNDING_HARVEST:
-        return jobs
     want = {p: q for p, q in (wanted or {}).items() if q > 0}
     if not want:
         return jobs
@@ -3882,8 +3601,15 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
     # so everything below is unchanged. Imported here and not at module scope because `crew` imports
     # this module. `crew.ACTIVE_UNTIL_DAY` is 0 until a day's grid says otherwise.
     from . import crew as CREW
-    assign = (CREW.cover if day is not None and (day < CREW.ACTIVE_UNTIL_DAY
-                                                or day in getattr(CREW, 'ACTIVE_EXTRA_DAYS', ()))
+    # **A solved day is routed by the planner that can read the solution.** `PRECOMPUTED_ROUTES` is
+    # consulted only inside `cover` -- `crew.py` does not contain the name -- so a route solved for a
+    # day the crew planner owns is written, loaded, and never read. That is the byte-identical null
+    # this repo has shipped three times (`CHAIN_OPS` under an unreachable `COVER_PLANNER`,
+    # `SOLVED_DAYS` against the name the code actually read, `RESERVATION_SLIP`). Inert while every
+    # solved day is d12+, and the guard is what makes solving an early day mean something.
+    assign = (CREW.cover if day is not None and day not in PRECOMPUTED_ROUTES
+              and (day < CREW.ACTIVE_UNTIL_DAY
+                   or day in getattr(CREW, 'ACTIVE_EXTRA_DAYS', ()))
               else cover)
     work, left = assign(units, jobs, budget, depots, carry, supply, deliver, wanted, day, rush, due)
     out = {}
@@ -3921,6 +3647,367 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
                       depot=(next((s.tile for s in route if getattr(s, "depot", False)), None)),
                       cost=cost)
     return out, left
+'''
+_SOURCES['kagg.search.branch'] = r'''"""One shape for every schedule branch: read a trigger off the board, decide once, install rows.
+
+## Why this exists, and it is not code reuse
+
+The shared code is about twenty lines. What is shared and worth pinning is the CONTRACT, because
+both ways of getting it wrong are silent:
+
+**Decide once, then hold the answer.** The leader's melon purchase spans two days -- d5 buys 3
+seeds, d6 buys 5 -- so a trigger re-read between them can answer differently and buy half a row of
+each. `arm` latches into `state` on the first day at or after `decide_by_day` and never looks again.
+
+**Clear and refill each row IN PLACE.** `schedule_agent.make_agent` shallow-copies the outer dict
+but shares every row object with its caller, and reads them live every turn. Rebinding
+`schedule[day] = new_row` therefore does nothing at all, while looking exactly like a working
+branch -- the failure this project calls a byte-identical null. `install` does
+`target.clear(); target.update(row)`.
+
+## What a branch is
+
+Three things, and nothing else:
+
+    trigger(observation)   a predicate read off the board, true when the branch should be taken
+    rows()                 {day: row} for the days it replaces
+    split_day              the first day it replaces
+
+`decide_by_day` is when the trigger is read, and it is normally EARLIER than `split_day`: the
+decision has to be settled before the first row that spends money on it.
+
+Subclasses are data plus a predicate. `melon_branch` and `q4_branch` are each about twenty lines of
+code around an embedded season.
+"""
+
+
+class Branch:
+    """A schedule branch. Subclass, set the four attributes, implement `trigger` and `rows`."""
+
+    #: The day the trigger is READ. Normally earlier than `split_day`.
+    decide_by_day = 0
+
+    #: The first day whose row this branch replaces.
+    split_day = 0
+
+    #: Keys under which the decision is latched in the agent's per-game `state`.
+    decided_key = "branch_decided"
+    armed_key = "branch_armed"
+
+    def trigger(self, observation):
+        """True when the branch should be taken. Read off the board, never off our own plan."""
+        raise NotImplementedError
+
+    def rows(self):
+        """`{day: row}` for `split_day` onwards. A fresh dict each call, so callers cannot mutate."""
+        raise NotImplementedError
+
+    def install(self, schedule, state=None):
+        """Replace rows from `split_day` on, in place. True if anything moved.
+
+        In place because the caller shares the row objects; see the module docstring.
+
+        `state` is the agent's per-game dict, passed so a branch can see what ELSE armed. Only
+        `q4_branch` uses it, and it needs it: the four-quadrant solve it installs depends on the
+        crop mix, because `cover._apply_precomputed` keys a stop on `(tile, ops)` and the melon
+        season and the strawberry season put different crops on different tiles from d5.
+        """
+        moved = False
+        for day, row in self.rows().items():
+            if day < self.split_day:
+                continue
+            target = schedule.get(day) if hasattr(schedule, "get") else None
+            if target is None:
+                continue
+            target.clear()
+            target.update(row)
+            moved = True
+        return moved
+
+    def arm(self, schedule, state, observation, day):
+        """Decide once, on or after `decide_by_day`; install if the trigger fired. Returns the latch."""
+        if state.get(self.decided_key):
+            return state.get(self.armed_key, False)
+        if day < self.decide_by_day:
+            return False
+        state[self.decided_key] = True
+        state[self.armed_key] = bool(self.trigger(observation))
+        if state[self.armed_key]:
+            self.install(schedule, state)
+        return state[self.armed_key]
+
+
+def count_tiles(observation, seat, **match):
+    """How many of `seat`'s tiles match every key/value given. `count_tiles(obs, 1, crop="MELON")`.
+
+    Both branches ask a question of this shape and both wrote the nested loop out by hand.
+    """
+    farms = observation.get("farms") or []
+    if not 0 <= seat < len(farms):
+        return 0
+    return sum(1 for row in (farms[seat].get("tiles") or []) for cell in row
+               if isinstance(cell, dict) and all(cell.get(k) == v for k, v in match.items()))
+
+
+def opponent_seat(observation):
+    """The seat that is not ours. `player` is absent in some harnesses and defaults to seat 0."""
+    return 1 - int(observation.get("player", 0) or 0)
+'''
+_SOURCES['kagg.search.melon_branch'] = r'''"""The leader's OTHER branch: when the opponent commits to melon, he stops buying it.
+
+## What this is, in one sentence
+
+`data/seed_scripts/kawashigi/schedule.json` is his MELON season (92498144, $149,998, MELON 20 /
+STRAWBERRY 11 at d9). This module carries his STRAWBERRY season (92466371, $147,059, MELON 12 /
+STRAWBERRY 19 at d9) and installs it when the trigger fires. Both are three-quadrant games of his.
+
+## The trigger, measured rather than guessed
+
+Across 67 of his games his melon count at d9 is BIMODAL -- 12 or 20, never between -- and
+`melon + strawberry` is 31 in every single one. The switch is the OPPONENT'S melon tile count at
+day 3:
+
+    opponent melon >= 9   ->  he holds 12 melon / 19 strawberry     15 games
+    opponent melon <  9   ->  he holds 20 melon / 11 strawberry     52 games
+
+Zero misclassifications in 67 games. Day 3 is readable: the earliest melon harvest is day 10, so a
+melon tile at d3 is a PLANTED tile and is on the board for anyone to count.
+
+`docs/allocation_bounds_pass2_2026-08-16.md` derives the same structure without being told it:
+best response to a melon-flooding opponent is 7-12 tiles, to a low-melon opponent 14-27, and the
+best-response fixed point is ~12-14. Melon is demand-capped at 188 units a season and he alone
+sells 120.
+
+## Why this REPLACES a token rewrite rather than extending one
+
+The previous implementation rewrote `MELON` to `STRAWBERRY` inside the melon schedule's own rows.
+Measured over 24 games against the frozen opponent: **0.0 per cent win rate against 66.7 with the
+swap off**, -$17,297 a game. The cause is in the reference. MELON is `ongoing: False` -- water it to
+day 10-12, harvest once, the tile is spent. STRAWBERRY is `ongoing: True` and must be watered every
+day to the end of the season or it weeds. A row recorded for melon hands a strawberry tile melon's
+maintenance, so the tiles die. Rewriting the token cannot fix that; only playing the season he
+actually recorded for that board can.
+
+## What differs, d3 to d8 -- the whole decision
+
+    d3   seeds    {CARROT: 1}                          ->  {}
+    d5   seeds    {STRAWBERRY: 4, MELON: 3}            ->  {STRAWBERRY: 4}
+    d6   plants   {MELON: 2}                           ->  {STRAWBERRY: 2}
+         seeds    {STRAWBERRY: 3, MELON: 5, CARROT: 7} ->  {STRAWBERRY: 3, CARROT: 8}
+    d7   plants   {MELON: 6, STRAWBERRY: 3}            ->  {STRAWBERRY: 2}
+         seeds    {WHEAT: 4}                           ->  {STRAWBERRY: 1, WHEAT: 4}
+         animals  {COW: 2, SHEEP: 1}                   ->  {COW: 2, SHEEP: 2}
+    d8   plants   {WHEAT: 5, STRAWBERRY: 4}            ->  {WHEAT: 3, STRAWBERRY: 11}
+         seeds    {WHEAT: 5, STRAWBERRY: 4}            ->  {STRAWBERRY: 11, WHEAT: 3}
+         animals  {SHEEP: 1}                           ->  {}
+
+He buys 8 melon seed after d0 -- 3 on d5, 5 on d6 -- and plants them on d6 and d7, which is how 12
+becomes 20. The strawberry branch buys none. Everything from d9 on differs only as downstream
+drift: different money, therefore different sells. It is not a second decision.
+
+`SPLIT_DAY` is 3, the day the decision is read. It was 5 -- the first row either season spends
+melon money on -- which left A3's `d3 seeds {CARROT: 1}` in place against B3's `{}`.
+
+## Embedded, not read from disk
+
+Same reason as `q4_branch.Q4_ROWS_B64`: a submission is one file. The blob holds only the fields the
+agent is driven by; `breakdown.TAPE_ONLY` and `shed_dusk` are stripped, so the branch depends on no
+replay it will not have.
+
+Rows are cleared and refilled IN PLACE. `make_agent` shallow-copies the outer dict but shares every
+row object with its caller, so rebinding a row would be a no-op that looks exactly like a working
+branch -- the failure this project calls a byte-identical null.
+"""
+import base64
+import json
+
+from .branch import Branch, count_tiles, opponent_seat
+
+#: The day the decision is READ. The opponent's melon tiles are visible from d0; d3 is the first day
+#: at which his commitment is settled, and it is two days before the first row that spends on melon.
+DECIDE_BY_DAY = 3
+
+#: Opponent MELON tiles at `DECIDE_BY_DAY` at or above which the strawberry season is installed.
+#: Separates his own two populations with zero errors across 67 games.
+OPPONENT_MELON = 9
+
+#: The first day whose row is replaced.
+#:
+#: This was 5, on the argument that d3 and d4 carry no melon in either season. That is true of
+#: melon and false of the row: A3's d3 is `seeds {CARROT: 1}` and B3's is `{}`, so installing from
+#: 5 left a carrot seed the strawberry season does not buy. It showed as `BUY_SEED 1/0` at d3 and
+#: as a bank that diverged from his three days before any field action did -- `money 9/28` at d3,
+#: still 9/19 at d7. Dropping it is worth nothing on its own (measured +$20 in the melon arm over
+#: a full season, every op row identical), but the row has to be his or the comparison is not one.
+SPLIT_DAY = 3
+
+#: Where the rows came from, for anyone re-deriving the blob.
+SOURCE_REPLAY = "data/seed_scripts/kawashigi/92466371.json"
+SOURCE_SCHEDULE = "data/seed_scripts/kawashigi_b3/schedule.json"
+
+B3_ROWS_B64 = (
+    "eyIxMCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6NDB9LCJjYXJlcyI6MTIsImZl"
+    "ZWRzIjoxMiwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjIwNDMuMCwicGxhY2VzIjpbXSwi"
+    "cGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo0fSwic2VsbHMiOnsi"
+    "RkVSVElMSVpFUiI6MTQ1LCJNRUxPTiI6NjYsIldIRUFUIjozMH19LCIxMSI6eyJhbmltYWxzX2JvdWdodCI6eyJDT1ciOjJ9"
+    "LCJidWlsZHMiOjIsImJ1eXMiOnsiV0hFQVQiOjE2fSwiY2FyZXMiOjE0LCJmZWVkcyI6MTQsImhhbmRzIjoxMiwiaGlyZXMi"
+    "OjEyLCJsYW5kIjoxLCJtb25leV9kYXduIjoxMjY0My4wLCJwbGFjZXMiOlsiQ09XIiwiQ09XIl0sInBsYW50cyI6WyJTVFJB"
+    "V0JFUlJZIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiV0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwi"
+    "V0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIs"
+    "IldIRUFUIiwiV0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIldIRUFUIiwi"
+    "U1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JF"
+    "UlJZIl0sInNlZWRzIjp7IlNUUkFXQkVSUlkiOjIzLCJXSEVBVCI6OH0sInNlbGxzIjp7Ik1FTE9OIjo2LCJNSUxLIjo2fX0s"
+    "IjEyIjp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo5fSwiY2FyZXMiOjE0LCJmZWVk"
+    "cyI6MTQsImhhbmRzIjoxMCwiaGlyZXMiOjEwLCJsYW5kIjowLCJtb25leV9kYXduIjoxNDE3MC4wLCJwbGFjZXMiOltdLCJw"
+    "bGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIlNUUkFXQkVSUlkiXSwic2VlZHMiOnsiV0hF"
+    "QVQiOjN9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjoyOCwiTUlMSyI6Nn19LCIxMyI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1"
+    "aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6OH0sImNhcmVzIjoxNCwiZmVlZHMiOjE0LCJoYW5kcyI6MTEsImhpcmVzIjoxMSwi"
+    "bGFuZCI6MCwibW9uZXlfZGF3biI6MTcwMzIuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIlNUUkFXQkVSUlkiLCJTVFJBV0JF"
+    "UlJZIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6M30sInNlbGxzIjp7"
+    "IkZFUlRJTElaRVIiOjEzLCJNSUxLIjo2LCJXSEVBVCI6NSwiV09PTCI6OH19LCIxNCI6eyJhbmltYWxzX2JvdWdodCI6e30s"
+    "ImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6OH0sImNhcmVzIjoxNCwiZmVlZHMiOjE0LCJoYW5kcyI6OCwiaGlyZXMiOjgs"
+    "ImxhbmQiOjAsIm1vbmV5X2Rhd24iOjE5NjI5LjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIl0sInNl"
+    "ZWRzIjp7IldIRUFUIjoyfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MTIsIk1JTEsiOjksIldIRUFUIjoxLCJXT09MIjo2fX0s"
+    "IjE1Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo4fSwiY2FyZXMiOjE0LCJmZWVk"
+    "cyI6MTQsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjoyMjA3Ny4wLCJwbGFjZXMiOltdLCJw"
+    "bGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjR9LCJzZWxscyI6eyJG"
+    "RVJUSUxJWkVSIjoyNDksIk1JTEsiOjE4LCJXSEVBVCI6MzEsIldPT0wiOjZ9fSwiMTYiOnsiYW5pbWFsc19ib3VnaHQiOnt9"
+    "LCJidWlsZHMiOjAsImJ1eXMiOnt9LCJjYXJlcyI6MTQsImZlZWRzIjoxNCwiaGFuZHMiOjksImhpcmVzIjo5LCJsYW5kIjow"
+    "LCJtb25leV9kYXduIjoyOTg5My4wLCJwbGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hF"
+    "QVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6OH0sInNlbGxzIjp7IkZFUlRJ"
+    "TElaRVIiOjI4LCJNSUxLIjo2LCJTVFJBV0JFUlJZIjo4LCJXSEVBVCI6OX19LCIxNyI6eyJhbmltYWxzX2JvdWdodCI6e30s"
+    "ImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6NDJ9LCJjYXJlcyI6MTQsImZlZWRzIjoxNCwiaGFuZHMiOjEyLCJoaXJlcyI6"
+    "MTIsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjMyMDY0LjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwi"
+    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo1fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MzE2LCJN"
+    "SUxLIjo2LCJTVFJBV0JFUlJZIjo0LCJXSEVBVCI6NDMsIldPT0wiOjN9fSwiMTgiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJi"
+    "dWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjE4fSwiY2FyZXMiOjE0LCJmZWVkcyI6MTQsImhhbmRzIjoxMiwiaGlyZXMiOjEy"
+    "LCJsYW5kIjowLCJtb25leV9kYXduIjo0MDY3NC4wLCJwbGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldI"
+    "RUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjR9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjoyNjQsIk1JTEsiOjI0LCJT"
+    "VFJBV0JFUlJZIjoxMiwiV0hFQVQiOjExfX0sIjE5Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7"
+    "IldIRUFUIjo2MX0sImNhcmVzIjoxNCwiZmVlZHMiOjE0LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlf"
+    "ZGF3biI6NDc2NTIuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hF"
+    "QVQiXSwic2VlZHMiOnsiV0hFQVQiOjV9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjozNTYsIk1JTEsiOjYsIlNUUkFXQkVSUlki"
+    "OjIyLCJXSEVBVCI6NTIsIldPT0wiOjIwfX0sIjIwIjp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7"
+    "IldIRUFUIjo4fSwiY2FyZXMiOjE0LCJmZWVkcyI6MTQsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9k"
+    "YXduIjo1NjQ2NC4wLCJwbGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVB"
+    "VCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjd9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjoxNTAsIk1JTEsi"
+    "OjMwLCJTVFJBV0JFUlJZIjoxMiwiV0hFQVQiOjE1fX0sIjIxIjp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJi"
+    "dXlzIjp7IldIRUFUIjozNH0sImNhcmVzIjoxNCwiZmVlZHMiOjE0LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwi"
+    "bW9uZXlfZGF3biI6NjQ2MDUuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJDQVJST1QiXSwic2Vl"
+    "ZHMiOnsiQ0FSUk9UIjoxLCJXSEVBVCI6Mn0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjI5MiwiTUlMSyI6NiwiU1RSQVdCRVJS"
+    "WSI6NDksIldIRUFUIjo1OCwiV09PTCI6OX19LCIyMiI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6"
+    "eyJXSEVBVCI6OH0sImNhcmVzIjoxNCwiZmVlZHMiOjE0LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlf"
+    "ZGF3biI6Nzg1NDguMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hF"
+    "QVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIkNBUlJPVCJdLCJzZWVkcyI6eyJDQVJST1QiOjEsIldIRUFU"
+    "Ijo5fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MTYxLCJNSUxLIjoyNCwiU1RSQVdCRVJSWSI6MjAsIldIRUFUIjo3fX0sIjIz"
+    "Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjozNH0sImNhcmVzIjoxNCwiZmVlZHMi"
+    "OjE0LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlfZGF3biI6ODY0NTcuMCwicGxhY2VzIjpbXSwicGxh"
+    "bnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6"
+    "Nn0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjI4MSwiTUlMSyI6NiwiU1RSQVdCRVJSWSI6NDAsIldIRUFUIjo0NCwiV09PTCI6"
+    "MTJ9fSwiMjQiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjh9LCJjYXJlcyI6MTQs"
+    "ImZlZWRzIjoxNCwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjk5MjA0LjAsInBsYWNlcyI6"
+    "W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIkNBUlJPVCIsIldIRUFUIl0sInNlZWRzIjp7"
+    "IkNBUlJPVCI6MSwiV0hFQVQiOjV9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjozNSwiTUlMSyI6MjQsIlNUUkFXQkVSUlkiOjI3"
+    "LCJXSEVBVCI6NjMsIldPT0wiOjR9fSwiMjUiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hF"
+    "QVQiOjYzfSwiY2FyZXMiOjE0LCJmZWVkcyI6MTQsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJtb25leV9kYXdu"
+    "IjoxMDY1NjIuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQi"
+    "LCJXSEVBVCIsIldIRUFUIiwiQ0FSUk9UIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiQ0FS"
+    "Uk9UIjoxLCJXSEVBVCI6MTF9LCJzZWxscyI6eyJDQVJST1QiOjIsIkZFUlRJTElaRVIiOjI1OCwiTUlMSyI6NiwiU1RSQVdC"
+    "RVJSWSI6MzIsIldIRUFUIjoxMzksIldPT0wiOjh9fSwiMjYiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1"
+    "eXMiOnsiV0hFQVQiOjIwfSwiY2FyZXMiOjE0LCJmZWVkcyI6MTQsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJt"
+    "b25leV9kYXduIjoxMTg4MTQuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFU"
+    "IiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIkNBUlJPVCIsIldIRUFUIiwiV0hFQVQiXSwic2Vl"
+    "ZHMiOnsiQ0FSUk9UIjoxLCJXSEVBVCI6MTF9LCJzZWxscyI6eyJDQVJST1QiOjIsIkZFUlRJTElaRVIiOjcsIk1JTEsiOjI0"
+    "LCJTVFJBV0JFUlJZIjo1LCJXSEVBVCI6NTF9fSwiMjciOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMi"
+    "OnsiV0hFQVQiOjMwfSwiY2FyZXMiOjEyLCJmZWVkcyI6MTQsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJtb25l"
+    "eV9kYXduIjoxMjAxOTIuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwi"
+    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6"
+    "eyJXSEVBVCI6MTJ9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjoyMSwiTUlMSyI6NiwiU1RSQVdCRVJSWSI6MjQsIldIRUFUIjox"
+    "MTgsIldPT0wiOjh9fSwiMjgiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjd9LCJj"
+    "YXJlcyI6OSwiZmVlZHMiOjEwLCJoYW5kcyI6MTAsImhpcmVzIjoxMCwibGFuZCI6MCwibW9uZXlfZGF3biI6MTM0NzI5LjAs"
+    "InBsYWNlcyI6W10sInBsYW50cyI6W10sInNlZWRzIjp7fSwic2VsbHMiOnsiQ0FSUk9UIjozLCJGRVJUSUxJWkVSIjoxMiwi"
+    "TUlMSyI6MjQsIlNUUkFXQkVSUlkiOjgsIldIRUFUIjoyMiwiV09PTCI6OH19LCIyOSI6eyJhbmltYWxzX2JvdWdodCI6e30s"
+    "ImJ1aWxkcyI6MCwiYnV5cyI6e30sImNhcmVzIjowLCJmZWVkcyI6MCwiaGFuZHMiOjgsImhpcmVzIjo4LCJsYW5kIjowLCJt"
+    "b25leV9kYXduIjoxMzk1MDguMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbXSwic2VlZHMiOnt9LCJzZWxscyI6eyJDQVJST1Qi"
+    "OjUsIkZFUlRJTElaRVIiOjksIk1JTEsiOjMwLCJTVFJBV0JFUlJZIjoyLCJXSEVBVCI6MTAyLCJXT09MIjo4fX0sIjMiOnsi"
+    "YW5pbWFsc19ib3VnaHQiOnsiQ09XIjoxfSwiYnVpbGRzIjowLCJidXlzIjp7fSwiY2FyZXMiOjQsImZlZWRzIjo0LCJoYW5k"
+    "cyI6NSwiaGlyZXMiOjUsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjM4LjAsInBsYWNlcyI6WyJDT1ciXSwicGxhbnRzIjpbXSwi"
+    "c2VlZHMiOnt9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo0fX0sIjQiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjEs"
+    "ImJ1eXMiOnsiV0hFQVQiOjZ9LCJjYXJlcyI6NSwiZmVlZHMiOjUsImhhbmRzIjo1LCJoaXJlcyI6NSwibGFuZCI6MCwibW9u"
+    "ZXlfZGF3biI6MTQyLjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsi"
+    "V0hFQVQiOjd9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo0fX0sIjUiOnsiYW5pbWFsc19ib3VnaHQiOnsiQ09XIjoxfSwiYnVp"
+    "bGRzIjowLCJidXlzIjp7IldIRUFUIjoyfSwiY2FyZXMiOjYsImZlZWRzIjo2LCJoYW5kcyI6NCwiaGlyZXMiOjQsImxhbmQi"
+    "OjAsIm1vbmV5X2Rhd24iOjI1My4wLCJwbGFjZXMiOlsiQ09XIl0sInBsYW50cyI6WyJTVFJBV0JFUlJZIiwiU1RSQVdCRVJS"
+    "WSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRzIjp7IlNUUkFXQkVSUlkiOjR9LCJzZWxscyI6eyJGRVJUSUxJ"
+    "WkVSIjo1LCJXSEVBVCI6MTh9fSwiNiI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6"
+    "Nn0sImNhcmVzIjo2LCJmZWVkcyI6NiwiaGFuZHMiOjQsImhpcmVzIjo0LCJsYW5kIjoxLCJtb25leV9kYXduIjo0NDYuMCwi"
+    "cGxhY2VzIjpbXSwicGxhbnRzIjpbIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRzIjp7IkNBUlJPVCI6OCwiU1RS"
+    "QVdCRVJSWSI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjUsIldPT0wiOjEyfX0sIjciOnsiYW5pbWFsc19ib3VnaHQiOnsi"
+    "Q09XIjoyLCJTSEVFUCI6Mn0sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6M30sImNhcmVzIjo5LCJmZWVkcyI6OSwiaGFu"
+    "ZHMiOjgsImhpcmVzIjo4LCJsYW5kIjowLCJtb25leV9kYXduIjoxNTQuMCwicGxhY2VzIjpbIlNIRUVQIiwiQ09XIiwiQ09X"
+    "Il0sInBsYW50cyI6WyJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSJdLCJzZWVkcyI6eyJTVFJBV0JFUlJZIjoxLCJXSEVBVCI6"
+    "NH0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjZ9fSwiOCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MiwiYnV5cyI6"
+    "eyJXSEVBVCI6MTd9LCJjYXJlcyI6MTAsImZlZWRzIjoxMCwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5"
+    "X2Rhd24iOjEzNi4wLCJwbGFjZXMiOlsiU0hFRVAiXSwicGxhbnRzIjpbIldIRUFUIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwi"
+    "V0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIs"
+    "IlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIl0sInNlZWRz"
+    "Ijp7IlNUUkFXQkVSUlkiOjExLCJXSEVBVCI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjYsIk1JTEsiOjEyfX0sIjkiOnsi"
+    "YW5pbWFsc19ib3VnaHQiOnsiQ09XIjoyfSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjoxMn0sImNhcmVzIjoxMSwiZmVl"
+    "ZHMiOjExLCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlfZGF3biI6MTE5NC4wLCJwbGFjZXMiOlsiQ09X"
+    "IiwiQ09XIl0sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjoyfSwic2VsbHMiOnsiRkVSVElM"
+    "SVpFUiI6OSwiV0hFQVQiOjgsIldPT0wiOjh9fX0="
+)
+
+
+class MelonBranch(Branch):
+    """His strawberry season, taken when the opponent has committed to melon."""
+
+    decide_by_day = DECIDE_BY_DAY
+    split_day = SPLIT_DAY
+    decided_key = "melon_decided"
+    armed_key = "melon_armed"
+
+    def trigger(self, observation):
+        """The opponent holds `OPPONENT_MELON` or more MELON tiles.
+
+        Counts TILES rather than harvests: the earliest melon yield is day 10 and the decision is
+        taken on day 3, so what is visible then is what has been planted.
+        """
+        return count_tiles(observation, opponent_seat(observation),
+                           crop="MELON") >= OPPONENT_MELON
+
+    #: The three-quadrant solve for the strawberry season. `cover` loads `solved_days` at import,
+    #: which was solved on the MELON board; a route is keyed on `(tile, ops)` and this branch puts
+    #: different crops on different tiles from d5, so those stops drop rather than adapt and the
+    #: strawberry season plays d12-d29 effectively unsolved. Same failure `q4_branch` documents for
+    #: 75 tiles against 100, one board over.
+    SOLVE_FOR_STRAWBERRY = "kagg.search.solved_days_straw"
+
+    def rows(self):
+        return {int(d): r for d, r in json.loads(base64.b64decode(B3_ROWS_B64)).items()}
+
+    def install(self, schedule, state=None):
+        moved = super().install(schedule, state)
+        import importlib
+        cover = importlib.import_module("kagg.search.cover")
+        try:
+            straw = importlib.import_module(self.SOLVE_FOR_STRAWBERRY)
+        except ImportError:
+            # Not solved yet. Leaving `cover`'s melon routes in place is what shipped before, and
+            # the mismatched stops drop silently -- which is the whole reason this solve is owed.
+            return moved
+        cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
+                                        for u, seq in units.items()}
+                                    for d, units in straw.SOLVED_DAYS.items()
+                                    if d not in cover.UNSOLVE_DAYS}
+        return moved
+
+
+BRANCH = MelonBranch()
+
+the_opponent_committed_to_melon = BRANCH.trigger
+install_the_strawberry_branch = BRANCH.install
+arm = BRANCH.arm
 '''
 _SOURCES['kagg.search.q4_branch'] = r'''"""Take the leader's FOUR-quadrant plan when the town promises wool early, and his three otherwise.
 
@@ -3978,8 +4065,10 @@ underperforms.
 """
 import importlib
 
+from .branch import Branch
+
 #: Switched off ships the three-quadrant plan unchanged, and is byte-identical to not importing this.
-BRANCH_ON_THE_YARN_STORE = False
+BRANCH_ON_THE_YARN_STORE = True
 
 #: The shop whose early arrival the leaders read. Pinned against the env's own shop table below.
 TRIGGER_SHOP = "YARN_STORE"
@@ -3998,132 +4087,140 @@ Q4_SCHEDULE = "data/seed_scripts/kawashigi_q4c/schedule.json"
 #: `build_tiles`, `land_turns`, `orders`) exactly as `build_planner_submission.TAPE_ONLY`
 #: thins the shipped plan, so the branch depends on no replay it will not have.
 Q4_ROWS_B64 = (
-    "eyIwIjp7ImFuaW1hbHNfYm91Z2h0Ijp7IkNPVyI6MiwiU0hFRVAiOjJ9LCJidWlsZHMiOjQsImJ1eXMiOnsiV0hFQVQiOjZ9"
-    "LCJjYXJlcyI6MiwiZmVlZHMiOjIsImhhbmRzIjo1LCJoaXJlcyI6NSwibGFuZCI6MCwibW9uZXlfZGF3biI6MTMuMCwicGxh"
-    "Y2VzIjpbIlNIRUVQIiwiQ09XIiwiU0hFRVAiLCJDT1ciXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldI"
-    "RUFUIiwiTUVMT04iLCJXSEVBVCIsIk1FTE9OIiwiTUVMT04iLCJXSEVBVCIsIk1FTE9OIiwiTUVMT04iLCJNRUxPTiIsIk1F"
-    "TE9OIiwiTUVMT04iLCJNRUxPTiIsIldIRUFUIiwiTUVMT04iLCJNRUxPTiIsIk1FTE9OIl0sInNlZWRzIjp7Ik1FTE9OIjox"
-    "MiwiV0hFQVQiOjd9LCJzZWxscyI6e30sInNoZWRfZHVzayI6eyJXSEVBVCI6M319LCIxIjp7ImFuaW1hbHNfYm91Z2h0Ijp7"
-    "fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo1fSwiY2FyZXMiOjQsImZlZWRzIjo0LCJoYW5kcyI6MCwiaGlyZXMiOjAs"
-    "ImxhbmQiOjAsIm1vbmV5X2Rhd24iOjE2LjAsInBsYWNlcyI6W10sInBsYW50cyI6W10sInNlZWRzIjp7fSwic2VsbHMiOnsi"
-    "RkVSVElMSVpFUiI6M30sInNoZWRfZHVzayI6eyJXSEVBVCI6NH19LCIxMCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxk"
-    "cyI6MCwiYnV5cyI6eyJXSEVBVCI6MzR9LCJjYXJlcyI6MTIsImZlZWRzIjoxMiwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxh"
-    "bmQiOjAsIm1vbmV5X2Rhd24iOjIyMjQuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJd"
-    "LCJzZWVkcyI6eyJXSEVBVCI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjE0MCwiTUVMT04iOjYwLCJXSEVBVCI6MjN9fSwi"
-    "MTEiOnsiYW5pbWFsc19ib3VnaHQiOnsiU0hFRVAiOjJ9LCJidWlsZHMiOjIsImJ1eXMiOnsiV0hFQVQiOjE3fSwiY2FyZXMi"
-    "OjE0LCJmZWVkcyI6MTQsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjoxLCJtb25leV9kYXduIjoxMzc4My4wLCJwbGFj"
-    "ZXMiOlsiU0hFRVAiLCJTSEVFUCJdLCJwbGFudHMiOlsiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIldIRUFU"
-    "IiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJT"
-    "VFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiV0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFX"
-    "QkVSUlkiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJS"
-    "WSIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSJdLCJzZWVkcyI6"
-    "eyJTVFJBV0JFUlJZIjoyMywiV0hFQVQiOjl9LCJzZWxscyI6eyJNRUxPTiI6MTIsIk1JTEsiOjZ9fSwiMTIiOnsiYW5pbWFs"
-    "c19ib3VnaHQiOnsiU0hFRVAiOjJ9LCJidWlsZHMiOjMsImJ1eXMiOnsiV0hFQVQiOjh9LCJjYXJlcyI6MTUsImZlZWRzIjox"
-    "NSwiaGFuZHMiOjEwLCJoaXJlcyI6MTAsImxhbmQiOjEsIm1vbmV5X2Rhd24iOjg5MDUuMCwicGxhY2VzIjpbIlNIRUVQIl0s"
-    "InBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIlNUUkFXQkVS"
-    "UlkiLCJTVFJBV0JFUlJZIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjl9LCJz"
-    "ZWxscyI6eyJGRVJUSUxJWkVSIjo3NCwiTUlMSyI6Nn19LCIxMyI6eyJhbmltYWxzX2JvdWdodCI6eyJTSEVFUCI6Mn0sImJ1"
-    "aWxkcyI6MSwiYnV5cyI6eyJXSEVBVCI6OX0sImNhcmVzIjoxNiwiZmVlZHMiOjE2LCJoYW5kcyI6MTEsImhpcmVzIjoxMSwi"
-    "bGFuZCI6MCwibW9uZXlfZGF3biI6MTIwMTEuMCwicGxhY2VzIjpbIlNIRUVQIiwiU0hFRVAiXSwicGxhbnRzIjpbIldIRUFU"
-    "IiwiV0hFQVQiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6NH0sInNlbGxzIjp7IkZF"
-    "UlRJTElaRVIiOjE0LCJNSUxLIjo2LCJXSEVBVCI6OCwiV09PTCI6OH19LCIxNCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1"
-    "aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MjB9LCJjYXJlcyI6MTcsImZlZWRzIjoxNywiaGFuZHMiOjgsImhpcmVzIjo4LCJs"
-    "YW5kIjowLCJtb25leV9kYXduIjoxMzgyNy4wLCJwbGFjZXMiOltdLCJwbGFudHMiOltdLCJzZWVkcyI6e30sInNlbGxzIjp7"
-    "IkZFUlRJTElaRVIiOjE5LCJNSUxLIjo5LCJXT09MIjo2fX0sIjE1Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjow"
-    "LCJidXlzIjp7IldIRUFUIjoxMH0sImNhcmVzIjoxNywiZmVlZHMiOjE3LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6"
-    "MCwibW9uZXlfZGF3biI6MTU2ODUuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJz"
-    "ZWVkcyI6eyJXSEVBVCI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjI1MiwiTUlMSyI6NiwiV0hFQVQiOjY1LCJXT09MIjox"
-    "Mn19LCIxNiI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MTJ9LCJjYXJlcyI6MTgs"
-    "ImZlZWRzIjoxOCwiaGFuZHMiOjksImhpcmVzIjo5LCJsYW5kIjowLCJtb25leV9kYXduIjoyNDA3Mi4wLCJwbGFjZXMiOlsi"
-    "U0hFRVAiXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo0fSwi"
-    "c2VsbHMiOnsiRkVSVElMSVpFUiI6MzMsIk1FTE9OIjoxMiwiTUlMSyI6MTgsIlNUUkFXQkVSUlkiOjcsIldIRUFUIjoyMCwi"
-    "V09PTCI6MTR9fSwiMTciOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjEwfSwiY2Fy"
-    "ZXMiOjE4LCJmZWVkcyI6MTgsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjoyNjkzMy4wLCJw"
-    "bGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJX"
-    "SEVBVCI6NX0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjE3NywiTUVMT04iOjE4LCJNSUxLIjo2LCJXSEVBVCI6MTcsIldPT0wi"
-    "OjE2fX0sIjE4Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo1Mn0sImNhcmVzIjox"
-    "OCwiZmVlZHMiOjE4LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlfZGF3biI6MzYyODIuMCwicGxhY2Vz"
-    "IjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwi"
-    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwi"
-    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjoyMn0sInNl"
-    "bGxzIjp7IkZFUlRJTElaRVIiOjMxMywiTUVMT04iOjE4LCJNSUxLIjoxMiwiU1RSQVdCRVJSWSI6MTUsIldIRUFUIjozNywi"
-    "V09PTCI6NH19LCIxOSI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MTE2fSwiY2Fy"
-    "ZXMiOjE4LCJmZWVkcyI6MTgsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjo0MTQ1Ni4wLCJw"
-    "bGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNl"
-    "ZWRzIjp7IldIRUFUIjo2fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MTEyLCJNSUxLIjo2LCJTVFJBV0JFUlJZIjo2LCJXSEVB"
-    "VCI6MTI2LCJXT09MIjozN319LCIyIjp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjoxLCJidXlzIjp7IldIRUFUIjo0"
-    "fSwiY2FyZXMiOjQsImZlZWRzIjo0LCJoYW5kcyI6NCwiaGlyZXMiOjQsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjE2NC4wLCJw"
-    "bGFjZXMiOltdLCJwbGFudHMiOltdLCJzZWVkcyI6e30sInNlbGxzIjp7fSwic2hlZF9kdXNrIjp7IldIRUFUIjo0fX0sIjIw"
-    "Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo1MX0sImNhcmVzIjoxOCwiZmVlZHMi"
-    "OjE4LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlfZGF3biI6NDQzNTguMCwicGxhY2VzIjpbXSwicGxh"
-    "bnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo0fSwic2VsbHMiOnsiRkVS"
-    "VElMSVpFUiI6MjUsIk1JTEsiOjEyLCJTVFJBV0JFUlJZIjoxNywiV0hFQVQiOjU1LCJXT09MIjo0fX0sIjIxIjp7ImFuaW1h"
-    "bHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo1NX0sImNhcmVzIjoxOCwiZmVlZHMiOjE4LCJoYW5k"
-    "cyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW9uZXlfZGF3biI6NDc1MDAuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldI"
-    "RUFUIiwiV0hFQVQiLCJXSEVBVCIsIkNBUlJPVCIsIkNBUlJPVCIsIkNBUlJPVCJdLCJzZWVkcyI6eyJDQVJST1QiOjMsIldI"
-    "RUFUIjozfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MjE5LCJNSUxLIjo2LCJTVFJBV0JFUlJZIjoyMSwiV0hFQVQiOjE1Miwi"
-    "V09PTCI6MTJ9fSwiMjIiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjI3fSwiY2Fy"
-    "ZXMiOjE4LCJmZWVkcyI6MTgsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjo1MjkzOC4wLCJw"
-    "bGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hF"
-    "QVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo5fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MjgzLCJNSUxL"
-    "IjoxMiwiU1RSQVdCRVJSWSI6MjYsIldIRUFUIjoyMDIsIldPT0wiOjE2fX0sIjIzIjp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwi"
-    "YnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjoxMzR9LCJjYXJlcyI6MTgsImZlZWRzIjoxOCwiaGFuZHMiOjEyLCJoaXJlcyI6"
-    "MTIsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjU4MjQyLjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwi"
-    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo4fSwic2Vs"
-    "bHMiOnsiRkVSVElMSVpFUiI6MjUwLCJNSUxLIjo2LCJTVFJBV0JFUlJZIjoxMywiV0hFQVQiOjIxMiwiV09PTCI6MzB9fSwi"
-    "MjQiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjExMX0sImNhcmVzIjoxOCwiZmVl"
-    "ZHMiOjE4LCJoYW5kcyI6MTEsImhpcmVzIjoxMSwibGFuZCI6MCwibW9uZXlfZGF3biI6NjExMTcuMCwicGxhY2VzIjpbXSwi"
-    "cGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiQ0FSUk9UIiwiQ0FSUk9UIiwiQ0FSUk9UIiwiV0hF"
-    "QVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiQ0FSUk9UIjozLCJXSEVBVCI6OH0sInNlbGxzIjp7IkZF"
-    "UlRJTElaRVIiOjE1NiwiTUlMSyI6MTIsIlNUUkFXQkVSUlkiOjMxLCJXSEVBVCI6MTUyfX0sIjI1Ijp7ImFuaW1hbHNfYm91"
-    "Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo5NX0sImNhcmVzIjoxOCwiZmVlZHMiOjE4LCJoYW5kcyI6MTEs"
-    "ImhpcmVzIjoxMSwibGFuZCI6MCwibW9uZXlfZGF3biI6NjU5NzUuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwi"
-    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwi"
-    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjE0fSwic2VsbHMiOnsiQ0FSUk9UIjo3"
-    "LCJGRVJUSUxJWkVSIjoyOSwiTUlMSyI6NiwiU1RSQVdCRVJSWSI6MTAsIldIRUFUIjoxMDYsIldPT0wiOjMyfX0sIjI2Ijp7"
-    "ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo1Mn0sImNhcmVzIjoxOCwiZmVlZHMiOjE4"
-    "LCJoYW5kcyI6MTEsImhpcmVzIjoxMSwibGFuZCI6MCwibW9uZXlfZGF3biI6Njk2MjUuMCwicGxhY2VzIjpbXSwicGxhbnRz"
-    "IjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiQ0FSUk9UIiwiV0hFQVQiXSwic2VlZHMiOnsiQ0FSUk9UIjox"
-    "LCJXSEVBVCI6NX0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjI1LCJNSUxLIjoxMiwiU1RSQVdCRVJSWSI6MTgsIldIRUFUIjo3"
-    "MSwiV09PTCI6OH19LCIyNyI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MTB9LCJj"
-    "YXJlcyI6MTMsImZlZWRzIjoxNiwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjcyNTQ0LjAs"
-    "InBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJX"
-    "SEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6MTB9LCJzZWxscyI6eyJGRVJUSUxJWkVS"
-    "IjoxMSwiTUlMSyI6NiwiU1RSQVdCRVJSWSI6MjYsIldIRUFUIjoxMzUsIldPT0wiOjh9fSwiMjgiOnsiYW5pbWFsc19ib3Vn"
-    "aHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjZ9LCJjYXJlcyI6NywiZmVlZHMiOjgsImhhbmRzIjoxMCwiaGly"
-    "ZXMiOjEwLCJsYW5kIjowLCJtb25leV9kYXduIjo3ODM4My4wLCJwbGFjZXMiOltdLCJwbGFudHMiOltdLCJzZWVkcyI6e30s"
-    "InNlbGxzIjp7IkNBUlJPVCI6NywiRkVSVElMSVpFUiI6MTMsIk1JTEsiOjEyLCJTVFJBV0JFUlJZIjoxMCwiV0hFQVQiOjI2"
-    "LCJXT09MIjoyMH19LCIyOSI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6e30sImNhcmVzIjowLCJm"
-    "ZWVkcyI6MCwiaGFuZHMiOjgsImhpcmVzIjo4LCJsYW5kIjowLCJtb25leV9kYXduIjo4NTA3OC4wLCJwbGFjZXMiOltdLCJw"
-    "bGFudHMiOltdLCJzZWVkcyI6e30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjYsIk1JTEsiOjE4LCJTVFJBV0JFUlJZIjoyLCJX"
-    "SEVBVCI6OTAsIldPT0wiOjI4fX0sIjMiOnsiYW5pbWFsc19ib3VnaHQiOnsiQ09XIjoxfSwiYnVpbGRzIjowLCJidXlzIjp7"
-    "fSwiY2FyZXMiOjQsImZlZWRzIjo0LCJoYW5kcyI6NSwiaGlyZXMiOjUsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjQyMS4wLCJw"
-    "bGFjZXMiOlsiQ09XIl0sInBsYW50cyI6W10sInNlZWRzIjp7IkNBUlJPVCI6MX0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjR9"
-    "LCJzaGVkX2R1c2siOnt9fSwiNCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MSwiYnV5cyI6eyJXSEVBVCI6Nn0s"
-    "ImNhcmVzIjo1LCJmZWVkcyI6NSwiaGFuZHMiOjUsImhpcmVzIjo1LCJsYW5kIjowLCJtb25leV9kYXduIjoxMzEuMCwicGxh"
-    "Y2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6N30sInNlbGxzIjp7"
-    "IkZFUlRJTElaRVIiOjR9LCJzaGVkX2R1c2siOnsiV0hFQVQiOjF9fSwiNSI6eyJhbmltYWxzX2JvdWdodCI6eyJDT1ciOjF9"
-    "LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjJ9LCJjYXJlcyI6NiwiZmVlZHMiOjYsImhhbmRzIjo0LCJoaXJlcyI6NCwi"
-    "bGFuZCI6MCwibW9uZXlfZGF3biI6MjMwLjAsInBsYWNlcyI6WyJDT1ciXSwicGxhbnRzIjpbIlNUUkFXQkVSUlkiLCJTVFJB"
-    "V0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiXSwic2VlZHMiOnsiTUVMT04iOjMsIlNUUkFXQkVSUlkiOjR9LCJz"
-    "ZWxscyI6eyJGRVJUSUxJWkVSIjo1LCJXSEVBVCI6MTh9LCJzaGVkX2R1c2siOnsiV0hFQVQiOjd9fSwiNiI6eyJhbmltYWxz"
-    "X2JvdWdodCI6e30sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6Nn0sImNhcmVzIjo2LCJmZWVkcyI6NiwiaGFuZHMiOjQs"
-    "ImhpcmVzIjo0LCJsYW5kIjoxLCJtb25leV9kYXduIjoxOTYuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIk1FTE9OIiwiTUVM"
-    "T04iXSwic2VlZHMiOnsiQ0FSUk9UIjo3LCJNRUxPTiI6NSwiU1RSQVdCRVJSWSI6M30sInNlbGxzIjp7IkZFUlRJTElaRVIi"
-    "OjUsIldPT0wiOjEyfSwic2hlZF9kdXNrIjp7IldIRUFUIjo3fX0sIjciOnsiYW5pbWFsc19ib3VnaHQiOnsiQ09XIjoyLCJT"
-    "SEVFUCI6MX0sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6M30sImNhcmVzIjo5LCJmZWVkcyI6OSwiaGFuZHMiOjgsImhp"
-    "cmVzIjo4LCJsYW5kIjowLCJtb25leV9kYXduIjoxNDMuMCwicGxhY2VzIjpbIlNIRUVQIiwiQ09XIiwiQ09XIl0sInBsYW50"
-    "cyI6WyJNRUxPTiIsIk1FTE9OIiwiTUVMT04iLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIk1FTE9OIiwiU1RSQVdCRVJS"
-    "WSIsIk1FTE9OIiwiTUVMT04iXSwic2VlZHMiOnsiV0hFQVQiOjR9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo2fSwic2hlZF9k"
-    "dXNrIjp7fX0sIjgiOnsiYW5pbWFsc19ib3VnaHQiOnsiU0hFRVAiOjF9LCJidWlsZHMiOjIsImJ1eXMiOnsiV0hFQVQiOjE3"
-    "fSwiY2FyZXMiOjEwLCJmZWVkcyI6MTAsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJtb25leV9kYXduIjoxOTAu"
-    "MCwicGxhY2VzIjpbIlNIRUVQIl0sInBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RS"
-    "QVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJTVFJBV0JFUlJZ"
-    "Ijo0LCJXSEVBVCI6NX0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjYsIk1JTEsiOjEyfSwic2hlZF9kdXNrIjp7IldIRUFUIjo4"
-    "fX0sIjkiOnsiYW5pbWFsc19ib3VnaHQiOnsiU0hFRVAiOjJ9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjE0fSwiY2Fy"
-    "ZXMiOjEyLCJmZWVkcyI6MTIsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjo5NDMuMCwicGxh"
-    "Y2VzIjpbIlNIRUVQIiwiU0hFRVAiXSwicGxhbnRzIjpbXSwic2VlZHMiOnt9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjo5LCJX"
-    "SEVBVCI6NSwiV09PTCI6OH19fQ=="
+    "eyIwIjp7ImFuaW1hbHNfYm91Z2h0Ijp7IkNPVyI6MiwiU0hFRVAiOjJ9LCJidWlsZHMiOjQsImJ1eXMiOnsiV0hFQV"
+    "QiOjZ9LCJjYXJlcyI6MiwiZmVlZHMiOjIsImhhbmRzIjo1LCJoaXJlcyI6NSwibGFuZCI6MCwibW9uZXlfZGF3biI6"
+    "MTMuMCwicGxhY2VzIjpbIlNIRUVQIiwiQ09XIiwiU0hFRVAiLCJDT1ciXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQV"
+    "QiLCJXSEVBVCIsIldIRUFUIiwiTUVMT04iLCJXSEVBVCIsIk1FTE9OIiwiTUVMT04iLCJXSEVBVCIsIk1FTE9OIiwi"
+    "TUVMT04iLCJNRUxPTiIsIk1FTE9OIiwiTUVMT04iLCJNRUxPTiIsIldIRUFUIiwiTUVMT04iLCJNRUxPTiIsIk1FTE"
+    "9OIl0sInNlZWRzIjp7Ik1FTE9OIjoxMiwiV0hFQVQiOjd9LCJzZWxscyI6e30sInNoZWRfZHVzayI6eyJXSEVBVCI6"
+    "M319LCIxIjp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjo1fSwiY2FyZXMiOj"
+    "QsImZlZWRzIjo0LCJoYW5kcyI6MCwiaGlyZXMiOjAsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjE2LjAsInBsYWNlcyI6"
+    "W10sInBsYW50cyI6W10sInNlZWRzIjp7fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6M30sInNoZWRfZHVzayI6eyJXSE"
+    "VBVCI6NH19LCIxMCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MzR9LCJj"
+    "YXJlcyI6MTIsImZlZWRzIjoxMiwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjIyMj"
+    "QuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6"
+    "M30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjE0MCwiTUVMT04iOjYwLCJXSEVBVCI6MjN9fSwiMTEiOnsiYW5pbWFsc1"
+    "9ib3VnaHQiOnsiU0hFRVAiOjJ9LCJidWlsZHMiOjIsImJ1eXMiOnsiV0hFQVQiOjE3fSwiY2FyZXMiOjE0LCJmZWVk"
+    "cyI6MTQsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjoxLCJtb25leV9kYXduIjoxMzc4My4wLCJwbGFjZXMiOl"
+    "siU0hFRVAiLCJTSEVFUCJdLCJwbGFudHMiOlsiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIldIRUFU"
+    "IiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUl"
+    "kiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiV0hFQVQiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJS"
+    "WSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUl"
+    "JZIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RS"
+    "QVdCRVJSWSJdLCJzZWVkcyI6eyJTVFJBV0JFUlJZIjoyMywiV0hFQVQiOjl9LCJzZWxscyI6eyJNRUxPTiI6MTIsIk"
+    "1JTEsiOjZ9fSwiMTIiOnsiYW5pbWFsc19ib3VnaHQiOnsiU0hFRVAiOjJ9LCJidWlsZHMiOjMsImJ1eXMiOnsiV0hF"
+    "QVQiOjh9LCJjYXJlcyI6MTUsImZlZWRzIjoxNSwiaGFuZHMiOjEwLCJoaXJlcyI6MTAsImxhbmQiOjEsIm1vbmV5X2"
+    "Rhd24iOjg5MDUuMCwicGxhY2VzIjpbIlNIRUVQIiwiU0hFRVAiXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJX"
+    "SEVBVCIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVC"
+    "IsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJXSEVBVCI6OX0sInNlbGxzIjp7IkZFUlRJTElaRVIi"
+    "Ojc0LCJNSUxLIjo2fX0sIjEzIjp7ImFuaW1hbHNfYm91Z2h0Ijp7IlNIRUVQIjoyfSwiYnVpbGRzIjoxLCJidXlzIj"
+    "p7IldIRUFUIjo5fSwiY2FyZXMiOjE2LCJmZWVkcyI6MTYsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJt"
+    "b25leV9kYXduIjoxMjAxMS4wLCJwbGFjZXMiOlsiU0hFRVAiLCJTSEVFUCJdLCJwbGFudHMiOlsiV0hFQVQiLCJXSE"
+    "VBVCIsIldIRUFUIiwiU1RSQVdCRVJSWSIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo0fSwic2VsbHMiOnsiRkVS"
+    "VElMSVpFUiI6MTQsIk1JTEsiOjYsIldIRUFUIjo4LCJXT09MIjo4fX0sIjE0Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fS"
+    "wiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjoyMH0sImNhcmVzIjoxNywiZmVlZHMiOjE3LCJoYW5kcyI6OCwiaGly"
+    "ZXMiOjgsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjEzODI3LjAsInBsYWNlcyI6W10sInBsYW50cyI6W10sInNlZWRzIj"
+    "p7fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MTksIk1JTEsiOjksIldPT0wiOjZ9fSwiMTUiOnsiYW5pbWFsc19ib3Vn"
+    "aHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjEwfSwiY2FyZXMiOjE3LCJmZWVkcyI6MTcsImhhbmRzIj"
+    "oxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjoxNTY4NS4wLCJwbGFjZXMiOltdLCJwbGFudHMiOlsi"
+    "V0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjozfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6Mj"
+    "UyLCJNSUxLIjo2LCJXSEVBVCI6NjUsIldPT0wiOjEyfX0sIjE2Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRz"
+    "IjowLCJidXlzIjp7IldIRUFUIjoxMn0sImNhcmVzIjoxOCwiZmVlZHMiOjE4LCJoYW5kcyI6OSwiaGlyZXMiOjksIm"
+    "xhbmQiOjAsIm1vbmV5X2Rhd24iOjI0MDcyLjAsInBsYWNlcyI6WyJTSEVFUCJdLCJwbGFudHMiOlsiV0hFQVQiLCJX"
+    "SEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjR9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjozMy"
+    "wiTUVMT04iOjEyLCJNSUxLIjoxOCwiU1RSQVdCRVJSWSI6NywiV0hFQVQiOjIwLCJXT09MIjoxNH19LCIxNyI6eyJh"
+    "bmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MTB9LCJjYXJlcyI6MTgsImZlZWRzIj"
+    "oxOCwiaGFuZHMiOjEyLCJoaXJlcyI6MTIsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjI2OTMzLjAsInBsYWNlcyI6W10s"
+    "InBsYW50cyI6WyJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIj"
+    "o1fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MTc3LCJNRUxPTiI6MTgsIk1JTEsiOjYsIldIRUFUIjoxNywiV09PTCI6"
+    "MTZ9fSwiMTgiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjUyfSwiY2FyZX"
+    "MiOjE4LCJmZWVkcyI6MTgsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjozNjI4Mi4w"
+    "LCJwbGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRU"
+    "FUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIs"
+    "IldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2"
+    "VlZHMiOnsiV0hFQVQiOjIyfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MzEzLCJNRUxPTiI6MTgsIk1JTEsiOjEyLCJT"
+    "VFJBV0JFUlJZIjoxNSwiV0hFQVQiOjM3LCJXT09MIjo0fX0sIjE5Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbG"
+    "RzIjowLCJidXlzIjp7IldIRUFUIjoxMTZ9LCJjYXJlcyI6MTgsImZlZWRzIjoxOCwiaGFuZHMiOjEyLCJoaXJlcyI6"
+    "MTIsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjQxNDU2LjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRU"
+    "FUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjZ9LCJzZWxscyI6eyJG"
+    "RVJUSUxJWkVSIjoxMTIsIk1JTEsiOjYsIlNUUkFXQkVSUlkiOjYsIldIRUFUIjoxMjYsIldPT0wiOjM3fX0sIjIiOn"
+    "siYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjEsImJ1eXMiOnsiV0hFQVQiOjR9LCJjYXJlcyI6NCwiZmVlZHMi"
+    "OjQsImhhbmRzIjo0LCJoaXJlcyI6NCwibGFuZCI6MCwibW9uZXlfZGF3biI6MTY0LjAsInBsYWNlcyI6W10sInBsYW"
+    "50cyI6W10sInNlZWRzIjp7fSwic2VsbHMiOnt9LCJzaGVkX2R1c2siOnsiV0hFQVQiOjR9fSwiMjAiOnsiYW5pbWFs"
+    "c19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjUxfSwiY2FyZXMiOjE4LCJmZWVkcyI6MTgsIm"
+    "hhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjo0NDM1OC4wLCJwbGFjZXMiOltdLCJwbGFu"
+    "dHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjR9LCJzZWxscyI6ey"
+    "JGRVJUSUxJWkVSIjoyNSwiTUlMSyI6MTIsIlNUUkFXQkVSUlkiOjE3LCJXSEVBVCI6NTUsIldPT0wiOjR9fSwiMjEi"
+    "OnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjU1fSwiY2FyZXMiOjE4LCJmZW"
+    "VkcyI6MTgsImhhbmRzIjoxMiwiaGlyZXMiOjEyLCJsYW5kIjowLCJtb25leV9kYXduIjo0NzUwMC4wLCJwbGFjZXMi"
+    "OltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiQ0FSUk9UIiwiQ0FSUk9UIiwiQ0FSUk9UIl0sIn"
+    "NlZWRzIjp7IkNBUlJPVCI6MywiV0hFQVQiOjN9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjoyMTksIk1JTEsiOjYsIlNU"
+    "UkFXQkVSUlkiOjIxLCJXSEVBVCI6MTUyLCJXT09MIjoxMn19LCIyMiI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aW"
+    "xkcyI6MCwiYnV5cyI6eyJXSEVBVCI6Mjd9LCJjYXJlcyI6MTgsImZlZWRzIjoxOCwiaGFuZHMiOjEyLCJoaXJlcyI6"
+    "MTIsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjUyOTM4LjAsInBsYWNlcyI6W10sInBsYW50cyI6WyJXSEVBVCIsIldIRU"
+    "FUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMi"
+    "OnsiV0hFQVQiOjl9LCJzZWxscyI6eyJGRVJUSUxJWkVSIjoyODMsIk1JTEsiOjEyLCJTVFJBV0JFUlJZIjoyNiwiV0"
+    "hFQVQiOjIwMiwiV09PTCI6MTZ9fSwiMjMiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsi"
+    "V0hFQVQiOjEzNH0sImNhcmVzIjoxOCwiZmVlZHMiOjE4LCJoYW5kcyI6MTIsImhpcmVzIjoxMiwibGFuZCI6MCwibW"
+    "9uZXlfZGF3biI6NTgyNDIuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldI"
+    "RUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiXSwic2VlZHMiOnsiV0hFQVQiOjh9LCJzZWxscyI6ey"
+    "JGRVJUSUxJWkVSIjoyNTAsIk1JTEsiOjYsIlNUUkFXQkVSUlkiOjEzLCJXSEVBVCI6MjEyLCJXT09MIjozMH19LCIy"
+    "NCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6MTExfSwiY2FyZXMiOjE4LC"
+    "JmZWVkcyI6MTgsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJtb25leV9kYXduIjo2MTExNy4wLCJwbGFj"
+    "ZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJDQVJST1QiLCJDQVJST1QiLC"
+    "JDQVJST1QiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLCJzZWVkcyI6eyJDQVJST1QiOjMsIldIRUFU"
+    "Ijo4fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MTU2LCJNSUxLIjoxMiwiU1RSQVdCRVJSWSI6MzEsIldIRUFUIjoxNT"
+    "J9fSwiMjUiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidWlsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjk1fSwiY2FyZXMi"
+    "OjE4LCJmZWVkcyI6MTgsImhhbmRzIjoxMSwiaGlyZXMiOjExLCJsYW5kIjowLCJtb25leV9kYXduIjo2NTk3NS4wLC"
+    "JwbGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFU"
+    "IiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCJdLC"
+    "JzZWVkcyI6eyJXSEVBVCI6MTR9LCJzZWxscyI6eyJDQVJST1QiOjcsIkZFUlRJTElaRVIiOjI5LCJNSUxLIjo2LCJT"
+    "VFJBV0JFUlJZIjoxMCwiV0hFQVQiOjEwNiwiV09PTCI6MzJ9fSwiMjYiOnsiYW5pbWFsc19ib3VnaHQiOnt9LCJidW"
+    "lsZHMiOjAsImJ1eXMiOnsiV0hFQVQiOjUyfSwiY2FyZXMiOjE4LCJmZWVkcyI6MTgsImhhbmRzIjoxMSwiaGlyZXMi"
+    "OjExLCJsYW5kIjowLCJtb25leV9kYXduIjo2OTYyNS4wLCJwbGFjZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSE"
+    "VBVCIsIldIRUFUIiwiV0hFQVQiLCJDQVJST1QiLCJXSEVBVCJdLCJzZWVkcyI6eyJDQVJST1QiOjEsIldIRUFUIjo1"
+    "fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6MjUsIk1JTEsiOjEyLCJTVFJBV0JFUlJZIjoxOCwiV0hFQVQiOjcxLCJXT0"
+    "9MIjo4fX0sIjI3Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjowLCJidXlzIjp7IldIRUFUIjoxMH0sImNh"
+    "cmVzIjoxMywiZmVlZHMiOjE2LCJoYW5kcyI6MTEsImhpcmVzIjoxMSwibGFuZCI6MCwibW9uZXlfZGF3biI6NzI1ND"
+    "QuMCwicGxhY2VzIjpbXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIiwiV0hFQVQiLCJX"
+    "SEVBVCIsIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjoxMH0sInNlbGxzIj"
+    "p7IkZFUlRJTElaRVIiOjExLCJNSUxLIjo2LCJTVFJBV0JFUlJZIjoyNiwiV0hFQVQiOjEzNSwiV09PTCI6OH19LCIy"
+    "OCI6eyJhbmltYWxzX2JvdWdodCI6e30sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6Nn0sImNhcmVzIjo3LCJmZW"
+    "VkcyI6OCwiaGFuZHMiOjEwLCJoaXJlcyI6MTAsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjc4MzgzLjAsInBsYWNlcyI6"
+    "W10sInBsYW50cyI6W10sInNlZWRzIjp7fSwic2VsbHMiOnsiQ0FSUk9UIjo3LCJGRVJUSUxJWkVSIjoxMywiTUlMSy"
+    "I6MTIsIlNUUkFXQkVSUlkiOjEwLCJXSEVBVCI6MjYsIldPT0wiOjIwfX0sIjI5Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7"
+    "fSwiYnVpbGRzIjowLCJidXlzIjp7fSwiY2FyZXMiOjAsImZlZWRzIjowLCJoYW5kcyI6OCwiaGlyZXMiOjgsImxhbm"
+    "QiOjAsIm1vbmV5X2Rhd24iOjg1MDc4LjAsInBsYWNlcyI6W10sInBsYW50cyI6W10sInNlZWRzIjp7fSwic2VsbHMi"
+    "OnsiRkVSVElMSVpFUiI6NiwiTUlMSyI6MTgsIlNUUkFXQkVSUlkiOjIsIldIRUFUIjo5MCwiV09PTCI6Mjh9fSwiMy"
+    "I6eyJhbmltYWxzX2JvdWdodCI6eyJDT1ciOjF9LCJidWlsZHMiOjAsImJ1eXMiOnt9LCJjYXJlcyI6NCwiZmVlZHMi"
+    "OjQsImhhbmRzIjo1LCJoaXJlcyI6NSwibGFuZCI6MCwibW9uZXlfZGF3biI6NDIxLjAsInBsYWNlcyI6WyJDT1ciXS"
+    "wicGxhbnRzIjpbXSwic2VlZHMiOnsiQ0FSUk9UIjoxfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6NH0sInNoZWRfZHVz"
+    "ayI6e319LCI0Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjoxLCJidXlzIjp7IldIRUFUIjo2fSwiY2FyZX"
+    "MiOjUsImZlZWRzIjo1LCJoYW5kcyI6NSwiaGlyZXMiOjUsImxhbmQiOjAsIm1vbmV5X2Rhd24iOjEzMS4wLCJwbGFj"
+    "ZXMiOltdLCJwbGFudHMiOlsiV0hFQVQiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIjp7IldIRUFUIjo3fSwic2VsbH"
+    "MiOnsiRkVSVElMSVpFUiI6NH0sInNoZWRfZHVzayI6eyJXSEVBVCI6MX19LCI1Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7"
+    "IkNPVyI6MX0sImJ1aWxkcyI6MCwiYnV5cyI6eyJXSEVBVCI6Mn0sImNhcmVzIjo2LCJmZWVkcyI6NiwiaGFuZHMiOj"
+    "QsImhpcmVzIjo0LCJsYW5kIjowLCJtb25leV9kYXduIjoyMzAuMCwicGxhY2VzIjpbIkNPVyJdLCJwbGFudHMiOlsi"
+    "U1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSJdLCJzZWVkcyI6eyJNRUxPTi"
+    "I6MywiU1RSQVdCRVJSWSI6NH0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjUsIldIRUFUIjoxOH0sInNoZWRfZHVzayI6"
+    "eyJXSEVBVCI6N319LCI2Ijp7ImFuaW1hbHNfYm91Z2h0Ijp7fSwiYnVpbGRzIjoyLCJidXlzIjp7IldIRUFUIjo2fS"
+    "wiY2FyZXMiOjYsImZlZWRzIjo2LCJoYW5kcyI6NCwiaGlyZXMiOjQsImxhbmQiOjEsIm1vbmV5X2Rhd24iOjE5Ni4w"
+    "LCJwbGFjZXMiOltdLCJwbGFudHMiOlsiTUVMT04iLCJNRUxPTiJdLCJzZWVkcyI6eyJDQVJST1QiOjcsIk1FTE9OIj"
+    "o1LCJTVFJBV0JFUlJZIjozfSwic2VsbHMiOnsiRkVSVElMSVpFUiI6NSwiV09PTCI6MTJ9LCJzaGVkX2R1c2siOnsi"
+    "V0hFQVQiOjd9fSwiNyI6eyJhbmltYWxzX2JvdWdodCI6eyJDT1ciOjIsIlNIRUVQIjoxfSwiYnVpbGRzIjoyLCJidX"
+    "lzIjp7IldIRUFUIjozfSwiY2FyZXMiOjksImZlZWRzIjo5LCJoYW5kcyI6OCwiaGlyZXMiOjgsImxhbmQiOjAsIm1v"
+    "bmV5X2Rhd24iOjE0My4wLCJwbGFjZXMiOlsiU0hFRVAiLCJDT1ciLCJDT1ciXSwicGxhbnRzIjpbIk1FTE9OIiwiTU"
+    "VMT04iLCJNRUxPTiIsIlNUUkFXQkVSUlkiLCJTVFJBV0JFUlJZIiwiTUVMT04iLCJTVFJBV0JFUlJZIiwiTUVMT04i"
+    "LCJNRUxPTiJdLCJzZWVkcyI6eyJXSEVBVCI6NH0sInNlbGxzIjp7IkZFUlRJTElaRVIiOjZ9LCJzaGVkX2R1c2siOn"
+    "t9fSwiOCI6eyJhbmltYWxzX2JvdWdodCI6eyJTSEVFUCI6MX0sImJ1aWxkcyI6MiwiYnV5cyI6eyJXSEVBVCI6MTd9"
+    "LCJjYXJlcyI6MTAsImZlZWRzIjoxMCwiaGFuZHMiOjExLCJoaXJlcyI6MTEsImxhbmQiOjAsIm1vbmV5X2Rhd24iOj"
+    "E5MC4wLCJwbGFjZXMiOlsiU0hFRVAiXSwicGxhbnRzIjpbIldIRUFUIiwiV0hFQVQiLCJXSEVBVCIsIlNUUkFXQkVS"
+    "UlkiLCJTVFJBV0JFUlJZIiwiU1RSQVdCRVJSWSIsIlNUUkFXQkVSUlkiLCJXSEVBVCIsIldIRUFUIl0sInNlZWRzIj"
+    "p7IlNUUkFXQkVSUlkiOjQsIldIRUFUIjo1fSwic2VsbHMiOnsiRkVSVElMSVpFUiI6NiwiTUlMSyI6MTJ9LCJzaGVk"
+    "X2R1c2siOnsiV0hFQVQiOjh9fSwiOSI6eyJhbmltYWxzX2JvdWdodCI6eyJTSEVFUCI6Mn0sImJ1aWxkcyI6MCwiYn"
+    "V5cyI6eyJXSEVBVCI6MTR9LCJjYXJlcyI6MTIsImZlZWRzIjoxMiwiaGFuZHMiOjEyLCJoaXJlcyI6MTIsImxhbmQi"
+    "OjAsIm1vbmV5X2Rhd24iOjk0My4wLCJwbGFjZXMiOlsiU0hFRVAiLCJTSEVFUCJdLCJwbGFudHMiOltdLCJzZWVkcy"
+    "I6e30sInNlbGxzIjp7IkZFUlRJTElaRVIiOjksIldIRUFUIjo1LCJXT09MIjo4fX19"
 )
 
 
@@ -4149,47 +4246,63 @@ def _q4_rows():
     return {int(k): v for k, v in json.loads(base64.b64decode(Q4_ROWS_B64)).items()}
 
 
-def install_the_fourth_quadrant(schedule):
-    """Rewrite rows `SPLIT_DAY`..29 of `schedule` IN PLACE, and install the 100-tile routes.
+class Q4Branch(Branch):
+    """His four-quadrant season, taken when the town promises wool early.
 
-    In place because `make_agent` shares row objects with its caller and reads them live each turn.
-    Rebinding a row would be a no-op that looks exactly like a working branch -- the failure mode
-    this project calls a byte-identical null.
+    `install` does more than swap rows: the shipped routes were solved for the 75-tile board and
+    `cover._apply_precomputed` keys a stop on `(tile, ops)`, so on a 100-tile board they DROP rather
+    than adapt. The four-quadrant solve goes in with the rows or the branch plays unsolved days.
     """
-    rows = _q4_rows()
-    for day, row in rows.items():
-        if day < SPLIT_DAY:
-            continue
-        target = schedule.get(day) if hasattr(schedule, "get") else None
-        if target is None:
-            continue
-        target.clear()
-        target.update(row)
 
-    cover = importlib.import_module("kagg.search.cover")
-    q4 = importlib.import_module("kagg.search.solved_days_q4")
-    cover.UNSOLVE_DAYS = ()
-    cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
-                                    for u, seq in units.items()}
-                                for d, units in q4.SOLVED_DAYS.items()}
-    return True
+    decide_by_day = DECIDE_BY_DAY
+    split_day = SPLIT_DAY
+    decided_key = "q4_decided"
+    armed_key = "q4_armed"
+
+    def trigger(self, observation):
+        return the_town_promised_wool_early(observation)
+
+    def rows(self):
+        return _q4_rows()
+
+    #: The four-quadrant solve for each crop mix. A route is keyed on `(tile, ops)`, so the
+    #: strawberry season cannot use the melon season's routes any more than a 100-tile board can
+    #: use a 75-tile board's -- the stops simply fail to match and drop, which is the failure this
+    #: class's own docstring describes. Handing the melon set to a strawberry board left the whole
+    #: of d9-d29 effectively unsolved on that branch.
+    SOLVE_FOR_MELON = "kagg.search.solved_days_q4"
+    SOLVE_FOR_STRAWBERRY = "kagg.search.solved_days_straw_q4"
+
+    def install(self, schedule, state=None):
+        moved = super().install(schedule, state)
+        cover = importlib.import_module("kagg.search.cover")
+        from . import melon_branch as MB
+        straw = bool((state or {}).get(MB.BRANCH.armed_key))
+        name = self.SOLVE_FOR_STRAWBERRY if straw else self.SOLVE_FOR_MELON
+        try:
+            q4 = importlib.import_module(name)
+        except ImportError:
+            # The strawberry four-quadrant solve may not exist yet. Falling back to the melon set
+            # is what shipped before this branch existed, so it is no worse -- but say nothing
+            # clever about it: an unsolved day is a day the greedy plays.
+            q4 = importlib.import_module(self.SOLVE_FOR_MELON)
+        cover.UNSOLVE_DAYS = ()
+        cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
+                                        for u, seq in units.items()}
+                                    for d, units in q4.SOLVED_DAYS.items()}
+        return moved
+
+
+BRANCH = Q4Branch()
+
+install_the_fourth_quadrant = BRANCH.install
 
 
 def arm(schedule, state, observation, day):
-    """Decide once, on or after `DECIDE_BY_DAY`, and before `SPLIT_DAY` can act.
-
-    `state` is any dict that persists across turns; the decision is recorded there so the schedule is
-    never mutated twice and never re-read after the split.
-    """
-    if not BRANCH_ON_THE_YARN_STORE or state.get("q4_decided"):
-        return state.get("q4_armed", False)
-    if day < DECIDE_BY_DAY:
+    """`BRANCH.arm`, gated by `BRANCH_ON_THE_YARN_STORE`."""
+    if not BRANCH_ON_THE_YARN_STORE:
         return False
-    state["q4_decided"] = True
-    state["q4_armed"] = bool(the_town_promised_wool_early(observation))
-    if state["q4_armed"]:
-        install_the_fourth_quadrant(schedule)
-    return state["q4_armed"]
+    return BRANCH.arm(schedule, state, observation, day)
 '''
 _SOURCES['kagg.search.crew'] = r'''"""A dawn planner that hands each unit a contiguous block and does not re-rank it.
 
@@ -4467,8 +4580,27 @@ def _pack(unit_pos, run, held, depots, budget, wanted, rush, share=None, due=Non
 
 #: Order the ops of one tile must be taken in. A pen is BUILT, then FILLED, then FED -- all on the
 #: same square, and nothing else in the plan orders them. Lower sorts first.
-OP_ORDER = {"BUILD": 0, "PLACE": 1, "FEED": 2, "CARE": 3, "COLLECT_FERTILIZER": 4,
-            "HARVEST": 5, "PLANT": 6, "WATER": 7}
+#:
+#: **HARVEST moved ahead of the upkeep, and it did NOT do what it was written for.** Only two
+#: orderings on a square are real: PLACE needs a pen already built, and CARE is offered only on a
+#: pen already fed (`router.animal_ops`). HARVEST has no such tie -- `reference/kaggriculture.py:446`
+#: tests `yield_units > 0` and nothing else, and `yield_units` is written once, by
+#: `_daily_refresh_animals:827`, at the night rollover. The produce is standing on the pen at dawn
+#: and today's feed pays into tonight, so taking it first is free.
+#:
+#: It was written to get d6's wool to market on the top rung, and it does not. Measured, seed 11,
+#: strawberry arm, `weeds 0.0`, before and after:
+#:
+#:     first SELL/WOOL   h11 both      revenue  2,315 both      (tape: h04, 2,464)
+#:
+#: The hour a loaded pen is REACHED is not set by this map. `_tile_rank` (the MINIMUM over a job's
+#: ops) feeds `at[t].sort` in `cover` below, which orders tiles WITHIN a run that has already been
+#: assigned; it does not decide which run a unit walks first. Look there before editing this again.
+#:
+#: Kept only because the d0-d8 grid moves one cell towards the tape and none away -- d6
+#: `PLACE 0/2 -> 1/2`, everything else byte-identical.
+OP_ORDER = {"BUILD": 0, "PLACE": 1, "HARVEST": 2, "FEED": 3, "CARE": 4,
+            "COLLECT_FERTILIZER": 5, "PLANT": 6, "WATER": 7}
 
 
 def _tile_rank(job):
@@ -4915,78 +5047,8 @@ MANDATORY = 100_000
 #: actual thing: losing the animal is not a bigger prize, it is a different kind of event.
 CRITICAL = 1_000_000
 
-#: Whether a pen one missed day from losing its animal is CRITICAL rather than merely mandatory.
-#: A flag so the arm stays attributable, and because this repo records four separate occasions where
-#: an animal verdict turned out to be a measurement artifact. Any accepted version must be judged on
-#: ANIMALS STANDING IN PENS per day, never on cells or money alone.
-FEED_IS_CRITICAL_WHEN_AT_RISK = True
-
-#: **Whether a one-shot crop on its LAST SAFE DAY is CRITICAL, exactly as a hungry pen is.**
-#:
-#: `_decay_plants` (`reference/kaggriculture.py:752`) runs on **every step**, not at the rollover:
-#: a one-shot crop past `max_lifespan_step = (planted_day + max_yield_day + 1) * 24` loses one unit
-#: every two steps and becomes a WEED at zero. `_one_shot_is_finished` legalises the HARVEST at
-#: `age >= max_day`. So the safe window is exactly ONE DAY WIDE, for every one-shot crop -- wheat
-#: legal at age 4 and decaying from age 5 h00, melon legal at 12 and decaying from 13.
-#:
-#: Water does not extend it. `max_lifespan_step` is fixed when the crop is planted
-#: (`kaggriculture.py:224`) and nothing updates it for a one-shot. This is an expiry date, not
-#: thirst, and it is the second weed source -- the first being `consecutive_unwatered >= 2`.
-#:
-#: **`cover.py` contains ZERO references to `max_lifespan_step`**, and `cover` is what decides the
-#: visit ORDER. So a harvest with four hours to live was ranked identically to one with all day and
-#: landed wherever insertion was cheapest. Measured on seed 11 against the kawashigi tape, weeds
-#: off so nothing is random:
-#:
-#:     died     tile     crop  planted  safe day   job built that day            seated
-#:     17/h05  (0,7)    WHEAT       12        16   [WATER, HARVEST, PLANT, ...]  False
-#:     25/h07  (8,4)    WHEAT       20        24   [WATER, HARVEST, HARVEST,..]  False
-#:     28/h09  (1,2)    WHEAT       23        27   [WATER, HARVEST, HARVEST,..]  False
-#:
-#: **Eleven of sixteen had a HARVEST job built on the safe day and it was not seated.** The job
-#: exists and loses the auction -- a ranking failure, not a missing job and not a turn shortage.
-#: Pricing it at `CRITICAL` is the same handle `FEED_IS_CRITICAL_WHEN_AT_RISK` uses for the pen that
-#: loses its animal tonight, and it puts the stop in `cover`'s first greedy pass.
-#:
-#: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
-#: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
-#: whole fix has to sit on the day before, which is what `age >= max_day` selects.
-#: **BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY -- d28 is the last harvest that banks itself.**
-#:
-#: Selling costs no unit-turns: a SELL is a market order in `_process_market`, not a unit action. So
-#: what the last day can sell is decided entirely by what sits in `private["shed"]` when it starts,
-#: and the shed is filled for free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce
-#: harvested on d28 is banked overnight at zero cost and is sellable all through d29. Produce
-#: harvested ON d29 lands in a hand, and that drop comes after the final turn, so it is discarded.
-#:
-#: This is how カワシギ takes the last two days without ever planning a delivery (ours/tape):
-#:
-#:     closing week   harvest      sell    drop     pass
-#:     d28             27/32     103/92     2/0    48/32
-#:     d29             27/19      93/148    3/9    30/56
-#:
-#:     harvest d0-d22   ours 201   tape 204     level
-#:     harvest d23-d29  ours 195   tape 185     we back-load +10
-#:
-#: He harvests 32 on d28 to our 27, the overnight drop banks it, and d29 becomes a selling day --
-#: 148 units to our 93. We back-load into the one day where delivery is not free, and the season
-#: ends with 51 sellable units, about $1,192, stranded in hands.
-#:
-#: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
-#: crew is standing around; the harvest is simply not ranked high enough to be seated.
-#:
-#: **A behavioral null on this board, ON anyway, and both halves are deliberate.** Three shapes
-#: (prize, at_risk, at_risk + re-solve) measured byte-identical on the grid: d28's solved route
-#: already seats every job with slack, so the promotion changes no seating today. It is ON because
-#: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
-#: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
-#: (an opponent, a lost hand) needs the ranking to already say so.
-BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False
-
 #: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
-
-HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
 
 #: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
 #: so an ungated version WOULD re-rank d4 -- inside the d0-d8 window that is matched to the tape op
@@ -5084,34 +5146,6 @@ CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells again
 
 SERVICE_ROUND = 10
 
-#: `FILLING_WATER` -- the water that takes a one-shot crop to `max_yield` also offers its HARVEST.
-#:
-#: **This is the day-10 melon, and it was never a delivery fault.** Measured on Seb's tape, seed 11,
-#: day 10, weeds off (`scripts/when_the_melon_fills.py`), the hour each of the three ripe MELON tiles
-#: first reads 6/6 and so becomes harvestable at all:
-#:
-#:     SEB   (4,2)=h6   (3,1)=h9   (4,1)=h9        -> SELL 12 @h13, SELL 6 @h15, 0 in shed at dawn
-#:     OURS  (2,0)=h15  (1,0)=h16  (0,0)=h18       -> harvested h17/h19/h20, 18 in shed at dawn
-#:
-#: Both sides wake with the same three tiles at **5/6**. MELON is a one-shot, and
-#: `_one_shot_is_finished` refuses HARVEST while `room > 0` -- correctly, since HARVEST demolishes
-#: the tile. So the harvest could not have happened earlier than the fill on either side, and ours
-#: lands one to three turns after it. The HARVEST is prompt; the WATER is seven hours late. Seven
-#: previous arms moved the delivery leg, which is two steps downstream of this.
-#:
-#: The water is late because of its price. An in-window one-shot water is priced at the single unit
-#: of yield it adds, $250. An out-of-window survival water on an immature melon is priced at
-#: `_crop_remaining`, the whole tile, $1,250-$1,500. So the planner ranked insurance on a tile that
-#: cannot yield for two more days five times above the one water that unlocks same-day money, and
-#: `plan_routes` -- prize-sorted, `prize / cost`-scored -- put it at dusk.
-#:
-#: That price is right for a water with room to spare and wrong for the LAST one, which is the only
-#: thing between the tile and its whole harvest. When the water fills the tile, the node offers the
-#: HARVEST too: `_live_ops` re-derives at the tile, so the unit waters, and next turn `room == 0`
-#: makes `_one_shot_is_finished` true and the same stop emits the HARVEST. No new mechanism -- the
-#: crew already does exactly this back-to-back pair, and this only makes the planner see it coming.
-FILLING_WATER = True
-
 #: Ops whose item really is drawn at the shed. `BUILD` is here because the unit may as well carry the
 #: animal on the same trip and PLACE it the turn after the pen goes up.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
@@ -5120,103 +5154,7 @@ DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
 #: so anything still in a hand at dusk is unsold -- it arrives overnight, a turn too late.
 YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
-#: Whether a pen's YIELDING ops are served BEFORE its consuming ones, rather than after.
-#:
-#: A stop's ops run in list order, and `animal_ops` built them in the order the rules are written:
-#: FEED, CARE, COLLECT_FERTILIZER, HARVEST. That puts the two ops that produce something sellable
-#: last, so a pen visited at dawn does not yield until its fourth turn.
-#:
-#: Measured on Seb's tape, seed 11, day 6 -- the same pen, the same four ops, opposite order:
-#:
-#:     tape  F  h0 HARVEST  h1 COLLECT_FERTILIZER  h2 DROP  h3 PICKUP  h5 FEED  h6 CARE
-#:     ours  u3 h3 FEED     h4 CARE  h5 COLLECT_FERTILIZER  h6 HARVEST  h7 walk  h8 DROP
-#:
-#: Six wool either way. His are in the shed at hour 2 and pay for that turn's BUY_SEED; ours are in
-#: a hand until hour 8. Day 6's entire gap is one $800 strawberry order placed at hour 1 against a
-#: $296 bank, and an hour-2 sale of that wool covers it.
-#:
-#: **TRIED AND REVERTED 2026-08-07.** It is the right reading of the tape and it does not help,
-#: because the hour it saves is not the hour that is missing. Measured, days 0-6, ours minus tape:
-#: d2 4 -> 8 cells, d3 7 -> 8, money newly diverging on d2 and d3, and **day 6 unchanged at 14**.
-#:
-#: The reason it cannot work on its own: his farmer HARVESTs at hour 0 because the sheep pen IS the
-#: depot tile (4,4). Ours is at (3,4), and the unit that serves it is doing a PICKUP at (4,4) on
-#: hour 1 and does not stand on the pen until hour 3. Re-ordering the ops moves the yield from that
-#: unit's 4th turn to its 1st -- hour 3 rather than hour 6 -- which is still three hours past the
-#: hour-2 sale that pays for the strawberry. The lever is WHERE the pen is, not what order it is
-#: served in; `build_tiles` is in `TAPE_ONLY` and stripped, so we choose our own tiles and chose a
-#: worse one.
-YIELD_FIRST = False
 
-#: Whether the FOUR shed-access cells pick their animal by the size of one harvest, instead of by
-#: position in `R.ANIMAL_NAMES` -- which is `["GOOSE", "COW", "SHEEP"]`, so a COW takes any shared
-#: PASTURE whenever both are in the shed at once.
-#:
-#: Deliberately NOT the reverted global tie-break a few lines below. That one value-ranked EVERY
-#: pasture and measured -$5,676 on the 12-seed ladder, because the season wants 8 COW to 6 SHEEP and
-#: a same-turn ranking reallocates far more pens than the one it was diagnosed on. This ranks only
-#: the four cells where a harvest can be DROPPED without moving, which is a property no field tile
-#: has at any price. The rest of the board keeps the fixed order untouched.
-#:
-#: Measured on Seb's tape, seed 11, day 6 -- identical boards, one different occupant:
-#:
-#:     (4,4)  ours {'kind': 'PASTURE', 'animal': 'COW'}     our SHEEP sits at (3,4)
-#:     (4,4)  tape {'kind': 'PASTURE', 'animal': 'SHEEP'}
-#:
-#: A full load is 6 WOOL at $200 against 6 MILK at $160, and his farmer takes it at hour 0 and drops
-#: it at hour 2 without a step -- which is what pays for day 6's $800 strawberry order.
-#: **TRIED AND REVERTED 2026-08-07.** Measured, days 0-6, cells ours-minus-tape per day:
-#: d2 4 -> 6, d3 7 -> 8, d4 7 -> 9, d5 7 -> 8, d6 14 -> 15; 52 -> 59 total. Worse on every day it
-#: touched and it did not even fix the day it was built for.
-#:
-#: So the narrowing argument above is sound and still insufficient: WHICH animal ends up on (4,4) is
-#: not a free choice made at that cell. It is decided days earlier by what the schedule has bought
-#: and by SHEEP `first_yield_day` 6 against COW's 8, and forcing the sheep there re-times the whole
-#: herd. Same shape of failure as the global tie-break it was distinguished from -- a same-turn
-#: ranking cannot see a season's allocation -- which is the third time that has been measured here.
-#: Whatever puts his sheep on the depot cell is upstream of `build_nodes`, in the buy/place order.
-DEPOT_PEN_BY_LOAD = False
-
-#: **A pen is placed with the animal it was BUILT for.**
-#:
-#: This is the "upstream of `build_nodes`, in the buy/place order" the note above ends on, and it
-#: turns out to be one line of bookkeeping rather than a new ranking. `_refresh_pins` already sites
-#: pens one at a time against the schedule's ORDERED `places` row and stamps each with an animal --
-#: `pins[spot] = ("BUILD", a, cost)`. The near ground is pinned first, so the row's order already
-#: decides who gets the short walk. Seb's day-0 row is `['SHEEP', 'SHEEP', 'COW', 'COW']` and his
-#: board reads exactly that. The assignment was being made correctly and then thrown away: the
-#: instant the pen is BUILT the tile stops being `None`, `_refresh_pins` pops the pin, and the
-#: animal is re-derived here from `R.ANIMAL_NAMES = ["GOOSE", "COW", "SHEEP"]` -- so COW wins every
-#: PASTURE. Measured, seed 11, weeds off, at day 1 dawn:
-#:
-#:     Seb   SHEEP@(4,4)d0  SHEEP@(4,3)d1  COW@(3,3)d2  COW@(2,3)d3    sheep walk 0 + 1 = 1
-#:     ours  COW@(4,4)d0    SHEEP@(3,4)d1  COW@(2,4)d2  SHEEP@(1,4)d3  sheep walk 1 + 3 = 4
-#:
-#: Both blocks sum to 22 from the depot, so no SITING rule can close this -- it is not a shape
-#: problem. `PEN_SPOTS`, `PEN_NEAREST_DEPOT` and `PEN_NEAREST_DEPOT_FROM_DAY` all move WHERE a pen
-#: goes and none of them can move WHICH animal ends up in it.
-#:
-#: It is not the value tie-break rejected in `build_nodes` either, which cost **-$5,676** on the
-#: 12-seed ladder. That one ranked animals by same-turn worth and so could not see that the season
-#: wants 8 COW against 6 SHEEP; this one ranks nothing and reads back a decision the schedule
-#: already made. The failure mode they share -- refusing an available animal while waiting for a
-#: better one -- is excluded by construction: an unfillable reservation falls straight through to
-#: the old order, pinned by
-#: `tests/test_the_pen_holds_the_animal_it_was_built_for.py::test_a_reservation_the_shed_cannot_fill_falls_back_rather_than_stalling`.
-PEN_KEEPS_ITS_ANIMAL = True
-
-#: Whether a tour that ends on a YIELDING node reserves the walk back to the nearest depot.
-#:
-#: The tour is otherwise costed as an OPEN route -- walk plus service from where the unit stands,
-#: nothing for getting back -- which is correct for a tile that only consumes and wrong for one that
-#: yields. Measured on Seb's tape, seed 11, day 3: our u4 collects a fertilizer, its tour ends at
-#: hour 17 seven steps out, the return leg turns it home on hour 18 and it walks into dusk without
-#: arriving. `sell 4/5`, day-4 dawn bank $388 against his $482, and $388 does not buy a $400 cow.
-#:
-#: This is a RESERVE, not work: it is charged against the budget at every acceptance test and never
-#: added to `cost`, so it shortens a tour rather than booking turns the unit does not spend. Off
-#: restores the open route exactly.
-RETURN_LEG = True
 
 #: Cost an insertion as a CLOSED tour -- `delta + homeward(after) - homeward(before)` -- rather than
 #: charging a flat return reserve at acceptance. It is the textbook closed-tour marginal and it is
@@ -5261,12 +5199,6 @@ HOMEWARD_DROP_TURNS = 0
 #: correcting the estimate the way `docs/idle_at_h10_2026-08-07.md` proposed -- inflating costs is
 #: not a route to it. Anything that adds a stop has to EARN its turns, not be handed them.
 DEPOT_NODE_EXTRA_SERVICE = 0
-
-#: Whether the shed's stock of an animal is a budget shared across units, the way turns already are.
-#: See the note in `plan_routes`. Off restores the pre-2026-08-07 behaviour, where one COW and three
-#: empty pens produced three full-prize PLACE nodes and two units were sent to fetch the same animal.
-SUPPLY_LEDGER = True
-
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -5430,33 +5362,6 @@ def _animal_remaining(cell, day):
     return max(0, days_left) // a["interval"] * price
 
 
-#: Water a tile that is NOT at risk, so the field stops coming due all on one day.
-#:
-#: The alternate-day rule (`consecutive_unwatered >= 1`) is correct per tile and synchronises the
-#: field in aggregate: everything watered on d11 falls due together on d13. Measured on seed 11,
-#: tiles on the brink at dawn against tiles rescued -- d12 has 15 due and 136 idle turns and still
-#: loses 2; d15 has 34 due, 2 idle turns in the entire day, and loses 6. The trough has turns going
-#: spare while the spike cannot cover its backlog.
-#:
-#: **Priced at a fraction of the survival water, never level with it.** A tile that weeds tonight is
-#: an asset lost outright; a top-up is a convenience. At equal price a spike day spends its turns on
-#: tiles that were never at risk.
-#: **MEASURED AND OFF.** It does what it was built for and loses the season doing it. Seed 11,
-#: tape 91422988, final bank: baseline $79,905 with 16 tiles starved; with this on, $63,645 with 5
-#: starved. Stacked on the crew planner for d0-d3 it is $91,943 -> $62,284. Brink misses over
-#: d0-d20 fall 13 -> 4 and the board carries zero dry tiles from d27 -- the rule is not broken, the
-#: tiles are simply worth less than the turns it takes to save them.
-#:
-#: The argument for switching it on was that the earlier `>= 0` widening had been rejected for
-#: reasons that had expired (wrong tape, measured only over d0-d7 where 17 tiles fit in a day). That
-#: argument was wrong on its own terms: the trough day's idle turns are not free, because spending
-#: them puts the hand somewhere else when the next spike lands.
-#: **Water half the SAFE tiles each day, alternating, instead of none of them.**
-#:
-#: A tile watered yesterday cannot weed tonight, so the survival rule skips it entirely -- which is
-#: why d3 emitted 7 waters against the leader's 14. See the note at the emission.
-WATER_ROTATION = True
-
 TOP_UP_SAFE_TILES = False
 #: Not before day 7. Seventeen tiles fit inside one day with room to spare, Seb waters alternate days
 #: there and takes zero weeds doing it, and d0-d6 is matched to the tape op for op.
@@ -5519,7 +5424,9 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # lost every auction: 3 weeds on d28, 4 on d29, and seven of d29's turns spent
                 # DIGging them. Held to d26+ purely for scope; the mispricing is not late-specific.
                 unit = price * (2 if fertilized else 1)
-                if day >= LATE_TRUNCATED_PLANT_DAY and cell["consecutive_unwatered"] >= 1:
+                if (day >= min(LATE_TRUNCATED_PLANT_DAY,
+                               BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY)
+                        and cell["consecutive_unwatered"] >= 1):
                     unit = max(unit, _crop_remaining(cell, day))
                 out.append(("WATER", None, unit))
                 # **The LAST water is not worth one unit, it is worth the tile.** See
@@ -5539,7 +5446,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # goes red on precisely that. Certain money today and contingent value tomorrow are
                 # not the same $1,500, and this node is the only place the difference is expressible.
                 gain = 2 if fertilized else 1
-                if FILLING_WATER and age >= info["first"] and gain >= room:
+                if age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
         elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
               and not upkeep_buys_nothing(day)):
@@ -5569,7 +5476,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
-        elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
+        elif (tile is not None and not cell["watered_today"]
               and (tile[0] + tile[1] + day) % 2 == 0
               and not upkeep_buys_nothing(day)):
             # Same last-day gate as the survival water above: the alternation only exists to keep
@@ -5623,7 +5530,18 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # water and then nothing -- 3 weeds by d28, 4 by d29, and seven of d29's turns spent
                 # DIGging our own dead tiles.
                 out.append(("WATER", None, price))
-            elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY:
+            elif tile is not None and not upkeep_buys_nothing(day):
+                # **The same parity alternation the one-shot branch above already ships.** Without
+                # it an ongoing crop has three gates and all three are shut for its first nine days:
+                # `produces_tomorrow` needs `age + 1 >= info["first"]`, which is 10 for STRAWBERRY,
+                # and `TOP_UP_SAFE_TILES` was a measured-off flag. So a strawberry could only ever be
+                # offered water on the day `consecutive_unwatered >= 1` and tonight's rollover weeds
+                # it -- no margin, and a safe tile returns `[]` so `build_nodes` emits no node at all
+                # and `cover` cannot choose to visit it early.
+                #
+                # NOT `TOP_UP_SAFE_TILES`, which held this slot and measured $79,905 -> $63,645:
+                # that offered EVERY safe tile from a fixed day and doubled the load. Parity offers
+                # HALF and flips daily, so no tile is skipped twice running.
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
@@ -5634,11 +5552,9 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        last_free = (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
-                     and day is not None and day == LAST_FREE_DROP_DAY)
+        last_free = False
         if (last_free
-                or (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
-                    and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                or (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
                     and age >= _last_safe_age(info))):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
@@ -5658,7 +5574,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     # DIG, and halved for the same reason: clearing ground is worth what goes into it, and only if
     # something does. Victor digs 30 spent strawberries from d19 on and replants behind them; we hold
     # the dead tiles and `plant` falls to 3/16 by d23 while `sell` collapses.
-    if (DIG_A_SPENT_ONGOING_CROP and info["ongoing"]
+    if (info["ongoing"]
             and int(cell.get("max_lifespan_step", -1)) >= 0):
         best = max((plant_prize(c, day) for c in R.CROPS), default=0)
         if best > 0:
@@ -5683,6 +5599,37 @@ HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
 #: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
 #: and truncating it would only waste the ground.
 LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+
+#: **From which day a tile that is PRODUCING and one dry night from weeding is priced at the whole
+#: tile**, rather than at the single unit the water adds.
+#:
+#: `crop_ops` has two branches for a dry tile. One outside its yield window gets a proper survival
+#: price -- the water buys the tile surviving tonight. One INSIDE its window took the in-window
+#: price of one unit, and the survival price was applied only behind `LATE_TRUNCATED_PLANT_DAY`,
+#: which is 26. The comment on that branch says the gate was arbitrary: "Held to d26+ purely for
+#: scope; the mispricing is not late-specific."
+#:
+#: It is not. Measured on live ladder games 2026-08-16, tracked tile by tile on our own farm:
+#:
+#:     (8,4) STRAWBERRY  died d9   last watered d6   -- d7 and d8 both missed
+#:     (9,1) WHEAT       died d11  last watered d8   -- d9 and d10 missed
+#:     (9,2) STRAWBERRY  died d11  last watered d8
+#:
+#: and the same coordinates die across independent games with different seeds and opponents --
+#: (2,2) and (3,2) wheat on d9 in four and three games. At d8 dusk eight tiles sat at
+#: `consecutive_unwatered >= 1`, one night from death and visible in the observation, while we
+#: watered sixteen others. A producing wheat tile was being offered at $25.
+#:
+#: **This is NOT `TOP_UP_SAFE_TILES`.** That rule waters tiles which are SAFE, and it is measured
+#: and off -- $79,905 -> $63,645, because a spike day then spends its turns on tiles never at risk.
+#: This one only ever fires at `consecutive_unwatered >= 1`, which is a tile that weeds tonight;
+#: `test_a_tile_watered_yesterday_is_not_given_the_survival_price` pins the difference.
+#: **MEASURED A NULL 2026-08-15 AND OFF.** Byte-identical on seeds 3/7/11: same weeds,
+#: same bank. `crop_ops` IS on the path (1,364 calls on d8, 131 of them brink tiles) but
+#: `cover` chooses STOPS by rules on the board, not by price -- 'There is no price table
+#: in here, and that is the point.' The price only decides what to do at a stop already
+#: being visited. The lever is `cover.AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP`.
+BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY = 99
 
 
 def _last_safe_age(info):
@@ -5764,24 +5711,14 @@ def produces_tonight(cell, day):
     return a["interval"] <= 0 or since % a["interval"] == 0
 
 
-#: Whether a FEED is offered only when it buys something. See the note in `animal_ops`.
-#:
-#: **OFF since 2026-08-11: the cadence was calibrated on Seb's tape and we are matching Victor's.**
-#: The mechanism's reasoning is sound and its evidence is real -- production never reads `fed_today`,
-#: so on a non-payout night a feed buys only survival. It is simply not what THIS tape does. Victor
-#: feeds every animal every day: 5, 0, 5, 5, 5, 6, 7, 10, 12, 12, 12, 12 against a herd that reaches
-#: twelve, with d1 the only zero and that a two-unit, 47-turn day where neither side feeds.
-#:
-#: Ours tracked him exactly to d6 and broke at d7 -- `FEED_CADENCE_FROM_DAY`, not a coincidence.
-#: `feed 8/10` there and `7/12 9/12 8/12 9/12` after, with CARE mirroring it cell for cell because
-#: `animal_ops` offers CARE only on a pen it is feeding.
-#: Whether a pen placed TODAY is skipped for FEED. Independent of the cadence rule below: this one
-#: is about a ration that provably buys nothing, not about feeding less often. See `will_be_fed`.
-SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES = True
 #: Feeds still available to pens that arrived TODAY. Set per turn by the agent from the schedule's
 #: `feeds` row; see `will_be_fed`. Module-level so the predicate stays a pure function of the cell.
 ARRIVAL_FEED_REMAINING = 0
-FEED_ONLY_WHEN_IT_BUYS_SOMETHING = False
+
+#: The earliest `first_yield_day` among the pens that arrived TODAY and are still unfed. Set beside
+#: `ARRIVAL_FEED_REMAINING` once per turn by the agent, from the same board read. `None` means "no
+#: preference", which is what a board with no unfed arrivals should say. See `will_be_fed`.
+ARRIVAL_FEED_EARLIEST_YIELD = None
 
 #: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
 #: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
@@ -5821,7 +5758,7 @@ def will_be_fed(cell, day):
     #
     # Those two rations are the reason d1 opens on one wheat, makes three separate shed trips with
     # a single unit, and leaves (3,4) unfed while idling h22-h23 one step away.
-    if SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES and int(cell.get("placed_day", -1)) == int(day):
+    if int(cell.get("placed_day", -1)) == int(day):
         # **How many of today's arrivals get fed is the TAPE's number, not a rule of ours.**
         # `ARRIVAL_FEED_REMAINING` is set once per turn by the agent from the day's `feeds` row
         # minus the pens that were already standing, and counted down off the board (`fed_today` on
@@ -5832,9 +5769,31 @@ def will_be_fed(cell, day):
         # places one and feeds none of it, d5 places one and feeds it, d7 places three and feeds two.
         # No predicate on the animal reproduces that -- "feed everything" and "feed only what is
         # producing" were both measured, and both lose.
-        return ARRIVAL_FEED_REMAINING > 0
-    if not FEED_ONLY_WHEN_IT_BUYS_SOMETHING or day < FEED_CADENCE_FROM_DAY:
-        return True
+        #
+        # **The allowance is a budget, so WHICH arrival spends it matters as much as how many.**
+        # It was first-come-first-served in route order, and on d0 our route reaches the two COWs
+        # before the two SHEEP, so the cows took both feeds. Measured at d6 dawn:
+        #
+        #     ours   SHEEP yield 5  bonus 1     COW yield 0  bonus 6
+        #     tape   SHEEP yield 6  bonus 1     COW yield 0  bonus 5
+        #
+        # The cow bonus is waste. `_daily_refresh_animals` pays `min(max_held, 1 + bonus)` on the
+        # first production night; a COW reaches that at the d7 -> d8 rollover with 8 nights to bank
+        # the 5 it can use, so it caps whatever happens on d0. A SHEEP reaches it at d5 -> d6 with
+        # only 6 nights for the same 5, so a night it misses early is a unit of wool it never gets.
+        # We shear 5 where he shears 6, on both sheep, which is `SELL 15/17` on d6 and the money
+        # that settles his d6 BUY_LAND.
+        #
+        # `ARRIVAL_FEED_EARLIEST_YIELD` is the earliest `first_yield_day` among the pens that
+        # arrived today and are still unfed, set beside the count by the same block in
+        # `schedule_agent` and off the same board read, so it needs no state of its own. An arrival
+        # with a later first production waits its turn; if it is the only species arriving it is
+        # the earliest and nothing changes.
+        return (ARRIVAL_FEED_REMAINING > 0
+                and (ARRIVAL_FEED_EARLIEST_YIELD is None
+                     or ANIMALS[cell["animal"]]["first_yield_day"]
+                     <= ARRIVAL_FEED_EARLIEST_YIELD))
+    return True
     if cell.get("consecutive_unfed", 0) >= 1:
         return True
     a = ANIMALS[cell["animal"]]
@@ -5937,7 +5896,7 @@ def animal_ops(cell, day, have_wheat):
             # A hungry pen is one missed day from the animal escaping outright
             # (`reference/kaggriculture.py:804`), which is irreversible: the structure survives, the
             # animal does not, and nothing on the board buys it back the same day. See `CRITICAL`.
-            floor = CRITICAL if (hungry and FEED_IS_CRITICAL_WHEN_AT_RISK) else MANDATORY
+            floor = CRITICAL if hungry else MANDATORY
             prize = floor + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
             out.append(("FEED", "WHEAT", prize))
             fed = True
@@ -5949,15 +5908,7 @@ def animal_ops(cell, day, have_wheat):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
         prize = cell["yield_units"] * price
-        if (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
-                and day is not None and day == LAST_FREE_DROP_DAY):
-            prize += CRITICAL          # last night this milk or wool can bank itself for free
         out.append(("HARVEST", None, prize))
-    if YIELD_FIRST:
-        # Stable, so COLLECT_FERTILIZER still precedes HARVEST and FEED still precedes CARE. Built
-        # in rule order above because the CARE prize is conditional on FEED being served; only the
-        # SERVICE order changes here, never which ops the pen is offered.
-        out.sort(key=lambda o: o[0] not in YIELDING)
     return out
 
 
@@ -6055,26 +6006,10 @@ class Node:
         return f"Node{self.tile}{[o for o, _ in self.ops]}@${self.prize:.0f}/{self.service}t"
 
 
-#: **Serve the animal on the turn it is placed, instead of discovering it a turn later.**
-#: A PLACE node also carries the FEED and CARE that animal needs today. Ships ON: the alternative
-#: is that the ops only come into existence once the animal is standing on the tile, which is a
-#: board the dawn plan never sees, and the day is fully deterministic so there is nothing to
-#: discover. See the note at the PLACE branch for the d0 measurement.
-SERVE_THE_ANIMAL_IT_PLACES = True
-
-#: Whether a pinned BUILD carries the PLACE (and its FEED and CARE) for the animal the pin was made
-#: for, so the pen is built and filled by one chain in one plan. OFF restores the old behaviour: the
-#: placement cannot be seen until a later turn finds the pen already standing, which needs a replan.
-BUILD_THEN_PLACE = True
-
 #: Whether a pinned PLANT carries the WATER (and FERTILIZE) the seed will need the moment it is in
 #: the ground. Same defect and same shape as `BUILD_THEN_PLACE`: without it the dawn plan cannot see
 #: the 17 waters day 0 creates for itself, and only a replan finds them.
 PLANT_THEN_WATER = True
-
-#: Whether an ongoing crop that has produced its lifetime maximum is offered a DIG, so the
-#: ground it is sitting on can be replanted. See the note in `crop_ops`.
-DIG_A_SPENT_ONGOING_CROP = True
 
 #: Whether a stop that HARVESTS a one-shot crop also carries the PLANT its cleared tile can take.
 #: Third instance of the same shape as `BUILD_THEN_PLACE` and `PLANT_THEN_WATER`, and the same shape
@@ -6224,16 +6159,13 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 # days) is real; ranking every tie by same-turn value is not the fix for it.
                 ops = []
                 order = list(R.ANIMAL_NAMES)
-                if DEPOT_PEN_BY_LOAD and tile in SHED_SET:
-                    order = sorted(order, key=lambda a: -(
-                        BASE_PRICE[ANIMALS[a]["product"]] * ANIMALS[a]["max_held"]))
                 # **The pen remembers what it was built for.** See `PEN_KEEPS_ITS_ANIMAL`. This is
                 # not the value rank rejected above: it ranks nothing, it reads back the assignment
                 # `_refresh_pins` already made from the schedule's own ordered `places` row. A pen
                 # with no reservation, or one the shed cannot fill, falls through to `order`
                 # untouched -- a preference, never a lock, because a lock is what left a SHEEP idle
                 # in the shed for three days.
-                want = (pen_for or {}).get(tile) if PEN_KEEPS_ITS_ANIMAL else None
+                want = (pen_for or {}).get(tile)
                 if want in order and ANIMALS[want]["structure"] == kind:
                     order = [want] + [a for a in order if a != want]
                 for a in order:
@@ -6280,7 +6212,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         # depot draw for the wheat as part of the same tour.
                         price = BASE_PRICE[ANIMALS[a]["product"]]
                         ops = [("PLACE", a, served)]
-                        if SERVE_THE_ANIMAL_IT_PLACES and TPD - hour - 1 >= SERVICE_ROUND:
+                        if TPD - hour - 1 >= SERVICE_ROUND:
                             ops.append(("FEED", "WHEAT", MANDATORY + price))
                             ops.append(("CARE", None, price))
                         break
@@ -6336,7 +6268,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
         # the schedule's own ordered row and through the same siting rules as every other pen. So
         # the placement IS geometry -- it is decided where the pasture is decided -- and all this
         # does is let the node say so.
-        if BUILD_THEN_PLACE and op == "BUILD" and item in ANIMALS and chain_left[item] > 0:
+        if op == "BUILD" and item in ANIMALS and chain_left[item] > 0:
             chain_left[item] -= 1
             served = ANIMALS[item]["cost"] + _animal_remaining(
                 {"animal": item, "placed_day": day}, day)
@@ -6349,7 +6281,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
             # Priced exactly as the standing-pen branch prices them, so a fresh pen's dinner does
             # not outbid an existing animal's. A BUILD costs a turn before the PLACE can start, so
             # the service round needs one more turn of headroom here than it does there.
-            if SERVE_THE_ANIMAL_IT_PLACES and TPD - hour - 2 >= SERVICE_ROUND:
+            if TPD - hour - 2 >= SERVICE_ROUND:
                 price = BASE_PRICE[ANIMALS[item]["product"]]
                 later.append(("FEED", "WHEAT", MANDATORY + price))
                 later.append(("CARE", None, price))
@@ -6380,325 +6312,6 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
 # routing: cluster-first is implicit in cheapest-insertion, then 2-opt each route
 # ---------------------------------------------------------------------------------------------
 
-def _path_len(start, seq):
-    d, cur = 0, start
-    for t in seq:
-        d += dist(cur, t)
-        cur = t
-    return d
-
-
-def _two_opt(start, seq, keep_prefix=0):
-    """Standard 2-opt on an OPEN path. `keep_prefix` pins the depot stop at the front."""
-    if len(seq) - keep_prefix < 3:
-        return seq
-    best = list(seq)
-    best_len = _path_len(start, best)
-    improved = True
-    while improved:
-        improved = False
-        for i in range(keep_prefix, len(best) - 1):
-            for j in range(i + 1, len(best)):
-                cand = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
-                cl = _path_len(start, cand)
-                if cl < best_len - 1e-9:
-                    best, best_len, improved = cand, cl, True
-    return best
-
-
-def plan_routes(units, nodes, budget, depots=SHED, carry=None, supply=None):
-    """Assign nodes to units and order each unit's tour. Returns `{unit: [Node, ...]}`.
-
-    Greedy cheapest-insertion on **prize / marginal cost**, which is the standard Team Orienteering
-    heuristic, then 2-opt per route. Mandatory nodes are placed first and unconditionally, so a
-    hungry animal is never outbid by a melon.
-
-    The marginal cost of inserting node `n` between `prev` and `next` is
-    `d(prev,n) + d(n,next) - d(prev,next) + n.service`, evaluated in O(1), so the whole assignment is
-    a few hundred thousand integer operations -- run once per replan, not per turn.
-    """
-    # **Only shed cells we OWN are depots.** `_spawn_hand` ignores ownership, so hands wake on `(5,4)`,
-    # `(4,5)` and `(5,5)`, which are LOCKED until $1,000, $2,000 and $7,000 of land is bought -- and
-    # `_apply_unit_action` returns on a LOCKED tile *before* it reaches PICKUP. Treating all four as
-    # depots put three of five hands on a locked cell emitting a PICKUP that did nothing, all day.
-    depots = tuple(depots) or SHED
-    routes = {u: [] for u in range(len(units))}
-    used = {u: 0 for u in range(len(units))}
-    depot = {u: collections.Counter() for u in range(len(units))}
-    depot_at = {u: None for u in range(len(units))}
-    # **A vehicle arrives with a load.** Hands are hired through the morning and every hire forces a
-    # replan, so by mid-morning units are already carrying wheat, fertilizer and animals. Costing every
-    # item-bearing stop as a fresh shed trip sent a unit with an empty hand to an empty shed while
-    # another stood holding the feed: eight wheat carried, four hungry animals, FEED 0, herd gone.
-    held = {u: collections.Counter((carry or {}).get(u) or {}) for u in range(len(units))}
-    # **The shed's stock of a DRAWN item is a shared budget, exactly like turns.** `build_nodes`
-    # prices a PLACE per DESTINATION TILE and gates it only on `shed[a] > 0`, so one COW and three
-    # empty pens produce three nodes each worth the full $1,840. `held` and `depot` are per-unit and
-    # nothing here notices that two units have claimed the same animal. Scarcity was enforced only at
-    # execution -- first unit to a depot takes it, every later claimant's PICKUP draws nothing and
-    # walks a full round trip to a pen with no animal in it.
-    #
-    # Measured on Seb's tape, seed 11, day 3: one COW, pens at (0,3), (1,3) and (0,4) all offered
-    # from hour 1 to hour 17, two units sent. The day is exact anyway only because both wasted trips
-    # land early enough to recover from -- which is why the closed-tour marginal broke it. Costing the
-    # tour correctly ranks a phantom node last, and the tail of the day is where a fake node does the
-    # most damage.
-    #
-    # **Only the animals.** Applied to every DRAWN item this MEASURED as a day-0 regression --
-    # `feed` and `care` 4/4 -> 3/4 -- because the day-0 shed holds no wheat at dawn and every wheat
-    # arrives later by BUY_PRODUCT. A plan that refuses to book feed against a shed that is empty
-    # right now is refusing work that will be fundable by the time the unit walks there, and the
-    # bought wheat comes in bulk so no unit's draw denies another's.
-    #
-    # An animal is the opposite on both counts: it is bought one at a time, it is the input to a
-    # chain with a same-day deadline, and a second claimant on the same COW gets nothing at all.
-    # `None` means unconstrained, for the synthetic router tests that pass no shed.
-    stock = None if supply is None or not SUPPLY_LEDGER else collections.Counter(
-        {k: v for k, v in supply.items() if k in R.ANIMAL_NAMES})
-    booked = collections.Counter()
-    left = list(nodes)
-
-    def seq(u):
-        out = []
-        if depot_at[u] is not None:
-            out.append(depot_at[u])
-        out.extend(n.tile for n in routes[u])
-        return out
-
-    def delta(u, n, i):
-        """Turn cost of putting `n` at position `i` of unit `u`'s route, depot stop included."""
-        s = seq(u)
-        off = 1 if depot_at[u] is not None else 0
-        at = i + off
-        prev = s[at - 1] if at > 0 else units[u]
-        # **A tour that yields is CLOSED: the depot is its last node.** Appending it here rather than
-        # reserving turns separately is the whole difference between ordering a tour and truncating
-        # one. As a reserve it refused the insertion outright, so day 4 lost a water and the far-corner
-        # harvest at (0,1) -- which then rotted past its `max_lifespan_step` and cost a DIG on day 5.
-        # As a closing node it only makes a far last stop *dearer* than the same stop taken mid-tour,
-        # which is exactly the ordering the tape plays: work until hour 15-17, then walk in.
-        nxt = s[at] if at < len(s) else None
-        d = dist(prev, n.tile) + (dist(n.tile, nxt) - dist(prev, nxt) if nxt else 0)
-        extra = n.service
-        short = _uncovered(u, n)
-        if short:
-            if depot_at[u] is None:
-                # One shed trip per unit per day: PICKUP is unbounded in quantity, so the only cost
-                # of another pen on the round is the walk to it.
-                home = min(depots, key=lambda c: dist(c, units[u]))
-                first = s[0] if s else n.tile
-                extra += len(short) + dist(units[u], home) + dist(home, first) - dist(units[u], first)
-            else:
-                extra += sum(1 for it in short if depot[u][it] == 0)
-        return d + extra
-
-    # **TRIED and REVERTED: put the walk home in the RATIO, as `delta + homeward(after) - homeward(now)`.**
-    # It is the textbook closed-tour marginal and it is exact at every insertion position, so it
-    # should have let a far node be resequenced onto the way back rather than refused. On day 4 it
-    # did exactly that -- `water` 16/17 -> 17/17, `harvest` 13/14 -> 14/14, and the day-5 DIG on the
-    # rotted (0,1) tile disappeared. It still broke two earlier things:
-    #
-    #     d3  sell 5/5 -> 3/5      fertilizer stranded again, `pickup` 7/3, two units walking in at 23
-    #     d4  place 1/1 -> 0/1     feed and care 7/7 -> 6/7; the animal chain lost to the reordering
-    #
-    # So the ratio was not the whole defect either. The likely remainder: `budget` is `TPD - hour - 1`
-    # and only IDLE units are replanned, so a unit committed at hour 6 keeps a tour costed against a
-    # budget that no longer exists, and the closed cost it was accepted under stops being true. Any
-    # next attempt should fix the stale budget first and re-measure, not re-derive the marginal.
-
-    def _uncovered(u, n):
-        """What this node needs that the unit is not already carrying, after everything assigned so far."""
-        return {it: c - held[u][it] for it, c in n.needs.items() if c > held[u][it]}
-
-    def claim(u, n):
-        """The animals this node's PLACE ops must draw, after what the unit already carries.
-
-        **PLACE only, never BUILD.** `BUILD` is in `DRAWN` and carries the animal name too, so
-        counting it as a claim MEASURED as day 0 `build_pasture` 8/8 -> 4/8: pens are built ahead of
-        the animals that will fill them -- the tape builds eight on day 0 having bought four -- and a
-        build does not consume the animal, it only says which one the pen is for.
-        """
-        want = collections.Counter(i for o, i in n.ops if o == "PLACE" and i in R.ANIMAL_NAMES)
-        return {it: c - held[u][it] for it, c in want.items() if c > held[u][it]}
-
-    def in_stock(u, n):
-        """Is the animal this node would place actually left, after earlier units' commitments?"""
-        if stock is None:
-            return True
-        return all(booked[it] + q <= stock[it] for it, q in claim(u, n).items())
-
-    def homeward(u, n=None, i=None):
-        """Turns reserved to walk home, if this tour would end holding something sellable.
-
-        See `RETURN_LEG`. Zero unless the route yields, and measured from the LAST tile rather than
-        from every yielding one, because one shed trip empties the whole hand.
-
-        **TRIED and REVERTED: close the tour instead, by making the depot `delta`'s final node.** It
-        is the better-shaped idea -- it makes a far last stop dearer than the same stop taken
-        mid-tour, rather than refusing it -- and on day 4 it worked exactly as intended, taking
-        `water` to 17/17 and `harvest` to 14/14 and rescuing the far-corner tile at (0,1) whose
-        expiry costs a DIG on day 5. But it let units range further out on DAY 3, which was exact:
-        `sell` went 5/5 -> 3/5, u0 and u2 both still walking home at hours 21-23, fertilizer reaching
-        the shed one unit at a time on hours 6, 14 and 18 against his two big drops.
-        Day 3 comes before day 4. The reserve stays until something does both.
-        """
-        if not RETURN_LEG:
-            return 0
-        route = list(routes[u])
-        if n is not None:
-            route.insert(i, n)
-        if not route or not any(o in YIELDING for m in route for o, _i in m.ops):
-            return 0
-        return min(dist(route[-1].tile, d) for d in depots) + HOMEWARD_DROP_TURNS
-
-    def cdelta(u, n, i):
-        """Marginal cost of the insertion with the walk home priced in. See `CLOSED_TOUR`.
-
-        Telescoping: `used[u]` therefore always holds the cost of the CLOSED tour as it stands, so
-        acceptance is a plain `used[u] + cdelta <= budget` with no separate reserve.
-        """
-        if not CLOSED_TOUR:
-            return delta(u, n, i)
-        return delta(u, n, i) + homeward(u, n, i) - homeward(u)
-
-    def reserve(u, n, i):
-        """The return leg still charged separately, which under `CLOSED_TOUR` is already in `cdelta`."""
-        return 0 if CLOSED_TOUR else homeward(u, n, i)
-
-    def commit(u, n, i, c):
-        """Put `n` at position `i` of unit `u`, paying `c` turns and booking whatever it must draw."""
-        short = _uncovered(u, n)
-        booked.update(claim(u, n))          # before `held` is spent below
-        routes[u].insert(i, n)
-        used[u] += c
-        # Consume the load first, and only draw the remainder. `held` going down as stops are added
-        # is what stops three pens on one unit each costing a shed trip.
-        for it, qty in n.needs.items():
-            held[u][it] = max(0, held[u][it] - qty)
-        if short:
-            if depot_at[u] is None:
-                depot_at[u] = min(depots, key=lambda t: dist(t, units[u]))
-            depot[u].update(short)
-
-    # ------------------------------------------------------------------ the animal chain, kept whole
-    # **PICKUP -> PLACE -> FEED -> CARE is a chain, not four independent prizes.** It has real
-    # precedence and a same-day deadline: an animal must be in a pen before it can be fed, and fed
-    # before CARE banks anything (`pending_care_bonus` is consumed only on a day the animal is also
-    # fed). Cheapest-insertion has no representation for either, so it interleaves the chain with
-    # fungible work and fragments it across units and hours.
-    #
-    # Measured on Seb's tape, seed 11, day 0. Both sides plant 17, water 17, build 8 pastures and
-    # place 4 animals -- the schedule lands either way. The whole difference is the chain:
-    #
-    #     tape u0   B u d u L ^ L v u ^ < L ^ L v v > c ^ < c     places at 4, 6, 11, 13
-    #     ours u0   B u L < < B L ^ B < B . v > > > u ^ < < L <   places at 2, 6, and 20
-    #
-    # The tape dedicates one unit to the chain and never lets it build. Ours places two animals, wanders
-    # off to BUILD_PASTURE at hours 5, 8 and 10, returns for a pickup at 16 and places the fourth at
-    # hour 20 -- too late to feed or care it. That is the entire day-0 work gap: FEED 3/4, CARE 3/4.
-    #
-    # So the chain is assigned first, whole, to the single unit that serves it cheapest. Everything
-    # after it is order-free and still goes to plain cheapest-insertion.
-    if CHAIN_OPS:
-        chain = [n for n in left if any(o in CHAIN_OPS for o, _i in n.ops)]
-        if chain:
-            def chain_cost(u):
-                pos, total = units[u], 0
-                for n in chain:
-                    total += dist(pos, n.tile) + n.service
-                    pos = n.tile
-                return total
-
-            best_u = min(range(len(units)), key=lambda u: (chain_cost(u), used[u]))
-            for n in sorted(chain, key=lambda n: -n.prize):
-                if not in_stock(best_u, n):
-                    continue
-                spot = min(((cdelta(best_u, n, i), i) for i in range(len(routes[best_u]) + 1)),
-                           default=None)
-                if (spot is None
-                        or used[best_u] + spot[0] + reserve(best_u, n, spot[1]) > budget[best_u]):
-                    continue                  # no room today; it stays in `left` for the general pass
-                commit(best_u, n, spot[1], spot[0])
-                left.remove(n)
-
-    order = sorted(left, key=lambda n: -n.prize)
-    # Mandatory nodes are assigned in their own pass, so a hungry animal cannot be outbid on ratio by a
-    # melon that happens to be nearer. Within the pass they still order by cost.
-    # Three tiers, not two. CRITICAL goes first because inside a single pool the ranking is
-    # `prize / marginal cost`, and a 1% prize edge cannot survive an 8x difference in distance --
-    # which is exactly how a pen one day from losing its animal lost to a healthy pen next door.
-    for pool in ([n for n in order if n.critical],
-                 [n for n in order if n.mandatory and not n.critical],
-                 [n for n in order if not n.mandatory]):
-        remaining = list(pool)
-        # **Parallel insertion, least-loaded unit first.** The obvious construction -- scan every
-        # (node, unit, position) and commit the single best `prize / delta` -- minimises total walking,
-        # and total walking is the wrong objective here. Units are hired for the whole day whether they
-        # move or not, so an idle unit's turns are free and the scarce resource is per-unit TIME.
-        #
-        # On a serpentine field that distinction is decisive: appending the next tile to the unit
-        # already standing on the previous one costs delta 2, while starting an idle unit from the shed
-        # costs delta 6, so the sequential rule packs one vehicle and starves the rest. Day 0 of seed 11
-        # measured `10, 9, 2, 0, 0` across five units -- two saturated at 21 and 20 turns against a
-        # budget of 21, two given nothing -- and six of the twenty-one pinned jobs were never started.
-        #
-        # But pure round-robin -- every unit claims one node per round -- overcorrects, because it hands
-        # a job to a distant idle unit even when a loaded one is standing beside it. Measured over five
-        # seasons it converted 776 idle turns into 742 extra MOVES for no extra work at all
-        # (`moves per work op` 0.94 -> 1.26) and cost the herd 26 feeds, since a far unit now outbid the
-        # unit already at the pen.
-        #
-        # So: keep the global cheapest-insertion rule, and only force the spread when a unit reaches its
-        # fair share of the day. The cap starts at `budget / n_units` and relaxes in `n_units` steps, so
-        # walking is minimised inside each pass and no unit can eat the whole field before the others
-        # have been offered any of it. The final pass has cap == budget, so nothing is ever left unserved
-        # that the plain rule would have served.
-        n_u = max(1, len(units))
-        for step in range(1, n_u + 1):
-            cap = {u: budget[u] * step / n_u for u in range(len(units))}
-            while remaining:
-                best = None
-                for n in remaining:
-                    for u in range(len(units)):
-                        if not in_stock(u, n):
-                            continue
-                        for i in range(len(routes[u]) + 1):
-                            c = cdelta(u, n, i)
-                            if used[u] + c + reserve(u, n, i) > cap[u]:
-                                continue
-                            score = n.prize / max(1, c)
-                            if best is None or score > best[0]:
-                                best = (score, n, u, i, c)
-                if best is None:
-                    break                          # nothing more fits under this cap; relax it
-                _s, n, u, i, c = best
-                commit(u, n, i, c)
-                remaining.remove(n)
-
-    for u in routes:
-        if len(routes[u]) < 3:
-            continue
-        by_tile = {n.tile: n for n in routes[u]}
-        start = depot_at[u] if depot_at[u] is not None else units[u]
-        ordered = _two_opt(start, [n.tile for n in routes[u]])
-        new = [by_tile[t] for t in ordered]
-        cost = _path_len(start, ordered) + sum(n.service for n in new)
-        if depot_at[u] is not None:
-            cost += dist(units[u], depot_at[u]) + len(depot[u])
-        # 2-opt reorders an OPEN path, so it can shorten the walk out and still leave the tour ending
-        # further from the shed. Close the cost the same way `delta` does before comparing, or the
-        # reorder is judged on a shorter path than the unit actually walks.
-        home = (min(dist(ordered[-1], d) for d in depots)
-                if RETURN_LEG and ordered
-                and any(o in YIELDING for m in new for o, _i in m.ops) else 0)
-        if cost + home <= budget[u]:
-            routes[u] = new
-            # Under `CLOSED_TOUR` every `used[u]` already carries the walk home, so the reordered
-            # tour must be booked the same way or the next insertion is costed against a short tour.
-            used[u] = cost + home if CLOSED_TOUR else cost
-
-    return {u: dict(route=routes[u], depot=depot_at[u], draw=depot[u], cost=used[u])
-            for u in routes}
 '''
 _SOURCES['kagg.search.schedule_agent'] = r'''"""A schedule-driven agent that reads the board every turn. No emitter, no dead reckoning, no model.
 
@@ -6741,88 +6354,11 @@ import collections
 import itertools
 
 from . import cover as DP
+from . import melon_branch as _MB
 from . import q4_branch as _Q4
 from . import router as RT
 
-#: Solve the day as a COVERING problem -- cover every job the board offers -- instead of as a prize
-#: auction. See `kagg/search/cover.py` for the argument; the short version is that we know the board
-#: in advance, we know every job it will want, and Seb's tape proves a day of it is coverable, so
-#: "which job is worth most" is a question the day does not actually pose.
-#:
-#: `router.build_nodes` still decides WHICH jobs exist -- that half is derived from the reference's
-#: own mechanics and is worth keeping. What is dropped is `prize`, `MANDATORY` and `CRITICAL`: the
-#: ranking, which is the half that measured wrong (-$34,816 over 12 seasons when a local search got
-#: BETTER at it, `data/logs/planner_ab3.log`).
-#:
-#: Off restores `router.plan_routes` exactly.
-COVER_PLANNER = True
 
-
-#: Also treat a tile ONE dry day from becoming a WEED as at-risk, the way a pen one day from losing
-#: its animal already is.
-#:
-#: It is the same rule twice. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:786`)
-#: and `consecutive_unwatered >= 2` turns the tile into a WEED (line 753); in both cases missing ONE
-#: day is free and missing the second is total. Measured on seed 11 with weeds switched OFF -- so
-#: every WEED on the board is a crop we let die of thirst, not a spawn -- ours finished with 7
-#: against the tape's 0.
-#:
-#: **This is NOT the arm that measured -$2,804.** That one promoted every thirsty tile into the same
-#: mandatory pass as fourteen pens, and the note on it says exactly why it failed: "a pass holding
-#: fourteen pens AND every thirsty tile cannot triage". Here the animals keep their own pass and run
-#: first; thirsty tiles get a second one, ahead of ordinary work but behind every pen.
-#:
-#: **ON. The season-total A/B said otherwise and it was the wrong instrument -- see below.**
-#:
-#: Days 16-18 in isolation, seed 11, with WHEAT and FERTILIZER stocked so supply cannot be the
-#: constraint (`data/logs/d16_18_water_ab.log`). This asks only what DIED:
-#:
-#:     arm                     animals lost    tiles WEEDED
-#:     WATER_AT_RISK off                  0               4
-#:     WATER_AT_RISK on                   0               2
-#:     Seb, same three days               0               1
-#:
-#: Day 16 alone goes 3 weeded to 0. And the capacity was never the issue: that day had 17 tiles that
-#: HAD to be watered, we landed 26 waters, and three of the seventeen still died. We had the turns
-#: and watered the wrong tiles, which is exactly what this flag orders.
-#:
-#: The earlier season-total 2x2 below reported the opposite. It is kept because the numbers are real,
-#: but it cannot answer this question: a 30-day WEED count folds in every tile the SCHEDULE lets get
-#: thirsty in the first place, and those swamp the handful this ordering decides. A three-day window
-#: with supply held constant isolates the ordering; a season total measures the schedule.
-#:
-#: **The residual gap to the tape is upstream of here and is a cadence.** Arriving at day 16 he has
-#: EIGHT tiles that must be watered; we have seventeen. He waters on alternate days and never builds
-#: the debt, so he is never rescuing. He is not better at rescuing -- he never gets into the position.
-#:
-#: SUPERSEDED MEASUREMENT, kept so it is not re-run: six seeds, seat 0, weeds off, 2x2 against
-#: `FEED_DAYS` (`data/logs/feed_x_risk.log`) -- WEED tiles at season end:
-#:
-#:     FEED_DAYS   water at-risk    mean $    escapes    WEEDS
-#:             2            off    96,055          3       47
-#:             2             on    96,302          4       58
-#:             4            off    94,986          0       53
-#:             4             on    98,382          0       58
-#:
-#: More weeds on BOTH rows. The money edge on the last row is ~3% on six samples, inside this
-#: project's ~15% seed variance, and does not get to override a count moving the wrong way.
-#:
-#: **And the mechanism explains it.** `router.crop_ops` offers survival water ONLY at
-#: `consecutive_unwatered >= 1`, so this arm can only ever RESCUE and never PREVENT -- and a rescue
-#: competes for turns at the worst possible moment, displacing the ordinary waters that would have
-#: stopped the next tile getting thirsty at all. The tape does not rescue because it never needs to:
-#: it waters on a fixed alternate-day cadence (d0 17, d1 0, d2 17, d3 14) that holds every tile at 0
-#: or 1 and takes zero weeds through day 7.
-#:
-#: So the real REMAINING fix for watering is a CADENCE in the schedule, upstream of this file. This
-#: flag closes the half that is reachable from the day planner.
-WATER_AT_RISK = True
-
-#: Whether the final turn of a day is budgeted as workable. See the note in `_router_acts`.
-#: Off restores `TPD - hour - 1`, which silently discarded one turn per hand per day -- 13 hands over
-#: 29 days is ~377 unit-turns a season, and every tour that ended on a tile still holding produce lost
-#: its HARVEST to it.
-LAST_TURN_IS_WORKABLE = True
 
 #: Turns remaining at or below which the walk back to the shed stops being charged. See `_solve`.
 #:
@@ -6898,30 +6434,6 @@ DELIVER_CUTOFF_TURNS = 99
 WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
 
-#: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
-#:
-#: Selling costs no unit-turns -- a SELL is a market order, not a unit action -- so what the last day
-#: can sell is decided by what sits in `private["shed"]` when it starts, and the shed is filled for
-#: free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce taken on d28 is banked overnight
-#: at zero cost and sells all through d29. Produce taken ON d29 lands in a hand and that drop comes
-#: after the final turn, so it is discarded: the season currently ends with 51 sellable units, about
-#: $1,192, in the crew's hands.
-#:
-#: So "skipping this today destroys something tonight" is literally true of a ripe tile on d28, which
-#: is why it belongs here rather than in a prize. **A prize cannot reach a solved day at all** --
-#: `cover._apply_precomputed` seats a stop by `(tile, ops)` and the prize never enters -- while
-#: `at_risk` is what `solve_day.weight(j)` reads, so it survives the re-solve.
-#:
-#: カワシギ, ours/tape: d28 harvest 27/32, d29 harvest 27/19, d29 sell 93/148. He harvests harder on
-#: d28 and spends d29 selling. We back-load +10 harvests into d23-d29 while d0-d22 are level, and we
-#: are not short of turns on d28 -- 48 idle unit-turns against his 32.
-#: **MEASURED A NULL 2026-08-15 AND LEFT OFF.** Three ways: prize, at_risk, and at_risk plus a d28
-#: re-solve. All three byte-identical on the grid. d28 is not under-prioritising anything -- its
-#: solved route already seats every job with slack, two hands idle, and only 7 ripe units remain
-#: unharvested at dusk. And the planting rows are IDENTICAL to the tape (d25 9/9, d26 9/9, d27
-#: 11/11), so his crops do not ripen earlier than ours either. Whatever gives him d28 harvest 32 to
-#: our 27 and d29 19 to our 27, it is neither ranking nor planting date.
-BANK_THE_FIELD_ON_D28 = False
 
 #: The last day whose carried load is banked overnight; d29's own drop lands after the final turn.
 LAST_FREE_DROP_DAY = 28
@@ -6937,14 +6449,14 @@ def _at_risk_tiles(tiles, day=None):
     On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
     """
     out = set()
-    banking = bool(BANK_THE_FIELD_ON_D28 and day is not None and day == LAST_FREE_DROP_DAY)
+    banking = False
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
                 continue
             if cell.get("animal") and cell.get("consecutive_unfed", 0) >= 1:
                 out.add((x, y))
-            elif (WATER_AT_RISK and cell.get("kind") == "PLANT"
+            elif (cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
                 out.add((x, y))
             elif banking and int(cell.get("yield_units", 0) or 0) > 0:
@@ -6959,13 +6471,6 @@ def _at_risk_tiles(tiles, day=None):
 #: that cannot reach another production day before day 29 is worth nothing, so every turn spent
 #: watering it is stolen from a harvest that still pays. He stops; we keep watering.
 LATE_SEASON_TRIAGE = True
-
-#: Do not clear a weed on ground we are never going to replant.
-#:
-#: `DIG` costs a turn and buys nothing unless something goes into the hole. The register records the
-#: final board as ours WEED=8 empty=72 against his WEED=42 empty=37 -- he leaves them, and the 35
-#: unit-turns we spend clearing ours are pure loss once the schedule has no plantings left.
-DIG_ONLY_IF_REPLANTING = True
 
 #: Last day of the season, so a crop needs its production day at or before this to be worth a turn.
 LAST_DAY = 29
@@ -6989,7 +6494,7 @@ def _pointless_tiles(tiles, day, plants_left):
                 continue
             kind = cell.get("kind")
             if kind == "WEED":
-                if DIG_ONLY_IF_REPLANTING and not plants_left:
+                if not plants_left:
                     out.add((x, y))
                 continue
             if kind != "PLANT" or not LATE_SEASON_TRIAGE:
@@ -7044,117 +6549,7 @@ FUND_THE_DAY_WHEN_SHORT = True
 #: actually covers 23 of the 24 hours.
 PLAN_THE_CREW_THAT_ARRIVES = True
 
-#: Whether the dawn plan credits the shed with the goods this turn's own market phase is about to
-#: buy. See the block at the `_solve` call for the mechanism and the day-0 measurement.
-PLAN_TODAYS_PURCHASES = True
-
-#: Whether a hand standing at an empty shed at hour 0 WAITS one turn for goods the day's row has
-#: already ordered, instead of discarding the draw. See the block in the tour walker.
-WAIT_FOR_THE_MORNING_DELIVERY = True
-
-#: Whether a draw the shed could not fill is re-attempted at the tour's NEXT shed stop, instead of
-#: being discarded at the stop that came up short.
-#:
-#: This is the third answer to the same problem and the only one that is not a trade. The first --
-#: delete the want -- loses the job. The second, standing at the shed until the goods land, was
-#: measured twice on 2026-08-13 and lost the d6 land parcel both times; the block in the tour walker
-#: records both arms. This one neither waits nor gives up: the hand walks on and asks again when its
-#: route puts it back at the shed anyway, which costs the one PICKUP turn and no travel at all.
-#:
-#: It is what the tape does. Day 1 of kawashigi, seed 11: four pens against a dawn shed of three
-#: wheat, so he feeds three, banks and re-buys at h18, draws again at h19 and feeds the fourth at h21.
-#: We drew three at h00, deleted the fourth want at h01, and reached the last pen at h20 with an empty
-#: hand -- `COLLECT_FERTILIZER` alone, no FEED, and no CARE either, since CARE is only legal on a pen
-#: that has been fed.
-CARRY_THE_UNFILLED_DRAW_FORWARD = True
-
-#: Whether a draw for an ANIMAL the row buys today survives an empty shed at any hour, by moving
-#: itself -- and the placement it feeds -- one stop further down the tour.
-#:
-#: The two rules above are both `hour == 0` only, which is right for wheat and wrong for a beast.
-#: An animal is bought once, for one named pen, and it lands whenever the row's order slot comes up:
-#: day 8 buys `SHEEP 1` at h05, so the shed reads `SHEEP 0` for six hours while the plan built
-#: against `PLAN_TODAYS_PURCHASES` believes it is stocked. Whichever hand reaches the shed inside
-#: that window deletes the want, and the `PLACE, FEED, CARE` behind it dies with it -- `place 0/3`,
-#: `animals 9/10`, `feed 9/10`, `care 9/10`, and one sheep sitting in the shed to the last turn.
-#:
-#: Narrower than `CARRY_THE_UNFILLED_DRAW_FORWARD` on purpose, because the all-day version of that
-#: rule was measured and is a loss (d3 `feed 4/4 -> 3/4`, d7 `7/9 -> 4/9`). The reason is contention:
-#: past dawn a short shed of WHEAT means another hand drew the ration first, so carrying the want
-#: forward does not conjure wheat, it takes a pen's feed and gives it to a later one. A bought animal
-#: has no such competition -- at h05 there is no sheep anywhere on the board, exactly one is coming,
-#: and exactly one job wants it. Deferring costs nobody anything.
-#:
-#: It moves rather than waits: standing at the shed past hour 0 was tried twice on 2026-08-13 and
-#: lost the d6 land parcel both times. The stop is re-inserted after the next piece of work, which is
-#: also what the tape does -- `h05 BUY_ANIMAL SHEEP 1`, `h06 u3 PICKUP/SHEEP`, `h09 u3 PLACE/SHEEP`.
-#: If the hand has no other work the want is dropped as before, so no hand ever idles on this.
-THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
-
-#: Whether the wheat row's money guard prices n units on the BOOK's curve rather than at n times the
-#: one price the observation publishes. See the block at the guard for the day-1 arithmetic.
-SIZE_THE_RATION_ON_THE_CURVE = True
-#: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
-#: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
-#: **A hand with an exhausted route walks to a crop that becomes a WEED tonight.**
-#:
-#: CLAUDE.md records "the day is planned ONCE, at hour 0. No replan, no urgency, no idle top-up",
-#: and that is right about REPLANNING -- nothing here re-solves the day. This is the narrowest
-#: possible exception: a hand that was going to emit PASS, and a tile that is one dry day from being
-#: destroyed. It cannot displace planned work, because it only ever runs on a turn already lost.
-#:
-#: Measured on ladder replay `93183652`, our own agent, 2026-08-15:
-#:
-#:     total PASS turns in the season                                847
-#:     PASS turns while a crop was ONE DAY from becoming a weed      773   (91%)
-#:     weed births on our farm                                        40   (26 STRAWBERRY, 14 WHEAT)
-#:     further turns spent on DIG cleaning them up                    58
-#:
-#: **Zero of the 40 came from `_spawn_weeds`**, even though the ladder runs the env default
-#: `weedSpawnChance = 0.005` -- every one was a standing crop we failed to water, turning at h00.
-#: So this is not defending against the RNG, it is not throwing away tiles we already paid to seed
-#: and plant. A WATER is one turn; the weed costs the tile, its whole remaining yield, and a DIG.
-#:
-#: The idle mass is d7-d18 (74, 69, 62, 72 turns on d8, d9, d11, d12) and nearly gone by d19, so
-#: this is a mid-game rule that runs out of fuel exactly when the crew saturates.
-THIRSTY_CROP_PULLS_AN_IDLE_HAND = False
-
 HARVEST_WHAT_YOU_STAND_ON = True
-
-#: **A passer-by does not demolish a crop that is still growing.**
-#:
-#: `HARVEST_WHAT_YOU_STAND_ON` is deliberately harvest-only -- "watering a tile someone else is
-#: routed to merely moves the turn around". True every day but one. On a one-shot crop's `max_day`
-#: the water is not a turn moved around, it is a UNIT: `crop_ops` offers WATER while
-#: `in_window = (max_day + 1) // 2 <= age <= max_day`, inclusive at the top. So a hand crossing the
-#: tile takes a harvest off a crop with a unit still coming, and the routed hand that was going to
-#: water it arrives at bare ground.
-#:
-#: kawashigi, seed 11, d4 -- wheat's max_day, sown d0, all seven tiles at 3 units at dawn. Five are
-#: routed and go WATER-then-HARVEST for 4 apiece; (3,2) at h06 and (1,4) at h14 are taken underfoot
-#: and bank 3. 26 against the tape's 28, whose earliest harvest is h08, after its watering round.
-#: The gap never closes -- the wheat ledger holds it at 2 through d5 and d6, and d7 opens holding 0
-#: against his 1, which is `feed 8/9`.
-#:
-#: The test is `any(o == "WATER" ...)` and not a day comparison, because that is exactly the
-#: question: `crop_ops` offering a water on this tile today IS "it can still grow", for every crop
-#: and every window, without this rule needing its own copy of the yield arithmetic.
-#:
-#: **This is not the withheld harvest.** Gating `_one_shot_is_finished` on `watered_today` banks the
-#: same 28 and costs $19,595 -- a deferred harvest never clears its tile, never replants, and the
-#: herd starves (d8 animals 9 -> 0). See `docs/the_last_growing_days_water_2026-08-14.md`. Here the
-#: HARVEST stays legal the instant it is legal; only the passer-by stands down, leaving the tile to
-#: the routed hand that already emits WATER then HARVEST back to back.
-UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW = True
-
-#: Whether a hand standing beside an animal it just placed, with no wheat in hand, walks back to the
-#: shed for one and returns. See the block in the tour walker for the trace and for what the tape
-#: does. OFF drops the stop, which is what leaves a first-day animal unfed.
-FETCH_THE_FEED_AND_RETURN = True
-
-#: Whether a hand crossing a tile that holds a hungry animal feeds it, out of wheat it is carrying
-#: above what the rest of its own route needs. See the block in the tour walker.
-FEED_WHAT_YOU_STAND_ON = True
 
 #: Whether a hand crossing a pen it has already fed today also CAREs it.
 #:
@@ -7174,18 +6569,6 @@ FEED_WHAT_YOU_STAND_ON = True
 #: The `d4 care 6/7` this was written for is real, but it is ONE care, and this buys it by spending
 #: nine others. A rule that fires only where the hand has slack would be a different arm.
 CARE_WHAT_YOU_STAND_ON = True
-
-#: A hand whose tour is finished walks its load to the shed instead of standing still.
-#:
-#: The only one of the four deleted return mechanisms worth having back, and the only one that
-#: cannot compete with the plan for turns: it fires on a turn whose alternative is PASS. See the
-#: long note at the point of use for the tape reading it comes from -- 91422988 d4 h15-h23, where
-#: Seb's whole crew walks home in four waves and sells 49 wheat and 6 fertilizer off the drops.
-#:
-#: The goods are not lost without it -- `_drop_inventories_to_shed` empties every hand at the
-#: rollover -- only late, and `_process_market` reads the shed, so late means unsold and then
-#: re-bought.
-WALK_THE_LOAD_HOME = True
 
 #: On the LAST day, a loaded hand abandons what is left of its route at the last hour that still
 #: reaches the shed. The runtime mirror of `cover.TRIM_HOME_DAYS`: the plan trims tails it can
@@ -7230,48 +6613,6 @@ def must_walk_home_now(day, hour, pos, held, depots):
         return False
     need = min(RT.dist(pos, t) for t in depots) + 1
     return (TPD - hour) <= need + LAST_DAY_WALK_SLACK
-
-
-#: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
-#:
-#: **Left ON, and the alternative is measured, not assumed.** It disagrees with `DUSK_FEED_TOPUP`,
-#: which counts the shed and nothing else, and that disagreement is what has d4 sell the shed bare
-#: at h19/h22/h23 and buy it straight back. Turning it OFF makes the two agree and is worse on every
-#: axis that matters: d4 `sell 41/55 -> 23/55`, d10 `feed 7/12 -> 2/12`, season money at d16
-#: $9,975 -> $9,487, and the churn does not go away -- it moves to d5-d7 and grows from 9 turns to
-#: 15. A reserve that holds back a whole day's feed stops the day selling at all.
-#:
-#: The churn is real and is netted at order assembly instead: see `NET_THE_TWO_LEGS`.
-RESERVE_COUNTS_WHEAT_IN_HANDS = True
-
-#: Whether the wheat every hungry animal needs TODAY is withheld from the market unconditionally,
-#: rather than being released against a purchase the row merely plans.
-#:
-#: The reserve it floors is `feed_days(day) * (alive + arriving) - drawn - will_buy`, and `will_buy`
-#: is the row's `buys` line -- a forecast. On `seb1326` d6 the row buys 7 wheat, so the reserve came
-#: out at `7 - 0 - 7 = 0` and the whole shed was sellable. We sold six at h00, re-ordered six at h01
-#: and filled THREE. Four wheat reached a hand, `feed 4/7`, and two cows escaped between d7 and d8
-#: (`kaggriculture.py:804` -- two consecutive unfed days and the animal is gone, pen left standing).
-#:
-#: The two claims on that wheat are not symmetrical, and that is the whole argument. A forecast that
-#: fails on the MULTI-DAY buffer costs some margin tomorrow; one that fails on today's ration costs
-#: the animal permanently, along with every unit it would have produced for the rest of the season.
-#: So the floor covers only mouths unfed right now, less the wheat the crew already carries, and
-#: leaves the rest of the buffer exactly as it was -- it must not grow into the "hold back a whole
-#: day's feed" rule that stopped the day selling at all (d2 `sell 4/5 -> 2/5`, d3 money $448 -> $95).
-#:
-#: Pinned by `tests/test_no_animal_is_ever_lost_to_starvation.py`.
-NEVER_SELL_TODAYS_RATION = True
-
-#: Never emit a SELL and a BUY_PRODUCT of the same good in the same turn; cancel the smaller leg
-#: against the larger. Both legs pay the spread, and no reserve arithmetic can be right and do that
-#: at the same time. `tests/test_we_never_sell_and_buy_the_same_good_in_one_turn.py`.
-NET_THE_TWO_LEGS = True
-
-#: Whether the dusk top-up counts wheat still in hands. It is swept into the shed at the rollover
-#: (`kaggriculture.py:812`), so at dusk it is wheat we own -- but only if the hand gets home, which
-#: is why this is re-measured alongside `WALK_THE_LOAD_HOME` rather than trusted from before it.
-TOPUP_COUNTS_HANDS = True
 
 
 def _arrivals(units, n):
@@ -7407,16 +6748,6 @@ def _hires_this_turn(state, row, day, hour, money, shed=None, prices=None):
     return n
 
 
-#: Whether the dawn plan is told about a parcel this turn's market phase is CERTAIN to buy.
-#: Off restores the pre-2026-08-11 behaviour, where the day the board grows by half is planned
-#: against the board it had before.
-PLAN_THE_LAND_THAT_ARRIVES = True
-
-#: Whether a hire that would land walled-in is held back on a day that buys the parcel unlocking it.
-#: See the hire block. OFF restores hiring the whole `hands` row at dawn regardless.
-HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS = True
-
-
 def _unwalled_landing_slots(tiles, units, want):
     """How many of the next `want` hires can be issued THIS TURN before one lands walled.
 
@@ -7443,12 +6774,6 @@ def _unwalled_landing_slots(tiles, units, want):
                    for a, b in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))):
             return n
     return int(want or 0)
-
-#: Whether the dawn plan may count the day's own `sells` row toward a parcel it cannot afford out of
-#: the standing bank. The market block already buys on `money + pending`; this makes the plan use the
-#: same test rather than a strictly more pessimistic one. See `_land_this_turn`.
-SELLS_FUND_THE_DAWN_PARCEL = True
-
 
 def _land_this_turn(sched, day, hour, unlocked, money, n_hires, prices=None):
     """The quadrant the market block below is about to buy, or None. Read by the DAWN PLAN.
@@ -7478,7 +6803,7 @@ def _land_this_turn(sched, day, hour, unlocked, money, n_hires, prices=None):
     case is deliberately NOT predicted here. On the Victor schedule that is d6 -- $432 at dawn
     against a $1,000 parcel -- and it stays unplanned, which is the conservative direction.
     """
-    if not (PLAN_THE_LAND_THAT_ARRIVES and hour == 0):
+    if hour != 0:
         return None
     owned = len(unlocked) - 1
     if owned < 0 or owned >= len(LAND_PRICES):
@@ -7512,9 +6837,8 @@ def _land_this_turn(sched, day, hour, unlocked, money, n_hires, prices=None):
     # is deliberately the row and not a guess at what the shed might yield. The row is the plan's
     # statement of what the day sells; if it does not hold, the day was already wrong.
     revenue = 0.0
-    if SELLS_FUND_THE_DAWN_PARCEL:
-        row_sells = (sched.get(day) or {}).get("sells") or {}
-        revenue = sum(float((prices or {}).get(p, 0.0)) * int(q) for p, q in row_sells.items())
+    row_sells = (sched.get(day) or {}).get("sells") or {}
+    revenue = sum(float((prices or {}).get(p, 0.0)) * int(q) for p, q in row_sells.items())
     if bank + revenue < LAND_PRICES[owned]:
         return None
     return R.LAND_ORDER[owned]
@@ -7596,8 +6920,6 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     the row says what the market is waiting for, and both are readable at dawn. See
     `cover.materialise`.
     """
-    if not COVER_PLANNER:
-        return RT.plan_routes(units, nodes, budget, depots, carry, supply=supply)
     jobs = [j for j in DP.from_nodes(nodes, tiles) if j.tile not in pointless]
     at_risk = set(at_risk)
     owed = collections.Counter({p: q for p, q in (wanted or {}).items() if q > 0})
@@ -7718,10 +7040,6 @@ def feed_days(day):
 #: This still governs the HERD top-up; the schedule's own row is handled by `BUY_THE_ROW_AT_DAWN`.
 BUY_DRIP = 1
 
-#: Whether the schedule's own WHEAT row is ordered whole at hour 0, out of the dawn bank, instead of
-#: being metered by `BUY_DRIP` like the herd's ration. See the note at the emission for the d0 trace.
-BUY_THE_ROW_AT_DAWN = True
-
 #: Most WHEAT the HERD path may buy in one turn. Separate from `BUY_DRIP` because that one also caps
 #: the schedule row (`min(owed, BUY_DRIP)`), so reusing it varies two things at once -- a sweep on it
 #: alone could not attribute its own result, and `BUY_DRIP = 99` scored 166 against a 151 baseline
@@ -7747,20 +7065,6 @@ BUY_THE_ROW_AT_DAWN = True
 #: gain is real and costs nothing earlier.
 FEED_TURN_CAP = 6
 
-#: **The shed must hold TOMORROW's feed by dusk.** Seb's dawn WHEAT equals his PEN COUNT on every
-#: day of both recorded games -- 4/4, 5/5, 6/6, 7/7, 11/11, 15/15, 18/18, 21/21. He does not achieve
-#: that by buying harder during the day; he simply never ends a day short.
-#:
-#: We do. Traced on 91422988, seed 11, day 6: we arrive at h0 with **2 wheat for 7 pens and $12**,
-#: and from h6 we are sitting on $1,402 still ordering ONE unit a turn, because `BUY_DRIP = 1` and
-#: because the daytime target `feed_days * alive - fed_today - on_hand - ordered` shrinks every time
-#: an animal is fed. The shed oscillates 0<->1 all day and never accumulates. `feed` lands 4/7.
-#:
-#: A daytime buy cannot fix that -- it is the wrong end of the day. This is an explicit end-of-day
-#: top-up to the count that will need feeding TOMORROW, taken from the schedule's own `places` row,
-#: and it is self-limiting: once the shed reaches the target the gap is <= 0 and it stops.
-DUSK_FEED_TOPUP = True
-
 #: Hour from which the dusk top-up may fire. **The LAST turn, measured, six seeds, whole season:**
 #:
 #:     h18   2 lost   $58,308      h22  16 lost   $57,407
@@ -7785,38 +7089,6 @@ DUSK_FROM_DAY = 2
 #: every time it is about to walk away, and pens sit ON depot tiles, so with no floor a unit banking
 #: one or two units at a time turns every such moment into a 1-turn DROP.
 MIN_OPPORTUNISTIC_DROP = 4
-
-#: Whether the opportunistic mid-tour DROP below runs at all. A flag rather than an edit because it
-#: was measured on final bank (-$8,292 over twelve seeds) and re-applied here without being measured
-#: again on the day-by-day trace -- so it must be switchable to be attributable.
-OPPORTUNISTIC_DROP = True
-
-#: Whether a unit standing at a depot delivers a load containing product today's SELL row still owes,
-#: ignoring the `own_route_needs_it` and `MIN_OPPORTUNISTIC_DROP` gates. A flag because the broad
-#: version of this ("drop any surplus at any shed visit") measured -$15,272 over twelve seeds, and the
-#: narrowing is the whole claim -- so it has to be switchable to stay attributable.
-#:
-#: **ON.** Measured on Seb's tape, seed 11, weeds off, at `MIN_SELL_ROW_DROP = 6`:
-#:
-#:     day 9 SELL units      10/22  ->  16/22      closer
-#:     day 10 dawn bank    1552/3104 -> 2509/3104  +$957
-#:     day-by-day cells, d0-d9        identical
-#:     day-by-day cells, season  531  ->  540      9 WORSE, first regression on d10
-#:
-#: It was nearly left OFF on the cell count. The argument for ON, which is Fable's and is right:
-#: **day 10's OFF-match is two errors cancelling.** OFF, day 9 ships 10 of 22 and leaves 12 units of
-#: backlog, which `CUMULATIVE_SELLS` re-offers, so day 10 offers 23 + 12 = 35 and coincidentally
-#: equals his 35. ON, day 9 ships 16, leaves 6, and day 10 offers 29. The match was the backlog, not
-#: the behaviour, and it dissolves the moment any earlier day is fixed -- d0-d8 still carry 4 to 15
-#: cells each. Suppressing the tape's own verified mechanism to preserve an accidental match is
-#: optimising the proxy. The earliest day the two configurations differ in substance is day 9, and
-#: there ON is strictly closer on both measures the cell counter is too coarse to score: `sell` is
-#: one differing cell whether we ship 10 or 16.
-#:
-#: Day 9 `work` also goes 89/91 -> 91/91, exact.
-#:
-#: What this does NOT fix: day 10 idle is 72 without it and 73 with it. That is a separate defect.
-DELIVER_THE_SELL_ROW = True
 
 #: How many units of the day's still-owed SELL row a load must contain before the delivery above is
 #: worth the turn. Swept on the day-by-day cells, days 0-11:
@@ -7847,9 +7119,7 @@ DELIVER_FERRY_MARGIN = 3
 
 def _trace_drop(sink, act, st, inv, shed, carried, tiles):
     """Name the first gate that refuses this drop. Pure observation; changes nothing."""
-    if not OPPORTUNISTIC_DROP:
-        gate = "flag off"
-    elif act[0] not in STEP:
+    if act[0] not in STEP:
         gate = f"not a STEP ({act[0]})"
     else:
         future_needs = collections.Counter()
@@ -7887,7 +7157,31 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
 #: Two cells out of 150, with d1 6->7 and d2 4->7 going backwards. So the early-day move diffs are
 #: NOT downstream of where the pens are, and any future "his layout is better" argument has to beat
 #: this number rather than restate the geometry.
-PEN_SPOTS = ()
+#:
+#: **That verdict expired, and the reason it expired is the point.** It measured MOVES, and moves
+#: are genuinely unchanged -- 22 Manhattan from the shed either way. What it could not measure is
+#: WHICH SPECIES ends up on which tile, because at the time `_live_ops` re-decided that itself by
+#: global species rank and ignored `pen_for` entirely; the ground could not have carried an
+#: assignment even if it had been sited correctly. With the executor reading the reservation, the
+#: ORDER these tiles are taken in is what maps the schedule's `places` row onto ground.
+#:
+#: We already reach the same six tiles by d5. We take them in a different order, so the row
+#: `['SHEEP','COW','SHEEP','COW']` lands inverted -- our sheep on `(3,4) (4,4)`, his on `(4,3)
+#: (3,3)` -- and four of six pens hold the wrong animal.
+#:
+#: Op counts are blind to it. A HARVEST on a sheep and on a cow are both `HARVEST 1`, so the grid
+#: reads `HARVEST 5/5` while one hand carries wool and the other milk. Replaying his d8 onto our
+#: board, `u2 HARVEST @ (3,4)` finds SHEEP where his finds COW, both his `PLACE MILK 6` move zero
+#: units, and the `SELL MILK 12` in that same basket -- funding his eleventh hire and ten
+#: strawberry seeds -- no-ops on an empty shed. That is a market defect with a geometric cause,
+#: which is exactly the axis the move-count measurement above cannot see.
+#:
+#: Read off both his replays, which agree tile for tile and hour for hour: this is a fixed opening,
+#: not a reaction to the board. NOT from `build_tiles`, which contradicts both (see above).
+#: Ordered, because the order is the assignment. Everything past `(4,2)` is NE ground and simply
+#: waits for `_owned`.
+PEN_SPOTS = ((4, 3), (4, 4), (3, 3), (3, 4), (2, 4), (4, 2),
+             (5, 3), (5, 4), (6, 4), (6, 3))
 
 
 #: Alex's narrowing, and the numbers say it is the right one: the damage and the benefit are on
@@ -7942,53 +7236,8 @@ PEN_NEAREST_DEPOT_FROM_DAY = 11
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
-#: Whether an order that does not fit the turn is UN-COUNTED, so it is retried, instead of being
-#: silently deleted while its bookkeeping stands.
-#:
-#: We appended freely and truncated at the end, so from day 11 every turn built 13-15 orders:
-#:
-#:     d11  n=14  {HIRE: 12, SELL: 2}      d13  n=15  {HIRE: 12, SELL: 3}
-#:     d12  n=14  {HIRE: 12, SELL: 2}      d14  n=13  {HIRE: 12, SELL: 1}
-#:
-#: Ten survived. The 2-5 lost HIREs still incremented `state["hired"]`, and every BUY_ANIMAL -- which
-#: the animal block appends LAST -- was deleted outright while `state["bought"]` and the bank were
-#: both charged for it. Both counters then read as satisfied, so neither was ever retried. The
-#: animal block's own comment is careful that "a failed order does not increment it (the `money >=`
-#: test guards that)"; truncation is a second way to fail that the guard cannot see.
-#:
-#: Measured on Seb's tape, seed 11: the schedule buys nine SHEEP across days 9-14 and we sent the env
-#: ZERO, herd stuck at the 2 we started with while nine pens stood empty and wheat we would have
-#: converted to wool piled to 63 units against his flat 19. Hires ran 2-6 short of his from day 10,
-#: which is the 23%-smaller crew and the late-season idle.
-#:
-#: HIRE is what spills, because deferring one inside a day is free -- `hires_today` is a per-DAY
-#: fibonacci counter, so 5+1+1 costs exactly the $33 that 7-at-once costs (measured, day 3). A
-#: deferred PLACE loses the day's feed and care with it, so the animal keeps the slot.
-FIT_ORDER_SLOTS = True
-
-
-#: Whether the turn's SELLs are ranked biggest-first among themselves before they are sent.
-#:
-#: `_process_market` walks slot `i` across BOTH players, so a sale in slot 1 trades only after every
-#: slot-0 sale has walked the book down -- the opponent's included. Which of our own sells goes first
-#: is therefore priced whenever the opponent is selling the same product, and we were emitting them
-#: in product-loop order, which is arbitrary with respect to size.
-#:
-#: Measured on Seb's tape, seed 11, day 5 hour 0 -- identical goods, identical eight hires:
-#:
-#:     ours  [SELL FERTILIZER 2, SELL WHEAT 17, 8x HIRE]   316 -> 925   (+663 net of $54 of hires)
-#:     tape  [SELL WHEAT 17, SELL FERTILIZER 2, 8x HIRE]   320 -> 965   (+699)
-#:
-#: $36 for putting a 2-unit sale ahead of a 17-unit one, and that is the entire day-6 dawn gap.
-#: Ranking is by `n * BASE_PRICE`, not by the live quote: the bases are what the router already plans
-#: against precisely because the ORDER they induce is stable while the quotes move.
-SELL_BIGGEST_FIRST = True
-
-
 def _order_sells(orders):
     """The same orders, with the SELLs ranked biggest-first among the slots they already occupy."""
-    if not SELL_BIGGEST_FIRST:
-        return orders
     at = [i for i, o in enumerate(orders) if o and o[0] == "SELL"]
     if len(at) < 2:
         return orders
@@ -8001,60 +7250,6 @@ def _order_sells(orders):
     for i, o in zip(at, ranked):
         out[i] = o
     return out
-
-
-#: Whether the day's WHEAT row is queued ahead of the hires, animals and seeds at hour 0.
-#: See `_wheat_row_first`.
-WHEAT_ROW_OUTRANKS_SHOPPING = True
-
-
-#: Whether the feed row outranks the day's shopping in EVERY turn, not just hour 0.
-#:
-#: `_wheat_row_first`'s own argument has nothing to do with dawn: `_process_market` walks the slots
-#: in order and `_do_buy_product` re-checks the bank per unit (`kaggriculture.py:666-673`), so a
-#: late slot is paid out of whatever the earlier ones left. That holds on every turn of every day.
-#:
-#: Day 8 of the Kawashigi tape is decided at **h01**, and the hour-0 gate meant the block that
-#: mattered was returned untouched. The row asks `WHEAT 17`; we emit
-#:
-#:     h00  SELL FERTILIZER 6, HIRE x9                        -- no wheat order at all
-#:     h01  HIRE, HIRE, BUY_SEED WHEAT 5, BUY_SEED STRAWBERRY 4, BUY_PRODUCT WHEAT 13
-#:
-#: on a $440 bank, with $144 of hires and $450 of seed -- $400 of it STRAWBERRY at $100 a unit --
-#: sitting ahead of the wheat. $594 committed against $440, so ONE wheat clears.
-#:
-#: The tape puts the feed ahead of the seed in both of its spending turns:
-#:
-#:     h00  SELL FERTILIZER 6, HIRE x5, BUY_PRODUCT WHEAT 9, BUY_SEED WHEAT 3
-#:     h05  SELL MILK 12, BUY_ANIMAL SHEEP 1, HIRE, BUY_PRODUCT WHEAT 2, BUY_SEED STRAWBERRY 4
-#:
-#: d8 totals `buy_product 5/17` and it decomposes exactly: 0 at h00 (nothing asked), 1 at h01
-#: (starved by the seed), four singles at h03-h06 -- four because `state["ordered"]` credited all
-#: thirteen QUEUED at h01, leaving `owed = 17 - 13 = 4`. Then the asking stops while money arrives
-#: all afternoon. This flag addresses the middle term only.
-#:
-#: Changes no quantity and no bank estimate -- only which slot an already-emitted order sits in.
-#:
-#: **SHIPPED FALSE: it fixes d8's wheat row completely and pays for it with two hands.**
-#:
-#:     d8            on-pen     +all-day slot
-#:     buy_product     5/17         17/17     <- exact, first time
-#:     feed            6/10          8/10
-#:     care            6/10          8/10
-#:     hands          11/11          9/11     <- the price
-#:     exact cells   467/697       452/697   (-15)
-#:     d16 money      31,816        29,383   (-2,433)
-#:
-#: With the wheat ahead of the hires, the wheat takes the money and two HIREs fail silently
-#: (`_do_hire`, `kaggriculture.py:691`). Two hands fewer for the rest of the season, and weeds
-#: appear on d8, d9, d11, d15 and d16 because nothing is left to water with.
-#:
-#: The tape gets BOTH -- 11 hands and 17 wheat -- by SPLITTING the hires: 5 at h00 alongside
-#: `BUY_PRODUCT WHEAT 9`, both funded by the `SELL FERTILIZER 6` in an earlier slot of that same
-#: turn, then 5 at h01 and 1 at h05. We hire NINE at h00 and leave the wheat to h01, so whichever
-#: of the two is put first starves the other. The slot order is not the remaining defect; the
-#: hire distribution is. Turn this on again once the hires are spread.
-WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY = True
 
 
 def _wheat_row_first(orders, hour):
@@ -8079,12 +7274,8 @@ def _wheat_row_first(orders, hour):
     `mult * fib(hires_today)` on a per-DAY counter, so the crew costs the same wherever in the turn
     it sits, and a hire in slot 5 of hour 0 still works 23 turns.
     """
-    if not WHEAT_ROW_OUTRANKS_SHOPPING:
-        return orders
     # See `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY`: the slot argument above is true on
     # every turn, and d8 is decided at h01.
-    if hour != 0 and not WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY:
-        return orders
     first_spend = next((i for i, o in enumerate(orders)
                         if o and o[0] in ("HIRE", "BUY_ANIMAL", "BUY_SEED")), None)
     if first_spend is None:
@@ -8100,8 +7291,6 @@ def _wheat_row_first(orders, hour):
 
 def _fit_slots(orders, state):
     """The turn's orders, cut to what the env will actually accept, with the losers un-counted."""
-    if not FIT_ORDER_SLOTS:
-        return orders[:ORDER_SLOTS]
     if len(orders) <= ORDER_SLOTS:
         return list(orders)
     # Drop surplus HIREs from the LAST one backwards: slot order is load-bearing for everything else
@@ -8205,24 +7394,6 @@ URGENT_OPS = ()
 #: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
 ANIMAL_OVER_HIRE = True
 
-#: Whether the row-driven wheat order stands down on a turn that is also buying land. BUY_LAND sits
-#: in an earlier order slot and takes the bank with it, so the ration behind it fills nothing while
-#: still counting against the row. See the block in the market phase.
-SKIP_THE_RATION_ON_A_LAND_TURN = True
-
-#: Whether the dusk feed top-up is capped by what the day's `buys` row still owes. A day with no
-#: `buys` row is unaffected -- there the top-up formula is the only rule there is.
-TOPUP_STAYS_INSIDE_THE_ROW = True
-
-#: Whether the schedule's `seeds` row is a FLOOR on what is offered, independent of how much ground
-#: today can actually plant. See the block in the market phase. Applies to the emission only; the
-#: reservation `seed_bill` stays pin-derived, which is what keeps d0's livestock intact.
-SEED_ROW_IS_A_FLOOR = True
-
-#: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
-#: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
-SEED_BEFORE_LIVESTOCK = True
-
 #: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
 #: already is. See the note above the seed bill for the day-6 measurement.
 SELLS_FUND_THE_TURN = True
@@ -8267,24 +7438,6 @@ STEAL_FROM_DAY_MARGIN = 4
 #: wide enough to cover a late harvest.
 SELL_CARRY_DAYS = 3
 
-#: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
-SHED_CAPACITY = 100
-
-#: Whether a sale may exceed the schedule's row purely to keep room for tonight's dusk drop.
-#:
-#: `_drop_inventories_to_shed` empties every hand into the shed at the rollover and DISCARDS whatever
-#: does not fit -- `del inv[item]` runs whether or not `take` covered the stack, silently. Measured on
-#: Seb's tape, seed 11, weeds off, before this flag: **101 units destroyed across 15 days**, peaking
-#: at 22 on day 24.
-#:
-#: This is deliberately NOT the parked `shed_dusk` arm and must not be merged with it. That one sells
-#: down to a target EVERY day and costs $5,471 of final bank (+5,533 -> +62) to tidy a stock curve
-#: that was never the problem: every unit of milk is sold in the end, at $243.9 against the tape's
-#: $240.0 while moving 30% more volume. Holding stock for a better price is a strategy worth keeping.
-#: Losing it off the back of the shed is not. This releases stock ONLY when the shed physically
-#: cannot take what the hands are already holding, and only from genuine surplus -- stock no
-#: remaining row will ask for -- so the trading behaviour is untouched on every other day.
-SELL_TO_MAKE_ROOM = True
 
 LAND_PRICES = R.LAND_PRICES
 
@@ -8422,39 +7575,8 @@ def _nearest_ground(order, tiles, taken, unlocked):
     return best
 
 
-#: **A bare pen takes the animal that is about to run out of days to bank its care bonus.**
-#:
-#: An animal's yield on its production day is `min(max_held, 1 + pending_care_bonus)`
-#: (`kaggriculture.py:814`), and the bonus is one per day the pen was fed AND cared, banked at each
-#: rollover. The window is relative to placement -- `days_since_first = next_day - placed_day -
-#: first_yield_day` (`:809`) -- so the days available to fill the cap is a constant per species:
-#:
-#:     GOOSE   first yield 4, cap 4   ->  slack 0, every day load-bearing
-#:     SHEEP   first yield 6, cap 6   ->  slack 0, every day load-bearing
-#:     COW     first yield 8, cap 6   ->  slack 2, it can miss two days and still milk six
-#:
-#: `_live_ops` chose by `next(... for a in R.ANIMAL_NAMES ...)`, and `ANIMAL_NAMES` is
-#: `["GOOSE", "COW", "SHEEP"]` -- so a unit holding cows and sheep places every COW first. COW and
-#: SHEEP are the only two sharing a structure, so this ordering decides nothing else.
-#:
-#: Day 0 on the kawashigi board buys COW 2 + SHEEP 2 and one hand does all four pens; it has turns
-#: for two FEED/CARE pairs. It placed `h07 COW, h12 COW, h17 SHEEP, h20 SHEEP` and served the cows,
-#: whose d8 milk the schedule feeds on d1-d6 anyway. Both sheep banked four bonus days instead of
-#: five and sheared `1 + 4 = 5`, so the d6 row's `WOOL 12` shipped as 10 -- `sell 15/17`.
-#:
-#: This is the site that BINDS the species. The pin already names one per pen
-#: (`_refresh_pins` writes `("BUILD", animal, cost)`) and the router chains a `("PLACE", item, ...)`
-#: off it (`router.py:1358`), but the route is a visit ORDER and `_live_ops` re-derives the work
-#: from the live board at the stop, so the plan's answer is discarded here. Four plan-time fixes --
-#: the pin order, the PLACE prize, the router's standing-pen branch, and `want_animals` -- were each
-#: measured byte-identical for exactly that reason.
-PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK = True
-
-
 def _place_order():
     """Animals in the order a bare pen should take them: least slack first, `ANIMAL_NAMES` on ties."""
-    if not PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK:
-        return list(R.ANIMAL_NAMES)
     return sorted(R.ANIMAL_NAMES,
                   key=lambda a: R.ANIMALS[a]["first_yield_day"] - R.ANIMALS[a]["max_held"])
 
@@ -8469,7 +7591,7 @@ def _emit(op, item):
     return [op]
 
 
-def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
+def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0, pen_for=None):
     """The ops still worth doing at `tile`, **re-derived from the live board every turn**.
 
     This is the whole trick to committing to a tour without going back to predicting state. The route
@@ -8486,6 +7608,19 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         if cell is not None:
             return []
         if op == "PLANT":
+            # **A plant needs a turn left to water it, or it is a weed by dawn.** A new plant
+            # starts at `consecutive_unwatered = 1` (`reference:222`, "planting day counts as
+            # unwatered"), the dusk rollover adds one (`:781`) and `>= 2` turns the tile to WEED
+            # (`:783`). WATER is a separate turn and needs `kind == "PLANT"`, so it can only come
+            # AFTER the plant and only on the same day -- there is no watering the ground first.
+            #
+            # On the last turn of the day that water cannot exist, for any unit, on any route. So
+            # the plant is not a gamble that failed, it is a seed spent to create a weed, and the
+            # ground is then blocked for the season because PLANT needs EMPTY. Measured seed 11
+            # melon arm d6: `u4 PLANT/MELON` at h23 on (8,4) with 8 seeds in store, and the day
+            # ends `crop_MELON 12 weed 2` against the tape's `14` and `1`. One action, two cells.
+            if hour >= TPD - 1:
+                return []
             return [("PLANT", item)] if seeds.get(item, 0) > 0 else []
         return [("BUILD", item)]
     if not isinstance(cell, dict):
@@ -8497,7 +7632,33 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
     elif "animal" in cell:
         ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
     elif kind in ("PASTURE", "COOP"):
-        ops = next(([("PLACE", a, 0)] for a in _place_order()
+        # **The pen takes the animal the schedule ordered for it.** `_refresh_pins` reads the row's
+        # ordered `places` -- d0 is `['SHEEP','COW','SHEEP','COW']` -- and reserves a tile per entry
+        # in `pen_for`. `router.build_nodes` has honoured that reservation since `PEN_KEEPS_ITS_ANIMAL`;
+        # the executor did not, and re-decided by `_place_order()`, a global species rank that never
+        # sees the row. SHEEP outranks COW there, so a hand holding both placed sheep every time and
+        # the row's alternation was lost: we laid `SHEEP,SHEEP,COW,COW` against the tape's
+        # `SHEEP,COW,SHEEP,COW`.
+        #
+        # Same six animals, same counts, different TILES -- and the tiles are what the season reads:
+        #
+        #     ours   SHEEP (2,4) (3,4)   COW (4,4) (4,3) (3,3) (4,2)
+        #     tape   SHEEP (4,3) (3,3)   COW (4,4) (3,4) (2,4) (4,2)
+        #
+        # Produce is harvested into the HAND, not the shed, and only a shed-adjacent DROP or
+        # `PLACE item n` banks it (`reference:394`). His milking cows sit along the shed row so two
+        # hands PLACE 6 milk each on d8 h5 and one `SELL MILK 12` clears it in the same turn; ours
+        # run away from the shed and the same 12 units split into h5 and h9. At d6 the same swap put
+        # wool in his hand and milk in ours, and the sell that funded his BUY_LAND no-oped for us.
+        #
+        # A preference, never a lock -- same rule as `build_nodes`. A pen with no reservation, or one
+        # this hand cannot fill, falls through to `_place_order()` untouched, because a lock is what
+        # left a SHEEP idle in the shed for three days.
+        order = _place_order()
+        want = (pen_for or {}).get(tile)
+        if want in order:
+            order = [want] + [a for a in order if a != want]
+        ops = next(([("PLACE", a, 0)] for a in order
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
         # A DIG clears ground for a planting that must happen on a LATER day, so on the last day
@@ -8525,16 +7686,6 @@ def _eta_along(start, route):
             out.setdefault(n.tile, t)
         pos = n.tile
     return out
-
-
-#: **Seed rows are offered in the order the day's own plan needs them.** See `_seed_need_order`.
-SEED_ROWS_FOLLOW_THE_PLAN = True
-
-#: **A committed PLANT stop reached before its seed is bought goes to the back of the tour.**
-#: Ordering the seed rows by need (above) can only decide which crop is bought FIRST; it cannot
-#: conjure the bank to buy them all at dawn, and the crop that loses the ordering is bought out of
-#: the day's own sale proceeds hours later. See the block in `_router_acts` that reads this.
-HOLD_A_PLANT_STOP_UNTIL_ITS_SEED_ARRIVES = True
 
 
 def _seed_need_order(units, routes):
@@ -8608,12 +7759,6 @@ def _claimed_tiles(units, routes, idle, margin):
     return busy
 
 
-#: **A shed-access cell is plantable on any day the schedule owes no pen.** See the block in
-#: `_refresh_pins` that reads this. `router.field_order` reserves those four cells permanently; this
-#: releases them for the days between one pen and the next.
-PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
-
-
 #: **Dig a weed when the day's own planting row cannot find ground.**
 #:
 #: OFF is the behaviour before 2026-08-12: `router.crop_ops` gates a weed's DIG on
@@ -8627,68 +7772,6 @@ PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 #: `plantable` rule is otherwise correct and was itself a fix: ungated, digs measured `dig 5/0` on
 #: d5 against a tape that digs nothing all season, plus strays on d12-d14.
 DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
-
-
-#: **A pen is reserved for a placement the schedule still owes, not for the Nth entry in a list.**
-#:
-#: `_refresh_pins` labelled a pen `wanted[have]`, where `wanted` is the cumulative `places` rows and
-#: `have` is the number of pens that exist. Those are different quantities and the schedule does not
-#: align them day by day -- d6 builds two pens and places nothing, d7 places three animals and builds
-#: two pens -- so through d7 it wants 10 pens against 9 placements, the index runs off the end of the
-#: list, and the loop takes its hardcoded `"COW"` default. The label then outlives the pin by design,
-#: so a pen mislabelled on the day its ground was chosen stays mislabelled.
-#:
-#: Measured on the kawashigi board, seed 11, d7 dawn. The row is `places = [SHEEP, COW, COW]` and
-#: `animals_bought = {COW: 2, SHEEP: 1}`; all three fill, `buy_animal 3/3`:
-#:
-#:     pen_for      {(5,4): COW, (6,4): COW, (6,3): COW, (5,2): COW}
-#:     nodes        four PLACE COW, no PLACE SHEEP anywhere
-#:     crew.cover   supply COW 2 -> keeps (5,4) (6,4), drops (6,3) (5,2)
-#:
-#: Two cows go in, the sheep is never picked up by anybody and sits in the shed until dusk:
-#: `place 2/3`, `animals 8/9`, and `feed 6/9` after it, since an animal in the shed cannot be fed.
-#:
-#: What the pens should be reserved for is on the board already: the cumulative `places` rows minus
-#: the animals standing in pens. At that moment that is `SHEEP 1, COW 2` -- exactly the shed. So the
-#: outstanding row is spent over the reserved-but-empty pens in siting order, nearest ground first,
-#: which is the same rule the siting itself uses.
-#:
-#: This is NOT the value ranking `router.py` rejected at -$5,676. That scored each species by
-#: `cost + remaining` and let the better one win a tie, which reallocates pastures the schedule never
-#: asked to reallocate. This ranks nothing and prefers nothing: it reads the schedule's own ordered
-#: rows and subtracts what the board has already realised.
-PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING = True
-
-
-#: **Sowing keeps back the ground the pens still to come will need.**
-#:
-#: Pens and crops draw from the same pool: `_next_ground(order, tiles, taken)` returns the first
-#: square in `field_order` that is neither built on nor pinned, and `field_order` is sorted by
-#: distance from the shed. Sowing runs after the BUILD loop in the same call, so day 0 takes the
-#: whole inner ring for crops and the pens the schedule builds on d2 and d4 get whatever is left.
-#:
-#: Read off Kawashigi's raw replay (seat 0 -- `farms[1]` of our own run is Yusuke Hayashi, not him):
-#:
-#:     d2  KAWASHIGI  pens 4  crops 19  free 2  ->  (4,2)d2  (2,4)d2
-#:         OURS       pens 4  crops 19  free 2  ->  (1,0)d7  (0,0)d8
-#:     d4  KAWASHIGI  pens 5  crops 19  free 1  ->  (4,2)d2     5th pen on (2,4), distance 2
-#:         OURS       pens 4  crops 19  free 1                  5th pen on (0,0), distance 8
-#:
-#: Same pen count, same crop count, same number of free squares, and the two day-0 pen blocks have
-#: the same Manhattan sum. The ONLY difference is which two squares stay open. He sows outward and
-#: keeps the inner ring; we sow the inner ring and keep the corner, so our d2 and d4 pens land at
-#: distance 7 and 8. A FEED is a shed round trip, so those two cost 14 and 16 turns of walking
-#: before any work, and d7 reads `feed 6/9` with 48 idle turns.
-#:
-#: **The horizon is the next land purchase, not the season.** Reserving for every pen the schedule
-#: ever builds would hold ten squares out of twenty-one on day 0 and push the whole planting to the
-#: rim. A parcel reopens near ground, so only the pens that have to fit on ground we already own are
-#: the ones sowing owes anything to -- d2 and d4 here, which is two, which is exactly what he keeps.
-#:
-#: A reserved square is a preference and never a loss: if sowing runs out of ordinary ground it takes
-#: the reserved squares rather than leave a planting unsown, because a crop in the ground today beats
-#: a pen sited well in two days.
-PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL = True
 
 
 def _pens_due_before_more_land(sched, day):
@@ -8770,26 +7853,54 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # See `PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING`. `pen_for` is insertion-ordered
     # and pens are sited nearest-ground-first, so spending the outstanding row over its existing
     # keys hands the earliest placements to the closest pens -- the siting rule, unchanged.
-    todo, took = [], 0
-    if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
-        todo = _outstanding_places(sched, day, tiles)
-        for t in list(pen_for):
-            if took >= len(todo):
-                break
-            a = todo[took]
-            took += 1
-            pen_for[t] = a
-            # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
-            # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
-            # disagreeing about the same tile.
-            if t in pins and pins[t][0] == "BUILD":
-                pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
-    while have < want_pens:
-        if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
-            a = todo[took] if took < len(todo) else "COW"
+    todo = _outstanding_places(sched, day, tiles)
+    # **A reservation is sticky while its species is still owed.** Re-labelling every tile from the
+    # outstanding row each call re-derives the whole map from whatever has been placed so far, so a
+    # hand that reaches its pens out of siting order silently rewrites the ones behind it.
+    #
+    # Measured on d0. The row is `['SHEEP','COW','SHEEP','COW']` and `PEN_SPOTS` sites
+    # `(4,3) (4,4) (3,3) (3,4)`, giving SHEEP COW SHEEP COW correctly at hour 0. One unit carries
+    # all four animals and walks `(3,4) (4,4) (4,3) (3,3)` -- the fourth pen first. Its COW lands on
+    # `(3,4)`, `_outstanding_places` drops a COW from the row, and the next refresh re-labels the
+    # three survivors from `[SHEEP, SHEEP, COW]` in insertion order: `(4,4)` flips COW -> SHEEP and
+    # `(3,3)` flips SHEEP -> COW. Two of six pens hold the wrong animal because of a walk order.
+    #
+    # Sticky keeps what the ground was chosen for and spends the row only on tiles that have no
+    # claim yet. The siting rule above is untouched, and a reservation whose species is no longer
+    # owed still falls through to be re-labelled -- that is what `PENS_ARE_RESERVED_FOR_THE_
+    # PLACEMENTS_STILL_OUTSTANDING` is for, and it is the case that matters when a placement is
+    # dropped rather than merely reordered.
+    pool = collections.Counter(todo)
+    sticky = {}
+    for t in list(pen_for):
+        a = pen_for[t]
+        if pool[a] > 0:
+            pool[a] -= 1
+            sticky[t] = a
+    #: The row's leftovers, still in row order, for the pens nobody has claimed.
+    spare, left = [], collections.Counter(pool)
+    for a in todo:
+        if left[a] > 0:
+            left[a] -= 1
+            spare.append(a)
+    took = 0
+    for t in list(pen_for):
+        if t in sticky:
+            a = sticky[t]
+        elif took < len(spare):
+            a = spare[took]
             took += 1
         else:
-            a = wanted[have] if have < len(wanted) else "COW"
+            break
+        pen_for[t] = a
+        # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
+        # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
+        # disagreeing about the same tile.
+        if t in pins and pins[t][0] == "BUILD":
+            pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
+    while have < want_pens:
+        a = spare[took] if took < len(spare) else "COW"
+        took += 1
         # A pen ON a shed-access cell runs its whole daily loop -- draw feed, feed, care, collect,
         # harvest -- without a single move, so those four cells are worth more than any field tile.
         spot = next((tuple(c) for c in PEN_SPOTS
@@ -8837,7 +7948,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # go while (4,5) sits empty. The schedule builds 15 pens; twelve are standing by d8 and the next
     # is **d21**. `plant 9/11`, and `water 38/41` because each of those plantings owes a water.
     plant_order = order
-    if PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED and have >= want_pens:
+    if have >= want_pens:
         plant_order = list(order) + [c for c in R.shed_access_tiles() if _owned(c, unlocked)]
     # **Smallest outstanding ask first.** `want` is CUMULATIVE and a Counter iterates in insertion
     # order, so WHEAT -- first seen on d0, and standing at 139 for the season -- claimed every empty
@@ -8856,13 +7967,12 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # See `PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL`. Held nearest-first,
     # because that is the ground a pen is worth more on and the ground sowing is about to take.
     sow_order = plant_order
-    if PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL:
-        owed_later = _pens_due_before_more_land(sched, day)
-        if owed_later > 0:
-            free_now = [t for t in plant_order
-                        if t not in taken and tiles[t[1]][t[0]] is None]
-            held = set(free_now[:owed_later])
-            sow_order = [t for t in plant_order if t not in held]
+    owed_later = _pens_due_before_more_land(sched, day)
+    if owed_later > 0:
+        free_now = [t for t in plant_order
+                    if t not in taken and tiles[t[1]][t[0]] is None]
+        held = set(free_now[:owed_later])
+        sow_order = [t for t in plant_order if t not in held]
 
     for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
         qty = want[crop]
@@ -8909,7 +8019,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # here is the index they will occupy in `farm["hands"]` -- so the route built for phantom k is
     # already waiting for the real unit k when it appears an hour later.
     plan_units = list(units) + [tuple(p) for p in arriving]
-    budget = [max(0, TPD - hour - (0 if LAST_TURN_IS_WORKABLE else 1))] * len(plan_units)
+    budget = [max(0, TPD - hour)] * len(plan_units)
     # A hand bought in THIS turn's market phase cannot act in this turn's unit phase -- the unit
     # phase already ran. It works from `hour + 1`, so it is one turn poorer than everyone else.
     for k in range(len(units), len(plan_units)):
@@ -8970,7 +8080,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         _bought_today.update(i for i, q in (sched.get(day, {}).get(_row) or {}).items() if int(q) > 0)
 
     plan_supply = shed
-    if PLAN_TODAYS_PURCHASES and hour == 0:
+    if hour == 0:
         plan_supply = collections.Counter(shed)
         for row_name in ("buys", "animals_bought"):
             for item, qty in (sched.get(day, {}).get(row_name) or {}).items():
@@ -9188,8 +8298,6 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             just sets `cared_today` (`kaggriculture.py:511-517`) -- against one extra unit of
             product on the next production day.
             """
-            if not FEED_WHAT_YOU_STAND_ON:
-                return None
             here = tiles[pos[1]][pos[0]]
             if not (isinstance(here, dict) and "animal" in here):
                 # **A ripe crop underfoot is the same defect as a hungry pen underfoot**, and this
@@ -9216,8 +8324,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                                   tile=tuple(pos))
                 # See `UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW`. A water still on offer means
                 # the tile has a unit left in it, and this hand is forbidden to water.
-                if (UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW
-                        and any(o == "WATER" for o, _a, _v in ops)):
+                if any(o == "WATER" for o, _a, _v in ops):
                     return None
                 if any(o == "HARVEST" for o, _a, _v in ops):
                     cared_this_turn.add(tuple(pos))
@@ -9352,7 +8459,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         #
                         # Hour 0 stays, because it is the one turn where an empty shed is certain to
                         # be a delivery not yet landed rather than a shortfall.
-                        if WAIT_FOR_THE_MORNING_DELIVERY and hour == 0 and item in _bought_today:
+                        if hour == 0 and item in _bought_today:
                             break
                         # **An animal is not a contested draw.** See
                         # `THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT`. The two rules above
@@ -9364,8 +8471,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # hand keeps working and asks again when its own route puts it back at the
                         # shed. Only when there IS other work -- a hand with nothing else would be
                         # standing at the shed, which is the arm that lost the d6 land parcel twice.
-                        if (THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT
-                                and item in R.ANIMAL_NAMES and item in _bought_today
+                        if (item in R.ANIMAL_NAMES and item in _bought_today
                                 and node.tile not in deferred):
                             tail = [n for n in st["route"][1:]
                                     if getattr(n, "needs", None) and n.needs.get(item, 0) > 0]
@@ -9382,8 +8488,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                     node.pick[item] -= take
                     if node.pick[item] <= 0:
                         del node.pick[item]
-                    elif (CARRY_THE_UNFILLED_DRAW_FORWARD and hour == 0
-                          and item in _bought_today):
+                    elif hour == 0 and item in _bought_today:
                         # **The other half of the morning delivery.** See
                         # `CARRY_THE_UNFILLED_DRAW_FORWARD`. `WAIT_FOR_THE_MORNING_DELIVERY` covers a
                         # draw that gets NOTHING at hour 0 -- but a draw that gets SOME of what it
@@ -9455,7 +8560,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 act = [m]
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]
-            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price)
+            ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price,
+                            hour=hour, pen_for=state.get("pen_for") or {})
             if not ops:
                 # **Go back for the feed rather than abandon the animal you just placed.**
                 # `SERVE_THE_ANIMAL_IT_PLACES` hangs the FEED and CARE off the placement node, and
@@ -9477,7 +8583,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 #
                 # Costed, not assumed: the round trip is the walk to the shed, the walk to the pen,
                 # the PICKUP and the FEED, and it is only taken if that many turns are actually left.
-                if (FETCH_THE_FEED_AND_RETURN and isinstance(cell_here, dict)
+                if (isinstance(cell_here, dict)
                         and "animal" in cell_here and not cell_here.get("fed_today")
                         and inv.get("WHEAT", 0) <= 0 and shed.get("WHEAT", 0) > 0):
                     def _md(a, b):
@@ -9513,7 +8619,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 # (4,9) has a MELON stop behind it at (4,8) that it does go on to plant; blocking
                 # the hand there would trade one planting for another. `deferred` caps it at one
                 # rotation per stop per turn.
-                if HOLD_A_PLANT_STOP_UNTIL_ITS_SEED_ARRIVES and not isinstance(cell_here, dict):
+                if not isinstance(cell_here, dict):
                     pin = pins.get(node.tile)
                     if pin and pin[0] == "PLANT" and seeds.get(pin[1], 0) <= 0:
                         crop = pin[1]
@@ -9539,97 +8645,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 pins.pop(node.tile, None)
             break
 
-        # ----------------------------------------------------- the four mechanisms that used to be here
-        # DELETED, and this is the point of the rebuild rather than a side effect of it. There were
-        # four ways produce reached the shed, and not one of them was a plan:
-        #
-        #   the deliver ferry        divert a WALKING unit home if it had slack
-        #   the opportunistic drop   dump the load on any incidental depot visit
-        #   DELIVER_THE_SELL_ROW     dump it if the row still wanted any of it
-        #   the return leg           walk home once the tour had run out
-        #
-        # Every one fired off whatever tile a unit happened to be standing on, none could act before
-        # the goods existed, and between them they carried day 6's wool from h10 to h19 while the
-        # bank sat on $20. `cover.materialise` now schedules the shed trip as a STOP -- before the
-        # jobs that need a draw, after the harvest that fills the hand, and at the end of the tour --
-        # so the executor above simply walks it.
-        #
-        # `DELIVER_THE_SELL_ROW` is also the exact defect that cost day 4 every one of its feeds. It
-        # tested only "does the row still want this", never "does my own route still need it", and
-        # its comment gave a reason -- DROP is all-or-nothing, so a mixed load cannot shed its wool
-        # without its wheat -- that is correct right up until WHEAT is itself the thing being sold.
-        # Day 4 sells `WHEAT: 28`, so eight wheat drawn for eight pens read as $200 of goods the
-        # market was waiting for: PICKUP 2, DROP 12, FEED 0, CARE 0, and eight animals unfed. The
-        # surplus rule that replaces it lives in `cover.materialise`, where the route is known.
-        #
-        # `tests/test_the_whole_day_is_planned_including_the_drop.py` pins both halves.
-        #
-        # ------------------------------------------------------------------ the return leg, restored
-        # **The fourth one above comes back, and only the fourth one.** The other three fired off
-        # whatever tile a unit stood on and competed with the plan for turns. This one fires only
-        # when the plan has nothing left to say: the tour is finished, the hand is full, and the
-        # alternative on this exact turn is PASS. It cannot take a turn from a job because there is
-        # no job left to take it from.
-        #
-        # It is the back half of the tape's day. 91422988 d4 h15-h23 is Seb's entire crew turning
-        # round and walking to (4,4) -- u0 spends eight consecutive turns carrying twelve wheat and
-        # doing nothing else -- arriving in four waves that DROP and sell 5, 12, 12 and 20 wheat plus
-        # 6 fertilizer, which is the schedule row for the day to the unit. Ours, same hours: u1 and
-        # u5 standing at (1,1) and (2,0) holding eight wheat each from h19 to dusk while the market
-        # bought 6 wheat at h18, 6 at h21 and 6 at h23 against a shed the harvest never reached.
-        #
-        # `cover.plan` declines the closing stop on five of six tours that day, and is right to: the
-        # trip costs 7 turns and 5 are spare, and `_drop_inventories_to_shed` (`kaggriculture.py:812`)
-        # empties every hand at the rollover regardless. Nothing is LOST by declining it. It is only
-        # late -- and late is the entire difference, because `_process_market` reads the shed, so a
-        # load that lands at the rollover is a load the day could not sell and then paid to replace.
-        #
-        # Walking five of the six steps and not arriving is worth nothing today, but it is worth
-        # nothing either way; the unit was passing. On the days it does arrive it is worth the sell.
-        # **A hand with nothing left to do walks to the crop that dies tonight.**
-        # See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`. Placed after `WALK_THE_LOAD_HOME` deliberately:
-        # carrying a load to the shed is worth a sale today, and this is worth a tile tomorrow, so
-        # the load wins the tie. Both only ever fire on a hand that was already passing.
-        if THIRSTY_CROP_PULLS_AN_IDLE_HAND and act == ["PASS"]:
-            best = None
-            for _y, _r in enumerate(tiles):
-                for _x, _c in enumerate(_r):
-                    if not (isinstance(_c, dict) and _c.get("crop")):
-                        continue
-                    # Dies at the next h00: `consecutive_unwatered` already counts yesterday, and
-                    # `_daily_refresh_plants` increments again for a day that ends unwatered, so
-                    # `>= 1 and not watered_today` is exactly "one more dry day and it is a WEED"
-                    # (`kaggriculture.py:777-782`, then the `>= 2` branch at `:771`).
-                    if _c.get("watered_today"):
-                        continue
-                    if int(_c.get("consecutive_unwatered", 0) or 0) < 1:
-                        continue
-                    _t = (_y, _x)
-                    # `working_tiles` is a hand standing on its own next stop; it will be offered
-                    # this tile's ops anyway. `thirsty_claimed` stops two idle hands converging on
-                    # one tile, which would spend two turns to save one.
-                    if _t in thirsty_claimed or _t in working_tiles:
-                        continue
-                    if not _owned(_t, unlocked):
-                        continue
-                    _d = RT.dist(pos, _t)
-                    if best is None or _d < best[0]:
-                        best = (_d, _t)
-            if best is not None:
-                _d, _t = best
-                if _d == 0:
-                    thirsty_claimed.add(_t)
-                    act = ["WATER"]
-                else:
-                    _m = _step_towards(pos, _t, unlocked)
-                    if _m is not None:
-                        # Claimed on the WALK, not on arrival: a second hand must not start the same
-                        # journey. If this one is interrupted tomorrow the claim is gone with the
-                        # turn, so nothing is stranded.
-                        thirsty_claimed.add(_t)
-                        act = [_m]
-
-        if WALK_THE_LOAD_HOME and act == ["PASS"] and any(v > 0 for v in inv.values()):
+        if act == ["PASS"] and any(v > 0 for v in inv.values()):
             if at_shed:
                 # Same clamp as the planned drop: DROP `del`s every item after taking what fits
                 # (`kaggriculture.py:333`), so a full shed DESTROYS the load rather than refusing it.
@@ -9678,56 +8694,7 @@ RESERVATION_SLIP = 0.10
 #: missing half, and it is Alex's framing -- once the bank covers the day the timing is free money,
 #: while it does not the timing IS the purchase.
 LATE_SELL_BIAS = True
-#: Whether an unfunded shopping list buys the day out of the hold above. Without it `LATE_SELL_BIAS`
-#: is the flat rule that was measured as a loss and left off.
-LATE_SELL_YIELDS_TO_DEMAND = True
 LATE_SELL_FROM_HOUR = 16
-#: **The hold above is justified by a drain that MELON does not have.** `LATE_SELL_BIAS`'s own
-#: docstring gives the reason for waiting: the price "recovers as the shops restock every 4 steps".
-#: That is true of every product a shop eats -- wheat 25/day, strawberry, milk, wool, egg, tomato all
-#: 13/day -- and false of melon, which appears in **no** `SHOPS` entry (`kaggriculture.py`: BAKERY,
-#: PIZZA_SHOP, BRUNCH_SPOT, YARN_STORE, ICE_CREAM_SHOP, PET_CAFE, SMOOTHIE_SHOP, FARMERS_MARKET --
-#: melon is in none of them). Its only drain is the town centre at 1 unit/day. So the hold waits all
-#: day for a recovery of one unit while the opponent walks the book down.
-#:
-#: `HOLD_A_FLOORED_BOOK` below already tests exactly this with `town_drain_remaining`; this gate is
-#: the same test applied to the one rule that never had it.
-#:
-#: Measured over seven consecutive ladder losses (`data/seed_scripts/ladder/`, each replayed on its
-#: own `info.seed`), melon revenue ours against theirs:
-#:
-#:     91989194  $8,221/$21,743   91992972  $8,009/$19,561   91994863  $8,133/$23,323
-#:     91996770  $5,939/$19,631   91997704  $4,483/$15,618   92003395  $7,608/$20,112
-#:     92005219  $9,700/$34,817
-#:
-#: Seven opponents, seven boards, a 2-4x gap every time. In 91989194 the mechanism is exact: 36 units
-#: sat in the shed from d22 h00 with the book at $133, the h16 gate held them, and they cleared at
-#: **$1.50** -- $54 for 36 melons, against his 114 units for $21,743.
-#:
-#: **`SELL_AT_ONCE_FROM_DAY` is deliberately a day and not a drain test.** The first flush already
-#: sells well (d10-d11 in that game: $244, $242, $232, $230 a unit) and there is nothing to win
-#: before d18 and a verified d0-d16 tape match to lose. Gating on the day makes the change
-#: unreachable from those days by construction. The principled form -- fire when `supply` exceeds
-#: `town_drain_remaining`, as `HOLD_A_FLOORED_BOOK` does -- needs no constant and is the next arm to
-#: try against this one.
-#:
-#: **LOWERED 18 -> 10, 2026-08-11.** The "nothing to win before d18" above was written from the sell
-#: price alone and is wrong about d10, because on d10 the melon money is not revenue -- it is the
-#: day's WORKING CAPITAL. Measured on Victor's d10, seed 11, with the seed rows reordered:
-#:
-#:     h2   buy MELON 14 + STRAWBERRY 4      bank 2,499 -> 26   (the row wants 16 strawberry)
-#:     h10  strawberry seed hits 0
-#:     h10 h11 h12 h13   four strawberry stops reached with no seed
-#:     h21  bank 16 -> 1,943, buy STRAWBERRY 12 -- every stop already walked
-#:
-#: `LATE_SELL_FROM_HOUR = 16` is what puts that $1,943 at h21. The tape does the opposite and its own
-#: row is explicit about it: `SELL MELON 6` at h12/h15/h17/h20/h22 against `BUY_SEED STRAWBERRY` at
-#: h12/h13/h15 -- each sale funds the next seed block inside the same turn. It sells all 30 melon on
-#: d10; we sell 18 and carry 12 into d11.
-#:
-#: So the gate is not protecting a price, it is starving the day that needs the cash most. d10 is the
-#: first day the row buys two seed blocks it cannot fund from dawn, which is why 10 and not 12.
-SELL_A_DRAINLESS_PRODUCT_AT_ONCE = True
 #: Products no shop consumes, so the within-day recovery `LATE_SELL_BIAS` waits for never arrives.
 #: FERTILIZER is drainless too (not even a town-centre product) but is held out of v1: no measurement
 #: says it is costing us, and each extra product widens what the A/B has to explain.
@@ -10194,39 +9161,6 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     return split
 
 
-#: **HERD_SPLIT_IS_A_SEASON_DECISION -- the split decides the MIX; the schedule decides the ORDER.**
-#:
-#: `_place_animals` used to hand `_herd_split` the herd accumulated through **today** and then use
-#: its answer as today's cumulative target. That makes one function decide two different things, and
-#: it gets the second one wrong: every branch of the split fills a species to a cap before it gives
-#: anything to the other, so on a schedule that interleaves them the later species is deferred to
-#: the end of the herd regardless of which days its rows sit on.
-#:
-#: Measured on the kawashigi board, seed 11, FILLS not offers. His `animals_bought` rows ARE his
-#: recorded order stream -- `d0 COW2 SHEEP2, d3 COW1, d5 COW1, d7 COW2 SHEEP1, d8 SHEEP1, d9 COW2,
-#: d11 COW2` -- so any divergence here is ours. Cumulative bought at dusk:
-#:
-#:                ours          his tape
-#:     d5         C4 / S2       C4 / S2       identical to here
-#:     d7         C6 / S2       C6 / S3       his d7 row is COW 2 + SHEEP 1
-#:     d8         C8 / S2       C6 / S4       his d8 row is SHEEP 1
-#:     d9         C10 / S2      C8 / S4
-#:     d11        C10 / S4      C10 / S4      the totals reconcile, four days late
-#:
-#: The MIX was never in dispute. YARN_STORE lands on this board at d12 -- the fourth draw, outside
-#: `WOOL_SHOP_DRAW_LIMIT` -- so `WOOL_SHOP_SETS_THE_HERD` pins COW at `WOOL_SHOP_NO_YARN_COW = 10`
-#: and the split returns COW 10 / SHEEP 4, which is exactly what the schedule asks for. Only the
-#: order moved, and the order is what the sells depend on: two sheep that arrive on d11 instead of
-#: d7 and d8 shear nothing into the d8-d10 wool rows, and a sheep's first yield is 6 days out.
-#:
-#: So the split is asked about the SEASON, once, and its answer is spent along the schedule's own
-#: rows in day order -- a head keeps its scheduled species while that species has season allowance
-#: left, and flips only when it does not. On a board whose shops genuinely say all-cow the allowance
-#: runs out at the first sheep row and every later one still becomes a cow, so the adaptivity the
-#: flag was built for is untouched; what is removed is the reordering it was never asked for.
-HERD_SPLIT_IS_A_SEASON_DECISION = True
-
-
 def _herd_through_day(sched, day, split):
     """Today's cumulative COW/SHEEP target: the schedule's rows in day order, re-labelled to `split`.
 
@@ -10638,108 +9572,11 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
         n += 1
     return n
 
-#: `shedCapacity`, the ONE limit shared by all nine products (`reference/kaggriculture.py:835`).
-SHED_CAPACITY = 100
 
-
-
-
-#: Whether the crew is bought BEFORE the day's goods, and limited by where the next hand would land
-#: rather than by a flat two-a-turn. Off restores the old behaviour exactly. Switchable for the same
-#: reason as the flags above: it has to be attributable on the day-by-day trace, not on a final bank.
-#:
-#: Measured on Seb's tape, seed 11, by `scripts/when_the_crew_arrives.py`. He issues every HIRE at
-#: hour 0; we dribble two an hour across hours 0-3 and append them LAST, after SELL, LAND, ANIMAL,
-#: SEED and FEED have already spent the bank. Two costs, and they are independent:
-#:
-#:     ordering   day 6 we open on $711, want 8 hands, and go (0,$711) (0,$711) (1,$10) (1,$10)
-#:                (2,$5) (2,$5) (3,$0) (3,$0) -- the bank is gone by hour 1, spent on seed and feed
-#:                between our second hire and our third, so six of eight HIREs fail and the day is
-#:                worked by five hands. `_hire_cost` is `mult * fib(hires_today)` and `hires_today`
-#:                is a per-DAY counter, so the crew costs the same whenever it is bought. Dribbling
-#:                saves nothing and lets a later order empty the bank first.
-#:     the cap    two-a-turn is a proxy for a real trap: with the farmer on `(4,4)` the third hire of
-#:                a turn lands on `(5,5)`, whose only neighbours `(4,5)` and `(5,4)` are LOCKED while
-#:                we own NW alone, so it cannot move all day. But `LAND_ORDER = ["NE", "SW", "SE"]`
-#:                unlocks `(5,4)` -- that hand's escape square -- with the FIRST parcel, and the cap
-#:                then costs 12, 73, 12, 35 and 26 hand-turns on days 5-8 and 10 for nothing.
-#:
-#: A hand hired at hour 0 works 23 turns; the same hand at hour 4 works 19. Nothing downstream
-#: recovers a turn that was never available, which is why this sits ahead of every routing question.
-HIRE_FIRST = True
-
-#: Ops whose VALUE decays with the hour they are served, so the work appearing is itself a reason to
-#: replan. Empty disables the trigger and restores the old crew-change-or-idle rule exactly.
-#:
-#: PLACE is the whole list because what follows it is time-critical: an animal must be fed and cared
-#: for on the day it lands, and a FEED costs a shed round trip of about eight turns against a budget
-#: of `24 - hour - 1`. Placed at hour 18 it simply cannot be served. Nothing else on the board works
-#: that way -- a melon watered at hour 3 or hour 20 yields the same melon.
-#
-# **Re-enabled 2026-08-07, and the reason it was off has expired.** It measured NET NEGATIVE once
-# hiring was fixed -- 42 cells against 39 -- back when `build_nodes` offered a full-prize PLACE at
-# every empty pen regardless of how many animals were in the shed. An urgent replan on a phantom node
-# is an urgent replan onto nothing, so of course forcing more of them lost. `RT.SUPPLY_LEDGER` now
-# retires the duplicates the moment one unit claims the animal, so the trigger fires on real work.
-#
-# Measured on Seb's tape, seed 11, day 4: the cow reaches the shed at hour 2 and `plan_routes` is not
-# called again until a unit falls idle at hour 10, by which point the budget is 13 and the far pen at
-# (0,3) plus the walk home no longer fits. It sits in the shed to hour 23. The tape picks it up at
-# hour 2 and places at hour 15.
-URGENT_OPS = ()
-
-#: Whether an animal purchase may take the slot of the day's last HIRE when the turn's ten market
-#: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
-ANIMAL_OVER_HIRE = True
 
 #: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
 #: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
 SEED_BEFORE_LIVESTOCK = True
-
-#: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
-#: already is. See the note above the seed bill for the day-6 measurement.
-SELLS_FUND_THE_TURN = True
-
-
-#: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
-#: `PEN_NEAREST_DEPOT_FROM_DAY` needed, and for the same reason: the cost and the benefit are on
-#: different days. Re-swept 2026-08-07 against a 127-cell baseline, ungated:
-#:
-#:              d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF       7  6  4  7  7  7 11 15 13 12  18  20   127
-#:     margin 4  7  7  4  7  8  8 11  8 11 14  19  19   123
-#:
-#: Lowest total and DISQUALIFIED in order -- d1 6->7, d4 7->8, d5 7->8. But d7 15 -> 8 is the biggest
-#: single-day gain anything has produced, and d8 goes 13 -> 11, so stealing is unlocking something
-#: real once the crew is large. Early on a claim is worth honouring: the crew is small, every unit is
-#: committed, and taking a stop off one just moves the work.
-#:
-#: Gated, swept on the day threshold at margin 4:
-#:
-#:               d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF        7  6  4  7  7  7 11 15 13 12  18  20   127
-#:     from d6    7  6  4  7  7  7 11  8 11 14  19  19   120   <- taken
-#:     from d5    7  6  4  7  7  8 11  8 11 14  19  19   121   d5 regresses
-#:     from d4    7  6  4  7  8  8 11  8 11 14  19  19   122   d4 regresses
-#:     from d7    7  6  4  7  7  7 11 17 14 15  23  17   135
-#:     from d8    7  6  4  7  7  7 11 15 14 16  18  17   129
-#:
-#: d0-d6 byte-identical and d7 15 -> 8, the largest single-day gain measured in this project. It
-#: gives back 2 on d9 and 1 on d10; under an in-order metric the earliest day touched is what counts
-#: and that day improves by seven. Gating LATER than 6 is worse, not better -- d7 and d8 both make
-#: d7 itself worse -- so this is not "steal late", it is "steal once the crew outgrows the work".
-STEAL_FROM_DAY = 6
-STEAL_FROM_DAY_MARGIN = 4
-
-#: How many days an uncovered sell row stays offerable. **The backlog must expire.** Carrying it
-#: forever is not "cumulative", it is unbounded: on the old leader's plan the schedule asks to sell
-#: more than we ever produce, so the uncovered remainder grew every day and the offer pinned at the
-#: season's largest row on every turn from about day 19 -- byte-identical to the runaway `asked - sold`
-#: ledger it was meant to replace, and money -19,407 -> -30,262 against that tape. The measured bug is
-#: a ONE day slip (Seb's melons ripen a day after his `MELON: 18` row), so the window only has to be
-#: wide enough to cover a late harvest.
-SELL_CARRY_DAYS = 3
-
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 #:
@@ -10769,44 +9606,6 @@ SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT") + tupl
 #: field asks for it. See the note at the reserve itself.
 FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 
-
-#: **Give up melon to an opponent already committed to it, and take strawberry instead.**
-#:
-#: Measured across all sixteen downloaded カワシギ games, 2026-08-15. His strawberry/melon split has
-#: exactly two states and the total is ALWAYS 54:
-#:
-#:     STRAW 34 / MELON 20     10 games        STRAW 42 / MELON 12      6 games
-#:
-#: Every game buys `MELON 12` on d0. The whole decision is one binary +8, executed `d5:+3 d6:+5`,
-#: paid for with 8 fewer strawberry. It separates 16/16 on the opponent, and the reason is visible on
-#: the board he can see when he makes it:
-#:
-#:     researchstudio.site   d5: MELON 9, WHEAT 7                -> holds at MELON 12, STRAW 42
-#:     the other three       d5: MELON 5, STRAWBERRY 3, WHEAT 6  -> tops up to MELON 20, STRAW 34
-#:
-#: **Melon is the one crop no shop buys** -- the eight demand lists at `kaggriculture.py:91-98` carry
-#: wheat, carrot, tomato, strawberry, egg, milk and wool, and never melon. So melon's price is set by
-#: nothing except how much the two farms dump into the town book, while strawberry has four shops
-#: bidding for it. An opponent on nine melon tiles is going to flood that book; the eight tiles are
-#: worth more in a crop somebody is buying.
-#:
-#: This corrects C-23 in `docs/REGISTER.md`, which reverted the `STRAWBERRY<->MELON` swap because it
-#: "produces an identical 54/4 split on every board -- a pair with one board-independent member
-#: cannot adapt". That is true of `SHOP_ADAPT_CROPS` and is the wrong reason to close the question:
-#: the signal was never the shop draw. It is the opponent, and it is not board-independent at all.
-#:
-#: The count is kept exactly and only the crop is re-decided, which is `_adapt_crops`' rule and keeps
-#: the tour shape untouched. Latched once, on the first day at or after `MELON_YIELD_FROM_DAY`, so d5
-#: and d6 cannot disagree.
-MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT = True
-
-#: d5, because that is the day he acts. The first shop unlocks at d2h23 in all sixteen games, so he
-#: has two and a half days of information; the fork is at d5 and completes on d6.
-MELON_YIELD_FROM_DAY = 5
-
-#: Between the two observed opponent states -- 9 melon tiles fires, 5 does not -- and no closer than
-#: that, because those are the only two values the sixteen games contain.
-MELON_YIELD_OPPONENT_MELON = 7
 
 
 #: **Turn late WHEAT plantings into CARROT / TOMATO.** Sweepable integers: how many wheat plant
@@ -10906,34 +9705,6 @@ def _wheat_to(row, crop, budget):
     return _recrew(row, "WHEAT", crop, budget)
 
 
-def _melon_to_strawberry(row):
-    """One day's row with its MELON moved into STRAWBERRY. The count and the ORDER are kept exactly.
-
-    The two rows have different shapes and both matter. `seeds` is a `{crop: qty}` dict -- the day's
-    shopping list, priced by `RT.SEED_COST`. `plants` is an ordered LIST of crop names, one entry per
-    stop, and the order is the planting order the tour is built from, so a melon entry is rewritten
-    in place rather than counted and re-appended. Shipped d6, for instance, is
-    `seeds {'STRAWBERRY': 3, 'MELON': 5, 'CARROT': 7}` against `plants ['MELON', 'MELON']`.
-
-    Writing this against a dict `plants` cost a build: `dict(['MELON', 'MELON'])` raises, the bundle
-    returned a null reward in the mirror gate, and the unit tests stayed green because they had been
-    written against the same wrong shape. `test_the_shipped_schedules_own_rows_survive_the_swap`
-    exists so the shape cannot drift out from under this again.
-    """
-    seeds = dict(row.get("seeds") or {})
-    plants = list(row.get("plants") or [])
-    if int(seeds.get("MELON", 0) or 0) <= 0 and "MELON" not in plants:
-        return row
-    out = dict(row)
-    n = int(seeds.pop("MELON", 0) or 0)
-    if n > 0:
-        seeds["STRAWBERRY"] = int(seeds.get("STRAWBERRY", 0) or 0) + n
-        out["seeds"] = seeds
-    if "MELON" in plants:
-        out["plants"] = ["STRAWBERRY" if c == "MELON" else c for c in plants]
-    return out
-
-
 def make_agent(schedule, me=0, router=True):
     """`agent(obs, config) -> action`.
 
@@ -10975,18 +9746,40 @@ def make_agent(schedule, me=0, router=True):
         _row_feeds = int((sched.get(day, {}) or {}).get("feeds", 0) or 0)
         if _row_feeds > 0:
             _arrived = _arrived_fed = _standing = 0
+            #: The earliest first production among today's arrivals that are STILL UNFED, which is
+            #: what `will_be_fed` spends the allowance on. Read off the same sweep so the two
+            #: numbers can never describe different boards. Unfed only: once the sheep have taken
+            #: their feeds the cows become the earliest still waiting and the rest of the allowance
+            #: reaches them in the same day.
+            #:
+            #: **The row counts too, not just the board.** d0 places `SHEEP COW SHEEP COW` and our
+            #: route lays the cows first, at h6 and h11, with the sheep not reaching the ground
+            #: until h16 and h19. A board-only read sees one COW at h7, calls it the earliest
+            #: arrival there is, and hands it the allowance eight hours before the sheep that
+            #: needed it exist. So the pens the row has still to fill today count as arrivals: they
+            #: are as certain as the ones already standing, the schedule named both.
+            _soonest = None
+            for _a in _outstanding_places(sched, day, tiles):
+                _y = R.ANIMALS[_a]["first_yield_day"]
+                _soonest = _y if _soonest is None else min(_soonest, _y)
             for _r in tiles:
                 for _c in _r:
                     if not (isinstance(_c, dict) and _c.get("animal")):
                         continue
                     if int(_c.get("placed_day", -1)) == day:
                         _arrived += 1
-                        _arrived_fed += 1 if _c.get("fed_today") else 0
+                        if _c.get("fed_today"):
+                            _arrived_fed += 1
+                        else:
+                            _y = R.ANIMALS[_c["animal"]]["first_yield_day"]
+                            _soonest = _y if _soonest is None else min(_soonest, _y)
                     else:
                         _standing += 1
             RT.ARRIVAL_FEED_REMAINING = max(0, _row_feeds - _standing - _arrived_fed)
+            RT.ARRIVAL_FEED_EARLIEST_YIELD = _soonest
         else:
             RT.ARRIVAL_FEED_REMAINING = 0
+            RT.ARRIVAL_FEED_EARLIEST_YIELD = None
         money = float(farm["money"])
         unlocked = set(farm.get("unlocked_quadrants") or ["NW"])
         row = sched.get(day, {})
@@ -11032,22 +9825,11 @@ def make_agent(schedule, me=0, router=True):
             # what the `seeds` row must be netted against. See `SEED_ROW_IS_A_FLOOR`.
             state["seeds_dawn"] = collections.Counter(seeds)
 
-            # **Read the opponent's melon commitment once, then hold the answer.**
-            # See `MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT`. Latched rather than re-read, because his
-            # own decision spans two days (`d5:+3 d6:+5`) and a split answer would buy half a row of
-            # each. `sched[day]` is replaced with a rewritten COPY -- `make_agent` shallow-copies the
-            # outer dict but shares every row with the caller, so mutating a row in place would leak
-            # the swap into the next game built from the same schedule object.
-            if MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT and day >= MELON_YIELD_FROM_DAY:
-                if state.get("melon_yield") is None and len(farms) > 1:
-                    _opp = farms[1 - me]
-                    state["melon_yield"] = sum(
-                        1 for _r in (_opp.get("tiles") or []) for _c in _r
-                        if isinstance(_c, dict) and _c.get("crop") == "MELON"
-                    ) >= MELON_YIELD_OPPONENT_MELON
-                if state.get("melon_yield"):
-                    sched[day] = _melon_to_strawberry(sched.get(day) or {})
-                    row = sched[day]
+            # **The leader's melon branch, as the season he actually recorded for that board.**
+            # See `kagg/search/melon_branch.py`. Decided once at d3 off the opponent's melon tiles
+            # and installed from d5, which is the first row either season spends melon money on.
+            if _MB.arm(sched, state, obs, day):
+                row = sched.get(day) or row
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
@@ -11440,30 +10222,29 @@ def make_agent(schedule, me=0, router=True):
         # that moves, rather than whichever product the loop happens to reach first.
         room_needed = 0
         release = collections.Counter()
-        if SELL_TO_MAKE_ROOM:
-            carried_home = sum(int(v) for iv in invs for v in (iv or {}).values() if int(v) > 0)
-            room_needed = max(0, int(sum(shed.values())) + carried_home - SHED_CAPACITY)
-            # **TRIED and REJECTED: forecast the day's inflow at dawn instead of reacting to it.**
-            # Counting the standing `yield_units` on every pen and ripe crop as arriving today, and
-            # pacing the release over `TPD - hour` turns, is the better-shaped idea and it does move
-            # the right fields -- discards 101 -> 47, `sh:milk` +181 -> +80, differing cells 417 ->
-            # 412, and the land parcels stay identical to the tape on every day. It costs **$4,385
-            # of final bank** (d29 +1,097 -> -3,288), because selling earlier walks the price down by
-            # more than the saved product is worth. On an Elo ladder the bank is the result and the
-            # tidier stock curve is not, so it is not being kept.
-            #
-            # Neither version closes the floor, and no sell rule can: **the market sells from the
-            # SHED, and product sitting in a hand at dusk was never sellable that day.** When the
-            # crew carries 40 units home to a shed with room for 15, the 25 die whatever the market
-            # did. The residue is exactly that shape -- 17 units on d21, 10 on d23. Closing it needs
-            # the ROUTER to stop collecting into a shed that cannot take the load, which is the same
-            # assignment defect as OPEN-4. See `docs/REGISTER.md`.
-            for p in sorted(SELLABLE, key=lambda p: -int(shed.get(p, 0))):
-                if room_needed <= 0:
-                    break
-                take = min(int(shed.get(p, 0)), room_needed)
-                release[p] = take
-                room_needed -= take
+        carried_home = sum(int(v) for iv in invs for v in (iv or {}).values() if int(v) > 0)
+        room_needed = max(0, int(sum(shed.values())) + carried_home - SHED_CAPACITY)
+        # **TRIED and REJECTED: forecast the day's inflow at dawn instead of reacting to it.**
+        # Counting the standing `yield_units` on every pen and ripe crop as arriving today, and
+        # pacing the release over `TPD - hour` turns, is the better-shaped idea and it does move
+        # the right fields -- discards 101 -> 47, `sh:milk` +181 -> +80, differing cells 417 ->
+        # 412, and the land parcels stay identical to the tape on every day. It costs **$4,385
+        # of final bank** (d29 +1,097 -> -3,288), because selling earlier walks the price down by
+        # more than the saved product is worth. On an Elo ladder the bank is the result and the
+        # tidier stock curve is not, so it is not being kept.
+        #
+        # Neither version closes the floor, and no sell rule can: **the market sells from the
+        # SHED, and product sitting in a hand at dusk was never sellable that day.** When the
+        # crew carries 40 units home to a shed with room for 15, the 25 die whatever the market
+        # did. The residue is exactly that shape -- 17 units on d21, 10 on d23. Closing it needs
+        # the ROUTER to stop collecting into a shed that cannot take the load, which is the same
+        # assignment defect as OPEN-4. See `docs/REGISTER.md`.
+        for p in sorted(SELLABLE, key=lambda p: -int(shed.get(p, 0))):
+            if room_needed <= 0:
+                break
+            take = min(int(shed.get(p, 0)), room_needed)
+            release[p] = take
+            room_needed -= take
         # Everything still to sell, not just what is in store: standing `yield_units` and whatever
         # the crew is carrying are both stock the season has to clear, and understating supply
         # understates the glut, which is the direction that already cost 331 destroyed units.
@@ -11500,7 +10281,7 @@ def make_agent(schedule, me=0, router=True):
         # not scope per category, and over-selling by one turn on a funded day is a far cheaper error
         # than under-funding a $1,000 parcel. If that proves too blunt, the fix is a per-category
         # remainder, not a tolerance.
-        unfunded = LATE_SELL_YIELDS_TO_DEMAND and (money + pending) < _days_bill(row)
+        unfunded = (money + pending) < _days_bill(row)
         for prod in SELLABLE:
             have = int(shed.get(prod, 0))
             # What the EVICTION may reach, which is `have` for everything except wheat. See
@@ -11622,8 +10403,7 @@ def make_agent(schedule, me=0, router=True):
                 # reserve that protects it -- `will_buy` is that purchase -- so d4 h00 read
                 # `6 - (1*6 - 0 - 1) = 1` sellable out of a shed that was exactly tight.
                 reserve = feed_days(day) * (alive + arriving) - drawn - will_buy
-                if RESERVE_COUNTS_WHEAT_IN_HANDS:
-                    reserve -= carried_wheat
+                reserve -= carried_wheat
                 # **TODAY'S dinner is never released against a purchase that has not cleared.**
                 # See `NEVER_SELL_TODAYS_RATION`. `will_buy` is a forecast, and the terms above can
                 # net the reserve to nothing on the strength of it: `seb1326` d6, row `buys WHEAT 7`,
@@ -11636,10 +10416,9 @@ def make_agent(schedule, me=0, router=True):
                 # the immediate, un-hedgeable need. It is deliberately NARROWER than `reserve`: the
                 # multi-day buffer may still be released by a forecast, because a forecast that fails
                 # only costs tomorrow's margin. Today's costs the animal.
-                if NEVER_SELL_TODAYS_RATION:
-                    unfed = sum(1 for r in tiles for c in r
-                                if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
-                    reserve = max(reserve, unfed + arriving - carried_wheat)
+                unfed = sum(1 for r in tiles for c in r
+                            if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
+                reserve = max(reserve, unfed + arriving - carried_wheat)
                 have = max(0, have - max(0, reserve))
                 # **The reserve yields slots rather than let the harvest be binned.** The full
                 # `feed_days(day)` buffer stands for ordinary rows; only the eviction may dip below
@@ -11835,7 +10614,7 @@ def make_agent(schedule, me=0, router=True):
             last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
             if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
                     and not unfunded
-                    and not (SELL_A_DRAINLESS_PRODUCT_AT_ONCE and prod in NO_DRAIN_PRODUCTS
+                    and not (prod in NO_DRAIN_PRODUCTS
                              and (day >= SELL_AT_ONCE_FROM_DAY
                                   or day in SELL_AT_ONCE_DAYS))):
                 n = 0
@@ -11935,25 +10714,24 @@ def make_agent(schedule, me=0, router=True):
         # stopped matching. The bill stays exactly what the pins justify; only what is OFFERED is
         # floored at the row.
         emit_seed = collections.Counter(want_seed)
-        if SEED_ROW_IS_A_FLOOR:
-            for c, q in (row.get("seeds") or {}).items():
-                # **Net off seed BOUGHT today, never seed sown today.** The row is a purchase total,
-                # and a planting can be paid for out of the carry -- seed lives in `private["seeds"]`
-                # and rides between days at no capacity cost, which is the whole reason d6 buys four
-                # and plants one. Netting against plantings makes those carried-seed plantings cancel
-                # units off the day's own buy.
-                #
-                # d7 is where it shows: `seeds {WHEAT 3, STRAWBERRY 9}` = 12 against FOURTEEN plants,
-                # opening on a store of `{WHEAT 1, STRAWBERRY 2}`. Two hours in, `done` is 2 and the
-                # strawberry floor has fallen 9 -> 8. `buy_seed 11/12`, and d7 ends on an empty store
-                # where the tape ends holding one strawberry. `plant 14/14` and `strawb 18/18` both
-                # matched, which is why it read as harmless. That seed is untouched through d8, d9 and
-                # d10 and then buys a planting on d11: `buy_seed 3/4`, `plant 9/11`, `water 38/41`.
-                #
-                # The purchases need no new tally -- the store and the plantings give them exactly.
-                done = state["planted"][c] - state["planted_dawn"][c]
-                bought = int(seeds.get(c, 0)) + done - int(state["seeds_dawn"].get(c, 0))
-                emit_seed[c] = max(int(emit_seed.get(c, 0)), max(0, int(q) - max(0, bought)))
+        for c, q in (row.get("seeds") or {}).items():
+            # **Net off seed BOUGHT today, never seed sown today.** The row is a purchase total,
+            # and a planting can be paid for out of the carry -- seed lives in `private["seeds"]`
+            # and rides between days at no capacity cost, which is the whole reason d6 buys four
+            # and plants one. Netting against plantings makes those carried-seed plantings cancel
+            # units off the day's own buy.
+            #
+            # d7 is where it shows: `seeds {WHEAT 3, STRAWBERRY 9}` = 12 against FOURTEEN plants,
+            # opening on a store of `{WHEAT 1, STRAWBERRY 2}`. Two hours in, `done` is 2 and the
+            # strawberry floor has fallen 9 -> 8. `buy_seed 11/12`, and d7 ends on an empty store
+            # where the tape ends holding one strawberry. `plant 14/14` and `strawb 18/18` both
+            # matched, which is why it read as harmless. That seed is untouched through d8, d9 and
+            # d10 and then buys a planting on d11: `buy_seed 3/4`, `plant 9/11`, `water 38/41`.
+            #
+            # The purchases need no new tally -- the store and the plantings give them exactly.
+            done = state["planted"][c] - state["planted_dawn"][c]
+            bought = int(seeds.get(c, 0)) + done - int(state["seeds_dawn"].get(c, 0))
+            emit_seed[c] = max(int(emit_seed.get(c, 0)), max(0, int(q) - max(0, bought)))
 
         # **The crew comes before the goods.** See `HIRE_FIRST`. SELL stays above this because it only
         # raises the bank; everything BELOW spends it, and a hand that is not standing at dawn cannot be
@@ -11994,7 +10772,7 @@ def make_agent(schedule, me=0, router=True):
             # So hold back exactly the hires that would land walled, and let the top-up below place
             # them once the ground exists. Held, never cancelled: `state["hired"]` is not credited,
             # so the day still reaches its `hands` row.
-            if HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS and int(row.get("land", 0) or 0) > 0:
+            if int(row.get("land", 0) or 0) > 0:
                 want = min(want, _unwalled_landing_slots(tiles, units, want))
             for _ in range(want):
                 orders.append(["HIRE"])
@@ -12005,8 +10783,7 @@ def make_agent(schedule, me=0, router=True):
             # a hand hired at dusk buys nothing -- but the square a held hire is waiting for opens
             # when the parcel settles, and on this schedule that is h13. Gating the top-up at 8 would
             # hold the hire back and then never place it.
-            deadline = TPD if (HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS
-                               and int(row.get("land", 0) or 0) > 0) else 8
+            deadline = TPD if (int(row.get("land", 0) or 0) > 0) else 8
             if state["hired"] < target and hour < deadline:
                 shed_tiles = R.shed_access_tiles()
                 occ = {t: 0 for t in shed_tiles}
@@ -12114,17 +10891,13 @@ def make_agent(schedule, me=0, router=True):
             # `HERD_SPLIT_IS_A_SEASON_DECISION`.** Handing the split today's partial herd made it
             # decide the buying ORDER as well as the mix, and its cows-first fill deferred every
             # floating sheep to the end of the herd.
-            if HERD_SPLIT_IS_A_SEASON_DECISION:
-                _season = collections.Counter()
-                for dd in sched:
-                    for a, qty in (sched[dd].get("animals_bought") or {}).items():
-                        _season[a] += int(qty)
-                _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
-                _through = _herd_through_day(sched, day, _s)
-                want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
-            else:
-                _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
-                want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
+            _season = collections.Counter()
+            for dd in sched:
+                for a, qty in (sched[dd].get("animals_bought") or {}).items():
+                    _season[a] += int(qty)
+            _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
+            _through = _herd_through_day(sched, day, _s)
+            want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue
@@ -12171,7 +10944,7 @@ def make_agent(schedule, me=0, router=True):
             # (`:666-673`) and stops, exactly as the per-order form did.
             want = 0
             for _ in range(max(0, qty - state["bought"][a])):
-                if money < R.ANIMALS[a]["cost"] + (seed_bill if SEED_BEFORE_LIVESTOCK else 0):
+                if money < R.ANIMALS[a]["cost"] + seed_bill:
                     continue
                 # The slot is charged once, for the first head of this species.
                 if want == 0 and len(orders) >= (10 if ANIMAL_OVER_HIRE else 8):
@@ -12217,8 +10990,7 @@ def make_agent(schedule, me=0, router=True):
         # measurement: the price order buys the crop the plan reaches at h5 and starves the one it
         # reaches at h2. A crop with no PLANT stop in any committed tour sorts last, which is where
         # the old rule already put anything the day was not about to plant.
-        _need = (_seed_need_order(units, state.get("routes") or {})
-                 if SEED_ROWS_FOLLOW_THE_PLAN else {})
+        _need = _seed_need_order(units, state.get("routes") or {})
         for crop, qty in sorted(emit_seed.items(),
                                 key=lambda kv: (_need.get(kv[0], 1 << 30),
                                                 -RT.SEED_COST.get(kv[0], 0) * int(kv[1]))):
@@ -12243,12 +11015,11 @@ def make_agent(schedule, me=0, router=True):
             #
             # Netted against seed BOUGHT today, which the store and the plantings give exactly, so
             # the floor cannot re-order what has already landed.
-            if SEED_ROW_IS_A_FLOOR:
-                _row_q = int((row.get("seeds") or {}).get(crop, 0))
-                _done = state["planted"][crop] - state["planted_dawn"][crop]
-                _bought = (int(seeds.get(crop, 0)) + _done
-                           - int(state["seeds_dawn"].get(crop, 0)))
-                short = max(short, _row_q - max(0, _bought))
+            _row_q = int((row.get("seeds") or {}).get(crop, 0))
+            _done = state["planted"][crop] - state["planted_dawn"][crop]
+            _bought = (int(seeds.get(crop, 0)) + _done
+                       - int(state["seeds_dawn"].get(crop, 0)))
+            short = max(short, _row_q - max(0, _bought))
             if short > 0 and len(orders) < 9:
                 orders.append(["BUY_SEED", crop, short])
 
@@ -12389,7 +11160,7 @@ def make_agent(schedule, me=0, router=True):
         # send shrunk by the money guard still counts as sent, which is today's behaviour for a
         # thin bank, and `SKIP_THE_RATION_ON_A_LAND_TURN` zeroing `short` leaves it unsent so a
         # land day re-offers once the parcel's turn is over.
-        if BUY_THE_ROW_AT_DAWN and owed > 0 and not state.get("dawn_row_sent", False):
+        if owed > 0 and not state.get("dawn_row_sent", False):
             short = max(short, owed)
         # **The ration is not discretionary spending and is not held to half the bank.** This line
         # used to read `short = min(short, int(money * 0.5 // quote))`. On a thin dawn that floors to
@@ -12419,18 +11190,15 @@ def make_agent(schedule, me=0, router=True):
         # `market.inventory` is `shared: True` in the observation spec, so this is the real book and
         # not a guess. Falls back to the flat divide if the env is not importable, which is what
         # `market_price` already does.
-        if SIZE_THE_RATION_ON_THE_CURVE:
-            _book = int(((obs.get("market") or {}).get("inventory") or {}).get("WHEAT", 0) or 0)
-            _purse, _n = money, 0
-            while _n < short:
-                _unit = market_price("WHEAT", _book - _n)
-                if _unit > _purse:
-                    break
-                _purse -= _unit
-                _n += 1
-            short = _n
-        else:
-            short = min(short, int(money // quote))
+        _book = int(((obs.get("market") or {}).get("inventory") or {}).get("WHEAT", 0) or 0)
+        _purse, _n = money, 0
+        while _n < short:
+            _unit = market_price("WHEAT", _book - _n)
+            if _unit > _purse:
+                break
+            _purse -= _unit
+            _n += 1
+        short = _n
         # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
         # is QUEUED, and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race
         # still closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn
@@ -12441,7 +11209,7 @@ def make_agent(schedule, me=0, router=True):
         #
         # Skipped rather than resized: the turn a parcel clears is not a turn that can also feed the
         # herd, and holding the order costs nothing because the row is re-offered every turn.
-        if SKIP_THE_RATION_ON_A_LAND_TURN and any(o and o[0] == "BUY_LAND" for o in orders):
+        if any(o and o[0] == "BUY_LAND" for o in orders):
             short = 0
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
@@ -12457,7 +11225,7 @@ def make_agent(schedule, me=0, router=True):
             money -= quote * short
 
         # **End the day holding tomorrow's ration.** See `DUSK_FEED_TOPUP`.
-        if (DUSK_FEED_TOPUP and day >= DUSK_FROM_DAY and hour >= DUSK_FEED_HOUR
+        if (day >= DUSK_FROM_DAY and hour >= DUSK_FEED_HOUR
                 and len(orders) < 9):
             # **Tomorrow's animals are tomorrow's wheat bill.** Pre-buying a ration for a pen that
             # will not exist until the next day is one purchase too many on the day it fires, and on
@@ -12484,7 +11252,7 @@ def make_agent(schedule, me=0, router=True):
             carried_now = sum(collections.Counter(iv).get("WHEAT", 0) for iv in invs)
             unfed_now = sum(1 for r in tiles for c in r
                             if isinstance(c, dict) and "animal" in c and not c.get("fed_today"))
-            spare = max(0, carried_now - unfed_now) if TOPUP_COUNTS_HANDS else 0
+            spare = max(0, carried_now - unfed_now)
             gap = (alive + arriving) - int(shed.get("WHEAT", 0)) - spare
             gap = min(gap, FEED_TURN_CAP, int(money // quote))
             # **And never past what the day's own `buys` row still owes.** The top-up reads the shed
@@ -12499,10 +11267,9 @@ def make_agent(schedule, me=0, router=True):
             #
             # A day with no `buys` row keeps the top-up unbounded: there the formula is the only rule
             # there is.
-            if TOPUP_STAYS_INSIDE_THE_ROW:
-                row_buys = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
-                if row_buys > 0:
-                    gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
+            row_buys = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
+            if row_buys > 0:
+                gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
             if gap > 0:
                 orders.append(["BUY_PRODUCT", "WHEAT", gap])
                 topup_orders.add(id(orders[-1]))
@@ -12537,52 +11304,51 @@ def make_agent(schedule, me=0, router=True):
         # variants. Both of those change how much is held back, which changes what the day can sell
         # at all. Netting changes neither: the same reserve, the same target, minus the round trip
         # that cancels itself. The larger leg survives at its net size and the smaller disappears.
-        if NET_THE_TWO_LEGS:
-            sells = collections.Counter()
-            buys = collections.Counter()
-            for o in orders:
-                if o and o[0] == "SELL":
-                    sells[o[1]] += int(o[2])
-                elif o and o[0] == "BUY_PRODUCT" and id(o) in topup_orders:
-                    # **Only the TOP-UP leg counts as the accident.** The round trip this rule was
-                    # written for is the sell guard and `DUSK_FEED_TOPUP` disagreeing about the same
-                    # stock, which is this order and no other. The row's own `buys` line is not an
-                    # accident: Victor's d5 sells WHEAT 17 at dawn and buys seven singles back
-                    # through the day on purpose, and netting the two deleted seven real sales and
-                    # then, once the counter gave them back, two real purchases instead.
-                    buys[o[1]] += int(o[2])
-            for prod_ in set(sells) & set(buys):
-                cancel = min(sells[prod_], buys[prod_])
-                if cancel <= 0:
-                    continue
-                for side, want in (("SELL", cancel), ("BUY_PRODUCT", cancel)):
-                    left = want
-                    for o in orders:
-                        if left <= 0:
-                            break
-                        if side == "BUY_PRODUCT" and id(o) not in topup_orders:
-                            continue
-                        if o and o[0] == side and o[1] == prod_:
-                            take = min(left, int(o[2]))
-                            o[2] = int(o[2]) - take
-                            left -= take
-                # The buy legs were debited against `state["ordered"]` when queued; a cancelled buy
-                # is one we never place, so the running total has to give it back or the next turn
-                # sizes its top-up against a purchase that did not happen.
-                state["ordered"][("feed", prod_)] = max(
-                    0, state["ordered"][("feed", prod_)] - cancel)
-                state["ordered"][("buys", prod_)] = max(
-                    0, state["ordered"][("buys", prod_)] - cancel)
-                # **And the SELL leg the same way, for exactly the same reason.** It was credited
-                # with the full offer when queued, above, and nothing here gave any of it back --
-                # so a day that offered 17 and shipped 10 spent the rest of the day believing its
-                # row was met, and `CUMULATIVE_SELLS` never re-offered the seven. Victor's d5 is a
-                # deliberate 17-at-dawn against seven singles bought back through the day; the
-                # netting is welcome to keep cancelling the overlap, but it may not also mark the
-                # cancelled units as sold.
-                state["ordered"][("sold", prod_)] = max(
-                    0, state["ordered"][("sold", prod_)] - cancel)
-            orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
+        sells = collections.Counter()
+        buys = collections.Counter()
+        for o in orders:
+            if o and o[0] == "SELL":
+                sells[o[1]] += int(o[2])
+            elif o and o[0] == "BUY_PRODUCT" and id(o) in topup_orders:
+                # **Only the TOP-UP leg counts as the accident.** The round trip this rule was
+                # written for is the sell guard and `DUSK_FEED_TOPUP` disagreeing about the same
+                # stock, which is this order and no other. The row's own `buys` line is not an
+                # accident: Victor's d5 sells WHEAT 17 at dawn and buys seven singles back
+                # through the day on purpose, and netting the two deleted seven real sales and
+                # then, once the counter gave them back, two real purchases instead.
+                buys[o[1]] += int(o[2])
+        for prod_ in set(sells) & set(buys):
+            cancel = min(sells[prod_], buys[prod_])
+            if cancel <= 0:
+                continue
+            for side, want in (("SELL", cancel), ("BUY_PRODUCT", cancel)):
+                left = want
+                for o in orders:
+                    if left <= 0:
+                        break
+                    if side == "BUY_PRODUCT" and id(o) not in topup_orders:
+                        continue
+                    if o and o[0] == side and o[1] == prod_:
+                        take = min(left, int(o[2]))
+                        o[2] = int(o[2]) - take
+                        left -= take
+            # The buy legs were debited against `state["ordered"]` when queued; a cancelled buy
+            # is one we never place, so the running total has to give it back or the next turn
+            # sizes its top-up against a purchase that did not happen.
+            state["ordered"][("feed", prod_)] = max(
+                0, state["ordered"][("feed", prod_)] - cancel)
+            state["ordered"][("buys", prod_)] = max(
+                0, state["ordered"][("buys", prod_)] - cancel)
+            # **And the SELL leg the same way, for exactly the same reason.** It was credited
+            # with the full offer when queued, above, and nothing here gave any of it back --
+            # so a day that offered 17 and shipped 10 spent the rest of the day believing its
+            # row was met, and `CUMULATIVE_SELLS` never re-offered the seven. Victor's d5 is a
+            # deliberate 17-at-dawn against seven singles bought back through the day; the
+            # netting is welcome to keep cancelling the overlap, but it may not also mark the
+            # cancelled units as sold.
+            state["ordered"][("sold", prod_)] = max(
+                0, state["ordered"][("sold", prod_)] - cancel)
+        orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
