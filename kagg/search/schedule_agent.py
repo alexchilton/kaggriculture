@@ -131,10 +131,13 @@ def _at_risk_tiles(tiles, day=None):
     walks off or the tile weeds. A pen fed yesterday, or a tile watered yesterday, can slip a day for
     free, which is precisely how the tape feeds 16 of 19 pens on day 19 and loses nothing.
 
-    On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
+    The d28 "bank the field" branch that used to sit here was dead -- gated on a local hardcoded
+    False, pointing at a `BANK_THE_FIELD_ON_D28` constant that no longer existed. It measured a null
+    because d28 is a SOLVED day with slack, so promoting a ripe tile into the at-risk set changed no
+    route. The deadline is real but it belongs in the PRICE, not in this set: see the d28 branch in
+    `router.animal_ops`.
     """
     out = set()
-    banking = False
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
@@ -143,8 +146,6 @@ def _at_risk_tiles(tiles, day=None):
                 out.add((x, y))
             elif (cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
-                out.add((x, y))
-            elif banking and int(cell.get("yield_units", 0) or 0) > 0:
                 out.add((x, y))
     return out
 

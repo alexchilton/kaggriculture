@@ -90,14 +90,14 @@ def test_the_automatic_drop_cannot_rescue_the_last_day():
         "the automatic drop moved out of _end_of_day; re-read where it runs before trusting this")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN GAP, UNFIXED. 51 sellable units (~$1,192) end the season in the crew's hands. Two "
-    "attempts failed and are recorded so they are not re-tried blind: adding d29 to "
-    "WALK_THE_LOAD_HOME_DAYS recovered only 7 units, because a solved route stores work stops and "
-    "materialise appends the shed trip from slack that d29 does not have; and freeing 28 turns by "
-    "dropping FEED/CARE regressed harvest 396->389 and sell 1489->1474, because _apply_precomputed "
-    "keys on the exact op tuple. The fix has to come from the route storing its delivery, or from "
-    "_apply_precomputed not matching on ops. strict=True so it reports the day either lands."))
+#: **CLOSED 2026-08-17.** This was `xfail(strict=True)` over a 51-unit (~$1,192) gap, with two
+#: failed attempts recorded on it: adding d29 to `WALK_THE_LOAD_HOME_DAYS` recovered only 7 units
+#: because a solved route stores work stops and `materialise` appends the shed trip from slack d29
+#: does not have; and freeing 28 turns by dropping FEED/CARE regressed harvest 396->389 because
+#: `_apply_precomputed` keyed on the exact op tuple. Both halves have since landed --
+#: `NO_UPKEEP_ON_THE_LAST_DAY` frees the turns and `cover.MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`
+#: reseats the reduced stop -- and the strict marker did its job: it went XPASS and reported that
+#: the day had landed. Left unmarked so a regression is a plain failure.
 def test_the_season_does_not_end_with_the_crew_holding_sellable_goods(final_state):
     """The defect. Every unit here is produce the board grew and we threw away."""
     carried, inv = final_state

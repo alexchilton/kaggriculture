@@ -585,6 +585,13 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             fertilized = True
         if not cell["watered_today"]:
             if cell["consecutive_unwatered"] >= 1:
+                # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: gate this with
+                # `upkeep_buys_nothing(day)`, as the one-shot survival water above already is.** The
+                # grid came back byte-identical and `water d29 14/11` did not move, which means this
+                # branch does not fire on d29 at all. d29's fourteen waters are the one-shot
+                # in-window fills higher up in this function -- each one paired with a HARVEST on
+                # the same stop, filling the tile so it can be taken the same turn -- and those are
+                # earning their turn, not wasting it.
                 out.append(("WATER", None, _crop_remaining(cell, day)))
             elif produces_tomorrow and room > 0 and (fertilized or day >= FERTILIZE_UNTIL_DAY):
                 # **Past `FERTILIZE_UNTIL_DAY` this branch is the ONLY water a safe tile can be
@@ -616,10 +623,13 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        last_free = False
-        if (last_free
-                or (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
-                    and age >= _last_safe_age(info))):
+        # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: add `upkeep_buys_nothing(day)` here**, so
+        # that every legal harvest on the last day is CRITICAL rather than only one past its last
+        # safe age. Byte-identical grid, $155,202 either way. d29 already ends with an empty field --
+        # 0 tiles and 0 units standing at the close -- so there was no harvest left for a higher
+        # price to win. See the matching note in `animal_ops`.
+        if (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                and age >= _last_safe_age(info)):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
@@ -916,6 +926,16 @@ def animal_ops(cell, day, have_wheat):
         if cell.get("fertilizer_available"):
             out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
         if cell.get("yield_units", 0) > 0:
+            # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: promote this to CRITICAL.** The
+            # argument is sound on its face -- produce left on a pen at the close is discarded, so a
+            # last-day harvest is worth the whole tile -- and it changed nothing at all: grid
+            # byte-identical, $155,202 before and after, `harvest d29 20/19` either way, even after
+            # re-solving d29 for 300s under the new price.
+            #
+            # The reason is that there is no gap to close. Measured on the same seed, d29 ends with
+            # **0 tiles and 0 units standing** -- the field is already fully harvested. The solved
+            # route plans 32 HARVEST stops and 20 execute, and the 12 that do not are tiles whose
+            # produce another stop already took. Price was never the binding constraint here.
             out.append(("HARVEST", None, cell["yield_units"] * price))
         return out
     if not fed and have_wheat:
@@ -972,6 +992,19 @@ def animal_ops(cell, day, have_wheat):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
         prize = cell["yield_units"] * price
+        # **d28 is the last day this produce banks itself for free.** `_drop_inventories_to_shed`
+        # runs inside `_end_of_day`, so a load carried at dusk reaches the shed at no turn cost and
+        # is sellable all through d29. On d29 that same drop lands AFTER the final `_process_market`
+        # (`kaggriculture.py:942` then `:946`), so milk left standing on a pen tomorrow is produce
+        # that can never be money.
+        #
+        # A crop already reaches CRITICAL through `_last_safe_age` -- it has a filling window that
+        # closes. A pen has no such window, so nothing ever promotes it, and the grid shows 48 idle
+        # unit-turns on d28 with the field still holding. This is the pen's version of the same
+        # deadline, and it is d28 ONLY: d29's own harvest is priced by the `upkeep_buys_nothing`
+        # branch at the top of this function.
+        if day is not None and day == R.SEASON_DAYS - 2:
+            prize += CRITICAL
         out.append(("HARVEST", None, prize))
     return out
 
