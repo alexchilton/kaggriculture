@@ -1306,7 +1306,7 @@ They do NOT carry across PLANS: the previous generation was solved against the v
 skipped. That stale quarter was still worth +$20,365 against no precomputation at all, which is the
 measure of how much the geometry alone is worth and why regenerating was worth doing.
 
-Regenerated 2026-08-15 by `scripts/resolve_days.py`, IN DAY ORDER: each solved day changes the next
+Regenerated 2026-08-17 by `scripts/resolve_days.py`, IN DAY ORDER: each solved day changes the next
 day's board, so every fixture is dumped with all earlier routes already installed. Re-run that
 script rather than editing this file or dumping a fixture by hand.
 """
@@ -1539,28 +1539,28 @@ SOLVED_DAYS = {
         11: [((2, 5), ('WATER', 'HARVEST', 'HARVEST')), ((2, 6), ('WATER',)), ((1, 6), ('HARVEST', 'DIG')), ((0, 6), ('HARVEST', 'DIG')), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((1, 7), ('HARVEST', 'DIG'))],
     },
     28: {
-        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST')), ((0, 4), ('WATER',)), ((0, 5), ('WATER', 'HARVEST'))],
-        1: [((4, 6), ('WATER',)), ((4, 7), ('WATER', 'HARVEST')), ((4, 8), ('WATER', 'HARVEST')), ((2, 9), ('WATER', 'HARVEST')), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((0, 7), ('WATER',))],
-        2: [],
-        3: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((9, 4), ('HARVEST',)), ((9, 3), ('WATER',)), ((9, 2), ('WATER',)), ((9, 1), ('WATER', 'HARVEST'))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST'))],
-        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER', 'HARVEST'))],
-        6: [((1, 5), ('WATER',)), ((1, 3), ('WATER', 'HARVEST')), ((1, 2), ('WATER', 'HARVEST')), ((1, 1), ('WATER', 'HARVEST')), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER', 'HARVEST')), ((1, 0), ('HARVEST',))],
-        7: [],
-        8: [((4, 0), ('WATER',)), ((5, 0), ('WATER', 'HARVEST')), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST'))],
-        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('WATER', 'HARVEST')), ((8, 2), ('WATER',)), ((8, 1), ('WATER', 'HARVEST'))],
-        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 7), ('WATER', 'HARVEST')), ((1, 7), ('WATER', 'HARVEST')), ((2, 6), ('WATER', 'HARVEST'))],
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        1: [((4, 6), ('WATER',)), ((4, 7), ('WATER', 'HARVEST')), ((4, 9), ('WATER', 'HARVEST')), ((3, 9), ('WATER', 'HARVEST'))],
+        2: [((3, 7), ('WATER', 'HARVEST')), ((3, 8), ('WATER', 'HARVEST')), ((2, 8), ('WATER', 'HARVEST')), ((1, 8), ('WATER', 'HARVEST')), ((0, 8), ('WATER', 'HARVEST')), ((0, 9), ('WATER', 'HARVEST')), ((1, 9), ('WATER', 'HARVEST'))],
+        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER', 'HARVEST')), ((8, 3), ('WATER', 'HARVEST')), ((9, 3), ('WATER',)), ((9, 2), ('WATER', 'HARVEST'))],
+        4: [((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((7, 2), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST'))],
+        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER', 'HARVEST')), ((7, 1), ('WATER', 'HARVEST'))],
+        6: [((2, 3), ('WATER',)), ((2, 2), ('WATER',)), ((2, 1), ('WATER', 'HARVEST')), ((1, 1), ('WATER',)), ((0, 1), ('WATER', 'HARVEST')), ((0, 0), ('WATER',)), ((1, 0), ('WATER', 'HARVEST')), ((2, 0), ('WATER', 'HARVEST'))],
+        7: [((2, 5), ('WATER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST')), ((1, 4), ('WATER',)), ((0, 4), ('WATER',)), ((0, 3), ('WATER', 'HARVEST')), ((1, 3), ('WATER',)), ((1, 2), ('WATER', 'HARVEST')), ((0, 2), ('WATER',))],
+        8: [((4, 1), ('WATER', 'HARVEST')), ((4, 0), ('WATER',)), ((5, 0), ('WATER',)), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST')), ((8, 1), ('WATER',)), ((9, 1), ('WATER', 'HARVEST'))],
+        9: [],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 6), ('WATER', 'HARVEST')), ((0, 6), ('WATER',)), ((1, 7), ('WATER', 'HARVEST'))],
     },
     29: {
-        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER', 'HARVEST'))],
-        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST'))],
-        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 5), ('WATER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST')), ((0, 4), ('WATER', 'HARVEST'))],
+        0: [((4, 4), ('COLLECT_FERTILIZER',)), ((4, 3), ('COLLECT_FERTILIZER',)), ((3, 3), ('COLLECT_FERTILIZER',)), ((2, 2), ('WATER', 'HARVEST')), ((2, 3), ('WATER', 'HARVEST')), ((1, 3), ('WATER', 'HARVEST')), ((1, 4), ('WATER', 'HARVEST')), ((2, 4), ('COLLECT_FERTILIZER', 'HARVEST'))],
+        1: [((7, 0), ('WATER', 'HARVEST')), ((9, 0), ('WATER', 'HARVEST')), ((8, 1), ('WATER', 'HARVEST'))],
+        2: [((4, 6), ('WATER', 'HARVEST')), ((4, 5), ('COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('COLLECT_FERTILIZER', 'HARVEST'))],
         3: [],
-        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 1), ('WATER',)), ((1, 0), ('WATER',))],
-        5: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 1), ('WATER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST')), ((7, 0), ('WATER', 'HARVEST'))],
-        6: [((4, 6), ('WATER', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER', 'HARVEST'))],
-        7: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 2), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST')), ((9, 2), ('WATER', 'HARVEST')), ((9, 3), ('WATER', 'HARVEST'))],
-        8: [((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER', 'HARVEST')), ((4, 0), ('WATER', 'HARVEST'))],
+        4: [((3, 4), ('COLLECT_FERTILIZER',)), ((0, 2), ('WATER', 'HARVEST')), ((0, 0), ('HARVEST',)), ((1, 1), ('WATER', 'HARVEST'))],
+        5: [((5, 4), ('COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('COLLECT_FERTILIZER', 'HARVEST')), ((6, 2), ('WATER', 'HARVEST')), ((5, 2), ('COLLECT_FERTILIZER', 'HARVEST'))],
+        6: [((3, 6), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((0, 6), ('WATER', 'HARVEST')), ((0, 5), ('WATER', 'HARVEST')), ((0, 4), ('WATER', 'HARVEST'))],
+        7: [((6, 4), ('COLLECT_FERTILIZER',)), ((6, 3), ('COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('WATER', 'HARVEST')), ((9, 3), ('WATER', 'HARVEST')), ((7, 4), ('COLLECT_FERTILIZER', 'HARVEST'))],
+        8: [((4, 2), ('COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER', 'HARVEST')), ((3, 0), ('WATER', 'HARVEST')), ((4, 0), ('WATER', 'HARVEST')), ((5, 0), ('WATER', 'HARVEST'))],
     },
 }
 '''
@@ -2816,7 +2816,7 @@ from .solved_days import SOLVED_DAYS                                          # 
 #: turns. `_end_of_day` delivers d28's load to the shed overnight for free. He never plans a d29
 #: delivery because he does not need one. We back-load 10 harvests into d23-d29 (195 against his
 #: 185) while d0-d22 are level (201 against 204). Move the work to d28 and the delivery is free.
-UNSOLVE_DAYS = ()
+UNSOLVE_DAYS = (29,)
 
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
@@ -5521,6 +5521,13 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
             fertilized = True
         if not cell["watered_today"]:
             if cell["consecutive_unwatered"] >= 1:
+                # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: gate this with
+                # `upkeep_buys_nothing(day)`, as the one-shot survival water above already is.** The
+                # grid came back byte-identical and `water d29 14/11` did not move, which means this
+                # branch does not fire on d29 at all. d29's fourteen waters are the one-shot
+                # in-window fills higher up in this function -- each one paired with a HARVEST on
+                # the same stop, filling the tile so it can be taken the same turn -- and those are
+                # earning their turn, not wasting it.
                 out.append(("WATER", None, _crop_remaining(cell, day)))
             elif produces_tomorrow and room > 0 and (fertilized or day >= FERTILIZE_UNTIL_DAY):
                 # **Past `FERTILIZE_UNTIL_DAY` this branch is the ONLY water a safe tile can be
@@ -5552,8 +5559,12 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        last_free = False
-        if (last_free
+        # **The last day is every tile's last safe day.** `_last_safe_age` promotes a harvest on the
+        # day decay would start eating it, which is right while there is a tomorrow to be eaten by.
+        # On d29 a tile left standing is not decayed, it is discarded whole, so the age test cannot
+        # express the deadline. Reads as a null on the kawashigi grid, which ends empty; the ladder
+        # corpus leaves 519 WHEAT standing over 30 games. See the note in `animal_ops`.
+        if (upkeep_buys_nothing(day)
                 or (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
                     and age >= _last_safe_age(info))):
             prize += CRITICAL
@@ -5852,7 +5863,19 @@ def animal_ops(cell, day, have_wheat):
         if cell.get("fertilizer_available"):
             out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
         if cell.get("yield_units", 0) > 0:
-            out.append(("HARVEST", None, cell["yield_units"] * price))
+            # **On the last day a standing harvest is the only thing that can still become money.**
+            # FEED and CARE are already gone above; what is left on a pen at the close is discarded
+            # at a rollover that scores nothing. So this is worth the whole tile, not its units, and
+            # it has to outrank the walk to it.
+            #
+            # **Judged on the kawashigi grid this reads as an exact null, and that grid is the wrong
+            # harness for it.** Seed 11 on 75 tiles ends with 0 units standing, so no price can win
+            # work already done. Across 30 real ladder games we end holding **22.8 units in the
+            # field per game against the opponents' 3.0** -- WHEAT 519, COW 99, CARROT 34 over the
+            # corpus -- and four losses are narrower than what we left in the ground
+            # (`93839424 -158` with 22 standing, `93826137 -623` with 24). Measure this with
+            # `scripts/rematch_the_losses.py`, which pins each game's own seed, never on one grid.
+            out.append(("HARVEST", None, CRITICAL + cell["yield_units"] * price))
         return out
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
@@ -5908,6 +5931,19 @@ def animal_ops(cell, day, have_wheat):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
         prize = cell["yield_units"] * price
+        # **d28 is the last day this produce banks itself for free.** `_drop_inventories_to_shed`
+        # runs inside `_end_of_day`, so a load carried at dusk reaches the shed at no turn cost and
+        # is sellable all through d29. On d29 that same drop lands AFTER the final `_process_market`
+        # (`kaggriculture.py:942` then `:946`), so milk left standing on a pen tomorrow is produce
+        # that can never be money.
+        #
+        # A crop already reaches CRITICAL through `_last_safe_age` -- it has a filling window that
+        # closes. A pen has no such window, so nothing ever promotes it, and the grid shows 48 idle
+        # unit-turns on d28 with the field still holding. This is the pen's version of the same
+        # deadline, and it is d28 ONLY: d29's own harvest is priced by the `upkeep_buys_nothing`
+        # branch at the top of this function.
+        if day is not None and day == R.SEASON_DAYS - 2:
+            prize += CRITICAL
         out.append(("HARVEST", None, prize))
     return out
 
@@ -6446,10 +6482,13 @@ def _at_risk_tiles(tiles, day=None):
     walks off or the tile weeds. A pen fed yesterday, or a tile watered yesterday, can slip a day for
     free, which is precisely how the tape feeds 16 of 19 pens on day 19 and loses nothing.
 
-    On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
+    The d28 "bank the field" branch that used to sit here was dead -- gated on a local hardcoded
+    False, pointing at a `BANK_THE_FIELD_ON_D28` constant that no longer existed. It measured a null
+    because d28 is a SOLVED day with slack, so promoting a ripe tile into the at-risk set changed no
+    route. The deadline is real but it belongs in the PRICE, not in this set: see the d28 branch in
+    `router.animal_ops`.
     """
     out = set()
-    banking = False
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
@@ -6458,8 +6497,6 @@ def _at_risk_tiles(tiles, day=None):
                 out.add((x, y))
             elif (cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
-                out.add((x, y))
-            elif banking and int(cell.get("yield_units", 0) or 0) > 0:
                 out.add((x, y))
     return out
 
