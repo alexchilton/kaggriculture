@@ -91,6 +91,30 @@ MODULES = (
     # This is NOT a verdict that a strawberry solve is worthless -- the arm demonstrably plays its
     # late season on routes that cannot match, and that is a real defect. It is a verdict that THIS
     # solve, at THIS budget, loses. Re-solving needs its own measurement before it ships.
+    #
+    # **BOTH ARE BACK IN as of 2026-08-17, on a fresh solve at 300s/day with two defects fixed that
+    # the 2026-08-16 solve had.** `OPENING_GEOMETRY` had six squares of the opening carrying the
+    # wrong crop, and `dump_day_jobs.py` was handing the solver the DAWN PREDICTION of each unit's
+    # start tile rather than the tile it woke on -- 22 of 205 unit-days across d12-d29 wrong, and the
+    # whole spawn ring rotated by one on d19. So the earlier negative was measured on routes solved
+    # for a board we no longer play, from start tiles that were wrong.
+    #
+    # What IS measured tonight, on the same 97 ladder games with the seeds fixed, is the melon half:
+    #
+    #     HEAD                                          66/97
+    #     + geometry, + start tiles, + melon q3 resolve  61/97
+    #
+    # Net -5, and NOT read as a regression: 15 of the 97 games changed result, 5 our way and 10
+    # against, on margins as thin as $92, $240, $313 and $583. Fifteen flips splitting 10/5 is 1.3
+    # standard deviations from even. It is churn, not signal.
+    #
+    # **The two strawberry tables themselves have no measurement.** They are shipped on Alex's
+    # explicit call, to get the night's work onto the ladder rather than hold it for a rematch. If
+    # the rating drops, these two lines are the first thing to pull -- `melon_branch.install` and
+    # `q4_branch.install` both catch `ImportError`, so removing them restores the melon fallback
+    # that the 66/97 was measured with.
+    ("kagg.search.solved_days_straw", "kagg/search/solved_days_straw.py"),
+    ("kagg.search.solved_days_straw_q4", "kagg/search/solved_days_straw_q4.py"),
     ("kagg.search.cover", "kagg/search/cover.py"),
     # **Before both branch modules, which import `Branch` from it at module scope.** A leaf: it
     # imports nothing from `kagg`. Its absence is what made this builder refuse to run at all --

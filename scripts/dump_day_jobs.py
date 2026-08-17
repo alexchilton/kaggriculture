@@ -104,10 +104,27 @@ def main():
                            jobs=[_jsonable(j) for j in p["jobs"]])
         return real(*a, **kw)
 
+    #: Where each unit ACTUALLY woke on the target day, by unit index. Filled while the day plays.
+    #: `setdefault` keeps the FIRST sighting, which for a hand is its spawn tile: the h0 crew has
+    #: walked off the ring by the time a second hire wave lands at h2, so a later reading would be
+    #: that hand's position, not its start.
+    woke = {}
+
+    def _agent():
+        a = SA.make_agent(sched, 0, router=True)
+
+        def f(o, _t=None):
+            if int(o.get("day", 0) or 0) == args.day:
+                farm = (o.get("farms") or [{}])[0] or {}
+                for u, p in enumerate([farm.get("farmer")] + list(farm.get("hands") or [])):
+                    if p is not None:
+                        woke.setdefault(u, [int(p[0]), int(p[1])])
+            return a(o)
+        return f
+
     C.plan = spy
     try:
-        B.run(lambda: (lambda a: (lambda o, t: a(o)))(SA.make_agent(sched, 0, router=True)),
-              lambda: B.tape_policy(replay, team, 1),
+        B.run(_agent, lambda: B.tape_policy(replay, team, 1),
               args.seed, args.weeds, stop_day=args.day + 1,
               economy=B.env_config(replay), shops=B.recorded_shops(replay))
     finally:
@@ -118,11 +135,43 @@ def main():
                          "day have any work? (a day whose job pool is empty never reaches it)"
                          % args.day)
 
+    # **The solver prices a tour from these tiles, so they must be the tiles the units WAKE on.**
+    #
+    # `cover.plan` is called at DAWN and its `units` list is a PREDICTION: `_end_of_day` discharges the
+    # whole crew (`kaggriculture.py:867`), so every hand is a fresh `_spawn_hand` and `_arrivals`
+    # guesses the least-occupied shed-access tile. The guess is wrong whenever the farmer's own tour
+    # walks it off `(4,4)` before the hires settle -- hires settle in the MARKET phase, which runs
+    # AFTER the unit phase (`:922` then `:928`) -- so the ring reads one slot emptier than predicted
+    # and every hand lands one slot early.
+    #
+    # Measured 2026-08-17, seed 11, `data/logs/start_tiles_d12_d29_2026-08-17.log`: 22 of 205
+    # unit-days across d12-d29 are routed from a tile the unit did not wake on, and d19 is the whole
+    # ring rotated by one, 11 of 13. A tour priced from the wrong square runs long and its tail is
+    # dropped live -- one strawberry on d11 traced to exactly that, and the tile weeded that night.
+    #
+    # The live agent cannot use this: it plans at h0 and the true tiles are not knowable until the
+    # hires settle. The SOLVER can, because it runs offline against a day that has already happened.
+    # Fixing the prediction itself is a separate and harder change -- forcing it true costs a game
+    # turn and measured as a loss; see
+    # `tests/test_a_hand_starts_the_day_on_the_tile_it_was_routed_from.py`, which is XFAIL for that
+    # reason.
+    moved = []
+    for u, tile in enumerate(grabbed["units"]):
+        real_tile = woke.get(u)
+        if real_tile is not None and list(real_tile) != list(tile):
+            moved.append((u, list(tile), list(real_tile)))
+            grabbed["units"][u] = list(real_tile)
+
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(grabbed, indent=1))
     print("%s  day %d, %d units, %d jobs, budget %s"
           % (out, args.day, len(grabbed["units"]), len(grabbed["jobs"]), grabbed["budget"]))
+    if moved:
+        print("  start tiles corrected from the dawn prediction to where the unit woke: %d of %d"
+              % (len(moved), len(grabbed["units"])))
+        for u, was, now in moved:
+            print("    u%-3d routed %s -> woke %s" % (u, was, now))
 
 
 if __name__ == "__main__":

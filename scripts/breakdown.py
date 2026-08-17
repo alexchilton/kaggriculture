@@ -111,6 +111,14 @@ TAPES = {
     #
     # Solve on an ARMED seed. `YARN_STORE` unlocks by d6 on 15 of 100 seeds and this branch is
     # only ever taken on those -- run on every seed it measured -$2,749 a season.
+    # **His STRAWBERRY season**, the other of his two populations. `melon_branch` embeds these rows
+    # as `B3_ROWS_B64` and installs them from d3 when the opponent shows 9+ melon tiles, but the game
+    # they were read off was never registered here -- so the strawberry arm has never had a tape
+    # column to be compared against, and every strawberry number in these docs is measured against
+    # his MELON season. `melon_branch.SOURCE_REPLAY` / `SOURCE_SCHEDULE` name both halves.
+    "kawashigi_b3": ("data/seed_scripts/kawashigi/92466371.json",
+                     "data/seed_scripts/kawashigi_b3/schedule.json", "カワシギ"),
+    # **The FOUR-quadrant branch.**
     "kawashigi_q4c": ("data/seed_scripts/downloads_2026-08-13/91907974.json",
                       "data/seed_scripts/kawashigi_q4c/schedule.json",
                       "\u30ab\u30ef\u30b7\u30ae"),
@@ -599,10 +607,13 @@ def main():
                                            shops=shops)
 
     def mine():
-        # `start_day` only exists on HEAD's agent, and only --handover needs it. Passing it
-        # unconditionally made every older base (1455*) die on import of the comparison itself.
-        kw = {} if args.handover is None else {"start_day": args.handover}
-        a = schedule_agent.make_agent(thin, 0, router=True, **kw)
+        # `start_day` belonged to the 3,610-line predecessor that `fa96ace` deleted on 2026-08-15
+        # when the shipped agent took its name. The shipped agent never had it, so --handover raised
+        # `TypeError` from that commit until this one. It told the agent "somebody else played the
+        # earlier days and MET their rows", suppressing the missed-row catch-up. We get the same
+        # effect a different way: the loop below drives our agent through every tape day, so it
+        # reaches the handover with its own state warm and no row recorded as missed.
+        a = schedule_agent.make_agent(thin, 0, router=True)
         if args.handover is None:
             return lambda o, t: a(o)
         tape = tape_policy(replay, team, 0)

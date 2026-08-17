@@ -1489,6 +1489,35 @@ def _outstanding_places(sched, day, tiles):
     return out
 
 
+#: Tile -> crop for the opening sowing, read off his board. **A permutation, not a count change.**
+#:
+#: Measured 2026-08-17, seed 11, both three-quadrant tapes. Our d1 and his d1 sow the same totals, 12
+#: melon and 7 wheat, and differ only in which square gets which -- six tiles, three each way. The
+#: cause is the sweep below: crops are seated in `router.field_order` order, so the first crop reached
+#: claims a contiguous block of squares and the next takes the remainder. He interleaves.
+#:
+#:     ours d1              his d1            x across, y down
+#:     ME ME ME ME ME      wh ME ME wh ME
+#:     ME ME ME ME wh      ME wh ME ME wh
+#:     ME ME wh wh  .      ME ME wh ME  .
+#:     ME wh wh  .  .      ME wh ME  .  .
+#:     wh wh  .  .  .      ME wh  .  .  .
+#:
+#: It is not cosmetic. Wheat sown on d1 is ripe and cleared by d5, which is what frees the square for
+#: his d6 strawberry; melon sown on d1 stands to about d10, and `PLANT` onto an occupied tile is
+#: refused outright, so the square is lost for the season. Replaying his own d5-d11 actions against
+#: our board, the ONLY refusals were these squares -- his d5 h14 strawberry on (0,0) and (1,1), his d8
+#: harvest-then-wheat on (3,0) -- and they are the whole of the `strawb -2` and `melon +3` the replay
+#: could not close. `docs/replay_window_cannot_converge_2026-08-17.md` has the tables.
+OPENING_GEOMETRY = {(0, 0): "WHEAT", (1, 1): "WHEAT", (3, 0): "WHEAT",
+                    (3, 2): "MELON", (2, 3): "MELON", (0, 4): "MELON"}
+
+#: Last day `OPENING_GEOMETRY` is consulted. The squares are occupied from d1 to d5 so the pins are
+#: unreachable in between anyway; the bound is here so a tile cleared in mid-season is sown by the
+#: ordinary rule rather than by a map that describes the opening.
+OPENING_GEOMETRY_LAST_DAY = 4
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -1659,6 +1688,24 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
                     if t not in taken and tiles[t[1]][t[0]] is None]
         held = set(free_now[:owed_later])
         sow_order = [t for t in plant_order if t not in held]
+
+    # See `OPENING_GEOMETRY`. Seated BEFORE the sweep so these squares carry the crop he sows rather
+    # than whichever crop the sweep order happens to reach first. Each pin spends its own crop's
+    # outstanding count -- `live` is incremented, and `_outstanding` reads it -- so the day's totals
+    # are untouched and this is a permutation of the same plantings, not an extra one.
+    if day <= OPENING_GEOMETRY_LAST_DAY:
+        for spot, crop in OPENING_GEOMETRY.items():
+            if crop not in CROP or RT.plant_prize(crop, day) <= 0:
+                continue
+            if spot in taken or not _owned(spot, unlocked):
+                continue
+            if tiles[spot[1]][spot[0]] is not None:
+                continue
+            if _outstanding(crop) <= 0:
+                continue
+            pins[spot] = ("PLANT", crop, RT.plant_prize(crop, day))
+            taken.add(spot)
+            live[crop] += 1
 
     for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
         qty = want[crop]
