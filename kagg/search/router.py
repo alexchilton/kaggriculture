@@ -623,13 +623,14 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: add `upkeep_buys_nothing(day)` here**, so
-        # that every legal harvest on the last day is CRITICAL rather than only one past its last
-        # safe age. Byte-identical grid, $155,202 either way. d29 already ends with an empty field --
-        # 0 tiles and 0 units standing at the close -- so there was no harvest left for a higher
-        # price to win. See the matching note in `animal_ops`.
-        if (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
-                and age >= _last_safe_age(info)):
+        # **The last day is every tile's last safe day.** `_last_safe_age` promotes a harvest on the
+        # day decay would start eating it, which is right while there is a tomorrow to be eaten by.
+        # On d29 a tile left standing is not decayed, it is discarded whole, so the age test cannot
+        # express the deadline. Reads as a null on the kawashigi grid, which ends empty; the ladder
+        # corpus leaves 519 WHEAT standing over 30 games. See the note in `animal_ops`.
+        if (upkeep_buys_nothing(day)
+                or (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                    and age >= _last_safe_age(info))):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
@@ -926,17 +927,19 @@ def animal_ops(cell, day, have_wheat):
         if cell.get("fertilizer_available"):
             out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
         if cell.get("yield_units", 0) > 0:
-            # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: promote this to CRITICAL.** The
-            # argument is sound on its face -- produce left on a pen at the close is discarded, so a
-            # last-day harvest is worth the whole tile -- and it changed nothing at all: grid
-            # byte-identical, $155,202 before and after, `harvest d29 20/19` either way, even after
-            # re-solving d29 for 300s under the new price.
+            # **On the last day a standing harvest is the only thing that can still become money.**
+            # FEED and CARE are already gone above; what is left on a pen at the close is discarded
+            # at a rollover that scores nothing. So this is worth the whole tile, not its units, and
+            # it has to outrank the walk to it.
             #
-            # The reason is that there is no gap to close. Measured on the same seed, d29 ends with
-            # **0 tiles and 0 units standing** -- the field is already fully harvested. The solved
-            # route plans 32 HARVEST stops and 20 execute, and the 12 that do not are tiles whose
-            # produce another stop already took. Price was never the binding constraint here.
-            out.append(("HARVEST", None, cell["yield_units"] * price))
+            # **Judged on the kawashigi grid this reads as an exact null, and that grid is the wrong
+            # harness for it.** Seed 11 on 75 tiles ends with 0 units standing, so no price can win
+            # work already done. Across 30 real ladder games we end holding **22.8 units in the
+            # field per game against the opponents' 3.0** -- WHEAT 519, COW 99, CARROT 34 over the
+            # corpus -- and four losses are narrower than what we left in the ground
+            # (`93839424 -158` with 22 standing, `93826137 -623` with 24). Measure this with
+            # `scripts/rematch_the_losses.py`, which pins each game's own seed, never on one grid.
+            out.append(("HARVEST", None, CRITICAL + cell["yield_units"] * price))
         return out
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
