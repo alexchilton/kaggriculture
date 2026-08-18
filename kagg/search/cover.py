@@ -934,7 +934,37 @@ from .solved_days import SOLVED_DAYS                                          # 
 #: turns. `_end_of_day` delivers d28's load to the shed overnight for free. He never plans a d29
 #: delivery because he does not need one. We back-load 10 harvests into d23-d29 (195 against his
 #: 185) while d0-d22 are level (201 against 204). Move the work to d28 and the delivery is free.
-UNSOLVE_DAYS = (29,)
+#:
+#: **2026-08-18: that prescription, carried out.** Nothing existed to move the work with, so the
+#: range now starts at d24. A solved route is worth having early and starts LOSING harvest from d24,
+#: because `_apply_precomputed` prices nothing: a stop whose op set drifted from the fixture loses
+#: its solved seat and falls to `_insert_leftovers`, which needs slack to place it. d13-d23 have
+#: slack and the demotion is invisible; d24 onward do not, and the job is simply never walked.
+#:
+#: Measured on each tape's own seed, baseline against `range(24, 30)`:
+#:
+#:     straw q3 (70683142)    money 155,804 -> 155,421   crop units left 22 -> 12, pen 16 -> 12
+#:                            d28 harvest 24 -> 27, d29 18 -> 22
+#:     melon q3 (1240813987)  money 139,249 -> 139,213   crop units left 12 ->  0, pen 19 -> 19
+#:                            d28 harvest 29 -> 29, d29 14 -> 18
+#:
+#: 34 crop units left standing becomes 12, for -$419 across both arms (0.14%, inside one-seed
+#: noise). カワシギ leaves ZERO on all three of his tapes while idling 56-97 turns on d29, so the
+#: leftovers were never a capacity problem.
+#:
+#: **The four-quadrant arms are NOT covered by this and are NOT measured.** `q4_branch.install` sets
+#: `UNSOLVE_DAYS = ()` and rebuilds `PRECOMPUTED_ROUTES` unfiltered, so this range does not reach
+#: them. An A/B there returns byte-identical, which reads exactly like a null and is not one.
+#:
+#: Going further loses: `range(19, 30)` clears the most (d28 harvest 29) and costs $6,223 on straw
+#: q3. `range(26, 30)` is worse on every column -- too late to move any work.
+#:
+#: **A NULL, recorded so it is not re-derived:** extending `MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`
+#: below d29 -- to d28, d24, or every day -- is byte-identical on money, harvest, leftovers and
+#: weeds on straw q3. Only the recorded miss count moves (55 -> 51 -> 43 -> 39). Re-seating a
+#: drifted stop changes which hand walks it, not whether it happens, because `_insert_leftovers`
+#: was already placing it. The 55 misses are a poor proxy for lost work.
+UNSOLVE_DAYS = tuple(range(24, 30))
 
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
@@ -1015,7 +1045,7 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
                                    % (len(units), no_unit)))
     if missed:
         PRECOMPUTED_MISSES.append((day, "skipped %d stop(s) the board does not have: %s"
-                                   % (len(missed), missed[:4])))
+                                   % (len(missed), missed)))
 
     seated = {id(j) for work in routes.values() for j in work}
     left = [j for j in jobs if id(j) not in seated]

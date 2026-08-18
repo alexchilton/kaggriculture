@@ -275,6 +275,22 @@ class Q4Branch(Branch):
             # is what shipped before this branch existed, so it is no worse -- but say nothing
             # clever about it: an unsolved day is a day the greedy plays.
             q4 = importlib.import_module(self.SOLVE_FOR_MELON)
+        # **This branch keeps its whole solved table, including the days `cover.UNSOLVE_DAYS` gives
+        # to the greedy.** `melon_branch.install` and the module-level build both filter by that
+        # range; this one deliberately does not, so the line below is a reset and not an oversight.
+        #
+        # TRIED AND REVERTED 2026-08-18: honouring the range here, i.e. `if d not in
+        # cover.UNSOLVE_DAYS`. It clears the closing board on both four-quadrant arms and costs money
+        # on both, measured on the q4 tape's own seed 244615642:
+        #
+        #     melon q4   93,699 -> 93,404   crop units left 18 ->  7, pen 10 ->  6, d28 harvest 28 -> 21
+        #     straw q4   78,065 -> 76,209   crop units left 16 ->  6, pen  6 -> 10, d28 harvest 26 -> 23
+        #
+        # The same range is free on the three-quadrant arms (-$383 and -$36) and is kept there. The
+        # difference is that these tables were solved for the 100-tile board out to d29 and the
+        # greedy has more ground to cover with the same crew, so giving away d24-d29 costs more than
+        # the produce it recovers. Do not re-derive it: an A/B here that reads byte-identical means
+        # this line was left in, not that the range does nothing.
         cover.UNSOLVE_DAYS = ()
         cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
                                         for u, seq in units.items()}
