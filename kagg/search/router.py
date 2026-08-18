@@ -433,6 +433,40 @@ TOP_UP_FROM_DAY = 7
 TOP_UP_DISCOUNT = 8.0
 
 
+
+def _the_field_is_given_up(day):
+    """True once no crop is watered again: the closing days are for COLLECTING, not defending.
+
+    A tile weeds at `consecutive_unwatered >= 2`, checked at the nightly rollover
+    (`reference/kaggriculture.py:783`). From d27 that is two dry nights away, so every tile survives
+    d27 and d28 unwatered and can still be harvested on either. Watering it buys nothing but
+    insurance against not reaching it -- and the turns that insurance costs are exactly the turns
+    that would have reached it. 39 waters on d28 and 18 on d29 in the ladder game 94282682.
+
+    d27 is the LAST day this works. Stop at d28 and nothing can weed before the season ends, so the
+    defence is dropped with no collection bought: measured -$3,057. Stop at d26 and tiles die before
+    they have filled: -$3,000 to -$5,000, with d28 harvest collapsing 27 -> 12.
+
+    カワシギ's weeds appear at d29 dawn and nowhere else -- 1 -> 16, 0 -> 11, 11 -> 25 across his
+    three tapes -- which is the signature of stopping on d27. He still waters 32-36 tiles on d28,
+    but that is spare capacity, not the mechanism: rules that keep watering the tiles worth
+    collecting were measured and all lose to giving up the whole field (held-only and
+    held-or-will-fill are byte-identical to no change at all; dense-only harvests 383 against 387).
+
+    Measured on each tape's own seed, d29 money and what is left standing:
+
+        straw q3   155,421 -> 155,489   crop 12 -> 0, pen 12 -> 3, weeds  3 -> 18
+        melon q3   139,213 -> 138,759   crop  0 -> 0, pen 19 -> 3, weeds  5 -> 17
+        melon q4    93,699 ->  94,273   crop 18 -> 0, pen 10 -> 0, weeds 12 -> 22
+        straw q4    78,065 ->  75,917   crop 16 -> 0, pen  6 -> 0, weeds 12 -> 28
+
+    -$1,960 on money, all of it the straw q4 arm, and the field ends EMPTY on all four. Money is not
+    the selection criterion: the previous closing-day change cost $419 and moved the ladder 1982.5
+    -> 2080.9.
+    """
+    return day is not None and day >= R.SEASON_DAYS - 3
+
+
 def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
@@ -492,7 +526,8 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                                BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY)
                         and cell["consecutive_unwatered"] >= 1):
                     unit = max(unit, _crop_remaining(cell, day))
-                out.append(("WATER", None, unit))
+                if not _the_field_is_given_up(day):
+                    out.append(("WATER", None, unit))
                 # **The LAST water is not worth one unit, it is worth the tile.** See
                 # `FILLING_WATER`. It takes `room` to 0, which is exactly the condition
                 # `_one_shot_is_finished` waits for, so the HARVEST becomes legal on the next turn
@@ -513,7 +548,8 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 if age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
         elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
-              and not upkeep_buys_nothing(day)):
+              and not upkeep_buys_nothing(day)
+              and not _the_field_is_given_up(day)):
             # The last-day gate: this water buys the tile surviving TONIGHT's rollover, and after
             # d29's rollover there is no tile to have saved. Same switch as FEED/CARE.
             # Outside the window water buys nothing but survival, and it is only needed on the day
