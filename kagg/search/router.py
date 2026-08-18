@@ -1137,22 +1137,16 @@ PLANT_THEN_WATER = True
 #: tile that still holds a crop would delete the very HARVEST that was going to clear it.
 REPLANT_A_CLEARED_TILE = True
 
-#: Tiles a cleared harvest must NOT re-sow, and the day the reservation lifts. **A later row already
-#: owns the ground.**
+#: **DELETED 2026-08-18: `FALLOW_UNTIL = {(0, 0): 5}`.** It reserved (0,0) against the replant above,
+#: because the leader harvests his (0,0) wheat during d4 and leaves it bare overnight so his d5 h14
+#: hand can sow strawberry there, while we harvested at d4 h11 and re-sowed wheat at h12 -- and a
+#: `PLANT` onto an occupied tile does nothing, so the square was lost for the season.
 #:
-#: (0,0) is the one square in the opening where the replant above is wrong. The leader harvests his
-#: (0,0) wheat during d4 and leaves it bare overnight so his d5 h14 hand can sow strawberry on it. We
-#: harvest at d4 h11 and re-sow wheat at h12, and the d5 strawberry is then refused -- `PLANT` onto an
-#: occupied tile does nothing, so the square is lost for the season and the board runs one strawberry
-#: short from d6 onward.
-#:
-#: Measured 2026-08-17 on the melon tape's OWN seed 1240813987 (not seed 11, where neither tape's town
-#: nor trigger applies), our agent in his seat, replay d5-d11 on. It is the last survivor of the
-#: family `schedule_agent.OPENING_GEOMETRY` fixed: three squares carrying the wrong crop into d5, two
-#: of them the wrong species at sowing and this one the right species sown a day too late.
-#:
-#: A DAY, not a flag: the reservation lifts at d5 and the tile is ordinary ground from then on.
-FALLOW_UNTIL = {(0, 0): 5}
+#: The reason it is gone is that `REPLAY_OPENING_DAYS` now covers d4, so the tape's own d4 actions are
+#: sent and the tile is never re-sown in the first place. The reservation had nothing left to prevent.
+#: It also never paid: a null on the strawberry arm, and it flipped the melon arm's own-seed result
+#: from a win to a loss. Recorded here so the square is not re-diagnosed from scratch; the fix lives
+#: in the replay window, not in a per-tile exception.
 
 
 def _freshly_planted(crop, day):
@@ -1250,10 +1244,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 # iteration order, exactly as `chain_left` budgets placements: the row is a count and
                 # this must not invent one. Priced at `plant_prize` like every other PLANT, so the
                 # combined stop outbids a bare harvest by what the seed is actually worth.
-                # See `FALLOW_UNTIL`: a square a later row already owns is left bare rather than
-                # re-sown, because the crop that follows cannot displace what we put there.
                 if (REPLANT_A_CLEARED_TILE and replant
-                        and day >= FALLOW_UNTIL.get(tuple(tile), 0)
                         and (any(o == "HARVEST" for o, _i, _p in ops)
                              and not CROP[cell["crop"]]["ongoing"]
                              # **A DIG clears ground exactly as a one-shot HARVEST does**

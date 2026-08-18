@@ -39,7 +39,13 @@ def dawn_of_day_five():
 
     from kagg.search import schedule_agent as SA
     B.schedule_agent = SA
-    SA.REPLAY_OPENING_DAYS = (5, 6, 7, 8, 9, 10, 11)
+    # **The window the agent SHIPS with, not the one this test was written against.** It pinned
+    # `(5..11)` and therefore played d4 with our own planner, which is the configuration
+    # `FALLOW_UNTIL` existed for. d4 is taped now, so the tape's own d4 actions are sent and the
+    # re-sow this file is about cannot happen -- which is why `FALLOW_UNTIL` was deleted on
+    # 2026-08-18. Pinning a superseded window here would have kept the test green against an agent
+    # nobody ships.
+    SA.REPLAY_OPENING_DAYS = (4, 5, 6, 7, 8, 9, 10, 11)
 
     d = json.loads(TAPE.read_text())
     names = d["info"]["TeamNames"]
