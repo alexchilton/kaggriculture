@@ -249,7 +249,7 @@ _SA = _install()
 
 # **The tape days, embedded.** A submission carries no `data/` tree, so `_replay_opening` would find
 # no file, return `{}` as designed, and the replay would silently not happen -- an artifact that says
-# it replays d5-d11 and does not. Only our own seat's `farmer`/`hands`/`market` for those days is
+# it replays d4-d11 and does not. Only our own seat's `farmer`/`hands`/`market` for those days is
 # needed, 23 KB a tape against a 30 MB replay file. JSON has no tuple keys, so the latch pair is
 # stored as a two-element list and turned back into a tuple here.
 _SA.EMBEDDED_OPENINGS = {tuple(json.loads(_k)): _v

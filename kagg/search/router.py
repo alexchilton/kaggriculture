@@ -601,7 +601,8 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # water and then nothing -- 3 weeds by d28, 4 by d29, and seven of d29's turns spent
                 # DIGging our own dead tiles.
                 out.append(("WATER", None, price))
-            elif tile is not None and not upkeep_buys_nothing(day):
+            elif (tile is not None and (tile[0] + tile[1] + day) % 2 == 0
+                  and not upkeep_buys_nothing(day)):
                 # **The same parity alternation the one-shot branch above already ships.** Without
                 # it an ongoing crop has three gates and all three are shut for its first nine days:
                 # `produces_tomorrow` needs `age + 1 >= info["first"]`, which is 10 for STRAWBERRY,
@@ -613,6 +614,17 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # NOT `TOP_UP_SAFE_TILES`, which held this slot and measured $79,905 -> $63,645:
                 # that offered EVERY safe tile from a fixed day and doubled the load. Parity offers
                 # HALF and flips daily, so no tile is skipped twice running.
+                #
+                # **The parity term was in this comment and NOT in the condition until 2026-08-18**,
+                # so this branch was `TOP_UP_SAFE_TILES` in all but name -- every safe ongoing tile
+                # offered water every day, the exact shape that flag measured worse. Water does not
+                # grow an ongoing crop: `_daily_refresh_crops` advances `yield_units` off the
+                # calendar alone and reads `was_watered` only to weed the tile at
+                # `consecutive_unwatered >= 2` and to gate the fertilizer doubling
+                # (`reference/kaggriculture.py:783,799`). Measured strawberry arm, own seed
+                # 70683142, every water classified by its tile's dawn state: d12 55 waters against
+                # his 32 with **17** on safe tiles on their off-parity day, d13 61 against 43 with
+                # **21**. See `tests/test_a_safe_ongoing_tile_is_watered_on_alternate_days.py`.
                 out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
@@ -1125,6 +1137,23 @@ PLANT_THEN_WATER = True
 #: tile that still holds a crop would delete the very HARVEST that was going to clear it.
 REPLANT_A_CLEARED_TILE = True
 
+#: Tiles a cleared harvest must NOT re-sow, and the day the reservation lifts. **A later row already
+#: owns the ground.**
+#:
+#: (0,0) is the one square in the opening where the replant above is wrong. The leader harvests his
+#: (0,0) wheat during d4 and leaves it bare overnight so his d5 h14 hand can sow strawberry on it. We
+#: harvest at d4 h11 and re-sow wheat at h12, and the d5 strawberry is then refused -- `PLANT` onto an
+#: occupied tile does nothing, so the square is lost for the season and the board runs one strawberry
+#: short from d6 onward.
+#:
+#: Measured 2026-08-17 on the melon tape's OWN seed 1240813987 (not seed 11, where neither tape's town
+#: nor trigger applies), our agent in his seat, replay d5-d11 on. It is the last survivor of the
+#: family `schedule_agent.OPENING_GEOMETRY` fixed: three squares carrying the wrong crop into d5, two
+#: of them the wrong species at sowing and this one the right species sown a day too late.
+#:
+#: A DAY, not a flag: the reservation lifts at d5 and the tile is ordinary ground from then on.
+FALLOW_UNTIL = {(0, 0): 5}
+
 
 def _freshly_planted(crop, day):
     """The cell the environment will create for `crop` planted today (`kaggriculture.py:205-211`).
@@ -1221,7 +1250,10 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 # iteration order, exactly as `chain_left` budgets placements: the row is a count and
                 # this must not invent one. Priced at `plant_prize` like every other PLANT, so the
                 # combined stop outbids a bare harvest by what the seed is actually worth.
+                # See `FALLOW_UNTIL`: a square a later row already owns is left bare rather than
+                # re-sown, because the crop that follows cannot displace what we put there.
                 if (REPLANT_A_CLEARED_TILE and replant
+                        and day >= FALLOW_UNTIL.get(tuple(tile), 0)
                         and (any(o == "HARVEST" for o, _i, _p in ops)
                              and not CROP[cell["crop"]]["ongoing"]
                              # **A DIG clears ground exactly as a one-shot HARVEST does**

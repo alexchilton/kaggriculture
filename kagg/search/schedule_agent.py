@@ -1651,6 +1651,32 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # is untouched. Anchored on `planted + live`, which never falls, so this cannot inflate the total.
     if SHOP_ADAPT_CROPS and day >= CROP_ADAPT_FROM_DAY:
         want = _adapt_crops(want, state["planted"], live, day, unlocked_shops, LAST_DAY)
+    # **A pin the row no longer wants is dropped.** The sweep at the top of this function releases a
+    # pin for three reasons -- the tile filled, the crop expired, the land was lost -- and the seating
+    # loop below only ever ADDS, since `range(qty - planted - live)` is empty rather than negative
+    # when the count is met. So nothing reconciles a pin against a row that something ELSE satisfied.
+    #
+    # Our own units are not that something: a unit that plants its pin fills the tile and the sweep
+    # takes the pin. A REPLAYED day is, because the planner is driven every turn and its answer thrown
+    # away, so it pins `(4,8)` while the tape sows `(7,3)`. The tape's crop credits `state["planted"]`
+    # and the pin on `(4,8)` is still empty ground.
+    #
+    # Measured 2026-08-18, strawberry arm, own seed 70683142, replay d4-d11: d12 dawn wants 39
+    # cumulative, 37 stand, and FOUR strawberry are pinned -- (3,8) (4,8) (3,9) (4,9). d12's row of
+    # two became four plants, each dragging a chained WATER (`router.PLANT_THEN_WATER`), and each a
+    # tile still holding a crop at d29.
+    #
+    # Newest first, so the oldest commitment survives. Pinning exists to stop the chosen ground
+    # wandering turn to turn, and dropping the tile picked first would be that same wander.
+    for _crop, _held in list(live.items()):
+        _over = state["planted"][_crop] + _held - want[_crop]
+        if _over <= 0:
+            continue
+        for _t in [t for t in reversed(list(pins))
+                   if pins[t][0] == "PLANT" and pins[t][1] == _crop][:_over]:
+            pins.pop(_t)
+            taken.discard(_t)
+        live[_crop] -= _over
     # **Shed-access ground is held for a pen that is DUE, not for one ten days out.**
     # `router.field_order` leaves the four shed-access cells out of the sweep on purpose -- they are
     # worth more as pens, where FEED, CARE, COLLECT_FERTILIZER, PICKUP and DROP all happen without a
@@ -3447,7 +3473,7 @@ def _wheat_to(row, crop, budget):
 #: back a replay starts the less true that is.
 #: `resolve_days.py` and `breakdown.py` both read this, so the routes are solved for the trajectory
 #: we actually play.
-REPLAY_OPENING_DAYS = (5, 6, 7, 8, 9, 10, 11)
+REPLAY_OPENING_DAYS = (4, 5, 6, 7, 8, 9, 10, 11)
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
 #: `scripts/build_planner_submission.py`. Empty in the repo, where the tapes are read off disk.
@@ -3466,9 +3492,38 @@ REPLAY_OPENING_TAPE = {
     (False, False): ("data/seed_scripts/kawashigi/92498144.json", "カワシギ"),
     (True, False): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
     (False, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
-    # No four-quadrant STRAWBERRY game has been identified. The strawberry three-quadrant tape is
-    # the closer of the two available: it at least agrees about which crop is in the ground, which is
-    # what the hand actions address, where the q4 tape agrees only about the parcel count.
+    # **The three-quadrant strawberry tape, and this is exact rather than a compromise.** The note
+    # here used to say no four-quadrant strawberry game had been identified, and that was simply
+    # false -- six kawashigi seats qualify, separated from the melon ones by MELON 84 against
+    # MELON 164 over the season:
+    #
+    #     owned  straw%  money    game
+    #       100   55.2%  136,045  field_2026-08-17/93459936
+    #       100   52.5%  135,162  kawashigi/92508348
+    #       100   56.6%  132,069  field_2026-08-17/93506985
+    #       100   56.2%  128,408  downloads_2026-08-13/91906088
+    #       100   56.0%   80,864  kawashigi/92488785
+    #       100   55.6%   68,372  kawashigi/93545421
+    #
+    # It does not matter, because over `REPLAY_OPENING_DAYS` -- d4 to d11 -- the q3 strawberry tape
+    # and all three of the good q4 strawberry tapes are INDISTINGUISHABLE. Measured 2026-08-18,
+    # tiles owned and strawberry standing at dawn:
+    #
+    #                      d4  d5  d6  d7  d8  d9  d10 d11 | d12 d13
+    #     93459936  q4     25  25  25  50  50  50  50  50  |  75 100      land
+    #     92466371  q3     25  25  25  50  50  50  50  50  |  75  75
+    #     93459936  q4      0   0   4   6   8  19  19  19  |  38  38      strawberry
+    #     92466371  q3      0   0   4   6   8  19  19  19  |  37  39
+    #
+    # They part company at d12, which is PAST the handover -- and our own planner then buys the
+    # third parcel on d12 and the fourth on d13, which is the q4 tapes' own timing. So switching
+    # this key to a q4 tape is a byte-identical change to the replay, and the four-quadrant board is
+    # the solver's job (`solved_days_straw_q4.py`), not the tape's.
+    #
+    # The melon q4 tape is the one that would be wrong here: `0 0 4 4 10 11 11 11` strawberry
+    # against `0 0 4 6 8 19 19 19`, because it sows melon on the squares this arm wants strawberry
+    # on. Land, pens and animals are identical in every tape through d12, so crop is the only axis
+    # this choice has.
     (True, True): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
 }
 
@@ -5197,6 +5252,7 @@ def make_agent(schedule, me=0, router=True):
         # Snapshot before driving the planner, because a replayed turn throws its answer away and
         # must not keep its side effects on the purchase counter -- see below.
         bought_before = dict(state["bought"])
+        planted_before = dict(state["planted"])
         live = agent(obs, config)
         step = int(obs.get("step", 0) or 0)
         # Both latches, read through the branches' OWN `armed_key` rather than a string written here.
@@ -5213,6 +5269,15 @@ def make_agent(schedule, me=0, router=True):
         # bought, and `_herd_split` anchors on it, so the species target drifts with it.
         state["bought"].clear()
         state["bought"].update(bought_before)
+        # **And the same for `state["planted"]`, for the same reason and with worse consequences.**
+        # `_refresh_pins` accumulates `want` over every row up to today and seats pins for
+        # `want - planted - live`, so a crop the tape put in the ground and the counter never saw is
+        # a debt the planner chases for the rest of the season. Measured 2026-08-18, strawberry arm,
+        # own seed 70683142: 37 strawberry standing at d12 and the counter reading 0, so d12's row of
+        # 5 became 10 plants and `router.PLANT_THEN_WATER` chained a WATER onto each. The melon arm's
+        # 8 melon squatting to d22 is the same counter, other crop.
+        state["planted"].clear()
+        state["planted"].update(planted_before)
 
         farmer, hands, market = opening[step]
         me_ = int(obs.get("player", me) or 0)
@@ -5276,6 +5341,16 @@ def make_agent(schedule, me=0, router=True):
                         orders.append(["BUY_ANIMAL", a, 1])
                 continue
             orders.append(o)
+
+        # **Credit the tape's PLANTs, the same way the planner credits its own.** `:2374` increments
+        # on EMISSION, not on the crop appearing, so this matches the convention exactly -- a plant
+        # the board refuses is counted by both, and `_refresh_pins` re-derives from the live board
+        # anyway. Counted off `acts`, which is the truncated list actually sent, so a hand action the
+        # reference drops for want of a unit is not credited either.
+        for a in acts:
+            if a and a[0] == "PLANT" and len(a) > 1:
+                state["planted"][a[1]] += 1
+
         return {"farmer": acts[0], "hands": acts[1:], "market": orders}
 
     return replayed

@@ -47,6 +47,7 @@ The file is rewritten in place. `git diff kagg/search/solved_days.py` is the rev
 import argparse
 import datetime
 import json
+import os
 import pathlib
 import pprint
 import subprocess
@@ -98,7 +99,13 @@ def _write_solved(solved, note):
             body.append(f"        {u}: {pprint.pformat(seq, width=10_000, compact=True)},\n")
         body.append("    },\n")
     body.append("}\n")
-    TARGET.write_text(note + "".join(body))
+    # **Atomic, so two arms can solve at once.** Every arm's dump step imports `cover`, which imports
+    # `solved_days` at module scope, so a plain `write_text` lets one arm read a half-written table
+    # the other is emitting -- a 90-minute run lost to a truncated file. `os.replace` is atomic on the
+    # same filesystem, so a reader sees either the old table or the new one and never a partial.
+    tmp = TARGET.with_suffix(TARGET.suffix + ".tmp")
+    tmp.write_text(note + "".join(body))
+    os.replace(tmp, TARGET)
     print(f"  wrote {TARGET.relative_to(REPO)} -- days {sorted(solved)}", flush=True)
 
 
