@@ -2649,8 +2649,8 @@ SHOP_ADAPT_FROM_DAY = 3
 #: purchases -- `d0:COW d0:SHEEP d1:COW d3:COW d4:COW` -- and only diverge from day 6 onward. Four
 #: cows and one sheep is therefore his committed opening, and the minimum of each column across all
 #: ten games is exactly 5 COW and 5 SHEEP, so nothing below this is ever regretted.
-HERD_FLOOR_COW = 4
-HERD_FLOOR_SHEEP = 1
+HERD_FLOOR_COW = 2
+HERD_FLOOR_SHEEP = 3
 
 #: **SHOP_ADAPT_CROPS -- float the crop inside a cadence pair on the shop draw. The herd's rule, one
 #: field over.**
@@ -2885,6 +2885,7 @@ WOOL_SHOP_DRAW_LIMIT = 3
 #: the trap executable.
 WOOL_SHOP_NO_YARN_COW = 10
 
+
 #: **Fit the whole herd to the leader's THREE-QUADRANT seats, which is the board we play.**
 #:
 #: Measured 2026-08-15 over 74 distinct episodes on disk carrying his seat, restricted to the 51
@@ -2944,9 +2945,34 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     """
     total = want_total["COW"] + want_total["SHEEP"]
     split = {a: bought.get(a, 0) for a in ("COW", "SHEEP")}
+    # **The geese are carried, not decided.** He finishes with at least one in 43 of his 78 games,
+    # a mean of 1.2 a game and never more than 4, always placed on days 6-13. Nothing measured so
+    # far says WHICH boards get them, so this invents no rule: the count the schedule rowed is
+    # passed straight through, and only COW/SHEEP are re-split below.
+    #
+    # It has to be a key of the returned split even so. Without one the caller's greedy has no
+    # GOOSE bucket to spend, so every goose he places scores as a miss against a rule that is
+    # structurally unable to name it -- 91 of 1187 placements before this line existed.
+    if want_total.get("GOOSE"):
+        split["GOOSE"] = max(bought.get("GOOSE", 0), int(want_total["GOOSE"]))
     # The floor is a commitment, so honour it even if the book for its product looks empty.
-    split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total))
-    split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total - split["COW"]))
+    # **Sheep first, and that ordering is the opening.** Measured over all 78 recorded tetsuya
+    # games: every single one places `SHEEP SHEEP SHEEP COW COW` on day 0, 78/78, no exceptions.
+    # The floors are applied in that order so the greedy that spends them reproduces it.
+    split["SHEEP"] = max(split["SHEEP"], min(HERD_FLOOR_SHEEP, total))
+    split["COW"] = max(split["COW"], min(HERD_FLOOR_COW, total - split["SHEEP"]))
+
+    # **An undrawn deck is not a known deck.** On day 0 `unlocked_shops` is EMPTY, and the wool
+    # branch below read that as "this board has no yarn store" and jumped straight to
+    # `WOOL_SHOP_NO_YARN_COW` -- ten cows, decided before a single shop had landed. That is the
+    # single biggest source of disagreement with him: his first five animals are the opening above
+    # and ours were cows.
+    #
+    # Returning here allocates only what the opening commits to and leaves the rest of the herd for
+    # the draws that have not happened yet. `_herd_split` is called again every turn, so the moment
+    # the first shop lands the full rule below takes over with real evidence.
+    if not unlocked_shops:
+        return split
 
     # **The wool shop decides it, and it decides it outright.** Cows are held at the cap and every
     # animal still unbought goes to sheep, which is what reproduces his 6/8 at a herd of 14 and his
@@ -2980,8 +3006,64 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
         # **Both branches of his step function are pinned, not just the capped one.** An early yarn
         # store means 6 cows; anything else means 10. Leaving the second case to the greedy below
         # was wrong on the majority of his recorded seats -- see `WOOL_SHOP_NO_YARN_COW`.
-        early = "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]
-        target = WOOL_SHOP_COW_CAP if early else WOOL_SHOP_NO_YARN_COW
+        # **He is a GRADIENT in the draw, not a step.** カワシギ is two-valued -- 6 cows on an early
+        # yarn store, 10 otherwise -- and that is what this line used to encode. Tetsuya walks up
+        # with the draw instead, measured over his 78 games:
+        #
+        #     first YARN_STORE at draw   #1    #2    #3
+        #     his COW count               4     5     6      (8/8, 10/11, 5/9 at the median)
+        #
+        # which is `3 + draw`, and it is written below as `CAP - (LIMIT - draw)` so it still passes
+        # through `WOOL_SHOP_COW_CAP` at `WOOL_SHOP_DRAW_LIMIT` -- the old behaviour is the last
+        # point of the new line, not a case beside it.
+        _draw = next((i + 1 for i, s in enumerate(list(unlocked_shops or ()))
+                      if s == "YARN_STORE"), None)
+        if _draw is not None and _draw <= WOOL_SHOP_DRAW_LIMIT:
+            target = WOOL_SHOP_COW_CAP - (WOOL_SHOP_DRAW_LIMIT - _draw)
+        else:
+            # **A late or absent yarn store is decided by MILK demand, not by wool.** His 50
+            # late/no-yarn games are bimodal at COW 6 and COW 12, so the yarn index cannot separate
+            # them -- but the count of milk-draining shops can, and the response is linear in it.
+            # PIZZA_SHOP, ICE_CREAM_SHOP and SMOOTHIE_SHOP all take MILK
+            # (`kaggriculture.py:105,108,110`). Measured over those 50 games:
+            #
+            #     milk shops    1     2     3     4     5     6
+            #     mean COW    6.0   7.5   8.6   9.8  10.9  12.0
+            #
+            # which is `4.8 + 1.2 * milk` to within 0.2 everywhere.
+            # `data/logs/tets_bimodal_2026-08-19.log`.
+            #
+            # **The count is the EXPECTED FINAL one, never the count visible today.** Fitting on the
+            # final board and reading `unlocked_shops` straight is the census-vs-decision error, and
+            # it measured -16 points when tried that way: at day 3 two shops have landed, the milk
+            # count is near zero, and the line asks for 6 cows on a board that ends at 12.
+            #
+            # Shops are drawn WITH REPLACEMENT from eight types, capped at `MAX_SHOP_INSTANCES` = 8
+            # (`kaggriculture.py:104-117`), and three of the eight drain milk -- so every undrawn
+            # instance is worth 3/8 of a milk shop in expectation. The corpus agrees: a mean of 3.3
+            # milk shops per 8 draws is 0.41 against the uniform 0.375, which is small-sample noise
+            # rather than a biased deck.
+            # **REVERTED 2026-08-19. Measured twice, negative both times, and the second run says
+            # why the first one failed for a DIFFERENT reason than I thought.**
+            #
+            #     visible milk count, fitted on the final board      65.6% -> 46.4%
+            #     expected final milk count, undrawn at 3/8 each     65.6% -> 63.0%
+            #     flat `WOOL_SHOP_NO_YARN_COW`                       65.6%
+            #
+            # The expectation correction recovered thirteen of the sixteen lost points, so reading a
+            # partial draw as if it were final WAS a real defect. It was not the only one.
+            #
+            # **A linear fit to a bimodal response lands between both modes and matches neither.**
+            # His late/no-yarn boards are not spread around a mean, they cluster at COW 6 and COW
+            # 12; the per-milk-count means of 6.0 ... 12.0 are averages OVER that split, not a
+            # trend within it. At three milk shops nine of his boards go low and eight go high, so
+            # the fitted 8.6 is a value he essentially never plays. The flat 10 wins because it at
+            # least sits on the larger mode.
+            #
+            # A rule that beats the flat number has to CLASSIFY -- find whatever separates his 6
+            # boards from his 12 boards -- not interpolate. Milk-shop count is not that variable;
+            # it correlates with the mixture weight, not with the choice.
+            target = WOOL_SHOP_NO_YARN_COW
         if split["COW"] <= target:
             split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], target))
             split["COW"] = max(split["COW"], min(target, total - split["SHEEP"]))

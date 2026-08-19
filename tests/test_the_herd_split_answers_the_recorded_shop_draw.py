@@ -100,8 +100,22 @@ def test_the_leader_is_a_step_function_on_the_first_yarn_draw(leader):
         "a late-yarn seat came in at or under the cap: %s" % sorted({r[3] for r in late}))
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="the rule follows tetsuya from 2026-08-19; カワシギ's flat COW 6 on draws #1-#2 is now "
+           "4 and 5. Kept as the executable record of HIS shape -- see the module note.")
 def test_the_rule_reproduces_the_leaders_cow_count_on_his_own_draws(leader):
     """The whole point: replay his real draw, and our answer must be his answer.
+
+    **XFAIL 2026-08-19, on Alex's call, and this is a pivot rather than a regression.** The agent
+    now follows tetsuya, who is #1 and who answers the yarn draw with a GRADIENT where カワシギ
+    answers with a step: COW 4 / 5 / 6 on draws #1 / #2 / #3, measured over 78 of his games and
+    unanimous on the first two. One function cannot be two players, so 27 of these 70 seats now
+    disagree -- every one of them a draw-#1 or draw-#2 seat where he wants 6 and the rule says 4
+    or 5.
+
+    Not deleted, and `strict` on purpose: if the rule is ever pointed back at カワシギ this turns
+    green and fails the suite, which is the signal that the pivot has been undone.
 
     **Five of his 67 seats are unreachable by any constant and the test says so explicitly.** On a
     draw with no yarn store at all he runs COW 10 in 22 games and COW 8 in 5, so no single number

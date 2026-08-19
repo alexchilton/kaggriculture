@@ -43,10 +43,22 @@ def test_the_split_is_decided_from_day_3_not_day_6():
     assert S.SHOP_ADAPT_FROM_DAY == 3, "the first draw is d3; adapting from d6 discards it"
 
 
+#: **XFAIL 2026-08-19: the rule now follows tetsuya, and he is not a step function.**
+#:
+#: カワシギ holds a flat COW 6 across draws #1-#3. Tetsuya walks up with the draw -- COW 4, 5, 6 --
+#: measured over his 78 recorded games, 8/8 and 10/11 unanimous on the first two. `_herd_split` was
+#: re-pointed at him on Alex's call, so draws #1 and #2 now return 4 and 5 and these two cases fail.
+#: Draw #3 still returns 6 and still passes, because the gradient is written to pass through the old
+#: cap at the old limit.
+#:
+#: Kept and NOT deleted: this is the executable record of カワシギ's shape, and `strict` means it
+#: fails loudly again the moment anyone points the rule back at him.
 @pytest.mark.parametrize("shops", [
-    ["YARN_STORE"],                                 # draw #1, d3
-    ["BAKERY", "YARN_STORE"],                       # draw #2, d6
-    ["BAKERY", "PIZZA_SHOP", "YARN_STORE"],         # draw #3, d9
+    pytest.param(["YARN_STORE"], marks=pytest.mark.xfail(          # draw #1, d3
+        strict=True, reason="tetsuya runs COW 4 on draw #1, カワシギ runs 6")),
+    pytest.param(["BAKERY", "YARN_STORE"], marks=pytest.mark.xfail(  # draw #2, d6
+        strict=True, reason="tetsuya runs COW 5 on draw #2, カワシギ runs 6")),
+    ["BAKERY", "PIZZA_SHOP", "YARN_STORE"],         # draw #3, d9 -- still 6, still passes
 ])
 def test_a_yarn_store_in_the_first_three_draws_holds_the_herd_at_six_cows(shops):
     """**Assert his number, not a bound.**
@@ -131,10 +143,22 @@ def test_the_total_is_never_exceeded():
     `HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE` reproduces that. Buying fewer frees $1,000, two
     FEED and two CARE stops a day, and ~16 units of wool out of a book that floors 59 units above
     `I0`; it needs no new pens, which is why it is expressible where raising the total is not.
+
+    **The empty draw is now the OPENING and is excluded from the floor, not from the ceiling.**
+    Until 2026-08-19 an empty `unlocked_shops` fell through to the no-yarn branch and committed ten
+    cows before a single shop had landed -- reading "nothing drawn yet" as "this board has no yarn
+    store". It now returns the measured opening instead, SHEEP 3 / COW 2, which all 78 recorded
+    tetsuya games place on day 0. So five is correct there and twelve is not.
+
+    The ceiling is the real invariant and is still asserted on every input including the empty one.
     """
     for shops in ([], ["YARN_STORE"], ["YARN_STORE", "YARN_STORE"], ["PIZZA_SHOP"]):
         got = split_for(shops)
         assert got["COW"] + got["SHEEP"] <= WANT["COW"] + WANT["SHEEP"], shops
+        if not shops:
+            # The opening, before any draw: 3 sheep and 2 cows, and nothing else committed yet.
+            assert got["SHEEP"] == 3 and got["COW"] == 2, got
+            continue
         assert got["COW"] + got["SHEEP"] >= 12, shops
 
 
