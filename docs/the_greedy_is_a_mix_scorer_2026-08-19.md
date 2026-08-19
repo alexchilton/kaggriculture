@@ -344,3 +344,66 @@ sheep-heavy opponent pushes him to cows.
 That is a candidate for the bimodality the milk line could not reach. **n=15 in the deciding cell.**
 One thin cell carrying the claim: a lead, not a result. It needs more late-yarn games before any
 code is written against it.
+
+## The herd clears the bar: 81.9%
+
+Two more fixes after the first commit (`2b28fe1`):
+
+  - **the goose is held to `GOOSE_FROM_DAY = 6`.** Offered at day 0 the bucket was spent on the
+    opening and displaced a sheep -- a miss twice over, the goose early and the sheep missing. He
+    places his first bird on d6 and nothing at all on d0-d5: d6:3 d7:8 d8:3 d9:9 d10:8 d11:28 d12:23
+    d13:13. **Day 0 went from 88.2% to 100.0%, 390/390.**
+  - **the tomato tile is gated on the draw.** See below.
+
+     day   placed   right    rate
+       0      390     390   100.0%
+       4      148     140    94.6%
+       7      124     110    88.7%
+       9       98      66    67.3%
+      11      143      86    60.1%
+      13       29      12    41.4%
+     season 972/1187 = 81.9%
+
+The whole remaining error is d9 onward, and the opponent lead above is the only candidate that
+reaches it.
+
+## The plant side
+
+### Tomato is a shop response and is now gated on one
+
+    tomato-draining shops    0    1    2    3    4    5
+    games                   10   24   25    9    7    3
+    games with tomato        0    0    1    0    1    2
+
+Not one tile across all 34 games with fewer than two draining shops. `TOMATO_DRAIN_SHOPS_NEEDED = 2`
+is added to the existing `melon_armed and not q4_armed` conditions. A GATE, not a size -- the tile
+count is untouched, so the only change is which boards get it.
+
+### Three false premises in one session, all the same mistake
+
+This is the one worth carrying forward. Three assertions were written against a NAME instead of the
+BRANCH that reads it, and all three were wrong:
+
+  1. "`WHEAT_TILES_TO_TOMATO` fires on every board, unconditionally" -- taken from its own docstring.
+     The use site has gated it on `melon_armed and not q4_armed` all along.
+  2. "`SHOP_ADAPT_CROPS = False`, so nothing connects the draw to the crop choice" --
+     `STRAWBERRY_TILES_BY_DRAIN` caps strawberry on the draw and runs OUTSIDE that flag.
+  3. "`_herd_through_day` re-labels every head, so a goose cannot survive" -- it iterates COW and
+     SHEEP only and leaves other species alone.
+
+And a fourth was caught before it shipped: the tomato gate was first written against the local
+`unlocked`, which is `unlocked_quadrants`. Quadrant names never match shop names, so it would have
+scored 0 on every board and switched the tile permanently off while reading like a working gate --
+a silent null. `CLAUDE.md` already says "print the name the code actually reads before any A/B";
+the docstring is not the name.
+
+### Carrot has no predictor and no gate was invented for it
+
+Carrot's nine games sit at drain counts 1,1,1,2,2,2,3,3,3 -- evenly spread -- and the five games
+with FOUR draining shops have none. Non-monotone, so drain count is the wrong variable. Its
+first-planted day splits into two clusters, d6-d10 and d25-d27, so the late one is end-of-season
+opportunism on leftover ground rather than a crop plan at all.
+
+`test_carrot_is_the_crop_with_no_predictor_yet` pins the non-monotonicity so nobody fits a line to
+it -- which is exactly what cost sixteen points on the herd side -- and says to replace itself when
+a predictor is found.

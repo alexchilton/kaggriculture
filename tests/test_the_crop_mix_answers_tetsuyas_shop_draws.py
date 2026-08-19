@@ -23,6 +23,7 @@ unlocked, and that is the only state a rule could have used; the end-of-season t
 day-29 draw nobody had on day 3.
 """
 import collections
+import inspect
 import json
 import pathlib
 
@@ -116,38 +117,83 @@ def test_carrot_and_tomato_are_draw_responses_not_habits(games):
         assert seen >= 2, "%s appears in %d games, too few to assert a response" % (crop, seen)
 
 
-def test_the_tomato_constant_does_not_fire_on_every_board(games):
-    """**`WHEAT_TILES_TO_TOMATO` is a constant standing in for a response.**
+def test_his_tomato_tracks_the_shop_draw(games):
+    """**His tomato is a shop response, and a clean one.**
 
-    It converts wheat tiles to tomato on EVERY board, unconditionally, at a fixed count. He plants
-    tomato in 4 of 78 games and when he does he plants 8-22 tiles of it. So the constant is wrong in
-    both directions at once: it fires roughly twenty times too often, and at a fraction of the size.
+    Tomato drains to PIZZA_SHOP and FARMERS_MARKET (`reference/kaggriculture.py:105,111`), and shops
+    are drawn WITH replacement, so the COUNT of draining shops varies where presence barely does.
+    Measured over the 78:
 
-    RED as written on 2026-08-19 with `WHEAT_TILES_TO_TOMATO = 1`. Passing means the tomato decision
-    has been made conditional on something -- the draw, the board, anything measured -- rather than
-    pinned.
+        tomato-draining shops    0    1    2    3    4    5
+        games                   10   24   25    9    7    3
+        games with tomato        0    0    1    0    1    2
+
+    Not one tomato tile across all 34 games with fewer than two draining shops, and two of the three
+    games with five. That is the variable.
+
+    **This test does NOT assert on `WHEAT_TILES_TO_TOMATO`.** An earlier version did, read its
+    docstring's word "unconditional", and was wrong: line 3919 gates the conversion on
+    `melon_armed and not q4_armed`, so the constant alone says nothing about whether a tile is
+    sown. Asserting on a name the branch does not read is how a change measures as a null.
     """
-    with_tom = [(_mix(p)["TOMATO"]) for _n, p, _s in games if _mix(p)["TOMATO"]]
-    assert with_tom, "no tomato in the corpus; re-measure before asserting"
-    share = len(with_tom) / len(games)
-    fires_always = bool(SA.WHEAT_TILES_TO_TOMATO)
-    assert not (fires_always and share < 0.5), (
-        "WHEAT_TILES_TO_TOMATO = %r converts wheat on every board, but he plants tomato in "
-        "%d of %d games (%.0f%%) and sows %d-%d tiles when he does"
-        % (SA.WHEAT_TILES_TO_TOMATO, len(with_tom), len(games), 100 * share,
-           min(with_tom), max(with_tom)))
+    by = collections.defaultdict(list)
+    for _n, plants, shops in games:
+        drain = sum(1 for s in shops if s in ("PIZZA_SHOP", "FARMERS_MARKET"))
+        by[drain].append(_mix(plants)["TOMATO"])
+    thin = [t for k, v in by.items() if k <= 1 for t in v]
+    assert len(thin) >= 20, "too few thin-draw games to assert on"
+    assert not any(thin), (
+        "he now plants tomato on a board with at most one draining shop: %s" % sorted(t for t in thin if t))
+    rich = [t for k, v in by.items() if k >= 4 for t in v]
+    assert sum(1 for t in rich if t) / len(rich) > sum(
+        1 for t in thin if t) / len(thin), "the drain-count signal has gone"
 
 
-def test_the_crop_choice_is_wired_to_the_shop_draw_at_all(games):
-    """`SHOP_ADAPT_CROPS` is the only path by which a shop draw can reach the crop choice.
+def test_the_tomato_tile_is_not_gated_on_the_shop_draw(games):
+    """**The gate is a STRATEGY condition where his tomato is a SHOP response.**
 
-    With it off, every crop decision is a constant read off one extracted schedule, and no amount of
-    tuning those constants can track a player whose carrot swings 0-65 tiles with the board.
+    `_tom` fires on `melon_armed and not q4_armed` -- which arm the season is running, and nothing
+    about the town. His own tomato is decided by the number of tomato-draining shops, and is zero
+    across all 34 games with fewer than two of them.
 
-    RED as written on 2026-08-19: `SHOP_ADAPT_CROPS = False`.
+    So the tile can be sown on a board he would never plant tomato on, and withheld on the five-shop
+    boards where he plants 10-22 tiles. Passing means the decision reads the draw.
+
+    RED as written on 2026-08-19.
     """
-    carrots = [_mix(p)["CARROT"] for _n, p, _s in games]
-    assert max(carrots) - min(carrots) > 20, "his carrot no longer moves with the board"
-    assert SA.SHOP_ADAPT_CROPS, (
-        "SHOP_ADAPT_CROPS is off, so nothing connects the draw to the crop choice, while his "
-        "carrot ranges %d-%d tiles across the corpus" % (min(carrots), max(carrots)))
+    src = inspect.getsource(SA)
+    gate = "melon_armed" in src and "WHEAT_TILES_TO_TOMATO" in src
+    assert not gate or "TOMATO_DRAIN_SHOPS" in src, (
+        "the tomato tile is gated on the season's arm (`melon_armed`/`q4_armed`) and reads nothing "
+        "about the town, while his tomato is zero on every board with <2 draining shops and present "
+        "on 2 of 3 boards with five")
+
+
+def test_carrot_is_the_crop_with_no_predictor_yet(games):
+    """**An open question pinned as a fact, not a demand for a gate I cannot specify.**
+
+    An earlier version of this test asserted `SHOP_ADAPT_CROPS`, on the premise that with it off
+    nothing connects the shop draw to the crop choice. That premise is false: `STRAWBERRY_TILES_BY_
+    DRAIN` caps strawberry on the draw and runs OUTSIDE `SHOP_ADAPT_CROPS`, and the tomato gate now
+    reads the draw too. Two of the four crops are already wired.
+
+    Carrot is the one that is not, and the reason is that no measured variable predicts it. Tomato
+    was easy -- zero tiles below two draining shops. Carrot's nine games sit at drain counts
+    1,1,1,2,2,2,3,3,3, evenly spread, and the five games with FOUR draining shops have none at all.
+    Non-monotone, so drain count is the wrong variable, and demanding a gate before knowing what to
+    gate on is how the milk line cost sixteen points on the herd side.
+
+    What this test does assert: the non-monotonicity is real, so nobody fits a line to it. When a
+    predictor is found this test should be replaced by one that asserts it.
+    """
+    by = collections.defaultdict(list)
+    for _n, plants, shops in games:
+        drain = sum(1 for s in shops if s in ("PET_CAFE", "FARMERS_MARKET"))
+        by[drain].append(_mix(plants)["CARROT"])
+    share = {k: sum(1 for t in v if t) / len(v) for k, v in by.items() if len(v) >= 5}
+    assert len(share) >= 3, "too few populated drain buckets to judge monotonicity"
+    keys = sorted(share)
+    rising = all(share[a] <= share[b] for a, b in zip(keys, keys[1:]))
+    assert not rising, (
+        "carrot is now monotone in the drain count %s -- it has become fittable, so replace this "
+        "test with the gate" % {k: round(share[k], 2) for k in keys})

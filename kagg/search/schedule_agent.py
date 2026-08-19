@@ -2885,6 +2885,10 @@ WOOL_SHOP_DRAW_LIMIT = 3
 #: the trap executable.
 WOOL_SHOP_NO_YARN_COW = 10
 
+#: **The earliest day a goose goes in.** Measured over tetsuya's 78 games: his first bird lands on
+#: day 6 and there is nothing at all on d0-d5. `data/logs/tets_rule_fit_2026-08-19.log`.
+GOOSE_FROM_DAY = 6
+
 
 #: **Fit the whole herd to the leader's THREE-QUADRANT seats, which is the board we play.**
 #:
@@ -2953,7 +2957,12 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # It has to be a key of the returned split even so. Without one the caller's greedy has no
     # GOOSE bucket to spend, so every goose he places scores as a miss against a rule that is
     # structurally unable to name it -- 91 of 1187 placements before this line existed.
-    if want_total.get("GOOSE"):
+    #
+    # **And not before `GOOSE_FROM_DAY`.** He places his first bird on day 6 and never earlier --
+    # measured over the 78, the distribution is d6:3 d7:8 d8:3 d9:9 d10:8 d11:28 d12:23 d13:13, with
+    # nothing at d0-d5. Offered at day 0 the bucket gets spent on the opening and displaces a sheep,
+    # which is a miss twice over: the goose is early and the sheep is missing.
+    if want_total.get("GOOSE") and day >= GOOSE_FROM_DAY:
         split["GOOSE"] = max(bought.get("GOOSE", 0), int(want_total["GOOSE"]))
     # The floor is a commitment, so honour it even if the book for its product looks empty.
     # **Sheep first, and that ordering is the opening.** Measured over all 78 recorded tetsuya
@@ -3581,7 +3590,26 @@ WHEAT_TILES_TO_CARROT = 0
 #: tile yields 4. This is the cows lesson -- per-tile revenue that ignores action cost is not
 #: decision-ready -- and it is exactly the cost a re-solve is able to route around, which is why the
 #: tile goes in before the solver runs rather than after.
+#:
+#: **2026-08-19: the "unconditional" claim above is now wrong, and so was the refutation.** A shop
+#: gate WAS tried and rejected here -- "on the seeds actually played the draws are 4 / 2 / 1
+#: tomato-draining shops and the results are -$1,117 / +$5,692 / -$11,655, so there is no monotone
+#: condition to gate on". That asked whether a gate raises MONEY on four tape arms whose route
+#: tables were solved without tomato. It is a different question from whether the tile fires on the
+#: boards the player we follow would plant on, and the second one has a clean answer: zero tomato
+#: across all 34 of his games with fewer than two draining shops. See `TOMATO_DRAIN_SHOPS_NEEDED`.
+#:
+#: The word "unconditional" was also never true of the code. Two conditions already applied at the
+#: use site -- `melon_armed and not q4_armed` -- and reading this docstring instead of that branch
+#: is what produced a test asserting on a name the branch does not read.
 WHEAT_TILES_TO_TOMATO = 1
+
+#: The shop types that drain TOMATO (`reference/kaggriculture.py:105,111`).
+TOMATO_DRAINING_SHOPS = ("PIZZA_SHOP", "FARMERS_MARKET")
+#: **Two, because that is where his first tomato appears.** Zero tomato across all 34 of his games
+#: with 0 or 1 draining shop; present from 2 and on two of the three boards with five.
+#: `data/logs/tets_crop_fit_2026-08-19.log`.
+TOMATO_DRAIN_SHOPS_NEEDED = 2
 
 #: **Every crop against every other, as `(src, dst, tiles)` triples.** The two integers above can
 #: only ever spend wheat; this can also take melon away, or buy wheat with strawberry.
@@ -3916,8 +3944,31 @@ def make_agent(schedule, me=0, router=True):
                     # on the q4 board anyway while the cap -- re-evaluated every day -- correctly stayed
                     # off, which is how one condition can look right and the other wrong on one board.
                     # `Q4Branch` decides at d6 and the key is stable by d12.
+                    # **And the town has to want it.** The two conditions above are about which arm
+                    # the season is running; neither reads the shop draw, and his tomato is decided
+                    # by exactly that. Tomato drains to PIZZA_SHOP and FARMERS_MARKET
+                    # (`kaggriculture.py:105,111`), drawn WITH replacement, so the COUNT varies where
+                    # presence does not. Measured over his 78 games:
+                    #
+                    #     tomato-draining shops    0    1    2    3    4    5
+                    #     games                   10   24   25    9    7    3
+                    #     games with tomato        0    0    1    0    1    2
+                    #
+                    # Not one tile across all 34 games with fewer than two draining shops, and two of
+                    # the three with five. `data/logs/tets_crop_fit_2026-08-19.log`.
+                    #
+                    # This is a GATE and not a size: the tile count stays exactly as it was, so the
+                    # only change is which boards get it. One delta.
+                    #
+                    # Read off `obs` the same way line 4044 does. NOT off the local `unlocked`,
+                    # which is `unlocked_quadrants` -- quadrant names never match shop names, so
+                    # that spelling scores 0 on every board and switches the tile permanently off
+                    # while looking like a working gate.
+                    _tom_drain = sum(1 for s in ((obs.get("town") or {}).get("unlocked_shops") or ())
+                                     if s in TOMATO_DRAINING_SHOPS)
                     _tom = (int(WHEAT_TILES_TO_TOMATO)
-                            if state.get("melon_armed") and not state.get("q4_armed") else 0)
+                            if (state.get("melon_armed") and not state.get("q4_armed")
+                                and _tom_drain >= TOMATO_DRAIN_SHOPS_NEEDED) else 0)
                     state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
                                                "TOMATO": _tom}
                 # **Only touch a day that HAS a row, for the reason spelled out on `CROP_TILE_SHIFTS`
