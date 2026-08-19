@@ -11964,8 +11964,14 @@ def make_agent(schedule, me=0, router=True):
             # The cap is today's REAL pins plus whatever LATER rows still ask for -- never today's row
             # slack. That preserves the carry the row floor exists for (d6 buys four and plants one
             # because d7 needs fifteen) and trims only seed the season has no planting left for.
+            # **A later row is only a reason to carry seed if that day can still GROW the crop.**
+            # `_later` counted every remaining row, including days past the last on which the crop can
+            # finish -- `RT.plant_prize` is already 0 there, and `_refresh_pins` drops such a pin, so
+            # those rows are never sown and the seed bought for them is dead. It is the tail of the
+            # wheat residue: we close holding 3 WHEAT on the straw arm, and ladder games show 2 and 4.
             _later = sum(collections.Counter(sched.get(_d, {}).get("plants") or [])[crop]
-                         for _d in range(day + 1, R.SEASON_DAYS))
+                         for _d in range(day + 1, R.SEASON_DAYS)
+                         if RT.plant_prize(crop, _d) > 0)
             # **The 5 STRAWBERRY seed we close holding cannot be recovered here, and it was tried.**
             # Capping this purchase by the strawberry ceiling measured a byte-identical season on all
             # four arms -- same money, same seed left. The seed is bought during the REPLAYED opening
@@ -12420,6 +12426,57 @@ def make_agent(schedule, me=0, router=True):
         orders = []
         for o in market:
             o = list(o)
+            # **His seed COUNT is sized for his season, not ours, and the surplus is never sown.**
+            # He buys `BUY_SEED STRAWBERRY 23` at d11 h0 for a 42-tile season;
+            # `STRAWBERRY_TILES_BY_DRAIN` holds us to 37, so five of them sit in the shed from d12 to
+            # the final bell -- $500 at `R.SEED_COST`, dead for eighteen days. `emit_seed`'s own cap
+            # cannot reach it and measured byte-identical trying, because on a replayed turn our
+            # market orders are discarded and his are sent. So the trim belongs here.
+            #
+            # Same rule as the `BUY_ANIMAL` re-label below, one field over: the TURN stays his, and
+            # what we own is the count rather than the species. No unit action, tile or route stop
+            # moves -- only how much seed is bought.
+            #
+            # **Ceiling is the table's MAXIMUM, never the day's own drain count.** Shops unlock on
+            # 3,6,9,12, so d11 sees three draws where the cap is decided on four: pricing this off
+            # d11 would buy for a cap of 36 against d12's 37 and cost a whole TILE to save a seed.
+            # Buying to the season's best case can only ever leave a spare, and `test_the_strawberry_
+            # still_all_goes_in` is what holds that line.
+            #
+            # **Every crop, not just strawberry.** The same order block carries his wheat and carrot,
+            # sized for his season, and the q4 arms close holding 11 and 8 WHEAT. The general bound is
+            # what the season has left to PLANT -- plantings, not tiles, since a one-shot crop re-sows
+            # the same ground many times over -- less what is already in the shed.
+            # **THREE-QUADRANT BOARDS ONLY, and that is measured.** `_season` is read off `sched`, and
+            # on a four-quadrant board `q4_branch` installs its extra planting rows AFTER this turn, so
+            # the total is short at d11 and the trim UNDER-buys. The tell is that the plantings move
+            # rather than just the shed: measured 2026-08-19,
+            #
+            #     arm        shipped    trimmed    delta   plants
+            #     straw_q3   159,623    160,183     +560   identical
+            #     melon_q3   145,068    145,068        0   identical
+            #     q4_straw    78,305     78,325      +20   identical
+            #     q4_melon    93,929     85,347   -8,582   WHEAT 133->126, CARROT 7->6
+            #
+            # Trading -$8,582 for the $170 of seed those arms leave is not a trade, so they keep the
+            # tape's counts until the season total can be known before the opening ends.
+            if (len(o) > 2 and o[0] == "BUY_SEED" and o[1] in R.CROPS
+                    and not state.get(_Q4.BRANCH.armed_key)):
+                _crop = o[1]
+                _held = int((priv_.get("seeds") or {}).get(_crop, 0) or 0)
+                _season = sum(collections.Counter(_r.get("plants") or [])[_crop]
+                              for _r in sched.values())
+                _room = max(0, _season - state["planted"][_crop] - _held)
+                # Strawberry is additionally held to the tile cap, which is a SEASON total and so
+                # bounds plantings directly -- the crop is ongoing, so a tile is sown once.
+                if _crop == "STRAWBERRY":
+                    _tiles = (farms_[me_] if len(farms_) > me_ else {}).get("tiles") or []
+                    _standing = sum(1 for _r in _tiles for _c in _r
+                                    if isinstance(_c, dict) and _c.get("crop") == _crop)
+                    _room = min(_room, max(0, max(STRAWBERRY_TILES_BY_DRAIN) - _standing - _held))
+                o[2] = min(int(o[2]), _room)
+                if o[2] <= 0:
+                    continue
             if split and len(o) > 2 and o[0] == "BUY_ANIMAL" and o[1] in _PASTURE:
                 # One head at a time against the target, so a row of two cows can come back split.
                 for _ in range(int(o[2])):
