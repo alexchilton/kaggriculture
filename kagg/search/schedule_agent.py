@@ -4882,6 +4882,21 @@ def make_agent(schedule, me=0, router=True):
             _bought = (int(seeds.get(crop, 0)) + _done
                        - int(state["seeds_dawn"].get(crop, 0)))
             short = max(short, _row_q - max(0, _bought))
+            # **Never buy seed no remaining row can plant.** The floor above is the tape's purchase
+            # total, which is right while later days still have plantings to spend the carry on and
+            # wrong on the last planting day: `d27` asks `WHEAT 12` against a board the pins can only
+            # seat 8 of, and the difference is money sitting in the shed at the final bell. Measured
+            # on ladder game 94282682 we close holding 9 WHEAT and 9 CARROT -- $270 at `SEED_COST` --
+            # on a ladder where 41% of games are decided inside $3,000 and the narrowest losses are
+            # $20 and $85. カワシギ carries the same 8+8, so it is value the whole field abandons.
+            #
+            # The cap is today's REAL pins plus whatever LATER rows still ask for -- never today's row
+            # slack. That preserves the carry the row floor exists for (d6 buys four and plants one
+            # because d7 needs fifteen) and trims only seed the season has no planting left for.
+            _later = sum(collections.Counter(sched.get(_d, {}).get("plants") or [])[crop]
+                         for _d in range(day + 1, R.SEASON_DAYS))
+            short = min(short, max(0, int(want_seed.get(crop, 0)) + _later
+                                   - int(seeds.get(crop, 0))))
             if short > 0 and len(orders) < 9:
                 orders.append(["BUY_SEED", crop, short])
 
