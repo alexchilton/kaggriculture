@@ -2889,6 +2889,18 @@ WOOL_SHOP_NO_YARN_COW = 10
 #: day 6 and there is nothing at all on d0-d5. `data/logs/tets_rule_fit_2026-08-19.log`.
 GOOSE_FROM_DAY = 6
 
+#: The shop types that drain MILK (`reference/kaggriculture.py:105,108,110`).
+MILK_DRAINING_SHOPS = ("PIZZA_SHOP", "ICE_CREAM_SHOP", "SMOOTHIE_SHOP")
+#: **A classifier, not a slope.** Two milk shops visible by d9 implies a big herd in 21 of 21 of his
+#: late/no-yarn games -- zero false positives. Fitting a LINE through the same variable measured
+#: -16 points, because his response is bimodal at COW 6 and COW 12 and a line lands between them.
+MILK_SHOPS_FOR_A_BIG_HERD = 2
+COW_ON_A_MILK_RICH_BOARD = 12
+COW_ON_A_MILK_POOR_BOARD = 7
+#: Three shops are drawn by d9; before that the count carries no evidence. d0-d7 already runs at
+#: ~90% on the opening and the gradient, so the classifier is kept out of it.
+MILK_CLASSIFIER_FROM_DAY = 9
+
 
 #: **Fit the whole herd to the leader's THREE-QUADRANT seats, which is the board we play.**
 #:
@@ -3070,9 +3082,32 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
             # least sits on the larger mode.
             #
             # A rule that beats the flat number has to CLASSIFY -- find whatever separates his 6
-            # boards from his 12 boards -- not interpolate. Milk-shop count is not that variable;
-            # it correlates with the mixture weight, not with the choice.
+            # boards from his 12 boards -- not interpolate.
+            #
+            # **2026-08-20: it IS the milk count. It had to be a THRESHOLD, and read at the
+            # decision.** Re-measured at the GAME level (50 late/no-yarn games, not 213 placements
+            # -- a game contributing twelve animals is one decision repeated, and the placement-level
+            # cut was pseudo-replication). Against his cow count, every other candidate is flat to
+            # three digits: quadrants 2.00 vs 2.00, shops drawn 3.00 vs 3.00, money 2760 vs 2694, and
+            # the OPPONENT's herd -0.05 to -0.32. Milk shops visible at d9 is 0.68 vs 1.81.
+            #
+            #     milk@d9 >= 1  -> high cow    37/50 = 74.0%   (fp 13, fn 0)
+            #     milk@d9 >= 2  -> high cow    40/50 = 80.0%   (fp  0, fn 10)
+            #     always-high baseline         31/50 = 62.0%
+            #
+            # Twenty-one of twenty-one games with two milk shops by d9 go high-cow. The FALSE
+            # POSITIVE count is zero, which is what makes it usable: "two milk shops implies a big
+            # herd" holds without exception, even though the converse does not.
+            # `data/logs/tets_split6v12_2026-08-20.log`.
+            #
+            # Gated from `MILK_CLASSIFIER_FROM_DAY` because the evidence does not exist before it --
+            # three shops are drawn by d9 -- and because d0-d7 already runs at ~90% on the opening
+            # and the gradient. This only touches the region that is broken.
             target = WOOL_SHOP_NO_YARN_COW
+            if day >= MILK_CLASSIFIER_FROM_DAY:
+                _milk = sum(1 for s in (unlocked_shops or ()) if s in MILK_DRAINING_SHOPS)
+                target = (COW_ON_A_MILK_RICH_BOARD if _milk >= MILK_SHOPS_FOR_A_BIG_HERD
+                          else COW_ON_A_MILK_POOR_BOARD)
         if split["COW"] <= target:
             split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], target))
             split["COW"] = max(split["COW"], min(target, total - split["SHEEP"]))

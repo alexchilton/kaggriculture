@@ -91,6 +91,8 @@ def test_a_yarn_store_that_arrives_late_does_not_trigger_the_rule():
         "the wool rule fired on a draw-#4 yarn store, which the leader ignores; got %r" % (got,))
 
 
+@pytest.mark.xfail(strict=True, reason=
+    "the herd follows tetsuya from 2026-08-20: on a late/no-yarn board two milk shops by d9 imply a big herd (21/21 of his games), where カワシギ runs a flat 10. Kept as the executable record of HIS shape; strict, so it fails if the rule is pointed back at him.")
 def test_a_late_yarn_store_still_leaves_the_herd_cow_heavy():
     """What he actually does once the rule correctly declines to fire.
 
