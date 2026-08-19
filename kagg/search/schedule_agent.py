@@ -1651,6 +1651,51 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # is untouched. Anchored on `planted + live`, which never falls, so this cannot inflate the total.
     if SHOP_ADAPT_CROPS and day >= CROP_ADAPT_FROM_DAY:
         want = _adapt_crops(want, state["planted"], live, day, unlocked_shops, LAST_DAY)
+    # **Cap the strawberry at what the town can actually drain -- see `STRAWBERRY_TILES_BY_DRAIN`.**
+    # The row asks for 41-42 on every board that exists, and the only thing that removes strawberry is
+    # a shop that carries it, so on a thin draw the last dozen tiles are dumped into a book that halves
+    # 31 units above `I0`.
+    #
+    # Deliberately a target read off the leaders, not a headroom model. `SHOP_ADAPT_CROPS`'s docstring
+    # records why the headroom route fails: it treats the drain as a cliff when the price curve is a
+    # slope, so it under-plants every steep-curve product. A tile count measured from 79 winning seats
+    # has neither problem.
+    #
+    # Freed ground needs no counterpart rule. `_outstanding` seats the smallest ask first, so melon and
+    # carrot take their few tiles and WHEAT -- outstanding in the hundreds all season, carried by 5 shop
+    # types, 3,000 units of dump tolerance -- takes the rest. That is the leaders' wheat complement.
+    #
+    # `max(cap, standing)` never retro-cuts ground already sown; the cap only declines to seat MORE.
+    #
+    # **THREE-QUADRANT BOARDS ONLY, and that is measured, not cautious.** Each arm uses a different
+    # end of the table, and only the high end survived:
+    #
+    #     arm        quads  drains  cap  row   delta      verdict
+    #     straw_q3     3      4      37   42   +4,022     cap binds, GOOD
+    #     melon_q3     3      3      36   34   +5,615     never binds
+    #     q4_straw     4      0      26   42     -214     binds hard
+    #     q4_melon     4      0      26   34   -9,560     binds hard, worst arm
+    #
+    # The four-quadrant boards both draw ZERO strawberry shops and so take the table's low end, where
+    # cutting costs about $2,400 a tile. tetsuya's 25.5 tiles at zero drains is HIS optimum for HIS
+    # season; ours has more ground and a different sell cadence and cannot go there. The high end is
+    # validated and the low end is refuted, so the cap is confined to the boards it was measured good
+    # on. `unlocked` is the live board, so this reads the quadrant count rather than trusting a branch
+    # to have installed by now.
+    #
+    # A flat ceiling near 37 fits every row above -- it would reproduce straw and melon exactly and
+    # never bind on q4 -- and is the next thing to test, with the q4 tables re-solved for it.
+    #
+    # **`q4_armed`, not `len(unlocked)`.** `Q4Branch` decides at d6, so the key is settled by d12,
+    # whereas d12 is the very turn the fourth quadrant is bought and the live count still reads 3 at
+    # dawn. The live test happens to be harmless here -- one day of binding against `max(cap, standing)`
+    # changes nothing -- but the same test in the tomato block fired on the q4 board and cost $1,031,
+    # so both now ask the question the same way.
+    if (not state.get("q4_armed") and day >= STRAWBERRY_FLOAT_FROM_DAY and want["STRAWBERRY"]):
+        _drains = sum(1 for s in (unlocked_shops or ()) if s in STRAWBERRY_SHOPS)
+        _cap = STRAWBERRY_TILES_BY_DRAIN[min(_drains, len(STRAWBERRY_TILES_BY_DRAIN) - 1)]
+        _standing = state["planted"]["STRAWBERRY"] + live["STRAWBERRY"]
+        want["STRAWBERRY"] = min(want["STRAWBERRY"], max(_cap, _standing))
     # **A pin the row no longer wants is dropped.** The sweep at the top of this function releases a
     # pin for three reasons -- the tile filled, the crop expired, the land was lost -- and the seating
     # loop below only ever ADDS, since `range(qty - planted - live)` is empty rather than negative
@@ -2716,6 +2761,49 @@ CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
 CROP_ADAPT_FROM_DAY = 6
 
 
+#: Shop types whose drain removes STRAWBERRY from the town -- four of the eight in `routines.SHOPS`.
+#: Shops are drawn WITH REPLACEMENT, so this counts INSTANCES, not distinct types: two SMOOTHIE_SHOPs
+#: drain twice as much as one.
+STRAWBERRY_SHOPS = ("BRUNCH_SPOT", "ICE_CREAM_SHOP", "SMOOTHIE_SHOP", "FARMERS_MARKET")
+
+#: **Strawberry tiles to hold, indexed by strawberry-draining shop INSTANCES unlocked at
+#: `STRAWBERRY_FLOAT_FROM_DAY`.**
+#:
+#: Our rows ask for 41-42 on every board. `market_price` is a pure function of persistent town stock and
+#: the only thing that removes strawberry is a shop that carries it, so the right tile count is a
+#: function of the draw -- and strawberry halves just 31 units above `I0`, the second-most fragile book
+#: in the game after wool.
+#:
+#: Read off tetsuya's 79 recorded seats (#1, rating 3156.4): tiles standing at d20 against the
+#: strawberry-draining shops visible at d12.
+#:
+#:     drains   0 -> 25.5    1 -> 26.4    2 -> 34.9    3 -> 36.4    4 -> 36.8
+#:     wheat    0 -> 28.0    1 -> 21.8    2 -> 21.3    3 -> 19.0    4 -> 18.0
+#:
+#: The step sits between 1 and 2 drains rather than sloping, which is what makes this a table.
+#:
+#: **A first cut of this lost $28,259 and it was NOT this table that was wrong.** Capping strawberry
+#: while leaving the route tables solved for 41-42 tiles measured the mismatch, not the allocation:
+#: wheat fell too on every arm that moved (124->120, 133->125, 128->124), because
+#: `_apply_precomputed` keys each stop on an exact `(tile, ops)` tuple and a day whose crop mix has
+#: changed no longer matches the route solved for it. The routes and the mix are one artifact and have
+#: to move together. See `docs/the_tapes_are_both_strawberry_rich_2026-08-19.md`; this version ships
+#: only alongside route tables re-solved against it.
+STRAWBERRY_TILES_BY_DRAIN = (26, 26, 35, 36, 37)
+
+#: Days strictly before this keep the row's own strawberry count.
+#:
+#: **Day 12, because that is where the evidence is and where our authority starts.** The table above is
+#: keyed on shops visible at d12 -- four draws, 68% of the season's shop-weighted drain. It is also the
+#: first day we decide anything: d4-d11 are replayed from the tape, so the opening's strawberry is
+#: committed whatever the draw says, and 37 of 42 tiles already stand at d12 dawn on the strawberry arm.
+#:
+#: **The draw is read from the LIVE observation, never from a tape file.** A forced `cfg["seed"]`
+#: re-rolls the shops, and the shop draw is one of only two RNG consumers in the environment. Reading
+#: the tape JSONs instead cost a wrong three-board table and a reverted tomato gate on 2026-08-19.
+STRAWBERRY_FLOAT_FROM_DAY = 12
+
+
 #: **WOOL_SHOP_SETS_THE_HERD -- an EARLY YARN_STORE makes the herd sheep-heavy.**
 #:
 #: Re-measured 2026-08-15 over **74 distinct** downloaded games of the #1 player -- every replay on
@@ -3391,7 +3479,27 @@ FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 #:
 #: Both default to 0, which is a no-op, so this is inert until a sweep sets it.
 WHEAT_TILES_TO_CARROT = 0
-WHEAT_TILES_TO_TOMATO = 0
+#: **ONE tile, unconditional, and it ships only with routes solved for it.**
+#:
+#: Measured 2026-08-19 on the four tape arms against routes solved for a NO-tomato mix, one tile from
+#: `LATE_CROP_FROM_DAY = 12`: melon_q3 +$5,692, straw_q3 -$1,117, q4_straw -$1,031, q4_melon -$11,655.
+#: Those losses do NOT establish that tomato loses, because the routes were solved for a mix without it
+#: -- the same confound that made the first strawberry cap read as -$28,259.
+#:
+#: **Unconditional, because the shop condition was tried and refuted.** A gate firing only where a
+#: tomato-draining shop was visible was built and measured; on the seeds actually played the draws are
+#: 4 / 2 / 1 tomato-draining shops and the results are -$1,117 / +$5,692 / -$11,655, so there is no
+#: monotone condition to gate on. The earlier table claiming 1/0/0/0 was read out of the tape JSONs,
+#: which describe a different draw than a forced `cfg["seed"]` produces.
+#:
+#: **One, not two.** On melon_q3 the second tile cost $8,870 with every other crop count identical --
+#: WHEAT 133, MELON 20, STRAWBERRY 34, CARROT 8 at both. Tomato is `interval 1`, so each tile demands a
+#: harvest visit on every one of its four yield days; one fits the day's slack and the second one's
+#: visits displace better work. Not saturation: tomato takes 135 units above `I0` before halving and a
+#: tile yields 4. This is the cows lesson -- per-tile revenue that ignores action cost is not
+#: decision-ready -- and it is exactly the cost a re-solve is able to route around, which is why the
+#: tile goes in before the solver runs rather than after.
+WHEAT_TILES_TO_TOMATO = 1
 
 #: **Every crop against every other, as `(src, dst, tiles)` triples.** The two integers above can
 #: only ever spend wheat; this can also take melon away, or buy wheat with strawberry.
@@ -3694,8 +3802,42 @@ def make_agent(schedule, me=0, router=True):
             # sweep value means "this many tiles over the whole season", not per day. Inert at 0.
             if day >= LATE_CROP_FROM_DAY and (WHEAT_TILES_TO_CARROT or WHEAT_TILES_TO_TOMATO):
                 if "late_crop_left" not in state:
+                    # **The tomato tile belongs to the STRAWBERRY season only.** `melon_armed` is set
+                    # by `MelonBranch` at d3 -- and note the name is inverted from what it reads like:
+                    # the class is "his strawberry season, taken when the opponent has committed to
+                    # melon", so armed means we are playing STRAWBERRY, on `solved_days_straw`.
+                    #
+                    # This is per-arm PLAN CONTENT, not a flag. The two arms already run different
+                    # schedules and different route tables for exactly this reason, and the tile is
+                    # part of one season's plan, so it belongs where the rest of that divergence lives.
+                    #
+                    # Measured 2026-08-19, each arm on routes solved for its own mix:
+                    #
+                    #     straw arm   155,601 -> 159,623   +4,022   with the tile
+                    #     melon arm   139,453 -> 136,516   -2,937   with the tile
+                    #                         -> 140,396     +943   without it
+                    #
+                    # **It is NOT a shop condition, and the draw says so.** Read live at d12 with the
+                    # agent playing, the straw board has ZERO tomato-draining shops and gains, the melon
+                    # board has one and loses. That is backwards for a demand story, so the tile is not
+                    # being paid for by tomato demand and no drain-count gate can express this.
+                    # **Not on a four-quadrant board either, and for the same reason the strawberry cap
+                    # carries that condition: the tile only exists where a route table was solved for
+                    # it.** The q4 arms run the pre-2026-08-19 tables, which have no tomato stop, so a
+                    # tile there is exactly the mismatch this day was spent removing -- measured at
+                    # -$1,031 on q4 straw, the same figure the tile scored against those tables in the
+                    # morning.
+                    #
+                    # **`q4_armed`, NOT `len(unlocked)`.** The budget is created once, on the first day
+                    # at `LATE_CROP_FROM_DAY`, and d12 is the very turn the fourth quadrant is bought:
+                    # the live count still reads 3 at dawn and 4 from d13. So a quadrant test here fired
+                    # on the q4 board anyway while the cap -- re-evaluated every day -- correctly stayed
+                    # off, which is how one condition can look right and the other wrong on one board.
+                    # `Q4Branch` decides at d6 and the key is stable by d12.
+                    _tom = (int(WHEAT_TILES_TO_TOMATO)
+                            if state.get("melon_armed") and not state.get("q4_armed") else 0)
                     state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
-                                               "TOMATO": int(WHEAT_TILES_TO_TOMATO)}
+                                               "TOMATO": _tom}
                 # **Only touch a day that HAS a row, for the reason spelled out on `CROP_TILE_SHIFTS`
                 # twelve lines down.** `sched.get(day) or {}` followed by an unconditional
                 # `sched[day] = _r` inserts an EMPTY row on every day from here that the schedule does
@@ -4904,6 +5046,14 @@ def make_agent(schedule, me=0, router=True):
             # because d7 needs fifteen) and trims only seed the season has no planting left for.
             _later = sum(collections.Counter(sched.get(_d, {}).get("plants") or [])[crop]
                          for _d in range(day + 1, R.SEASON_DAYS))
+            # **The 5 STRAWBERRY seed we close holding cannot be recovered here, and it was tried.**
+            # Capping this purchase by the strawberry ceiling measured a byte-identical season on all
+            # four arms -- same money, same seed left. The seed is bought during the REPLAYED opening
+            # d4-d11, before `STRAWBERRY_FLOAT_FROM_DAY`, so it is already spent by the time any cap
+            # can act, and seed cannot be sold back (`private["seeds"]` is not a market product). The
+            # only way to reach it is to stop replaying the tape's own BUY_SEED, which changes the
+            # opening this whole agent is built on. Recorded so it is not re-derived: $500 on the straw
+            # arm, $400 on each q4 arm, and it is sunk, not leaking.
             short = min(short, max(0, int(want_seed.get(crop, 0)) + _later
                                    - int(seeds.get(crop, 0))))
             if short > 0 and len(orders) < 9:
