@@ -778,19 +778,27 @@ def _one_shot_is_finished(info, age, room, day=None):
         # to collect; it is paired here with the `plant_prize` change that puts the crop in the ground.
         # Victor takes 26 wheat on d29 at age 2-3, `held 4 / max 6` (`91854176.json`).
         return True
-    # **`follow-tetsuya` branch: a one-shot is takeable as soon as it is LEGAL, not once it is full.**
+    # **MEASURED AND REVERTED 2026-08-19: `age >= info["first"]` -- take a one-shot as soon as it is
+    # LEGAL rather than once it is full. Do not re-derive it.**
     #
-    # WHEAT is `first_yield 2, max_day 4`. The old rule held every tile to `max_day`, which maximises
-    # units per tile and minimises ground turnover. tetsuya takes wheat at age 2-3 and re-sows, and
-    # his schedule's SELL rows assume it -- d3 carries `sells {WHEAT: 30}`, which our planner cannot
-    # supply because nothing is four days old yet.
+    # The theory was that ground is the bottleneck: tetsuya takes wheat at age 2-3 and re-sows, his
+    # d3 row sells WHEAT 30 which nothing four days old can supply, and his plan idles 1332-1553
+    # unit-turns against kawa's 831-992 while planting MORE.
     #
-    # This is the trade the docstring above warns about, taken deliberately in the other direction:
-    # fewer units per tile, more cycles per square. It is the same shape as the strawberry cap, which
-    # paid +$4,022 by planting LESS. Measured on the head-to-head, his plan idles 1332-1553 unit-turns
-    # against kawa's 831-992 while planting MORE, which is the crew waiting for ground that our gate
-    # will not release.
-    return age >= info["first"] or room <= 0
+    # It did the OPPOSITE of the intended thing on both plans, 8 seeds, same opponent:
+    #
+    #     gate            wins            tets idle    kawa idle
+    #     max_day         kawa 3 tets 5   1332-1553     831- 992
+    #     first_yield     kawa 1 tets 1   1613-1962    1048-1368
+    #
+    # Idle went UP. Fewer units per tile means the same harvest turns bank less, and the tile is
+    # demolished before it grows -- the exact failure recorded above, five crop tiles lost on d3 of
+    # seed 11. Ground was never the bottleneck.
+    #
+    # **Read the WINS column, not money.** The money mean improved to +519 while the median fell to
+    # -10,044, because kawa collapsed on two seeds (101,807 -> 36,884 and 93,571 -> 42,219). A mean
+    # that moves the opposite way to the median is an outlier, not a result.
+    return age >= info["max_day"] or room <= 0
 
 
 def produces_tonight(cell, day):
