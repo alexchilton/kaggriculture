@@ -3696,12 +3696,21 @@ def make_agent(schedule, me=0, router=True):
                 if "late_crop_left" not in state:
                     state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
                                                "TOMATO": int(WHEAT_TILES_TO_TOMATO)}
-                _r = sched.get(day) or {}
-                for _crop in ("CARROT", "TOMATO"):          # a total order, so a sweep is reproducible
-                    _r, _spent = _wheat_to(_r, _crop, state["late_crop_left"][_crop])
-                    state["late_crop_left"][_crop] -= _spent
-                sched[day] = _r
-                row = _r
+                # **Only touch a day that HAS a row, for the reason spelled out on `CROP_TILE_SHIFTS`
+                # twelve lines down.** `sched.get(day) or {}` followed by an unconditional
+                # `sched[day] = _r` inserts an EMPTY row on every day from here that the schedule does
+                # not plant on. That changes the season identically for every budget, so it lands inside
+                # the measurement of whatever is being swept and reads as the swept effect -- which is
+                # exactly how ten different `CROP_TILE_SHIFTS` configs all returned +$4,691. The same
+                # defect was live on this block and was found on 2026-08-19 while measuring tomato.
+                # Both integers ship at 0, so fixing it changes nothing that runs today.
+                if sched.get(day):
+                    _r = sched[day]
+                    for _crop in ("CARROT", "TOMATO"):      # a total order, so a sweep is reproducible
+                        _r, _spent = _wheat_to(_r, _crop, state["late_crop_left"][_crop])
+                        state["late_crop_left"][_crop] -= _spent
+                    sched[day] = _r
+                    row = _r
 
             # **The general form: any crop onto any other.** See `CROP_TILE_SHIFTS`. Applied after
             # the two wheat integers so a sweep that sets both is still a total order.

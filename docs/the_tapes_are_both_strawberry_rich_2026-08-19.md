@@ -147,12 +147,39 @@ Measured against the seed-cap baseline, one tile from `LATE_CROP_FROM_DAY = 12`:
   q4_straw     78,305     -1,031        +836     0
 ```
 
-The gate suggested by the top row -- plant tomato only where something drains it -- would score
-+$5,692 on the one qualifying arm and change nothing on the other three.
-**Not shipped, because it rests on a single board whose own sign flips at two tiles.** A +$5,692 that
-becomes -$3,178 when one more tile is added is not an effect that can be sized, and n=1 with an
-unexplained sign flip is exactly the shape of the confounded results this project has been burned by.
-It needs the re-solve above, then fresh seeds with varying tomato-shop draws, scored on win rate.
+**The "tomato-shops at d12" column above is WRONG, and it invalidates the gate built on it.**
+Those counts were read out of the tape JSON files. Our runs force `cfg["seed"]` to the tape's own seed,
+and the shop draw is one of only two `random.Random` consumers in the environment, so the board we
+actually play has a different draw from the one the tape recorded. Printed from the live env at d12 h0
+on the seeds actually in play:
+
+```
+  arm        played seed     tomato-drain   straw-drain   tomato=1 result
+  straw_q3   70683142              4             2           -1,117
+  melon_q3   1240813987            2             4           +5,692
+  q4         244615642             1             2          -11,655
+```
+
+Four drains loses, two gains, one loses badly. **There is no monotone shop condition here**, and the
+"plant tomato only where something drains it" gate has no support: it was implemented, measured, and
+found to fire on the q4 board and lose $11,655 while declining on the 4-drain board. Reverted.
+
+Two separate lessons, both of which cost time in this session:
+
+- **Read the draw from the env you are running, never from the tape file.** A forced seed re-rolls the
+  shops. Every "shops visible" number in an experiment has to be printed from the live observation.
+- **A "read once" rule has to name the day.** The first implementation created the tomato budget on the
+  first day that happened to carry a planting row, so on the q4 board the read slid from d12 to d15 and
+  saw a `PIZZA_SHOP` that had not existed at the decision point. The gate looked closed and fired.
+
+Also fixed while here, and kept: this block did `sched[day] = _r` unconditionally, inserting an EMPTY
+row on every day from `LATE_CROP_FROM_DAY` that the schedule does not plant on -- the identical defect
+already documented twelve lines down for `CROP_TILE_SHIFTS`, where it made ten different configs all
+return +$4,691. Both integers ship at 0 so nothing live changes, but any future sweep of either would
+have been confounded by it.
+
+What tomato would still need: the re-solve above, then fresh seeds spanning tomato-shop draws, scored
+on paired-seat win rate.
 
 ## Timing constraint from the taped opening
 
