@@ -88,20 +88,71 @@ the ground to wheat -- wheat went DOWN on every arm that moved (124->120, 133->1
 the strawberry tiles *and* wheat tiles. Strawberry seed also sat unsown in the shed, $400-$500 an arm,
 because the purchase was already committed before the cap declined the pin.
 
-The cause is the precomputed route tables. They are solved for days 12-23 **against the schedule's own
-crop counts**, and `_apply_precomputed` keys every stop on the exact `(tile, ops)` tuple; a miss demotes
-the job to `_insert_leftovers`, which needs slack the day does not have. Changing the crop mix after
-d11 therefore desynchronises the day from the route that was solved for it, and the day loses work it
-would otherwise have done.
+The SUSPECTED cause is the precomputed route tables. They are solved for days 12-23 **against the
+schedule's own crop counts**, and `_apply_precomputed` keys every stop on the exact `(tile, ops)` tuple;
+a miss demotes the job to `_insert_leftovers`, which needs slack the day does not have. Changing the crop
+mix after d11 would then desynchronise the day from the route solved for it.
 
-**So: a crop-mix float cannot be wedged in behind solved route tables.** It is not that 37 tiles is the
-wrong target -- tetsuya plays 36.8 on this board and wins with it. It is that our 42 and our routes are
-one artifact. Getting his allocation means re-solving all four tables for the new mix, days 12-23,
-which is a different and much larger job than a target table.
+**This mechanism is NOT established, and the one isolation test run so far points the other way.**
+Recorded here because the first version of this doc asserted it as fact.
 
-This also predicts the same blocker for any other post-d11 crop reallocation, including
-`WHEAT_TILES_TO_CARROT` and `WHEAT_TILES_TO_TOMATO`, which rewrite `sched[day]` rows from
-`LATE_CROP_FROM_DAY = 12` -- exactly inside the solved range.
+The isolation is a 2x2: drop the solved routes (`cover.UNSOLVE_DAYS = range(12, 30)`) and then add the
+crop change. If route conflict is the cause, the change should do BETTER with the routes gone.
+
+```
+  straw_q3            routes ON    routes OFF
+    tomato 0           155,601      150,291      -5,310 = the cost of losing the routes
+    tomato 1           154,484      137,135
+    tomato delta        -1,117      -13,156      <- WORSE without routes, not better
+```
+
+So on the strawberry board tomato's loss is real crop economics -- 0 tomato-draining shops at d12 -- and
+not route desync. The route hypothesis is refuted for tomato on this arm.
+
+`melon_q3` returned **byte-identical** money on both route settings (139,453 at tomato 0, 145,145 at
+tomato 1, either way), so that arm's override never took: the melon/q4 branch resets `UNSOLVE_DAYS`,
+which is the trap `q4_branch`'s own note warns about -- "an A/B there that reads byte-identical means
+the reset line was left in". That half of the 2x2 is a non-experiment and nothing may be read from it.
+
+**The strawberry isolation has NOT been run.** For strawberry the only evidence is the wheat column
+above, which is suggestive and not decisive.
+
+## What has to happen before any crop mix can be tested
+
+Solving the routes for 42 strawberry and then planting 37 measures the MISMATCH, not the allocation.
+So the order is:
+
+1. Choose the target mix (tetsuya's table, or a swept variant).
+2. Re-solve all four tables -- `solved_days`, `solved_days_q4`, `solved_days_straw`,
+   `solved_days_straw_q4` -- against that mix, days 12-23.
+3. A/B mix-vs-mix, each running on its OWN routes.
+4. Score on paired-seat win rate, not money. That is the instrument that correctly killed the
+   unconditional carrot and tomato arms, where mean money rose and win rate fell.
+
+Until step 2 exists, every crop-mix number on the tape arms is confounded by the route tables, and a
+loss there is not evidence the allocation is wrong.
+
+The same confound applies to `WHEAT_TILES_TO_CARROT` and `WHEAT_TILES_TO_TOMATO`, which rewrite
+`sched[day]` rows from `LATE_CROP_FROM_DAY = 12` -- inside the solved range.
+
+## Tomato, for the record
+
+Measured against the seed-cap baseline, one tile from `LATE_CROP_FROM_DAY = 12`:
+
+```
+              baseline   tomato=1    tomato=2    tomato-shops at d12
+  melon_q3    139,453     +5,692      -3,178     1  (FARMERS_MARKET)
+  straw_q3    155,601     -1,117      -4,365     0
+  q4_melon     93,929    -11,655      -2,134     0
+  q4_straw     78,305     -1,031        +836     0
+```
+
+The gate suggested by the top row -- plant tomato only where something drains it -- would score
++$5,692 on the one qualifying arm and change nothing on the other three.
+**Not shipped, because it rests on a single board whose own sign flips at two tiles.** A +$5,692 that
+becomes -$3,178 when one more tile is added is not an effect that can be sized, and n=1 with an
+unexplained sign flip is exactly the shape of the confounded results this project has been burned by.
+It needs the re-solve above, then fresh seeds with varying tomato-shop draws, scored on win rate.
 
 ## Timing constraint from the taped opening
 
