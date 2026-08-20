@@ -63,6 +63,33 @@ def batches(shard, size, rng):
         yield {k: v[sl] for k, v in shard.items()}
 
 
+def argmax_in_chunks(fn, tiles, units, gfeat, chunk):
+    """Run the instrument's forward pass in training-sized pieces and stitch the answers.
+
+    **Why this is not just tidiness.** The instrument used to call the model ONCE on all 8,192
+    held-out rows while training ran batches of 256. The entity transformer's attention is
+    quadratic in its 124 tokens per row, so that single call asked for 4.79 GiB and aborted the
+    run on the box at 20:37:01 on 2026-08-20 -- after epoch 0 had trained over all fifteen shards.
+    The weights were lost, because the traceback lands before both the print and the save.
+
+    Nothing caught it earlier because the failure needs a LARGE holdout: `sl` is
+    `min(8192, len(...))`, so the two-game smoke run scored a few hundred rows and never built the
+    big pass. It also needs a GPU -- on CPU an oversized allocation is slow, not fatal.
+
+    `chunk` should be the training batch size. That size is proven to fit by the time this runs:
+    the epoch that just finished did thousands of them.
+    """
+    n = len(tiles)
+    bs, os_ = [], []
+    for i in range(0, n, chunk):
+        b, o = fn(tiles[i:i + chunk], units[i:i + chunk], gfeat[i:i + chunk])
+        bs.append(np.asarray(b))
+        os_.append(np.asarray(o))
+    if not bs:
+        return np.zeros(0, np.int32), np.zeros(0, np.int32)
+    return np.concatenate(bs), np.concatenate(os_)
+
+
 def to_loss_batch(b):
     """npz arrays -> the dict `bc.loss_terms` reads, with masks all-legal.
 
@@ -229,12 +256,15 @@ def main():
         # the teacher DID trade -- 21.1% of them, and all of the money.
         probe_shard = load_shard(holdout_path)
         sl = slice(0, min(8192, len(probe_shard["y_bundle"])))
-        bmax, omax = argmax_mix(
-            params,
-            jnp.asarray(probe_shard["tiles"][sl], dtype=jnp.float32),
-            jnp.asarray(probe_shard["units"][sl], dtype=jnp.float32),
-            jnp.asarray(probe_shard["glob"][sl], dtype=jnp.float32))
-        bmax = np.asarray(bmax)
+        # In pieces the size of a training batch -- see `argmax_in_chunks`. One 8,192-row forward
+        # pass wants 4.79 GiB and killed this run once already, after a full epoch had trained.
+        bmax, omax = argmax_in_chunks(
+            lambda t, u, g: argmax_mix(params,
+                                       jnp.asarray(t, dtype=jnp.float32),
+                                       jnp.asarray(u, dtype=jnp.float32),
+                                       jnp.asarray(g, dtype=jnp.float32)),
+            probe_shard["tiles"][sl], probe_shard["units"][sl], probe_shard["glob"][sl],
+            chunk=args.batch)
         y_bundle = probe_shard["y_bundle"][sl]
         traded = y_bundle != 0
 
@@ -245,7 +275,6 @@ def main():
         # Op agreement on LIVE unit slots only. Padding slots are all NOOP and would carry the
         # figure to ~0.95 on their own -- the padding mistake `bc.py` warns about, in a metric.
         live = probe_shard["live"][sl]
-        omax = np.asarray(omax)
         agree_op = float((omax[live] == probe_shard["y_op"][sl][live]).mean()) if live.any() else 0.0
         top = collections.Counter(bmax.tolist()).most_common(5)
 
