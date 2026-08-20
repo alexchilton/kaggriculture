@@ -221,8 +221,31 @@ class MelonBranch(Branch):
         return count_tiles(observation, opponent_seat(observation),
                            crop="MELON") >= OPPONENT_MELON
 
+    #: The three-quadrant solve for the strawberry season. `cover` loads `solved_days` at import,
+    #: which was solved on the MELON board; a route is keyed on `(tile, ops)` and this branch puts
+    #: different crops on different tiles from d5, so those stops drop rather than adapt and the
+    #: strawberry season plays d12-d29 effectively unsolved. Same failure `q4_branch` documents for
+    #: 75 tiles against 100, one board over.
+    SOLVE_FOR_STRAWBERRY = "kagg.search.solved_days_straw"
+
     def rows(self):
         return {int(d): r for d, r in json.loads(base64.b64decode(B3_ROWS_B64)).items()}
+
+    def install(self, schedule, state=None):
+        moved = super().install(schedule, state)
+        import importlib
+        cover = importlib.import_module("kagg.search.cover")
+        try:
+            straw = importlib.import_module(self.SOLVE_FOR_STRAWBERRY)
+        except ImportError:
+            # Not solved yet. Leaving `cover`'s melon routes in place is what shipped before, and
+            # the mismatched stops drop silently -- which is the whole reason this solve is owed.
+            return moved
+        cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
+                                        for u, seq in units.items()}
+                                    for d, units in straw.SOLVED_DAYS.items()
+                                    if d not in cover.UNSOLVE_DAYS}
+        return moved
 
 
 BRANCH = MelonBranch()
