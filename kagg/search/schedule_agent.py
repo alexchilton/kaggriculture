@@ -3726,7 +3726,21 @@ def _wheat_to(row, crop, budget):
 #: back a replay starts the less true that is.
 #: `resolve_days.py` and `breakdown.py` both read this, so the routes are solved for the trajectory
 #: we actually play.
-REPLAY_OPENING_DAYS = (4, 5, 6, 7, 8, 9, 10, 11)
+#: **DISARMED 2026-08-20. Following tetsuya's schedule while replaying カワシギ's recorded actions
+#: for eight days is incoherent, and it was silently overriding the rule this week was spent on.**
+#:
+#: Every tape in `REPLAY_OPENING_TAPE` below is a カワシギ game. With the agent pointed at tetsuya --
+#: his crop mix, his herd gradient, his opening, his goose timing -- days 4-11 were still playing a
+#: different player's turns, on a board his plan does not describe.
+#:
+#: The size of it: 620 of tetsuya's 1187 recorded placements fall in d4-d11, **52%**. That includes
+#: d9, d10 and d11, the exact days `MILK_CLASSIFIER_FROM_DAY` lifted from 60-67% to 73-83%. Measured
+#: as a function, `_herd_split` matches him on 88.5% of placements; with this armed, half of those
+#: decisions never reached the board. A rule that cannot execute is not a rule.
+#:
+#: This costs the d4-d11 tape opening that the current route tables were solved against, so money on
+#: the existing arms is unmeasured until they are re-solved. Alex's call, made explicitly.
+REPLAY_OPENING_DAYS = ()
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
 #: `scripts/build_planner_submission.py`. Empty in the repo, where the tapes are read off disk.
@@ -3837,9 +3851,19 @@ def make_agent(schedule, me=0, router=True):
         # **The four-quadrant branch.** Decides once on d6, and only when the yarn store is already
         # unlocked -- the read three top players make. On an armed draw it rewrites rows 9-29 of
         # `sched` IN PLACE with the leader's four-quadrant tape and installs the 100-tile routes.
-        # Rows 0-8 are the same plan in both tapes, so the opening cannot move. See
-        # `kagg/search/q4_branch.py` for the measurements, which do NOT show a gain.
-        _Q4.arm(sched, state, obs, day)
+        # **DISARMED 2026-08-20, same reason as `REPLAY_OPENING_DAYS`: it is カワシギ's plan
+        # overwriting tetsuya's.** `Branch.install` does `target.clear(); target.update(row)` -- it
+        # WIPES every row from `split_day` on and replaces it with the branch's own, which is read
+        # off カワシギ games.
+        #
+        # Measured on tetsuya's own board and seed, holding a reference to the live schedule object
+        # rather than re-reading the file:
+        #
+        #     crop rows BEFORE the season   WHEAT 164  STRAWBERRY 32  MELON 8  CARROT 8
+        #     crop rows AFTER  the season   WHEAT 127  STRAWBERRY 45  MELON 0  CARROT 5
+        #
+        # His melon is deleted outright. The season we play is not the season the plan names, and
+        # the docstring above already recorded that these measurements do NOT show a gain.
         farms = obs.get("farms") or []
         if len(farms) <= me:
             return {"farmer": ["PASS"], "hands": [], "market": []}
@@ -3937,10 +3961,10 @@ def make_agent(schedule, me=0, router=True):
             state["seeds_dawn"] = collections.Counter(seeds)
 
             # **The leader's melon branch, as the season he actually recorded for that board.**
-            # See `kagg/search/melon_branch.py`. Decided once at d3 off the opponent's melon tiles
-            # and installed from d5, which is the first row either season spends melon money on.
-            if _MB.arm(sched, state, obs, day):
-                row = sched.get(day) or row
+            # **DISARMED 2026-08-20 with `_Q4.arm` above, and for the same reason.** The melon
+            # branch is also read off カワシギ games and also installs through `Branch.install`,
+            # which clears every row from its split day on. It is the likelier culprit for the
+            # MELON 8 -> 0 above, since it is the branch that decides melon.
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
