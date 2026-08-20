@@ -75,10 +75,15 @@ DTYPE = jnp.float32
 
 # Quantity ladders. Coarse on purpose: the difference between selling 30 and 31 is noise, and every
 # extra bucket is another logit to learn. Bucket 0 is always "do nothing", and always legal.
-# How many coarse "what kind of market turn is this" modes the per-product heads condition on.
-# Three is the smallest number that can express the distinction the data actually shows -- no
-# trading, ordinary trading, and liquidating the shed before the 100-item cap destroys the overflow.
-N_TRADE_MODES = 3
+# Size of the market bundle vocabulary: one class per observed combination of orders.
+#
+# This replaces the `N_TRADE_MODES = 3` coarse latent, which was a low-rank guess at the same
+# structure. Measured on ead81e2's own self-play (5,752 player-turns): 117 distinct bundles, top 100
+# covering 99.70% and top 200 covering 100%. 128 is therefore the whole distribution with headroom,
+# and `market_bundles.Vocabulary.coverage` reports what any truncation would cost -- so this is a
+# measured size, not a guessed one. Rebuild the vocabulary and re-check coverage if the teacher
+# changes; a bundle the head cannot express is one the policy can never emit.
+N_BUNDLES = 128
 
 SELL_BUCKETS = jnp.asarray([0, 1, 3, 10, 30], dtype=jnp.int32)
 BUY_BUCKETS = jnp.asarray([0, 1, 2, 5], dtype=jnp.int32)
@@ -185,33 +190,40 @@ class Policy(nn.Module):
                       .reshape(-1, n_units, N_OPS, J.N_ITEMS),
             "qty": nn.Dense(N_OPS * len(UNIT_QTY_BUCKETS), **D)(utok)
                       .reshape(-1, n_units, N_OPS, len(UNIT_QTY_BUCKETS)),
-            # **The market heads are conditioned on a coarse `trade` decision, not independent.**
+            # **The market is ONE categorical over observed order bundles, not six marginals.**
             #
-            # Emitting nine per-product distributions and reading them as a joint is a mean-field
-            # approximation, and it fails in both directions when decoded. Argmax over the
-            # marginals emits *zero* orders -- nine separate "probably not sell" decisions compose
-            # into "never sell" -- and the agent banks exactly its starting money. Independent
-            # sampling from the same marginals banks $1, firing combinations the true joint never
-            # produces. The marginals themselves are fine: 12:1 discrimination on `buy_product`
-            # between turns the teacher traded and turns it did not. It is the factorisation that
-            # loses the information, because a teacher liquidating the shed makes one coordinated
-            # decision across products rather than nine coin flips.
+            # The trade-mode latent this replaces was a low-rank version of the same idea, and the
+            # measurement says the full version is cheap. Emitting per-product distributions and
+            # reading them as a joint is a mean-field approximation that fails in both directions
+            # when decoded. Argmax over the marginals emits *zero* orders -- six separate "probably
+            # not sell" decisions compose into "never sell" -- and the agent banks exactly its
+            # starting money. Independent sampling from the same marginals banks $1, firing
+            # combinations the true joint never produces. The marginals themselves are fine: 12:1
+            # discrimination on `buy_product` between turns the teacher traded and turns it did not.
+            # It is the factorisation that loses the information, because a teacher liquidating the
+            # shed makes one coordinated decision across products rather than six coin flips.
             #
-            # So each product head emits one slice per trade mode and the mode is sampled first:
-            # `p(trade) * prod_i p(product_i | trade)` is an exact factorisation of a joint with
-            # the dominant correlation in it, and it still costs a single forward pass because the
-            # conditioning variable has only `N_TRADE_MODES` values.
-            "trade": nn.Dense(N_TRADE_MODES, **D)(gtok),
-            "sell": nn.Dense(J.N_PRODUCTS * N_TRADE_MODES * len(SELL_BUCKETS), **D)(gtok)
-                      .reshape(-1, J.N_PRODUCTS, N_TRADE_MODES, len(SELL_BUCKETS)),
-            "buy_product": nn.Dense(J.N_PRODUCTS * N_TRADE_MODES * len(BUY_BUCKETS), **D)(gtok)
-                      .reshape(-1, J.N_PRODUCTS, N_TRADE_MODES, len(BUY_BUCKETS)),
-            "buy_seed": nn.Dense(J.N_CROPS * len(BUY_BUCKETS), **D)(gtok)
+            # Measured on ead81e2's own self-play, 5,752 player-turns: 78.7% of turns carry no
+            # market action, there are 117 distinct bundles, and the top 100 cover 99.70%. So the
+            # entire joint is ~16k parameters and an incoherent combination becomes
+            # unrepresentable rather than merely unlikely.
+            #
+            # The bundle that pays for this is rank 2: `HIRE x10` in a single turn, 113 times. As
+            # six independent heads that is unemittable -- worse, `jax_sim` takes a hire COUNT while
+            # the old `hire` head was `Dense(2)`, so no policy could ever hire more than one hand a
+            # turn. A bundle is a multiset, so the count falls out of the decode.
+            "bundle": nn.Dense(N_BUNDLES, **D)(gtok),
+            # Quantities are NOT part of the bundle identity -- 52 of 116 non-empty bundles carry
+            # more than one quantity vector and the five-way sell carries 48. They stay per-product
+            # and are read only for the products the drawn bundle activates, so the coordination
+            # lives in the bundle and the magnitude lives here. A wrong quantity is graceful; a
+            # wrong bundle is catastrophic.
+            "qty_sell": nn.Dense(J.N_PRODUCTS * len(SELL_BUCKETS), **D)(gtok)
+                      .reshape(-1, J.N_PRODUCTS, len(SELL_BUCKETS)),
+            "qty_buy_product": nn.Dense(J.N_PRODUCTS * len(BUY_BUCKETS), **D)(gtok)
+                      .reshape(-1, J.N_PRODUCTS, len(BUY_BUCKETS)),
+            "qty_buy_seed": nn.Dense(J.N_CROPS * len(BUY_BUCKETS), **D)(gtok)
                       .reshape(-1, J.N_CROPS, len(BUY_BUCKETS)),
-            "buy_animal": nn.Dense(J.N_ANIMALS * 2, **D)(gtok)
-                      .reshape(-1, J.N_ANIMALS, 2),
-            "hire": nn.Dense(2, **D)(gtok),
-            "buy_land": nn.Dense(2, **D)(gtok),
         }
         # **The value head is bounded to [0, 1], and that bound is a fact, not a heuristic.**
         # The reward is 1 for a win and 0 for a loss, paid once, and gamma <= 1 -- so no state can
