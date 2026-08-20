@@ -244,3 +244,36 @@ def sell_table(vocab):
     trying.
     """
     return [[n > 0 for n in row] for row in tables(vocab)["sell"]]
+
+
+def orders_from_heads(vocab, index, sell_bucket, buy_product_bucket, buy_seed_bucket,
+                      sell_ladder, buy_ladder, products, crops, animals):
+    """Sampled heads -> the environment's `market` list.
+
+    The bundle names WHICH orders; the per-product quantity heads name HOW MANY. They are indexed
+    differently -- the bundle is a sorted multiset, the quantity heads are one entry per product --
+    so this is where the two are joined, once, rather than at each call site.
+
+    A selected entry floors at one unit. Bucket 0 means "do nothing", which contradicts a bundle
+    that named the product, and the bundle is the decision carrying the coordination. Same rule as
+    `to_sim_fields` and `jax_act.to_sim_actions`; all three must agree or a policy plays differently
+    depending on which decoder ran.
+    """
+    out = []
+    for op, item in vocab.bundle(index):
+        if op == HIRE:
+            out.append([HIRE])
+        elif op == BUY_LAND:
+            out.append([BUY_LAND])
+        elif op == SELL and item in products:
+            n = max(1, int(sell_ladder[int(sell_bucket[products.index(item)])]))
+            out.append([SELL, item, n])
+        elif op == BUY_PRODUCT and item in products:
+            n = max(1, int(buy_ladder[int(buy_product_bucket[products.index(item)])]))
+            out.append([BUY_PRODUCT, item, n])
+        elif op == BUY_SEED and item in crops:
+            n = max(1, int(buy_ladder[int(buy_seed_bucket[crops.index(item)])]))
+            out.append([BUY_SEED, item, n])
+        elif op == BUY_ANIMAL and item in animals:
+            out.append([BUY_ANIMAL, item, 1])
+    return out
