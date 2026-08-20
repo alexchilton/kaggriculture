@@ -136,7 +136,7 @@ def features(obs, seat):
     return f
 
 
-def read(path, player, days):
+def read(path, player, days, blocks_out=None):
     rep = json.loads(pathlib.Path(path).read_text())
     if not isinstance(rep, dict) or not rep.get("steps"):
         return []
@@ -164,7 +164,7 @@ def read(path, player, days):
             if act is None:
                 continue
             turns[day].append((hour, canonical(plant_only(act)), canonical(act),
-                               canonical(species_only(act))))
+                               canonical(species_only(act)), act))
             if hour == 0:
                 try:
                     feats[day] = features(obs, seat)
@@ -173,15 +173,24 @@ def read(path, player, days):
         for day, t in turns.items():
             if len(t) != TURNS_PER_DAY or day not in feats:
                 continue
-            t = sorted(t)
+            t = sorted(t, key=lambda r: r[0])
             digest = lambda parts: hashlib.md5(                           # noqa: E731
                 "|".join(parts).encode()).hexdigest()[:10]
+            block = digest([p for _h, p, _f, _s, _a in t])
             rows.append({"game": pathlib.Path(path).stem, "seat": seat, "day": day,
                          # `block` keeps the historical name and stays the default label.
-                         "block": digest([p for _h, p, _f, _s in t]),
-                         "block_full": digest([f for _h, _p, f, _s in t]),
-                         "block_species": digest([s for _h, _p, _f, s in t]),
+                         "block": block,
+                         "block_full": digest([f for _h, _p, f, _s, _a in t]),
+                         "block_species": digest([s for _h, _p, _f, s, _a in t]),
                          "x": feats[day]})
+            # **One representative action sequence per block.** Needed to answer "when the tree
+            # picks the WRONG block, how wrong is it?" -- exact-match accuracy is a harsh metric
+            # when 55% of what separates two blocks is movement and another 20% is watering, both
+            # of which the router re-derives. Keyed by (day, block); identical hashes have
+            # identical ops by construction, so the first one seen is representative.
+            if blocks_out is not None:
+                blocks_out.setdefault(str(day), {}).setdefault(
+                    block, [a for _h, _p, _f, _s, a in t])
     return rows
 
 
@@ -197,8 +206,9 @@ def main():
     for d in args.dirs:
         paths += sorted(glob.glob(d.rstrip("/") + "/*.json"))
     rows = []
+    blocks_out = {}
     for p in paths:
-        rows += read(p, args.player, args.days)
+        rows += read(p, args.player, args.days, blocks_out)
 
     games = {(r["game"], r["seat"]) for r in rows}
     print("player %s: %d day-rows from %d game-seats" % (args.player, len(rows), len(games)))
@@ -223,6 +233,10 @@ def main():
     out.write_text(json.dumps(rows))
     print("\nwrote %s  (%d rows, %d features)"
           % (out, len(rows), len(rows[0]["x"]) if rows else 0))
+    blocks_path = out.with_name(out.stem + ".blocks.json")
+    blocks_path.write_text(json.dumps(blocks_out))
+    print("wrote %s  (%d day/block sequences)"
+          % (blocks_path, sum(len(v) for v in blocks_out.values())))
 
 
 if __name__ == "__main__":

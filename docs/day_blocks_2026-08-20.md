@@ -175,3 +175,91 @@ is why the tree exists: held-out games cannot be bought with a finer partition.
 | `player_self_consistency.py` | does one player repeat themselves, and what key splits them |
 | `build_day_rows.py` | one row per (game, day): 64 named features -> block id |
 | `fit_day_classifier.py` | the tree, held-out by game, and it prints its rules |
+
+## The new #1: Ryo Hasegawa, and he is a third shape
+
+Nine games, downloaded 2026-08-20 23:02, episodes 95029938-95381518.
+Six of the nine are against tetsuya, two against Arman Tuganbaev.
+He wins seven of nine, by margins of 1,760 to 14,163 — but nine SELECTED games cannot support a
+win rate and none is claimed here.
+
+**His first five days are a frozen 120-turn unit script.**
+
+    day 0   8 pairs  unit ops IDENTICAL
+    day 1   8 pairs  unit ops IDENTICAL -- but 2 turn-pairs differ in MARKET ORDERS ONLY
+    day 2   8 pairs  unit ops IDENTICAL -- but 2 turn-pairs differ in MARKET ORDERS ONLY
+    day 3   8 pairs  unit ops IDENTICAL
+    day 4   8 pairs  unit ops IDENTICAL
+    day 5   8 pairs  0.8 differing unit-slots per pair  (PLANT 50%, WATER 50%)
+    day 6   8 pairs  34.8 per pair
+
+Every move, plant and water identical across nine games, regardless of opponent or shop draw.
+**In a five-day window where he varies nothing else, selling is the only thing he varies** — which
+is Alex's "the selling cadence and positioning is the tricky bit", arriving as the sole degree of
+freedom in an otherwise frozen opening.
+
+| | fixed unit opening | mid-game | shape |
+|---|---|---|---|
+| Ryo Hasegawa | **d0-d4 exact, d5 near** | breaks at d6 | longest frozen script, selling free |
+| カワシギ | d1-d2 exact | branch persists, tree 58% at d12 | structure carried across days |
+| tetsuya | d0-d3 (d3 at 98%) | lawnmower, tree 3% at d12 | reactive routine |
+
+Kawashigi's fixed opening was 74 turns, ending at the d3 shop unlock. Ryo's runs 120 turns to d5
+and does not react to the first shop draw at all.
+
+### His repertoire
+
+    PLANT       WHEAT 1157   STRAWBERRY 312   CARROT 205   MELON 147   TOMATO 26
+    BUY_ANIMAL  COW 85   SHEEP 28
+    SELL(orders) FERTILIZER 672  MILK 415  STRAWBERRY 353  WHEAT 323
+                 WOOL 174  MELON 95  CARROT 73  TOMATO 34
+
+- **No geese, no eggs.** COW and SHEEP only. Independent of our own goose verdict, which was void
+  because EGG was unsellable when it was measured — this does not prove geese are bad, but it is a
+  data point agreeing with `HERD_GEESE = 0` for an unrelated reason.
+- **Tomato in 3 of 9 games**, 26 plants against 1,157 wheat — about 2% of his planting.
+- **Carrot in 6 of 9 games**, 205 plants. Genuinely part of the repertoire.
+- Wheat is 63% of everything he plants.
+
+Those SELL figures are **order counts, not fills** — the agent re-posts an order every turn, so the
+ordering between products is distorted by re-offer frequency. Presence and absence are reliable;
+volumes are not. `kagg/analysis/fills.py` gives real quantities.
+
+### A fifth wrong measurement, caught by disagreement
+
+`what_differs_between_blocks.py` computed its `total` excluding the market column and then printed
+"IDENTICAL" when `total == 0`. It reported Ryo's d1-d4 as identical while the self-consistency table
+said 78% for d2. Both could not be true, and a direct hash of the raw actions settled it:
+
+    day 0: 9 games, 1 distinct
+    day 1: 9 games, 2 distinct  (7 vs 2)
+    day 2: 9 games, 2 distinct  (7 vs 2)
+    day 3: 9 games, 1 distinct
+    day 4: 9 games, 1 distinct
+
+The label was wrong, and the case it mislabelled is the most interesting one in the file. It now
+says "unit ops IDENTICAL -- but N turn-pairs differ in MARKET ORDERS ONLY".
+
+## Wrong-pick cost: the hoped-for result did NOT appear
+
+When the tree misses, is the block it chose a near neighbour of the right one, or unrelated?
+Against a random block from the same day's library, カワシギ:
+
+| day | exact | wrong: real | random: real | ratio |
+|---|---|---|---|---|
+| 3 | 83.6% | 7.5 | 15.5 | 0.48 |
+| 6 | 83.6% | 1.7 | 3.7 | 0.46 |
+| 7 | 65.7% | 34.2 | 34.0 | 1.00 |
+| 9 | 73.1% | 22.2 | 23.3 | 0.95 |
+| 11 | 47.8% | 46.9 | 40.3 | 1.16 |
+| 12 | 58.2% | 35.4 | 48.7 | 0.73 |
+| 16 | 26.9% | 67.9 | 73.8 | 0.92 |
+
+Median ratio about 0.73, but d7, d9, d11, d14 and d16 sit at 0.92-1.16 — on those days a miss is as
+far from the truth as a random pick. **Exact-match accuracy is not a large underestimate**, which is
+the opposite of what was suggested before measuring.
+
+Counterweight: the absolute numbers are small against a day of ~190 unit-slots — a wrong pick at d12
+differs on ~35 and a random block on ~49, so even random agrees on three-quarters. Whether the
+residual matters is a money question and this measures ops. The real test is a replay through the
+fast sim, which is parity-exact at 300/300 full-length episodes.

@@ -140,7 +140,17 @@ def main():
         total = sum(v for k, v in tally.items()
                     if not k.startswith("_") and k != "market orders differ")
         if total == 0:
-            print("day %-2d  %d pairs  IDENTICAL" % (day, pairs))
+            # **Never say IDENTICAL while the market column is non-zero.** `total` deliberately
+            # excludes market orders, so an earlier version printed "IDENTICAL" for Ryo Hasegawa's
+            # d1-d4 when those days differ in what he SELLS and in nothing else -- and the
+            # self-consistency table said 78% for the same day, which is how the lie was caught.
+            # That case is not a null result, it is the most interesting result in the file: a
+            # frozen unit script with the selling left free.
+            print("day %-2d  %d pairs  unit ops IDENTICAL%s"
+                  % (day, pairs,
+                     "" if not tally["market orders differ"]
+                     else " -- but %d turn-pairs differ in MARKET ORDERS ONLY"
+                          % tally["market orders differ"]))
             continue
         parts = [(k, v) for k, v in tally.items()
                  if not k.startswith("_") and k != "market orders differ"]
