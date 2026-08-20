@@ -1635,6 +1635,12 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # is untouched. Anchored on `planted + live`, which never falls, so this cannot inflate the total.
     if SHOP_ADAPT_CROPS and day >= CROP_ADAPT_FROM_DAY:
         want = _adapt_crops(want, state["planted"], live, day, unlocked_shops, LAST_DAY)
+    # **CARROT_SWAP -- a plain shop-instance-count substitution, independent of the machinery
+    # above.** See the flag's own docstring for why this is a distinct question from
+    # `SHOP_ADAPT_CROPS`'s dollar-scored `WHEAT<->CARROT` pair (OFF, C-23) and from `CARROT_LATE`
+    # (a timing dial, measured flat).
+    if CARROT_SWAP:
+        want = _carrot_swap(want, state["planted"], live, day, unlocked_shops)
     # **Shed-access ground is held for a pen that is DUE, not for one ten days out.**
     # `router.field_order` leaves the four shed-access cells out of the sweep on purpose -- they are
     # worth more as pens, where FEED, CARE, COLLECT_FERTILIZER, PICKUP and DROP all happen without a
@@ -2533,6 +2539,86 @@ CROP_SWAP_PAIRS = (("WHEAT", "CARROT"), ("TOMATO", "STRAWBERRY"))
 #: whose book is spoken for scores zero rather than negative, so a pair whose demand has gone can
 #: never be pushed past the point where it stops paying, and the day gate protects the opening.
 CROP_ADAPT_FROM_DAY = 6
+
+
+#: **CARROT_SWAP -- plant CARROT instead of WHEAT once the shop draw plainly favours it.**
+#:
+#: This is deliberately a DIFFERENT mechanism from `SHOP_ADAPT_CROPS`'s `("WHEAT", "CARROT")`
+#: pair (`REGISTER.md` C-23, OFF, do not conflate the two), not a second attempt at the same
+#: rule. That pair scores in dollars through a season-long headroom model, computed jointly with
+#: `("TOMATO", "STRAWBERRY")`, and measured 0.806 against HEAD's 0.871 over 232 matched games --
+#: a real loss. It was never isolated to WHEAT<->CARROT alone. `CARROT_LATE` (a 0/1 timing dial)
+#: is a different question again -- it moves WHEN carrot goes in, never WHETHER -- and measured
+#: flat, 65.1% vs 64.1% over 384 games (`data/seed_scripts` sweep, `data/logs/
+#: exp_cow_carrot_2026-08-12.log`).
+#:
+#: This rule is the plain instrument the task asks for: sum unlocked shop INSTANCES from
+#: `kaggriculture.SHOPS` that buy CARROT against those that buy WHEAT, weighting a single-product
+#: shop double -- `PET_CAFE` buys nothing else, so one instance drains carrot twice as fast as a
+#: multi-product shop drains wheat, the same convention `town_drain_remaining` already uses for
+#: every product. WHEAT is carried by 5 of 8 shop types, none single-product; CARROT by 2 --
+#: `PET_CAFE` (doubled) and `FARMERS_MARKET`. Only once carrot's weighted count STRICTLY exceeds
+#: wheat's does anything move, and only the schedule's still-unplanted WHEAT -- ground already in
+#: the dirt (`planted + live`) is never re-labelled, matching `_adapt_crops`'s anchor rule.
+#:
+#: **Not a free swap.** WHEAT and CARROT are cadence-compatible one-shots (`router.CROP_TABLE`:
+#: both `first_yield_day 2`, `max_yield_day` 4 vs 3), so the tour shape is untouched, but the
+#: crops are not equal value: WHEAT yields 6 units at $25 base ($150 gross, $10 seed) against
+#: CARROT's 4 units at $35 base ($140 gross, $20 seed) -- carrot is worth LESS per tile even before
+#: any market saturation. The shop draw has to earn the swap, which is the whole point of gating on
+#: it rather than a fixed ratio.
+#:
+#: **Measured, see `docs/carrot_swap_2026-08-12.md`.**
+CARROT_SWAP = False
+
+#: Same day and the same reason as `CROP_ADAPT_FROM_DAY`: two shop draws (day 6) is the first
+#: point where the signal is worth committing ground to; one draw of eight is too little.
+CARROT_SWAP_FROM_DAY = 6
+
+
+def _carrot_shop_weights(unlocked_shops):
+    """(carrot_weight, wheat_weight) from unlocked shop INSTANCES, `kaggriculture.SHOPS`.
+
+    A single-product shop (`PET_CAFE`) counts double -- it drains its one product twice as fast as
+    a shop offering several, the same convention `town_drain_remaining` already uses. Duplicates
+    count: two `PET_CAFE` draws are twice the carrot demand of one.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0, 0
+    carrot_w = wheat_w = 0
+    for name in (unlocked_shops or []):
+        products = _KG.SHOPS.get(name)
+        if not products:
+            continue
+        weight = 2 if len(products) == 1 else 1
+        if "CARROT" in products:
+            carrot_w += weight
+        if "WHEAT" in products:
+            wheat_w += weight
+    return carrot_w, wheat_w
+
+
+def _carrot_swap(want, planted, live, day, unlocked_shops):
+    """Move the schedule's still-unplanted WHEAT to CARROT once the draw strictly favours carrot.
+
+    `want` is the cumulative planting target (a Counter); returns a new Counter with the WHEAT+
+    CARROT total unchanged. Ground already committed -- `planted + live` -- is never re-labelled,
+    only the remainder the schedule has not yet put in the dirt. See the flag's docstring above
+    for the counting rule and why this is not the same question as `SHOP_ADAPT_CROPS`.
+    """
+    if _KG is None or day < CARROT_SWAP_FROM_DAY:                            # pragma: no cover
+        return want
+    carrot_w, wheat_w = _carrot_shop_weights(unlocked_shops)
+    if carrot_w <= wheat_w:
+        return want
+    out = collections.Counter(want)
+    anchor = planted.get("WHEAT", 0) + live.get("WHEAT", 0)
+    remainder = max(0, out.get("WHEAT", 0) - anchor)
+    if remainder <= 0:
+        return out
+    out["WHEAT"] = anchor
+    out["CARROT"] = out.get("CARROT", 0) + remainder
+    return out
 
 
 def _adapt_crops(want, planted, live, day, unlocked_shops, last_day=29):
