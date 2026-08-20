@@ -78,8 +78,7 @@ say "2/3 fit (GPU venv)"
 $CUDA -c "import jax; print('jax devices:', jax.devices())" 2>&1 | tail -2
 # Three epochs over 920,320 rows. Read the argmax mix against the teacher's 0.789, not the loss:
 # a falling loss with a degenerate argmax is the failure this pipeline exists to catch.
-$CUDA -u scripts/fit_bc.py --rows "$ROWS" --vocab "$VOCAB" \
-    --out /home/alex/bc_bundle.pkl --epochs 3 --batch 256
+bash "$REPO/scripts/box_fit.sh" "$ROWS" "$VOCAB" /home/alex/bc_bundle.pkl
 code=$?
 
 say "3/3 DONE exit=$code"
