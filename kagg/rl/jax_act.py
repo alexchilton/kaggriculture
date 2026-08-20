@@ -77,7 +77,13 @@ def masks_for(state, bundle_sells):
     qty = jnp.ones((b, 2, J.MAX_UNITS, len(P.UNIT_QTY_BUCKETS)), dtype=bool)
 
     # A bundle is legal unless it names a SELL for a product the shed is empty of.
-    have = state.private.shed > 0                                    # [B, P, N_PRODUCTS]
+    #
+    # **The shed lives on `farm`, and it is N_ITEMS wide, not N_PRODUCTS.** `jax_sim.Farm.shed` is
+    # `[B, P, N_ITEMS]` -- 12 entries, products AND animals -- while `bundle_sells` is
+    # `[N_BUNDLES, N_PRODUCTS]` at 9. The first version of this read `state.private.shed`, which
+    # does not exist on `State` at all, so the mask crashed on every call and no test noticed
+    # because none of them called it.
+    have = state.farm.shed[..., :J.N_PRODUCTS] > 0                   # [B, P, N_PRODUCTS]
     wants = jnp.asarray(bundle_sells, dtype=bool)                    # [N_BUNDLES, N_PRODUCTS]
     impossible = jnp.any(wants[None, None, :, :] & ~have[:, :, None, :], axis=-1)
     bundle = ~impossible                                             # [B, P, N_BUNDLES]

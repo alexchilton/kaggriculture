@@ -206,8 +206,14 @@ def from_sim_fields(fields):
     return tuple(sorted(pairs))
 
 
-def tables(vocab):
+def tables(vocab, pad_to=None):
     """Static `[N_BUNDLES, ...]` lookups so a sampled bundle index decodes inside a jit.
+
+    **`pad_to` must match the head width.** The vocabulary is 197 and the head is 256, and a table
+    of 197 rows cannot broadcast against a 256-wide mask. Worse than a crash: JAX clamps
+    out-of-range gather indices under jit, so an unpadded table indexed at 200 would silently return
+    row 196 -- a real, confidently-emitted, wrong order. Padding rows are all-zero, i.e. the empty
+    bundle, and `sell_table` marks them illegal so they are never drawn in the first place.
 
     `to_sim_fields` is Python and cannot run on a traced array, so the same information is laid out
     once as arrays. `hire` is a COUNT column for the reason the module docstring gives, and
@@ -216,7 +222,10 @@ def tables(vocab):
 
     Returns plain lists so the caller chooses the array library; `jax_act` wraps them in `jnp`.
     """
-    n = vocab.size
+    n = int(pad_to or vocab.size)
+    if n < vocab.size:
+        raise ValueError("pad_to=%d is narrower than the vocabulary (%d): the head could not "
+                         "express bundles the labels use" % (n, vocab.size))
     out = {
         "sell": [[0] * M.N_PRODUCTS for _ in range(n)],
         "buy_product": [[0] * M.N_PRODUCTS for _ in range(n)],
@@ -225,7 +234,7 @@ def tables(vocab):
         "hire": [0] * n,
         "buy_land": [False] * n,
     }
-    for i in range(n):
+    for i in range(vocab.size):
         fields = to_sim_fields(vocab.bundle(i), None)
         out["sell"][i] = list(fields["sell"])
         out["buy_product"][i] = list(fields["buy_product"])
@@ -236,14 +245,23 @@ def tables(vocab):
     return out
 
 
-def sell_table(vocab):
+def sell_table(vocab, pad_to=None):
     """`[N_BUNDLES, N_PRODUCTS]` bool: does this bundle sell this product?
 
     The legality mask `jax_act.masks_for` needs exactly this and nothing else -- you cannot sell
     what the shed does not hold, and that is the one market constraint the agent cannot discover by
     trying.
+
+    **Padding rows are marked as selling a sentinel the shed can never hold**, so `masks_for` rules
+    them illegal. An all-zero padding row would read as the empty bundle and be perfectly legal,
+    which would let the sampler draw a dead index that gathers back to a real bundle under jit.
     """
-    return [[n > 0 for n in row] for row in tables(vocab)["sell"]]
+    n = int(pad_to or vocab.size)
+    rows = [[x > 0 for x in row] for row in tables(vocab, pad_to=n)["sell"]]
+    for i in range(vocab.size, n):
+        # Every product at once: no shed ever holds all nine, so this is unconditionally illegal.
+        rows[i] = [True] * M.N_PRODUCTS
+    return rows
 
 
 def orders_from_heads(vocab, index, sell_bucket, buy_product_bucket, buy_seed_bucket,
