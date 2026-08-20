@@ -520,3 +520,488 @@ joint allocation with a shared budget), so it cannot currently explain or rule o
   land problem, or a scheduling-logic problem was not diagnosed here** — only measured as present
   on both loss episodes and absent (or much smaller) for both real opponents that beat us. That is
   the next thing to trace, not something this document had time to trace itself.
+
+---
+
+# Folded-in sources
+
+The four sections below are merged in verbatim (or near-verbatim) from separate docs during the
+2026-08 consolidation.
+Each keeps its own dateline, its own superseded banner where it had one, and every number it
+originally reported.
+
+## 2026-08-09 — The two private bots beating Kaggriculture's public meta
+
+Folded in from `docs/the_top_five_clusters_2026-08-09.md`.
+
+> **SUPERSEDED IN SCALE, added 2026-08-11.** This is a 15-replay sample (3 per team) from one
+> public notebook. `docs/the_ladder_is_two_scripts.md` measures 2,744 ladder seats from the
+> official episode datasets and is the current position on what the field does — read that one
+> first. `counter_meta` here (Seb, rank #1 at 3,201.1 in this sample) is the same player whose
+> median bank halved and who has since withdrawn from the ladder; see that doc's "why our
+> schedule is the wrong target" before treating Seb as the build to imitate.
+
+Shared by Alex on 2026-08-09, verbatim from a public notebook ("The Two Private Bots Beating
+Kaggriculture's Public Meta").
+Companion dataset: *Cracking Kaggriculture's Top-5: Opening-Move Data*.
+Method: 3 recent replays per top-5 team, actions extracted from the first 48 steps, clustered by
+opening signature.
+Snapshot 2026-08-09.
+
+Saved because it is the first outside description of the field this project had, and because it
+answers a question this project had been guessing at for two days — what the leaders actually do.
+
+### The three clusters
+
+| Cluster | Teams | Ladder | Day-0 signature |
+|---|---|---|---|
+| `v23_fork` | three top-5 teams | 3,117 – 3,131 | 5 hires · 2 cows + 2 sheep · 7 wheat / 12 melon seeds · 0 strawberry |
+| `sheep_first_hybrid` | HealthStone (rank #2) | 3,132.9 | 3 hires · 1 cow + 4 sheep · 5 wheat / 5 melon seeds · sheep-first buys |
+| `counter_meta` | Seb (rank #1) | 3,201.1 | 14 hires · 3 cows + 2 sheep · 14 wheat / 3 melon seeds · aggressive labor |
+
+Three of the top five run an **identical** opening down to seed counts: the public reference agent
+`kaitofukami v23`, verified by running v23 locally in self-play and confirming byte-identical
+opening actions.
+That public agent is a hard ceiling at 3,117–3,131.
+The two teams above it run nothing public.
+
+### Cash on hand, days 0-5 (mean of 3 episodes per team)
+
+| Day | HealthStone | Seb (`counter_meta`) | `v23_fork` |
+|---|---|---|---|
+| 0 | 3,000 | 3,000 | 3,000 |
+| 1 | 14 | 562 | 22 |
+| 2 | 14 | 353 | 22 |
+| 3 | 18 | 656 | 152 |
+| 4 | 26 | 481 | 417 |
+| 5 | 214 | 766 | 694 |
+
+* **HealthStone front-loads everything** — $14 by day 1, held there for four days, betting on CARE
+  compounding from a sheep-weighted herd (sheep interval 3 days, so CARE banks +3 per yield against
+  a cow's +1). Every wheat buy in week one is survival, not accumulation.
+* **Seb keeps a real cushion**, $500+ through days 1-5, which funds a four-quadrant expansion.
+* **`v23_fork` is in between**: broke on days 1-2, then rebuilding.
+
+### Final state
+
+| | `v23_fork` | HealthStone | Seb |
+|---|---|---|---|
+| Land quadrants | 3 | 3 | **4** |
+| Cows | 8 | 8 | 9 |
+| Sheep | 6 | 4 | **11** |
+| Total animals | 14 | 12 | **20** |
+| Avg final coins | ~$100k | ~$100k | ~$57k *(in these games; still rank 1)* |
+
+Seb banks the **least money of the three** in the sampled episodes and is rank 1.
+That is the Elo lesson in this project's own CLAUDE.md arriving from outside: a $100k win and a
+$57k win score the same, and Seb wins by beating the `v23_fork` cluster consistently.
+
+HealthStone runs the smallest herd (12 animals) and matches `v23_fork` on coins — efficiency
+through CARE compounding rather than scale.
+
+### What the notebook says the edge is
+
+* `v23_fork` — replicable, copy the public reference, band ~3,117–3,131.
+* `sheep_first_hybrid` — needs a redesign around CARE compounding on sheep. The $14-for-four-days
+  cash constraint is severe, which is likely why few teams run it.
+* `counter_meta` — needs to fund 4 quadrants and 20 animals. *"The cash trap is real (I hit variants
+  of it four times when I tried building toward it heuristically); execution has to be tight."*
+* **Detection is cheap**: the first 48 turns identify an opponent's cluster. `openings_actions.csv`
+  in the companion dataset has the raw stream.
+* **What v23 misses**: it is calibrated for a symmetric opponent, and loses to HealthStone and Seb
+  in the sampled data.
+
+### What this means for us — read this part with care
+
+**Our best submission scores 1,123.5. The public meta's floor is 3,117.** We are not in a
+neighbouring band; we are roughly a third of the way up. The daily episode index says the same
+thing independently — `median_avg_score` on 2026-08-08 was **3,067.75**, and `top_avg_score`
+3,192.89. Every "we are close, the gap is price realised per unit" reading in
+`we_oversell_into_a_contested_book_2026-08-09.md` was made against a field we had mismeasured.
+
+Three specific things to check rather than assume:
+
+1. **Our `seb` tape is not this Seb, or not this Seb's current play.** `scripts/vs_tapes.py` has us
+   beating the `seb` tape 4/4 by $40k-$110k. The Seb here is rank 1 at 3,201. Either the tape is
+   an old submission of theirs, a different player, or beating a fixed replay of their actions is
+   not the same as beating them.
+2. **The opening we splice is worth re-deriving.** We hand over on day 11 from a recorded tape. All
+   three clusters are distinguishable by day 0 and broke or nearly broke by day 2 — an aggressive
+   front-load we do not do.
+3. **`counter_meta` is 14 hires and 20 animals.** `scripts/what_the_others_do.py` measured our
+   hires at the 14th percentile (12 against a top-quintile 12) and read it as "no headroom". Seb
+   opens with 14 hires on day 0. That lever was mismeasured, not absent.
+
+Nothing above is verified by us. It is one notebook's clustering of 15 replays, 3 per team, and the
+final-coins column already shows sampling noise ($57k for a rank-1 agent). Treat the *signatures*
+as leads to verify against `data/ladder/leaders_0808/`, which is 20 real episodes from the same
+day, and treat the *ladder numbers* as confirmed, because the episode index agrees with them.
+
+### Contradiction against Table 5 above, on Seb's day-0 hire count
+
+This notebook (this section) reports Seb's day-0 signature as **14 hires**.
+Table 5, above, extracted directly from the raw `HIRE` action stream of the two real Seb episodes
+in `data/ladder/leaders_0808/` (90850170, 90851845), reports Seb's crew size on day 0 as **7**,
+holding at 7 through day 5, then ramping to 12 by day 10.
+Both figures are dated 2026-08-09.
+
+**UNRESOLVED CONTRADICTION — needs a measurement.** Not reconciled here. Candidate explanations,
+none checked: the notebook's "14 hires" may count cumulative `HIRE` actions issued rather than net
+crew size on the roster; it may describe a different Seb episode than either of the two in
+`leaders_0808`; or one of the two extraction methods has a bug. Re-derive both numbers from the
+same raw episode JSON before trusting either over the other, and before revisiting point 3 of
+"What this means for us" above, which currently treats the 14-hire figure as established.
+
+## 2026-08-09 — What saturates, what does not, and how much we throw away
+
+Folded in from `docs/what_saturates_and_what_does_not_2026-08-09.md`.
+2026-08-09, on `shaping-potential`. Pins `tests/test_the_planner_prices_volume.py`.
+
+Stage 1's `revenue_rate` capped production at `DRAIN_UNITS * OPPONENT_SHARE` and valued every unit
+at half base price.
+Both halves are wrong, and the cap is the worse one: melon yields 12 units a tile against a cap of
+15, so **two melon tiles and sixteen scored identically (62.50)** and the planner stopped buying
+melon ground.
+Correcting `DRAIN_UNITS` to 1.32.6 dropped melon's drain 140 -> 30 and made the error 4.67x worse.
+
+The replacement prices volume on the environment's own `market_price`, with a rival-supply term.
+By the time we have sold our `k`-th unit the book sits about `k * (1 + contest - drain/units)`
+above `I0`.
+
+### Where each product stops paying
+
+First local peak, `CONTEST = 1.0`, i.e. the opponent sells as much as we do.
+
+```
+  product       base  drain  peak units     $/u   season $  tiles/head
+  WHEAT           25    553         276    25.0      6,900         6.6
+  CARROT          35    317         156    35.0      5,460         4.0
+  TOMATO          60    209         104    60.0      6,240         6.5
+  STRAWBERRY     120    452         224   120.0     26,880        18.7
+  MELON          250     30          88   179.0     15,748         7.3
+  MILK (cow)     160    322         160   160.0     25,600         2.4
+  WOOL (sheep)   200    204         112   192.2     21,529         2.3
+  EGG (goose)     50    256         128    50.0      6,400         1.2
+  FERTILIZER     100      0        4000     4.1     16,250         n/a
+```
+
+**Read "first local peak" literally.** The global maximum is meaningless: once `market_price` bottoms
+out at the $1 floor, revenue is `q * $1` and rises forever, so a global search returns "dump 3,000
+units at $5". The first version of this table did exactly that and reported wheat, carrot, tomato,
+melon, egg and fertilizer all saturating at 3,000 units. That is the search limit, not economics.
+
+### Geese are NOT the exception -- retracted the same day
+
+**This section originally claimed geese scale without limit. That was wrong, from two bugs at
+once, and the corrected answer is the opposite: geese saturate EARLIEST of the three.**
+
+The two bugs:
+
+1. `revenue_rate` computed a herd's output as `events * max_held`. `max_held` caps the
+   *unharvested buffer* -- `kaggriculture.py:813` is `yield_units = min(max_held, yield_units + 1 +
+   bonus)` -- so an animal makes one unit per event. Every herd was overstated 4-6x.
+   `kagg/economics/production.py:60` already held the measured truth: EGG 26, MILK 11, WOOL 8.
+2. `best_revenue` took the *global* maximum over sell volume. Past the crash `market_price` sits at
+   the $1 floor, so revenue is `q * $1` and rises forever, and the search left the modelled region
+   and returned "dump 3,000 units at $5". It now stops at the first local peak.
+
+Corrected, per head:
+
+```
+  animal    1      2      4      8     12     16     20     24
+  COW      80    160    320    640    960   1164   1164   1164   <- flat from 16
+  SHEEP    67    133    267    533    800    897    897    897   <- flat from 16
+  GOOSE    50    100    200    246    246    246    246    246   <- flat from 8
+```
+
+Both corrections matter for the leaders question. Cow and sheep saturation moved 4 -> 16, which
+**brackets Seb's 9 cows and 11 sheep** instead of contradicting them, so the contradiction flagged
+below is resolved and the model was the thing that was wrong.
+
+Egg's book really is the shallowest in the game -- `above_func: log`, `above_target: 0.2` against
+wool's `sq` at 3.2 -- but egg's base is $50 against milk's $160 and wool's $200, so the shallow
+curve protects a much smaller prize. A goose herd caps at $246/day; a cow herd at $1,164.
+
+The superseded reading follows, kept because the shape of the error is the point:
+
+```
+  animal    1      2      4      6      8     12     16     20  head
+  COW     480    960   1164   1164   1164   1164   1164   1164   <- flat from 4
+  SHEEP   400    800    897    897    897    897    897    897   <- flat from 4
+  GOOSE   200    343    652    955   1257   1845   2424   2998   <- still climbing at 20
+```
+
+A goose yields every day from day 4 (`interval` 1, `max_held` 4), so twenty geese make 2,080 eggs a
+season, and egg's book is shallow enough that 2,080 units still realise ~$37 against a $50 base.
+Milk and wool crash; eggs barely bend.
+Geese are also the cheapest animal at $300 against a cow's $400 and a sheep's $500.
+
+### Fertilizer is species-independent, and it has no drain
+
+`kaggriculture.py:818` sets `tile["fertilizer_available"] = True` for **every animal tile, every
+day**, outside the yield conditional.
+`COLLECT_FERTILIZER` (502-508) adds exactly one unit and clears the flag.
+So a $300 goose produces the same 1 fertilizer/day as a $500 sheep, regardless of species,
+`interval`, `max_held`, or whether the animal was fed that day.
+Twenty animals is ~600 units a season.
+
+`TOWN_CENTER_PRODUCTS` excludes FERTILIZER (line 101) and no shop carries it, so its drain is
+**zero** -- nothing ever leaves that book but our own sales.
+`DRAIN_UNITS` has no entry for it, which is correct rather than an omission, and
+`sale_revenue` now uses `.get(prod, 0)` for exactly this reason.
+
+### SUPERSEDED -- the part that contradicted the leaders, and was indeed wrong
+
+Kept as written because the reasoning that flagged it was sound and the resolution is instructive:
+the model contradicted the strongest observed evidence, the model was suspected first, and the model
+was the thing at fault (`events * max_held`). Corrected saturation is 16 cows and 16 sheep. The
+`tiles/head` column in the "Where each product stops paying" table above -- MILK 2.4, WOOL 2.3,
+EGG 1.2 -- is from the same bug and is stale by the same 4-6x.
+
+The model says four cows and four sheep, and does not move much with the contest assumption:
+
+```
+  saturation head-count by CONTEST
+  animal       0.0    0.25     0.5     1.0     1.5
+  COW            5       4       4       3       2
+  SHEEP          5       4       3       3       2
+  GOOSE        >32     >32     >32     >32     >32
+```
+
+Seb, rank 1 at 3,201, runs **9 cows and 11 sheep**. The `v23_fork` cluster runs 8 and 6. Our model
+says everything past four is waste. One of those is wrong, and the rank-1 player is the less likely
+candidate.
+
+Candidate explanations, none measured yet:
+
+* CARE compounding. `pending_care_bonus` adds to `yield_units` on a fed production day, so a cared
+  herd yields more per head than `events * max_held` assumes, but that raises supply and would make
+  saturation *worse*, not better.
+* The book recovers continuously, and `drain * k / units` models that as a straight line. A herd
+  that sells in small daily parcels realises more than one that dumps.
+* `BUY_PRODUCT` conversion: buy cheap wheat, feed it, sell expensive milk. That values an animal by
+  its conversion margin rather than by its product's book depth, and it is the one lever where
+  `what_the_others_do.py` put us at only the 49th percentile.
+
+**Resolved 2026-08-09, same day.** Use the corrected per-head table above, not this section.
+`docs/the_top_five_clusters_2026-08-09.md` (folded in above) has the observed builds.
+
+## 2026-08-09 — What the opponents actually do
+
+Folded in from `docs/the_field.md`.
+
+Measured from leaderboard replay JSON, not inferred from notebooks or forum posts.
+This file exists because "the leaders" get described from memory and the description drifts.
+
+> **Version and currency caveat, added 2026-08-09.** The replays analysed below predate the
+> 2026-08-07/08 move to `kaggle-environments` 1.32.6, so absolute dollar figures (bank totals,
+> revenue splits) are not directly comparable to a 1.32.6 game. The structural finding — winners
+> submit fixed 720-turn open-loop scripts — is a claim about *behaviour*, not price level, and is
+> independently reconfirmed on 1.32.6 by the "What the leaders actually grow" measurement above and
+> the "two private bots" section above, which also show our own ladder position (1,123.5)
+> against the current field floor (~3,117) — read those two before treating this file's field as
+> "close."
+>
+> **2026-08-11 addendum.** `docs/the_ladder_is_two_scripts.md` measures 2,744 ladder seats directly
+> and reconfirms the open-loop finding at population scale: most of the field is scripted, two shared
+> scripts dominate, and the one clearly reactive top player (#1) beats the fixed scripts by ~110
+> rating points through an adaptive herd, not a different opening.
+
+### The winners submit fixed 720-turn scripts
+
+Six replays, five distinct players. For each player appearing in more than one replay, every turn's
+action was split into `units` (`farmer` + `hands`) and `market` (trading orders) and compared
+turn-by-turn between episodes:
+
+```
+senkin13        4 episodes, 6 pairwise comparisons, different opponents AND swapped seats
+                units  identical 720/720  (100.0%)  in all six
+                market identical 720/720  (100.0%)  in all six
+                banks $121,538 - $145,034
+
+syouya tobita   units  identical 720/720       (100.0%)  in all six
+                market identical 716-720/720   ( 99.4-100.0%)
+
+Dmitry Larko    units  701/720 (97.4%)   market 689/720 (95.7%)
+```
+
+Independently confirmed on the later leader `somewhere after` (four replays, 2026-08-05): every
+derived quantity — land days, herd, seed counts, fertilizer flows, crew ramp — is **byte-identical
+across all four**, in both seats, against four different opponents. The only variation anywhere is
+107 vs 106 `FERTILIZE` ops.
+
+**Reactivity is worth approximately nothing at the top of this leaderboard.** Two design questions
+close on it: no opponent model, no market policy.
+
+**But the artifact is a genuine 720-step program, not a repeated routine.** Every player shows
+**30/30 distinct daily unit-routines**. There is seasonal phase structure; "one routine, repeated"
+cannot express what they play.
+
+**Open-loop does not mean unoptimised.** Reactivity is conditioning on state at play time, which
+they have none of. Optimisation is searching for a good sequence before play time, which they
+clearly did a great deal of.
+
+#### Caveats that must travel with the claim
+
+- **`senkin13` and `syouya tobita` are not confirmed top-ranked** — a strong mid-field agent at
+  ~$145k — and they are a **mirror match**: 536/720 identical action dicts between the two of them.
+  `CLAUDE.md`: a mirror match is not a best response.
+- The only confirmed top-tier games are the `Dmitry Larko` pair, which is the *weakest* open-loop
+  evidence in the table. Our own docs disagreed on that figure (97.4% here, 93.5% elsewhere for the
+  same pair).
+- **Zero `WEED` tiles across all 720 turns of all six replays**, despite `weedSpawnChance: 0.005`.
+  "The winners ignore weeds" is untested, not proven harmless. Validate any open-loop script across
+  many fresh seeds before submitting.
+- The claim that survives independently of rank: **"manual player" ranked #3 at 2,911.8.** A human
+  cannot compute reactive per-turn decisions across 720 turns under a one-second clock.
+
+### The mixed economy, torn down
+
+`senkin13`, episode 89541819, final reward **$145,034**, gross sales **$220,542**:
+
+| product | revenue | share | units |
+|---|---:|---:|---:|
+| MILK | $58,505 | 26.5% | 235 |
+| STRAWBERRY | $42,942 | 19.5% | 309 |
+| WOOL | $40,112 | 18.2% | 190 |
+| WHEAT | $38,632 | 17.5% | 855 |
+| MELON | $24,489 | 11.1% | 123 |
+| FERTILIZER | $14,698 | 6.7% | 271 |
+| EGG | $769 | 0.3% | 12 |
+| CARROT | $395 | 0.2% | 10 |
+
+**Animal products 45.1% · crops 48.3% · fertiliser 6.7%.** Three crops carrying real weight, two
+animal species, a fertiliser side-business. Not the "83% from milk and wool" single-episode figure
+that circulated for a while, which was one agent in one episode.
+
+Four things this contradicted:
+
+1. **Melon is not the meta crop.** Strawberry out-earns it nearly 2:1 on 309 units against 123.
+   Seeds bought: `STRAWBERRY 44, WHEAT 34, MELON 21`.
+2. **Wheat is an input.** They buy 1,055 units for $47,594 and sell 855 for $38,632. Net cash on
+   wheat is negative; the return arrives as milk and wool.
+3. **Fertiliser is a revenue stream**, not an expense — 271 units for $14,698, from
+   `COLLECT_FERTILIZER`, which costs one action and is available only if you own animals.
+4. **Cows and sheep, no geese.** `COW 8, SHEEP 6, GOOSE 0`, `BUILD_PASTURE 14, BUILD_COOP 0`, plus
+   **304 hires** and 2 land purchases. Goose is the cheapest animal and the one our agents reach
+   for first; the measured meta skips it entirely.
+
+### The leader `somewhere after`, four replays 2026-08-05
+
+| episode | seat | opponent | his | theirs | margin |
+|---|---|---|---|---|---|
+| 90016067 | 1 | haoran huang430 | 160,593 | 157,959 | +1.7% |
+| 90018004 | 1 | manual player | 134,780 | 130,777 | +3.1% |
+| 90020633 | 1 | Savko | 137,667 | 133,335 | +3.2% |
+| 90023239 | 0 | Savko | 123,443 | 118,437 | +4.2% |
+
+4/4, mean bank **$139,121**, mean margin **+3.1%**.
+
+**The margin is the point.** Everyone at the top banks $120k-160k and the leader edges it by a few
+thousand. On an Elo ladder a $2,634 win scores what a $50,000 win scores, so the top of this board
+is a knife-edge contest between several near-equal fixed scripts — and because they are fixed, they
+cannot punish anything. They are a stationary target to compute a best response against.
+
+His farm: land on **days 7 and 10**, two parcels, never SE. **8 COW + 6 SHEEP = 14 pens.**
+WHEAT 66 (50%), STRAWBERRY 44 (34%), MELON 21 (16%). 318 fertilizer collected, **107 applied**,
+0 bought, 445 offered. Crew 4 on day 0 ramping 4-6-5-5-6-6-6-8-10-11-12, flat 12 from day 10.
+`DIG` 103 times.
+
+Op census, four replays aggregated:
+
+```
+NORTH 4,943 16.8%   WEST 4,392 15.0%   SOUTH 3,716 12.7%   EAST 3,428 11.7%
+WATER 3,404 11.6%   PASS 1,427 4.9%    PICKUP 1,356 4.6%   HARVEST 1,352 4.6%
+FEED 1,276 4.3%     COLLECT_FERTILIZER 1,272 4.3%          CARE 1,232 4.2%
+PLANT 524 1.8%      FERTILIZE 427 1.5%  DROP 320 1.1%      PLACE 108 0.4%
+DIG 103 0.4%        BUILD_PASTURE 56 0.2%
+```
+
+**56% of his ops are movement and `PASS` is only 4.9%.** His units are spread across the board
+rather than working compact adjacent blocks — he spends the turns to reach better tiles. Our own
+serpentine blocks minimise walking by construction, which looks efficient and may be the wrong
+objective.
+
+`PLANT` 524 across four replays is 131 per replay, matching 66 + 44 + 21 = 131 seeds exactly.
+
+### How he funds it
+
+From `data/seed_scripts/new_leader/90016067.json`:
+
+```
+day  0  $3,000   BUY_ANIMALx4 BUY_PRODUCTx16 BUY_SEEDx4 HIREx4 SELLx12
+day  1  $   42   <-- forty-two dollars
+day  2  $  141
+day  3  $  217
+day  5  $  621
+day  7  $1,719   BUY_LANDx1
+day 10  $1,278   BUY_LANDx1     <-- a $2,000 parcel on a $1,278 dawn bank
+day 11  $3,236
+day 12  $6,828
+day 13  $14,622
+```
+
+- **He goes all-in on day 0 and ends it on $42.** Four animals, ~51 wheat bought in small lots
+  across all 24 hours, 18 seeds, 4 hires. His day-0 SELL orders are speculative over-requests
+  against an empty shed and mostly no-op — exactly like ours.
+- **His early revenue is FERTILIZER.** Day 1 hour 8: `SELL FERTILIZER x4`. Four day-0 animals
+  produce it nightly, collecting costs no action, and he sells it daily from day 1 — long before
+  milk arrives on day 8. Our census: 83 collections against his 318.
+- **He funds purchases from same-day sales.** The $2,000 parcel on a $1,278 dawn bank works because
+  his sells land earlier in the same day. He runs at the edge of insolvency the whole ramp.
+  **We hoard, he compounds.**
+- Wheat is **not** arbitrage: he buys 967 at mean $44.96 and sells 1,131 at $46.49, a 3.4% spread,
+  with 319 units going to FEED. He buys feed instead of growing it.
+
+### The public meta (2026-08-03 notebooks, `reference/community_notebooks/`)
+
+Live market prices in that meta: `STRAWBERRY 280 · MILK 263 · WOOL 235 · MELON 54 · WHEAT 58`
+against bases of 120/160/200. Strawberry, milk and wool trade **well above base** because the town
+drains faster than two farms can supply; **melon collapsed to 22% of base** because everyone dumps
+it on day 10.
+
+Three clusters: pure cow ranch (3-10 cows), melon IPO (16 melons + 2 cows, day-10 dump), and the
+staged economic herd (`C0x` family), which is the strongest public code. The common plan (c16) is
+**8 cows, 5 sheep, 5 strawberry plots, 12 hands**.
+
+Hands are nearly free at the bottom of the Fibonacci ladder and expensive fast at the top:
+
+| hands | 6 | 8 | 10 | **12** | 14 | 16 |
+|---|---|---|---|---|---|---|
+| coins/day | 20 | 54 | 143 | **376** | 986 | 2583 |
+
+Twelve hands is 376 coins for 288 extra actions — about **1.3 coins each**, against one in-window
+melon watering worth $250.
+
+Value per action, measured:
+
+| action | value |
+|---|---:|
+| melon, in-window watering | ~$250 (while price holds) |
+| cow, fed + cared | ~$95 |
+| sheep, fed + cared | ~$86 |
+| **`COLLECT_FERTILIZER`** — free, every animal, every day | **~$85** |
+| goose, fed + cared | ~$32 |
+| strawberry | ~$37 |
+| wheat | ~$17 |
+
+### Our own reference tape: Seb
+
+`data/seed_scripts/top_guys/90494364.json` is the tape `scripts/breakdown.py --tape seb` diffs
+against, day by day, on seed 11 with weeds off. It is a **diagnostic, not the goal** — beating it
+is the goal, so "the tape doesn't do this" is never an argument against a change.
+
+Its own metadata is not trustworthy: `build_tiles` day 0 says `[[4,4] COW]` while a SHEEP stands
+there all season. The ordered `places` list is the good metadata; `build_tiles` labels are not.
+
+### What the field says about our own numbers
+
+- Ladder targets go stale in days. A field that reached 2,700 in four days keeps climbing.
+- **Imitation learning off the daily top-episodes datasets was checked and rejected**: those are
+  ordered by *current* rating, so on 2026-07-31 they contained agents near the $3,512 baseline while
+  we banked $43k. Their value is an opponent pool and scouting. Re-check only once leaderboard
+  scores exceed our own.
+- **Self-play pressure is bounded by the pool it plays.** A pool of frozen copies of an $18k policy
+  plus scripts topping out at $27k demands nothing, and nothing in it plays cows, sheep, strawberry,
+  fertiliser collection or a twelve-hand crew — so those strategies are not merely undiscovered,
+  they are never *demonstrated*.
