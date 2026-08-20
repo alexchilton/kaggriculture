@@ -2877,6 +2877,55 @@ SELL_A_DRAINLESS_PRODUCT_AT_ONCE = True
 NO_DRAIN_PRODUCTS = ("MELON",)
 SELL_AT_ONCE_FROM_DAY = 18
 
+#: **SELL_ADAPTS_TO_THE_HERD -- floor an animal product's day total at OUR herd's daily rate.**
+#:
+#: The `sells` row is an absolute count read off Kawashigi's trajectory, and his herd is COW 10 /
+#: SHEEP 4. `SHOP_ADAPT_HERD` re-species our purchases on the live shop draw, so the herd filling
+#: our shed is not the herd the rows describe -- on seed 11 we end COW 6 / SHEEP 8. The better the
+#: adapter works, the further the rows drift from our own production, and the drift is the measured
+#: ladder failure: 27 milk sold at $108-213 against 90 dumped below $42, because the surplus the
+#: rows never name leaves late, into a book we crashed ourselves. The lever is WHEN stock leaves --
+#: shops drain the book every 4 steps and the town centre every 12, so spread sales recover the
+#: price and one dump does not.
+#:
+#: The floor releases stock at the speed the herd makes it: `allow` is raised to
+#: `_herd_daily_rate(tiles)[prod]`, animal products only, from `HERD_SELL_FROM_DAY`. It is `max`,
+#: never a cap -- a row asking for more still fires in full, so the refuse-to-sell arm that cost
+#: -$16,025 is unreachable -- and `rate[prod]` still bounds every single offer, so the one-turn
+#: dump that took mean money $111,238 -> $77,587 is unreachable too.
+#:
+#: **Why not `still_owed`?** The obvious form -- shrink the whole-season reserve by what the herd
+#: will still produce -- was built, tested and measured NULL (byte-identical, both tapes), because
+#: `still_owed` never governs before d25: `have - still_owed` sits at 18-267 against 6-18 in hand,
+#: so `allow` is always `today + carry` on the whole 17-day grid. The reserve is the wrong term to
+#: adapt; the day total is the one that binds.
+SELL_ADAPTS_TO_THE_HERD = True
+
+#: Day 8, the task's own gate: d0-d8 is matched op-for-op against the tape and must not move.
+#: On the tape fixture the gate is free anyway -- the first animal product reaches the shed on d11
+#: (COW `first_yield_day` 8, bought d0, collected the next dawn) -- so the days the floor can touch
+#: at all start where the match constraint ends.
+HERD_SELL_FROM_DAY = 8
+
+
+def _herd_daily_rate(tiles):
+    """Units per day the CURRENT herd adds to the shed, fed and cared daily -- per product.
+
+    `(1 + interval) / interval` per animal: a production day banks 1 base unit plus every care
+    bonus accrued since the last one, and a fed-and-cared animal accrues one a day
+    (`reference/kaggriculture.py:822-828`). Our routine feeds and cares the whole herd daily --
+    the breakdown grid's `feed`/`care` rows equal the herd count on every day -- so the cared rate
+    is the right estimate, and `n = min(have, ...)` caps any residual optimism at the shed door.
+    """
+    out = collections.Counter()
+    for row in tiles:
+        for c in row:
+            if isinstance(c, dict) and c.get("animal"):
+                a = R.ANIMALS.get(c.get("animal")) or {}
+                if a.get("product"):
+                    out[a["product"]] += (1 + a["interval"]) / a["interval"]
+    return collections.Counter({p: int(round(v)) for p, v in out.items()})
+
 
 def market_price(prod, inventory):
     """`kaggriculture.market_price`, or `BASE_PRICE` flat if the env is not importable."""
@@ -4484,6 +4533,11 @@ def make_agent(schedule, me=0, router=True):
         # than under-funding a $1,000 parcel. If that proves too blunt, the fix is a per-category
         # remainder, not a tolerance.
         unfunded = LATE_SELL_YIELDS_TO_DEMAND and (money + pending) < _days_bill(row)
+        # The herd's own daily rate, once per turn -- the floor `SELL_ADAPTS_TO_THE_HERD` puts
+        # under an animal product's day total inside the loop below.
+        herd_rate = (_herd_daily_rate(tiles)
+                     if SELL_ADAPTS_TO_THE_HERD and day >= HERD_SELL_FROM_DAY
+                     else collections.Counter())
         for prod in SELLABLE:
             have = int(shed.get(prod, 0))
             # What the EVICTION may reach, which is `have` for everything except wheat. See
@@ -4713,6 +4767,14 @@ def make_agent(schedule, me=0, router=True):
                 target = (row.get("shed_dusk") or {}).get(prod)
                 if target is not None:
                     allow = max(allow, have - int(target))
+                # **The herd floor: our animals' own daily rate, not his row.** See
+                # `SELL_ADAPTS_TO_THE_HERD` for the argument and the failed arms it must not
+                # become. A third `max` arm on the day total, animal products only, so stock
+                # leaves at the speed the CURRENT herd makes it; `rate[prod]` below still bounds
+                # each single offer, and `n = min(have, ...)` still caps at the shed.
+                if (SELL_ADAPTS_TO_THE_HERD and day >= HERD_SELL_FROM_DAY
+                        and herd_rate.get(prod)):
+                    allow = max(allow, herd_rate[prod])
                 # **PRICE_AWARE_SELL_CAP: relax the DAY TOTAL, never the PER-OFFER size.** `allow`
                 # (via `still_owed`/carry) bounds how much of a product is sold across the whole
                 # day -- a fact about ONE REPLAY's row, not about the market -- and that is what
