@@ -90,12 +90,24 @@ def iter_actions(paths, team):
                    (step[seat] or {}).get("action") or {})
 
 
-def build_vocabulary(paths, team, coverage=0.985):
-    """`(vocab, stats)` -- the bundles worth their own class, most frequent first.
+def build_vocabulary(paths, team, coverage=1.0):
+    """`(vocab, stats)` -- every distinct bundle, most frequent first.
 
-    Truncated by COVERAGE rather than by a fixed size, because the tail is where a rare but
-    important bundle lives and a round number would cut it on the wrong side. Everything beyond the
-    cut maps to the nearest kept bundle at training time; it is <1.5% of turns by construction.
+    **`coverage` defaults to 1.0 and should stay there. Truncating measured actively harmful.**
+    At 0.985 the overall out-of-vocabulary rate is a comfortable 1.49% -- and **16.6% of every turn
+    containing a HIRE falls outside the kept set** (`data/logs/hire_counts_2026-08-20.log`).
+
+    The cut lands there because coverage optimises TOTAL turns while hire bundles are rare per
+    symbol: they fragment across nine distinct counts (x1 to x9, with x5/x6/x7 carrying 75% of them)
+    times the sell combinations they ride with. Rare per symbol, and the highest-consequence
+    decision on the board -- a missing hire cost d10 twenty planned ops
+    (`docs/plant_is_a_money_problem_2026-08-20.md`).
+
+    That is the same defect as `replays.encode_action` storing `hire` as a binary, reached by a
+    different route: a representation that cannot express "hire seven" caps the clone below the
+    teacher no matter how well it fits. There is no safe place to cut, so do not cut.
+
+    352 classes against 68,305 samples is not a problem worth optimising.
     """
     counts = collections.Counter(bundle_of(a) for _d, _h, a in iter_actions(paths, team))
     total = sum(counts.values())
