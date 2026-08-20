@@ -65,7 +65,6 @@ import collections
 from . import routines as R
 
 TPD = R.TURNS_PER_DAY
-WORK_TURNS = TPD - 1
 SHED = tuple(R.shed_access_tiles())
 SHED_SET = frozenset(SHED)
 CROP = R.CROP_TABLE
@@ -111,9 +110,6 @@ MANDATORY = 100_000
 #: actual thing: losing the animal is not a bigger prize, it is a different kind of event.
 CRITICAL = 1_000_000
 
-#: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
-LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
-
 #: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
 #: so an ungated version WOULD re-rank d4 -- inside the d0-d8 window that is matched to the tape op
 #: for op and must not regress. Nothing actually rots before d16 on seed 11, so gating here costs
@@ -124,15 +120,6 @@ HARVEST_CRITICAL_FROM_DAY = 9
 #: inventory -- `private["seeds"]` is consumed directly by PLANT -- which is why PLANT never generates
 #: a depot stop no matter that it carries an item name.
 SEED_COST = {"WHEAT": 10, "CARROT": 20, "TOMATO": 50, "STRAWBERRY": 100, "MELON": 80}
-
-#: Turns a unit needs to place an animal and then actually serve it the same day: walk to the shed,
-#: draw wheat, walk back, FEED and CARE. Below this many turns left, a placement banks no product
-#: today, and `build_nodes` prices it accordingly.
-#: Ops forming the animal chain, assigned WHOLE to one unit before anything else. Empty restores plain
-#: cheapest-insertion over every node. See the block in `plan_routes` for the day-0 measurement.
-#: Whether a PLACE node also draws one WHEAT, for the feed that placement necessarily creates. Off
-#: restores the old needs exactly. See `Node.__init__` for the day-0 measurement.
-PLACE_DRAWS_FEED = True
 
 #: Whether a PLACE joins the MANDATORY pool, which `plan_routes` assigns against an empty budget,
 #: instead of the optional pool it is offered to once the day is spent. `None` restores the old
@@ -205,18 +192,11 @@ PLACE_DRAWS_FEED = True
 #: before this is trusted on another seed.
 PLACE_IS_MANDATORY_FROM_DAY = 14
 
-CHAIN_OPS = ()          # MEASURED WORSE as a hard one-unit rule: 53 cells against 42,
-                        # last PLACE pushed hour 20 -> 22. Our four pens are not one tour.
-
 SERVICE_ROUND = 10
 
 #: Ops whose item really is drawn at the shed. `BUILD` is here because the unit may as well carry the
 #: animal on the same trip and PLACE it the turn after the pen goes up.
 DRAWN = ("FEED", "FERTILIZE", "PLACE", "BUILD")
-
-#: Ops that put a sellable item into the unit's own inventory. The market only ever reads the SHED,
-#: so anything still in a hand at dusk is unsold -- it arrives overnight, a turn too late.
-YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
 
 
@@ -672,18 +652,12 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
 #: Ours runs 9/2, 11/0, 5/0 against the tape on d26-d28, i.e. 25 turns spent on a row the tape has
 #: essentially stopped playing. **TRIED at 23 and measured -$2,547**, which is why this sits at 26:
 #: d23-d25 fertilize still fills tiles that have a window left to fill.
-LATE_SEASON_PAIR = True
-
-FERTILIZE_UNTIL_DAY = 26 if LATE_SEASON_PAIR else 99
-
-#: Whether a one-shot whose growing window cannot close before the season ends is offered for
-#: HARVEST anyway, taking a partial yield. Only reachable from d26. See the body.
-HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
+FERTILIZE_UNTIL_DAY = 26
 
 #: The first day a one-shot may be planted with a window the season cannot finish. Below it
 #: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
 #: and truncating it would only waste the ground.
-LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+LATE_TRUNCATED_PLANT_DAY = 26
 
 #: **From which day a tile that is PRODUCING and one dry night from weeding is priced at the whole
 #: tile**, rather than at the single unit the water adds.
@@ -769,8 +743,9 @@ def _one_shot_is_finished(info, age, room, day=None):
     unsold, banks $0" at the cost of a turn that would otherwise have gone to something that clears.
     Reverted. The bug is real; this fix for it is not a net win on this benchmark.
     """
-    if (HARVEST_A_TRUNCATED_ONE_SHOT and day is not None
-            and day + (info["max_day"] - age) > R.SEASON_DAYS - 1):
+    # A one-shot whose growing window cannot close before the season ends is offered for HARVEST
+    # anyway, taking a partial yield. Only reachable from d26.
+    if day is not None and day + (info["max_day"] - age) > R.SEASON_DAYS - 1:
         # **The window cannot close before the season does, so waiting forfeits the tile.** This is
         # the second half of `docs/the_late_season_is_one_defect_in_two_halves_2026-08-12.md`, and it
         # only ever fires from d26 -- at d25 a wheat still reaches `max_day` on d29, the last day.
@@ -824,20 +799,32 @@ ARRIVAL_FEED_REMAINING = 0
 #: preference", which is what a board with no unfed arrivals should say. See `will_be_fed`.
 ARRIVAL_FEED_EARLIEST_YIELD = None
 
-#: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
-#: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
-#: -- and the cycling starts at d5 (4 of 7) and is unmistakable by d7 (3 of 17).
+#: **NO CODE READS THIS. There is no cadence -- `will_be_fed` feeds every standing pen, every day.**
+#: The rule it gated sat behind an unconditional `return True` in `will_be_fed` and was deleted with
+#: the rest of that dead block on 2026-08-20; the constant is kept only because
+#: `tests/test_we_feed_on_alternate_days_like_the_tape.py` and
+#: `tests/test_the_herd_is_fed_on_the_tapes_cadence.py` read it, and the first of those already
+#: FAILS on this branch for exactly that reason. Deleting it is a test change; re-enabling the
+#: cadence is a behaviour change. Both need a decision, neither is a cleanup.
 #:
-#: Applied from d0 it drags days that have nothing to do with feeding: a rolling half-herd is hungry
-#: every morning, every one of those feeds prices as CRITICAL, and the routes reorder around them.
-#: d2 `sell 4/5 -> 2/5` and d3 `water 14/14 -> 12/14` are rows that are exact in the tape and were
-#: exact in ours.
+#: What it meant, kept because the measurement is real. **The tape feeds everything, every day,
+#: until d5.** Its feed row over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for
+#: the ones placed that day -- and the cycling starts at d5 (4 of 7) and is unmistakable by d7
+#: (3 of 17). Applied from d0 it drags days that have nothing to do with feeding: a rolling
+#: half-herd is hungry every morning, every one of those feeds prices as CRITICAL, and the routes
+#: reorder around them. d2 `sell 4/5 -> 2/5` and d3 `water 14/14 -> 12/14` are rows that are exact
+#: in the tape and were exact in ours.
 FEED_CADENCE_FROM_DAY = 7
 
 
 def will_be_fed(cell, day):
     """Whether `animal_ops` would offer this pen a FEED today. The market block sizes its wheat
-    purchases off this, so it has to be the same rule and not a second copy of it."""
+    purchases off this, so it has to be the same rule and not a second copy of it.
+
+    Two rules only, and they are the whole function: no FEED on the last day, and an arrival is fed
+    out of a budget. **Everything else is fed, unconditionally** -- there is no production or
+    hunger test left, whatever `FEED_CADENCE_FROM_DAY` above still says.
+    """
     # **The last day, before everything else.** Dropping FEED from `animal_ops` alone measured
     # d29 `feed 14/0 -> 14/0` unchanged: the route is a visit ORDER, the executor re-derives work
     # at stops and crossings, and `underfoot()` (`schedule_agent:2458`) feeds any pen this
@@ -897,11 +884,13 @@ def will_be_fed(cell, day):
                 and (ARRIVAL_FEED_EARLIEST_YIELD is None
                      or ANIMALS[cell["animal"]]["first_yield_day"]
                      <= ARRIVAL_FEED_EARLIEST_YIELD))
+    # **Every standing pen is fed, every day.** The cadence this function used to apply -- skip a pen
+    # that has not reached `first_yield_day` unless `consecutive_unfed >= 1` -- sat behind this
+    # `return True` and had been unreachable for as long as the return has been there. It is deleted
+    # rather than re-enabled: turning it back on is a BEHAVIOUR change and has to be measured on the
+    # grid, not restored by a cleanup. `FEED_CADENCE_FROM_DAY` above is what that rule was gated on
+    # and has no reader left in this module.
     return True
-    if cell.get("consecutive_unfed", 0) >= 1:
-        return True
-    a = ANIMALS[cell["animal"]]
-    return ((day + 1) - int(cell.get("placed_day", 0)) - a["first_yield_day"]) >= 0
 
 
 #: **No FEED and no CARE on the last day. Both pay out at a rollover that scores nothing.**
@@ -1124,7 +1113,7 @@ class Node:
         # Traced on day 0, seed 11: u0 has two placements, draws WHEAT at h2, h3, h4 and h5, feeds
         # twice and carries two spare to dusk -- while u4, standing beside the cow it placed at
         # (4,3), reads an empty shed at h5 and loses that feed for the day. `feed 3/4`.
-        if PLACE_DRAWS_FEED and not any(o == "FEED" for o, _i, _p in ops):
+        if not any(o == "FEED" for o, _i, _p in ops):
             for o, _i, _p in ops:
                 if o == "PLACE":
                     self.needs["WHEAT"] += 1

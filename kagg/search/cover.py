@@ -808,12 +808,14 @@ RESERVE_FROM_DAY = 10
 RESERVE_DAYS = frozenset({2, 3}) | frozenset(range(RESERVE_FROM_DAY, 30))
 
 
-#: Days it applies. d4 is the day it exists for: 28 wheat and 4 fertilizer in hands at dusk against
-#: a row asking for 49 and 6.
-RANK_HOME_DAYS = frozenset({4})
-
 #: Whether a tour that cannot get its load home gives up trailing jobs until it can. Never a trade:
 #: the produce those jobs make is stranded by definition, so the turns buy nothing as things stand.
+#:
+#: **Hard ON, and it stays only because `scripts/close_package_ablation.py` flips it by NAME.** That
+#: script's `DELTAS` table is a `{"FLAG_NAME": (module, on, off)}` dict driven through `setattr`, so
+#: the reference is a STRING and no static search for a reader finds it. Deleting the flag would
+#: leave the ablation setting an attribute nothing reads and reporting a byte-identical arm as a
+#: measured null -- the failure mode `CLAUDE.md` records. Grep the string, not just the name.
 TRIM_A_TAIL_THAT_CANNOT_COME_HOME = True
 
 #: The days the trim may fire. **Only the last day, and the reason is the overnight sweep.** On
@@ -916,6 +918,11 @@ PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
 #: on d29: `NO_UPKEEP_ON_THE_LAST_DAY` strips FEED/CARE from a pen's job, the key stops matching,
 #: and the stop leaves the solved route for greedy insertion instead of getting two turns cheaper.
 #: Measured as harvest 396 -> 389, sell 1489 -> 1474 (see `router.NO_UPKEEP_ON_THE_LAST_DAY`).
+#:
+#: **INERT on this branch, and that is not obvious from the code.** `UNSOLVE_DAYS` above is
+#: `range(0, 30)`, so `PRECOMPUTED_ROUTES` evaluates to `{}` and `_apply_precomputed` seats nothing
+#: on any day. Nothing below can fire until a caller narrows `UNSOLVE_DAYS` -- `q4_branch.install`,
+#: `scripts/swap_one_crop.py` and `scripts/cem_collection.py` all do, which is why this stays.
 #:
 #: The fallback fires only on `SEASON_DAYS - 1`, only when the exact key misses, and only for a job
 #: at the SAME tile whose op set is a SUBSET of the solved stop's -- a reduced form of the work the
