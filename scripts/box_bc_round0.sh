@@ -43,16 +43,28 @@ echo "MAX_QTY: $($VENV -c 'from kagg.rl import jax_policy as P; print(P.MAX_QTY,
 wc -l "$LABELS"/*.jsonl | tail -1
 ls -la "$VOCAB" || { echo "NO VOCABULARY -- stop"; exit 1; }
 
-say "1/3 build rows, 16 workers"
+# **Waves of 4, not all 16 at once.** The first attempt ran all sixteen and the OOM killer took
+# every one of them: no traceback, the worker logs simply stopping after "vocabulary 197 of 256
+# slots", `free` showing nothing alive and the output directory empty. WSL2 has 13 GB. Each worker
+# holds ~395 MB of output arrays plus its own jax interpreter, so sixteen does not fit even after
+# the streaming fix in `build_bc_rows.build`. Four waves of four is under half the RAM and the box
+# has 16 cores, so the wall clock barely moves.
+WAVE=4
+say "1/3 build rows, 16 shards in waves of $WAVE"
 rm -rf "$ROWS"; mkdir -p "$ROWS"
-pids=()
-for w in $(seq 0 15); do
-    $VENV -u scripts/build_bc_rows.py --shards "$LABELS" --vocab "$VOCAB" --out "$ROWS" --only "$w" \
-        > "/home/alex/rows_w$w.log" 2>&1 &
-    pids+=($!)
-done
 fail=0
-for p in "${pids[@]}"; do wait "$p" || fail=1; done
+for start in $(seq 0 "$WAVE" 15); do
+    pids=()
+    for w in $(seq "$start" $((start + WAVE - 1))); do
+        [ "$w" -gt 15 ] && continue
+        $VENV -u scripts/build_bc_rows.py --shards "$LABELS" --vocab "$VOCAB" \
+            --out "$ROWS" --only "$w" > "/home/alex/rows_w$w.log" 2>&1 &
+        pids+=($!)
+    done
+    for p in "${pids[@]}"; do wait "$p" || fail=1; done
+    echo "  wave from shard $start done (fail so far=$fail)  $(date '+%H:%M:%S')"
+    free -g | head -2
+done
 
 say "rows built (fail=$fail)"
 ls -la "$ROWS"

@@ -38,6 +38,15 @@ from kagg.sim import market as M
 SELL, BUY_PRODUCT, BUY_SEED, BUY_ANIMAL, HIRE, BUY_LAND = (
     "SELL", "BUY_PRODUCT", "BUY_SEED", "BUY_ANIMAL", "HIRE", "BUY_LAND")
 
+#: **The order an agent writes orders in, which is the order the environment gives them slots in.**
+#: `kagg/sim/game.py:70-77` defines it and `jax_sim._order_book` mirrors it, both because the
+#: reference pairs the two players' i-th ORDERS rather than matching them by product.
+#:
+#: This is NOT the order a bundle stores. A bundle is a sorted multiset and that sort is
+#: alphabetical, so SELL sorts last -- see `orders_from_heads`, which is where the two are
+#: reconciled, and the test named there for what it cost.
+SLOT_ORDER = (SELL, BUY_SEED, BUY_PRODUCT, BUY_ANIMAL, HIRE, BUY_LAND)
+
 # Index 0 is always the empty bundle. It is the majority class, so it must be a real symbol the head
 # can choose, never an absence expressed by falling off the vocabulary.
 EMPTY = ()
@@ -295,6 +304,18 @@ def orders_from_heads(vocab, index, qty_sell, qty_buy_product, qty_buy_seed,
     named the product, and the bundle is the decision carrying the coordination. Same rule as
     `to_sim_fields` and `jax_act.to_sim_actions`; all three must agree or a policy plays differently
     depending on which decoder ran.
+
+    **The emitted ORDER matters, and it is not the stored order.** A bundle is a sorted multiset and
+    that sort is alphabetical, which puts SELL last -- so walking the bundle verbatim emitted every
+    purchase and hire BEFORE the sell that funds it. The environment settles slots in sequence: slot
+    i takes its money before slot i+1 is quoted, so those purchases are refused on a thin bank. Both
+    simulators lay slots out in `SLOT_ORDER` below (`game.py:70-77`, `jax_sim._order_book`), which is
+    the order the teacher writes and the reason the module docstring gives for hires being funded by
+    the same turn's sells. This is where the two are reconciled.
+
+    It could only ever fail in the real environment -- every sim-side path already used the correct
+    order -- which is exactly where DAgger rolls out.
+    `tests/test_the_orders_go_out_in_the_order_the_bank_needs.py` pins it.
     """
     out = []
     for op, item in vocab.bundle(index):
@@ -310,6 +331,9 @@ def orders_from_heads(vocab, index, qty_sell, qty_buy_product, qty_buy_seed,
             out.append([BUY_SEED, item, max(1, int(qty_buy_seed[crops.index(item)]))])
         elif op == BUY_ANIMAL and item in animals:
             out.append([BUY_ANIMAL, item, 1])
+    # Stable, so orders of the same kind keep the vocabulary's own ordering and two decodes of one
+    # bundle are always byte-identical.
+    out.sort(key=lambda o: SLOT_ORDER.index(o[0]))
     return out
 
 

@@ -112,11 +112,22 @@ def market_labels(orders, vocab):
 
 
 def build(path, vocab, out_dir):
-    rows = []
+    """One JSONL shard -> one npz of arrays.
+
+    **The rows are streamed, never collected.** The first version did `rows = [json.loads(l) for l
+    in fh]` and then sized the arrays from `len(rows)`. A shard is 1.2 GB of JSON on disk and several
+    times that as live Python dicts, so sixteen workers against WSL2's 13 GB were all killed by the
+    OOM killer -- silently, with no traceback, the worker logs simply stopping after "vocabulary 197
+    of 256 slots". `free` showed nothing running and `rows_r0b` was empty.
+
+    So the line count comes from a cheap first pass that keeps no objects, and the second pass holds
+    exactly one decoded row at a time. Peak is then the output arrays -- about 395 MB for 57,520
+    rows -- plus one dict.
+    """
+    n = 0
     with open(path) as fh:
-        for line in fh:
-            rows.append(json.loads(line))
-    n = len(rows)
+        for _ in fh:
+            n += 1
     if not n:
         return 0
 
@@ -142,7 +153,9 @@ def build(path, vocab, out_dir):
     w_qbs = np.zeros((n, len(CROPS)), dtype=np.float32)
 
     t0 = time.time()
-    for r, row in enumerate(rows):
+    fh = open(path)
+    for r, line in enumerate(fh):
+        row = json.loads(line)
         ob, seat, act = row["obs"], int(row["seat"]), row["act"] or {}
         privates = [None, None]
         privates[seat] = ob.get("private")
@@ -159,9 +172,10 @@ def build(path, vocab, out_dir):
         (y_bundle[r], y_qs[r], y_qbp[r], y_qbs[r],
          w_qs[r], w_qbp[r], w_qbs[r]) = market_labels(act.get("market") or [], vocab)
 
-        if r and r % 20000 == 0:
+        if r and r % 5000 == 0:
             print("    %s %6d/%d  %.0f rows/s"
                   % (pathlib.Path(path).name, r, n, r / max(1e-6, time.time() - t0)), flush=True)
+    fh.close()
 
     out = pathlib.Path(out_dir) / (pathlib.Path(path).stem + ".npz")
     out.parent.mkdir(parents=True, exist_ok=True)
