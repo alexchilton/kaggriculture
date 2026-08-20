@@ -171,6 +171,45 @@ def make_clone(tables):
     return act
 
 
+def mix_of(path, team):
+    """Crop and animal mix for one game: the vector the arms are actually defined on."""
+    d = json.loads(pathlib.Path(path).read_text())
+    names = [str(n) for n in ((d.get("info") or {}).get("TeamNames") or [])]
+    if team not in names:
+        return None
+    seat = names.index(team)
+    c = collections.Counter()
+    for step in (d.get("steps") or [])[1:]:
+        act = (step[seat] or {}).get("action") or {}
+        for u in [act.get("farmer")] + list(act.get("hands") or []):
+            if u and u[0] == "PLANT" and len(u) > 1:
+                c["P:" + str(u[1])] += 1
+        for o in (act.get("market") or []):
+            if isinstance(o, (list, tuple)) and o and o[0] == "BUY_ANIMAL" and len(o) > 1:
+                c["A:" + str(o[1])] += 1
+    return c
+
+
+def arm_mates(paths, team, holdout, within):
+    """Games whose crop/animal mix is within `within` of the holdout's. The holdout stays out."""
+    mixes = {p.stem: mix_of(p, team) for p in paths}
+    target = mixes.get(holdout)
+    if not target:
+        return paths
+    keys = set(target)
+    for m in mixes.values():
+        if m:
+            keys |= set(m)
+    keys = sorted(keys)
+
+    def dist(m):
+        tot = sum(max(target[k], m[k]) for k in keys)
+        return sum(abs(target[k] - m[k]) for k in keys) / tot if tot else 1.0
+
+    return [p for p in paths
+            if p.stem == holdout or (mixes.get(p.stem) and dist(mixes[p.stem]) < within)]
+
+
 def op_label(a):
     if not a:
         return "PASS"
@@ -188,6 +227,10 @@ def main():
     # trajectory, not a missing entry. That is the difference between needing more data and
     # needing on-policy correction, and they have opposite fixes.
     ap.add_argument("--memorise", action="store_true")
+    ap.add_argument("--arm", type=float, default=None,
+                    help="build the tape ONLY from games in the same crop/animal-mix arm as the "
+                         "holdout, within this distance. Oracle arm selection: it isolates "
+                         "'does the arm fix planting' from 'can we pick the arm'.")
     ap.add_argument("--tape", action="store_true",
                     help="key units on (day, hour, unit slot) only -- the open-loop tape")
     args = ap.parse_args()
@@ -203,6 +246,10 @@ def main():
     seat = names.index(args.team)
     other = 1 - seat
 
+    if args.arm is not None:
+        paths = arm_mates(paths, args.team, args.holdout, args.arm)
+        print("arm: %d games share the holdout's crop/animal mix within %.2f"
+              % (len(paths), args.arm), flush=True)
     ut, mt, games = build_tables(paths, args.team,
                                  None if args.memorise else args.holdout)
     tables = (ut, mt)
