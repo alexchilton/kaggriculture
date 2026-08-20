@@ -43,18 +43,27 @@ def canonical(action):
     return json.dumps([farmer, hands, sorted(map(list, market))], sort_keys=True, default=str)
 
 
+#: **The names this file reads, verified against a real row before anything was measured.**
+#: The first version of this script read `row["action"]` and `obs["unlocked_shops"]`. Neither
+#: exists. `label_games` writes `act`, and the observation carries `shops`. Both lookups returned
+#: their default on every row, so every day hashed to the same empty block and the table said
+#: "1 distinct block per day, 1 shop configuration" for all 29 days -- a clean, plausible,
+#: completely fabricated result.
+#:
+#: A row is: {"seed", "seat", "obs", "act"}, and obs is
+#: {"day", "farms", "hour", "market", "private", "seat", "shops", "step"}.
+ACT_KEY = "act"
+SHOPS_KEY = "shops"
+
+
 def find_shops(obs):
-    """`town.unlocked_shops` moves around between env versions, so look rather than assume."""
-    stack = [obs]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, dict):
-            if "unlocked_shops" in node:
-                return tuple(sorted(node["unlocked_shops"] or []))
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-    return None
+    shops = obs.get(SHOPS_KEY)
+    if shops is None:
+        raise KeyError("observation has no %r; keys are %s"
+                       % (SHOPS_KEY, sorted(obs.keys())))
+    # Shops are drawn WITH replacement, so the same shop can appear twice and the multiplicity
+    # matters -- sorted tuple, not a set.
+    return tuple(sorted(str(s) for s in shops))
 
 
 def main():
@@ -86,6 +95,15 @@ def main():
         shops = shops_at.get(key)
         per_day_shop_block[day][(shops, h)] += 1
 
+    # **Print what is being read before counting anything.** An empty action and a missing key
+    # look identical in the output table, and the first version of this script produced a full,
+    # plausible 29-row table entirely out of `{}`.
+    with open(paths[0]) as fh:
+        first = json.loads(fh.readline())
+    print("row keys: %s" % sorted(first.keys()))
+    print("sample %r: %s" % (ACT_KEY, canonical(first[ACT_KEY])[:180]))
+    print("sample %r: %r\n" % (SHOPS_KEY, (first.get("obs") or {}).get(SHOPS_KEY)))
+
     shops_at = {}
     for p in paths:
         with open(p) as fh:
@@ -101,7 +119,11 @@ def main():
                 if key not in open_day:
                     open_day[key] = []
                     shops_at[key] = find_shops(obs)
-                open_day[key].append((hour, canonical(row.get("action") or {})))
+                act = row.get(ACT_KEY)
+                if act is None:
+                    raise KeyError("label row has no %r; keys are %s"
+                                   % (ACT_KEY, sorted(row.keys())))
+                open_day[key].append((hour, canonical(act)))
                 if len(open_day[key]) == 24:
                     flush(key)
         # A game that straddled the end of a shard leaves a partial day; drop it rather than
