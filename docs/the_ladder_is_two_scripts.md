@@ -129,7 +129,7 @@ plan to extract — it is a sparring opponent and the evidence that adaptive cow
 
 ## What was tried on the crop dynamic, and why all of it is off
 
-`SHOP_ADAPT_CROPS` in `kagg/search/schedule_agent_1455mh.py` carries the full record. Summary:
+`SHOP_ADAPT_CROPS` in `kagg/search/schedule_agent.py` carries the full record. Summary:
 
 - **`WHEAT<->CARROT` and `TOMATO<->STRAWBERRY`** — shipped, measured 0.806 vs HEAD's 0.871 over 232
   matched games. They swap toward crops the ladder plants 0.2% and 0.0% of the time.

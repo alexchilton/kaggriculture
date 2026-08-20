@@ -42,6 +42,9 @@ args = ap.parse_args()
 
 TD = 24
 BUILD = {"BUILD_PASTURE", "BUILD_COOP"}
+#: Taken from the env rather than written out, so a new species cannot silently be dropped from a
+#: schedule as a "product". See the PLACE branch below for why the distinction matters.
+ANIMAL_NAMES = frozenset(__import__("kagg.search.routines", fromlist=["ANIMALS"]).ANIMALS)
 
 d = json.load(open(args.replay))
 seat = d["info"]["TeamNames"].index(args.team)
@@ -49,7 +52,7 @@ seat = d["info"]["TeamNames"].index(args.team)
 day_rows = collections.defaultdict(lambda: dict(
     builds=[], places=[], plants=[], animals_bought=collections.Counter(),
     seeds=collections.Counter(), land=0, land_turns=[], orders=[], hires=0, sells=collections.Counter(),
-    buys=collections.Counter(), money_dawn=None, hands=0))
+    buys=collections.Counter(), money_dawn=None, hands=0, feeds=0, cares=0))
 
 # **From `steps[1:]`, like every other reader in this project.** `steps[0].action` is the
 # placeholder recorded at reset and is never applied, so counting from index 0 puts every day
@@ -75,9 +78,31 @@ for t, step in enumerate(d["steps"][1:]):
         if op[0] in BUILD:
             row["builds"].append(op[0])
         elif op[0] == "PLACE":
-            row["places"].append(op[1] if len(op) > 1 else "?")
+            # **PLACE is not only "an animal goes into a pen".** It also puts a carried PRODUCT
+            # down on a tile -- fertilizer onto a crop, and harvested goods staged for a later
+            # pickup. `places` feeds the scheduler's pen/animal plan, where a product is not merely
+            # noise but a crash: `_refresh_pins` looks the name up in `R.ANIMALS`.
+            #
+            # This went unnoticed because the only schedule ever extracted was Victor's, and he
+            # never places a product -- his `places` is 5 SHEEP and 9 COW and nothing else.
+            # カワシギ's is COWx10 SHEEPx4 plus FERTILIZERx5, WOOLx5, MILKx5, MELONx10 and
+            # STRAWBERRYx12. Same code, same op, and the assumption held for one player only.
+            what = op[1] if len(op) > 1 else "?"
+            if what in ANIMAL_NAMES:
+                row["places"].append(what)
         elif op[0] == "PLANT":
             row["plants"].append(op[1] if len(op) > 1 else "?")
+        elif op[0] == "FEED":
+            # **The feed CADENCE is a recorded fact and was the one op we never captured.** Every
+            # other quantity the day commits to -- hands, places, seeds, buys, sells -- comes off the
+            # tape, and FEED was left to be re-derived by rule. It cannot be: on d0 he places four
+            # animals and feeds exactly TWO of them, which is neither "feed everything" nor "feed
+            # nothing that is producing" (none of them are). Both rules were measured and both lose.
+            row["feeds"] += 1
+        elif op[0] == "CARE":
+            # CARE only banks `pending_care_bonus` on a day the pen is also fed, so the two counts
+            # are read together or neither is meaningful.
+            row["cares"] += 1
     for o in (a.get("market") or []):
         if not o:
             continue
@@ -170,6 +195,55 @@ if tape:
 else:
     print(f"{'tiles':>14}: tape.json missing -- run scripts/extract_tape.py to add coordinates")
 
+#: How many hours after a BUY a SELL of the same product still counts as the same wash trade.
+WASH_TRADE_WINDOW = 1
+
+# **Net the wash trades out of `buys`/`sells`, or the day sells stock it never had.**
+# `market_price` quotes a BUY at post-buy inventory, so buying n and selling m of the same product on
+# the same day moves `n - m` into the shed at roughly zero cost -- the tape does it constantly, and
+# d0's `BUY_PRODUCT WHEAT 9` + `SELL WHEAT 3` is exactly a net 6.
+#
+# Left un-netted, the agent inherits a `sells {WHEAT: 3}` row it cannot fill from a shed that opens
+# empty, and `CUMULATIVE_SELLS` carries the unfillable remainder forward for `SELL_CARRY_DAYS`,
+# draining stock through the window that funds the d6 land purchase. Measured on the kawashigi tape:
+# un-netted d0 gives `tiles 25/50` on d6 and `animals 4/9` on d7.
+#
+# This was a HAND EDIT to the generated schedule until 2026-08-14, so every regeneration silently
+# reintroduced the loss.
+#
+# **Only a genuine wash, never a harvest.** Two conditions, both read off the order book: the day
+# cannot sell MORE of the product than it bought, and no SELL may come before the day's first BUY.
+# A day selling its own harvest fails the first -- d21 sells 125 wheat against a handful bought --
+# so nothing is netted off it.
+#
+# An earlier cut tested the DAWN SHED instead ("did the day own any before it traded"), which reads
+# correctly and is wrong here: this file walks `steps[1:]`, so the observation filed under hour 0 is
+# the state AFTER the first turn's trade. d0's shed read 5, not 0, and the netting silently never
+# fired.
+for _r in day_rows.values():
+    for _p, _sold in list(_r["sells"].items()):
+        _bought = _r["buys"].get(_p, 0)
+        if _sold <= 0 or _bought <= 0 or _sold > _bought:
+            continue
+        _buy_hours = [o[0] for o in _r["orders"] if o[1] == "BUY_PRODUCT" and o[2] == _p]
+        _sell_hours = [o[0] for o in _r["orders"] if o[1] == "SELL" and o[2] == _p]
+        # **A wash is same-turn or next-turn, not same-DAY.** Every SELL must sit within
+        # `WASH_TRADE_WINDOW` hours AFTER a BUY of the same product. d0 buys at h00 and sells at
+        # h01. d10 buys 33 wheat and sells 25 -- but the first sell is h13 against a buy at h03, ten
+        # hours earlier, and the later buys come after the sells. That is a trading day, and netting
+        # it would delete 25 units of revenue the plan is supposed to make.
+        if not _buy_hours or not all(
+                any(0 <= _sh - _bh <= WASH_TRADE_WINDOW for _bh in _buy_hours)
+                for _sh in _sell_hours):
+            continue
+        _n = min(_sold, _bought)
+        _r["buys"][_p] -= _n
+        _r["sells"][_p] -= _n
+        if _r["buys"][_p] <= 0:
+            del _r["buys"][_p]
+        if _r["sells"][_p] <= 0:
+            del _r["sells"][_p]
+
 out = {str(day): dict(
     plant_tiles=(tiles.get(day) or {}).get("plants", []),
     build_tiles=(tiles.get(day) or {}).get("builds", []),
@@ -181,6 +255,8 @@ out = {str(day): dict(
     orders=day_rows[day]["orders"],
     builds=len(day_rows[day]["builds"]),
     places=day_rows[day]["places"],
+    feeds=day_rows[day]["feeds"],
+    cares=day_rows[day]["cares"],
     plants=day_rows[day]["plants"],
     animals_bought=dict(day_rows[day]["animals_bought"]),
     seeds=dict(day_rows[day]["seeds"]),

@@ -1,8 +1,8 @@
 # The d4/d5 planner chain: the spawn-ring step deletes the depot draw
 
 Fable, 2026-08-11.
-Worktree `agent-abcebcdbb11b26b7e`, detached at `f847e7d` ("Day zero matches"), plus the two experimental edits described below (uncommitted, in `kagg/search/schedule_agent_1455mh.py`).
-Everything here is measured on seed 11, Victor tape, `townCenterSellInterval 24`, `weeds 0.0`, via `python -u scripts/breakdown.py --module schedule_agent_1455mh --tape victor --days 12`.
+Worktree `agent-abcebcdbb11b26b7e`, detached at `f847e7d` ("Day zero matches"), plus the two experimental edits described below (uncommitted, in `kagg/search/schedule_agent.py`).
+Everything here is measured on seed 11, Victor tape, `townCenterSellInterval 24`, `weeds 0.0`, via `python -u scripts/breakdown.py --module schedule_agent --tape victor --days 12`.
 
 ## Verdict in one paragraph
 
@@ -119,7 +119,7 @@ Alex retracted "replant the tile you just harvested", so I did not re-run his at
 The pinned-tile gate exists in TWO places:
 
 - `router.build_nodes:956`: `if tile in pinned or not isinstance(cell, dict): continue` — the planner side he patched.
-- `_live_ops:1349-1352` (`schedule_agent_1455mh.py`): a pinned tile whose cell is not `None` returns `[]` — the EXECUTOR side.
+- `_live_ops:1349-1352` (`schedule_agent.py`): a pinned tile whose cell is not `None` returns `[]` — the EXECUTOR side.
 
 The route is a visit order and `_live_ops` re-derives the work at each stop, so even a correctly emitted HARVEST+PLANT node on a pinned occupied tile is dropped silently at execution.
 Any future variant of this idea must patch both, or it is deleted at the second gate it never saw.
@@ -136,6 +136,6 @@ Any future variant of this idea must patch both, or it is deleted at the second 
 
 ## Artifacts
 
-- Experimental edits: `kagg/search/schedule_agent_1455mh.py` (uncommitted; `hold_farmer` + `farmer_start`, both flagged EXPERIMENT).
+- Experimental edits: `kagg/search/schedule_agent.py` (uncommitted; `hold_farmer` + `farmer_start`, both flagged EXPERIMENT).
 - Test: `tests/test_the_spawn_step_defers_the_depot_draw.py` (red on `f847e7d`, green with delta 1).
 - Logs: `data/logs/fable_baseline_grid.log`, `fable_defer_grid.log` (delta 1 alone), `fable_defer_plus_charge_grid.log` (delta 1+2), `fable_final_grid.log` (byte-identical to the previous — the tree reproduces its own measurement), `fable_trace_d4.log`, `fable_trace_d0_d5.log`, `fable_trace_d6_defer.log`, `fable_trace_weed.log`, `fable_trace_cell53.log`.

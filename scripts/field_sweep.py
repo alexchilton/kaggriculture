@@ -19,6 +19,7 @@ how often we drew them, and it is a sample of games Alex kept -- which skews to 
     PYTHONPATH=. .venv/bin/python -u scripts/field_sweep.py --flag HERD_GEESE --values 0,2 --seeds 4
 """
 import argparse
+import kagg.plan as _PLAN
 import collections
 import json
 import pathlib
@@ -30,7 +31,7 @@ from concurrent.futures import ProcessPoolExecutor
 sys.path.insert(0, ".")
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PLAN = REPO / "data/seed_scripts/victor/schedule.json"
+PLAN = _PLAN.SHIPPED_PLAN
 FIELD = REPO / "data/seed_scripts/field"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders",
              "money_dawn", "money_dusk", "bank", "tiles", "weeds")
@@ -58,12 +59,15 @@ def _opponents(limit=None, min_money=0):
 
 def _play(job):
     """One seating of one seed against one recorded opponent."""
-    flag, value, seed, opp_file, swapped = job
+    flag, value, seed, opp_file, swapped, module = job
+    import importlib
+
     from kaggle_environments import make
 
-    from kagg.search import schedule_agent_1455mh as SA
+    from kagg.search import schedule_agent as SA
 
-    setattr(SA, flag, value)
+    target = importlib.import_module(module) if module else SA
+    setattr(target, flag, value)
     me_seat = 1 if swapped else 0
     me = SA.make_agent(_schedule(), me_seat, router=True)
 
@@ -91,7 +95,10 @@ def _play(job):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--flag", required=True,
-                    help="module-level name on schedule_agent_1455mh to sweep, e.g. CARROT_LATE")
+                    help="module-level name on schedule_agent to sweep, e.g. CARROT_LATE")
+    ap.add_argument("--module", default=None,
+                    help="dotted module holding --flag, if not kagg.search.schedule_agent "
+                         "(e.g. kagg.search.cover for a cover.py constant like START_SLACK_TURNS)")
     ap.add_argument("--values", required=True, help="comma-separated, e.g. 0,1")
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--first-seed", type=int, default=1300)
@@ -102,10 +109,10 @@ def main():
     ap.add_argument("--workers", type=int, default=14)
     args = ap.parse_args()
 
-    values = [int(v) for v in args.values.split(",") if v.strip()]
+    values = [float(v) if "." in v else int(v) for v in args.values.split(",") if v.strip()]
     seeds = list(range(args.first_seed, args.first_seed + args.seeds))
     field = _opponents(args.opponents, args.min_money)
-    jobs = [(args.flag, v, s, f, sw)
+    jobs = [(args.flag, v, s, f, sw, args.module)
             for v in values for s in seeds for f, _t, _m in field for sw in (False, True)]
 
     print(f"{args.flag} {values} against {len(field)} recorded ladder opponents")

@@ -29,19 +29,20 @@ and `_best_replant_crop` already handle -- offering both crops in the budget yie
 
 WHY THIS COULD NOT BE MEASURED BEFORE
 ------------------------------------
-`SELLABLE` in `schedule_agent_1455mh` listed six of the env's nine products and CARROT was not one
+`SELLABLE` in `schedule_agent` listed six of the env's nine products and CARROT was not one
 of them. It is the iteration domain of the only loop that emits a SELL, so a `sells` row naming
 carrot was read by nothing. Traced on seed 11: 55 seeds bought, 38 planted, harvested on schedule,
 **92 units standing in the shed on d29**, zero orders, $0 banked. Fixed, with
 `tests/test_a_product_the_schedule_asks_to_sell_can_be_sold.py` pinning it.
 """
 import argparse
+import kagg.plan as _PLAN
 import collections
 import json
 import pathlib
 import sys
 
-PLAN = pathlib.Path("data/seed_scripts/victor/schedule.json")
+PLAN = _PLAN.SHIPPED_PLAN
 
 #: Days that take a carrot planting, and how many each. His mean is 1.29/1.15/0.30/1.03/1.00/0.76
 #: over d21-d26 for a season total of 5-8; one a day over six days is the same shape at the same

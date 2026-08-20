@@ -35,7 +35,7 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SCHEDULE = REPO / "data/seed_scripts/top_guys/91422988/schedule.json"
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 
 
 @pytest.fixture(scope="module")

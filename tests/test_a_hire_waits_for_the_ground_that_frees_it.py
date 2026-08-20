@@ -48,7 +48,7 @@ def played():
     """`{day: ({unit: [op, ...]}, quadrants_gained)}` for our seat over d0-d11."""
     import breakdown as B
     from kaggle_environments import make
-    import kagg.search.schedule_agent_1455mh as sa
+    import kagg.search.schedule_agent as sa
 
     replay, schedule, team = B.TAPES["victor"]
     sched = {int(k): v for k, v in json.loads((REPO / schedule).read_text()).items()}

@@ -50,7 +50,7 @@ import collections
 
 import pytest
 
-from kagg.search import schedule_agent_1455mh as SA
+from kagg.search import schedule_agent as SA
 from kagg.search import router as RT
 
 

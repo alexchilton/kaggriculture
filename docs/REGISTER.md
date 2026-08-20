@@ -1,17 +1,25 @@
-is cl# Register — what is open, what is closed, and what keeps reopening
+# Register — what is open, what is closed, and what keeps reopening
 
-Last updated 2026-08-08, on `shaping-potential`.
+Last updated 2026-08-15, on `kawashigi-plan`.
+
+> **Repaired 2026-08-15.** This file was diverged and corrupted on the `kawashigi-plan` branch: line
+> 1 read `is cl# Register` (a splice artifact) and the header still said 2026-08-08, because the
+> 2026-08-13 pass (`bbc2a31`, `e4e0c65` — which folded README.md's index in here and fixed stale
+> citations) never merged into this lineage. Rebuilt from `bbc2a31` with this branch's own OPEN-5b
+> and OPEN-5c carried forward. `CLAUDE.md` tells every session to read this file before opening
+> anything, so it being seven days stale was the most expensive kind of staleness we have.
 
 > **Version caveat, added 2026-08-09.** The ladder moved to `kaggle-environments` 1.32.6 on
 > 2026-08-07/08. The `STATE at last update` block below, and most dollar figures elsewhere in this
 > file, were measured on 1.32.2 or against a fixture that did not yet reflect the town rebalance
-> (`competition_brief.md`, "version skew"). Both simulators now **fail parity on 1.32.6** — 8
-> failures, not the "300/300 exact" figure this file and `architecture.md` used to treat as current.
-> The *mechanisms* below (routing, feed, geometry, discard timing) are still believed correct; the
-> *dollar sizes* are not to be trusted without re-measuring on 1.32.6. See
-> `docs/the_market_2026-08-09.md` for the current, 1.32.6-dated market picture and
-> `docs/the_top_five_clusters_2026-08-09.md` for the current ladder gap (we score 1,123.5 against a
-> field whose floor is ~3,117).
+> (`competition_brief.md`, "version skew"). Both simulators briefly **failed parity on 1.32.6** (8
+> failures) earlier on 2026-08-09 and were **restored to exact parity the same day** — four
+> behavioural rule fixes (locked-tile movement, DROP/PICKUP/PLACE ordering, shed-capacity caps on
+> BUY, shop unlock with replacement); see `architecture.md`'s PARITY CORRECTION note. One search-layer
+> regression was left open: `test_two_different_far_tiles_are_not_the_same_farm`. The *mechanisms*
+> below (routing, feed, geometry, discard timing) are still believed correct; the *dollar sizes* are
+> not to be trusted without re-measuring on 1.32.6. See `docs/the_market.md` for the current,
+> 1.32.6-dated market picture and `docs/the_ladder_is_two_scripts.md` for the current ladder gap.
 >
 > **Second version caveat, added 2026-08-11.** The `STATE at last update` block below, and the
 > baseline command it names, judge the agent against Seb's recorded tape. `docs/the_ladder_is_two_scripts.md`
@@ -20,8 +28,20 @@ Last updated 2026-08-08, on `shaping-potential`.
 > Matching his tape op-for-op is still useful as a bug-finding harness (see the mechanism note on
 > OPEN-1 through OPEN-8), but it is no longer the strategic target. The field plants 108-147 WHEAT
 > tiles a season; our schedule plants 24. See `docs/the_ladder_is_two_scripts.md` for the rebase
-> recommendation (Dmitry Belan or Efe Can Celiksoy) and `docs/what_the_town_will_actually_eat.md` for
+> recommendation (Dmitry Belan or Efe Can Celiksoy) and `docs/the_market.md` for
 > the current market-appetite picture.
+>
+> **Third version caveat, added 2026-08-13.** `SELLABLE` excluded CARROT, TOMATO and EGG until
+> commit `c99a8a5` (2026-08-13, "Three of the nine products could never be sold, and the wool rule
+> fired too late") — our own agent could never emit a SELL for those three products regardless of
+> market conditions. **Any measurement or verdict below (or in any deleted doc folded in here) about
+> carrot not selling, or about geese/eggs being unprofitable, was taken with that revenue line
+> disconnected and is VOID.** C-23 below is the clearest casualty: the crops it says the ladder
+> "plants 0.2%/0.0% of the time" include carrot, measured while carrot could not be sold by us at
+> all. Geese/eggs are now a live axis in the running product-mix sweep rather than a closed question.
+> See `docs/market_depth_and_the_morning_losses_2026-08-13.md` for the corrected depth table (EGG is
+> one of only two products — with WHEAT — that never floors) and the confirmation that this
+> revenue line is now connected.
 
 This file exists because items in this project get closed under one name and reopen under another.
 Melon has been opened and closed at least four times.
@@ -81,6 +101,47 @@ missed same-day sale belongs to OPEN-1. Do not open it as a new item.
 ---
 
 ## OPEN
+
+### OPEN-15 — The precomputed path ignores both the budget and the prize
+
+`cover._apply_precomputed` returns before the greedy's `c > cap` check ever runs, so **d12-d29 are
+not budget-checked at all**: seed 11 ships `d14 u5` at 24 turns against 23, `d21 u12` at 32 against
+23, `d27 u2` at 27 against 23. It also matches jobs on `(tile, ops)` alone, so a job's PRIZE never
+enters — which is why `HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY` (2026-08-15) is ignored on exactly
+the days crops rot.
+
+Both halves are pinned by strict `xfail`s, so they go red the moment either is fixed:
+`tests/test_a_day_is_packed_against_the_tour_it_will_walk.py` and
+`tests/test_a_ripe_one_shot_crop_is_taken_before_it_rots.py`.
+
+### OPEN-16 — Crops rot on a one-day window the visit order cannot see
+
+`_decay_plants` (`reference/kaggriculture.py:752`) runs on **every step**, not the rollover. A
+one-shot crop past `max_lifespan_step = (planted_day + max_yield_day + 1) * 24` loses a unit every
+two steps and turns to WEED at zero, while `_one_shot_is_finished` legalises HARVEST at
+`age >= max_day`. **The safe window is exactly one day wide** and water does not extend it.
+
+`cover.py` contains zero references to `max_lifespan_step`. Partly addressed 2026-08-15 by pricing
+the last-safe-day harvest at `CRITICAL`: on seed 11's own shop draw, 24 tiles/24 units -> 10/11.
+**Byte-identical under `breakdown.py`**, which replays the tape's recorded shop draw — so it is a
+null against the tape comparison and a gain on the natural draw the ladder actually runs.
+
+Of the 10 that remain, **4 die of thirst** (`consecutive_unwatered >= 2`, at h00) and 6 to OPEN-15.
+
+### OPEN-17 — Both animal books flooring predicts a loss, and nothing adapts to it
+
+Across all 18 recorded games of the current agent: games where MILK **and** WOOL both close at or
+near the floor go **1W/4L**; games where at least one is alive go **10W/3L**. `SHOP_ADAPT_HERD`
+floats the cow/sheep SPLIT and keeps the COUNT, which is also what Kawashigi does (he varies
+(10,4)/(6,12)/(8,6)/(6,8) across 67 games and wins 62), so "cut the herd" is contradicted by the
+best evidence available.
+
+Fable closed the goose alternative on the Elo objective 2026-08-15
+(`docs/fable_geese_audit_2026-08-15.md`): goose is margin-best in **0.9%** of shop draws, because
+exiting the flooded milk/wool books gifts the opponent ~$9-10k of price suppression. The corollary
+matters more than the answer — **our flood is holding THEIR 300 units down too**, so the fix is
+release timing inside the book, not exit from it.
+
 
 ### OPEN-1 — the largest open defect. Animal produce is sold a day late, all season
 
@@ -154,7 +215,7 @@ Constraint on any fix: CARE correlates **+0.441** with money across 312 real lea
 **Partially superseded 2026-08-09.** `PRICE_AWARE_SELL_CAP` and `RESERVATION_SELL_CAP` are both now
 `True` in `schedule_agent.py`, replacing the schedule-row-only `allow` this section describes with a
 live-price rule. Whether that closes this item has not been re-measured against the mechanism
-described here; see `docs/the_market_2026-08-09.md` §4-5, which found milk and wool still
+described here; see `docs/the_market.md` §4-5, which found milk and wool still
 under-priced on real ladder losses even with both flags on.
 
 ### OPEN-4 — The strawberries die eleven days too early
@@ -225,6 +286,48 @@ top up through the day.
 
 *Correction on the record:* first reported as "-2 from d10". That was a column-offset miscount. It is
 **d16**, and the `sheep` row is `an_SHEEP`, animals standing, not an op count.
+
+### OPEN-5b — The same starvation now fires on the LADDER, and it is a cash failure
+
+Owner: nobody. Evidence: `data/seed_scripts/ours_ladder_new/`, 2026-08-13.
+`scratchpad/escapes.py` reproduces it from a downloaded replay in one pass.
+
+OPEN-5 above is the seed-11 tape version of this. On the ladder it is worse and the trigger is
+plainly **cash**, not reachability:
+
+```
+day  feeds  harv  wheat_shed  money  hands
+  8      9     1           0    137      6
+  9     10     4           0  1,377      7
+ 10      1     1           0      1     14     <-- first escape
+ 11      0     0           0     75     10
+ 12      0    13           0     22     10     <-- eight escape in one day
+ 13      0     0           7    167      8
+```
+
+`FEED` takes one WHEAT from the acting hand (`kaggriculture.py:496`); two consecutive unfed days and
+the animal leaves and the pen stays (`:804`). The shed held **zero wheat from d8 to d12** while the
+bank was at $1, $75, $22 — neither the stock nor the cash to buy it. Twelve of fourteen animals
+walked: $5,200 of stock plus seventeen days of milk and wool.
+
+**It is not a regression from the carrot release.** Verified with the carrot-sell discriminator:
+`92566708` (new build) and `92535914` (old build, zero carrot sells) have the identical signature —
+12 escapes, 2 surviving cows, 13 bare pens. The old-build game is also the worst margin in the whole
+downloaded set, $46,313 against $154,391.
+
+Nothing reserves the feed bill. `RESERVE_THE_SEED_BILL` does exactly this for seeds, and the feed
+bill is the more expensive liability: a missed seed costs a planting, a missed feed costs the animal.
+
+### OPEN-5c — A pen is built after the last animal is bought, and stands empty to the close
+
+Owner: nobody. Present in **every** downloaded ladder game, both builds.
+
+Fifteen `BUILD_PASTURE` ops against fourteen animals. The last `BUY_ANIMAL` lands on d18; pens are
+still going up on d21 (2) and d24 (1). The d24 pen is bare from d24 to d29 while the bank holds
+$53k-$95k and a sheep costs $500. In `92550780` the town was draining 1,074 wool and wool closed at
+$252 — above base — so that empty pen was worth roughly $250 a unit, all season.
+
+Distinct from OPEN-5b: no animal died here, one was simply never bought for a pen we paid to build.
 
 ### OPEN-6 — Idle diverges only when the board gets busy
 
@@ -297,7 +400,8 @@ of a fixed script.
 This is not the planner, the watering or the market logic; it is the target. Nothing in the
 "matching-the-tape" line of work (OPEN-1 through OPEN-9 above, and the mechanism docs banded
 2026-08-11) needs to be redone — it needs to be repointed at a different tape and re-derived, the way
-`router_tape_repoint_2026-08-09.md` did once already for the 1.32.2 -> 1.32.6 move.
+the router's tape fixture was once already repointed for the 1.32.2 -> 1.32.6 move (see
+`docs/matching_the_tape_mechanisms.md` §2, "the mechanical fix: repointing the tape").
 
 ### OPEN-11 — Watering: 61 of our tiles go to weed against the opponent's 0, in a real loss
 
@@ -321,6 +425,89 @@ the loss sample show a weed-driven divergence concentrated on d13 and d16.** No 
 producing that aggregate was found under `data/logs/` or `scripts/` as of 2026-08-11 — the per-episode
 figure above is confirmed, the 44-of-64 aggregate is not. Per this file's own ground rule, treat the
 aggregate as UNVERIFIED until a script that reproduces it is committed and named here.
+
+### OPEN-12 — The feed reserve's eviction throttle is unpaced against reachable room
+
+Owner: nobody. `docs/fable_the_discard_problem_2026-08-09.md` (folded in here; file deleted).
+
+**Self-correction on the record first:** the discard metric this item used to be measured on
+(`held_at_dusk − shed_at_dawn`) double-counted hour-23 `SELL`/`BUY_PRODUCT` as loss. Corrected,
+env-exact figures: full season **7 units** discarded (not the 105-137 first reported), handover-11
+**123 units** (not 145) — a ~15x overstatement. Final money was identical either way. Do not quote
+the old 105/145 figures.
+
+**A real, fixed bug (shipped):** `FEED_RESERVE_YIELDS_TO_OVERFLOW` had no day gate despite every
+comment describing it as a day-16+ lever — it fired from day 0 against a 4-animal herd. Fixed at two
+sites in `schedule_agent.py` (sell-side ~line 2549, buy-side ~line 3109), gated on
+`day >= FEED_DAYS_FROM_DAY`. RED before (`tests/test_the_feed_gate_is_a_late_season_lever.py`, 15/16
+days differed), GREEN after, reverted and reconfirmed RED.
+
+**Tried and NOT shipped (measured, not a win):** releasing the wheat reserve broadly to evict more
+aggressively. Across 7 seed/mode combinations (seeds 11-14, handover-11 and full-season), it made
+discards **worse in 5 of 7** and money **worse in 4 of 7** — worst case full-season seed 12,
+**-$13,304** for 39 fewer units discarded. Do not rebuild the broad eviction fix without beating
+this.
+
+**Still open:** the router's "unreachable room" claim (the reason we don't evict more: there's
+nowhere to put it) is only **partially** true. Of 17 residual discard nights on seed-11 handover-11,
+10 had wheat already at/below the eviction floor (claim holds, nothing left to sell) but **5 nights
+(d16, 17, 18, 20, 24) had wheat sitting 9-29 units above the floor while product still died** — d20
+is the sharpest: 48 units of wheat in shed (the entire shed) against a floor of 19, 29 units of
+reachable room unused, 15 units of other product destroyed the same night. This is a sell-side /
+eviction-throttle pacing question, not a room question, and it is untested.
+
+### OPEN-14 — The late-season STRAWBERRY dump, and the ladder is one fixed board, not a random draw
+
+Owner: nobody. `docs/fable_where_next_2026-08-11.md` (folded in here; file deleted) and
+`docs/kawashigi_one_board_2026-08-13.md` (folded into `the_ladder_is_two_scripts.md`; file deleted).
+
+**The dump, ranked #1 by net-trade gap.** Against Victor's tape (seed 11, replayed), the per-product
+gap is STRAWBERRY **-$22,323** (dominant — half volume, half a late-season dump: 30u@$168 d20 →
+29u@$68 d22 → 12u@$20 d23 → 28u@$7 d24, while Victor sells *more* volume the same days at
+$182/$162/$114), then WHEAT -$4,948, MELON -$3,166, FERTILIZER -$869. **WOOL is a proven win
+(+$10,146)** — holding instead of dumping already beats the tape. MILK is a wash (+$1,533) because
+Victor's own milk book floors at $1-5 from d16, capping any herd-split cleverness at "low thousands,
+not tens" — the same floor `docs/market_depth_and_the_morning_losses_2026-08-13.md` documents
+independently on real ladder losses. **This is the same failure class market_depth's two named
+losses (92550780, 92562037) describe: we ship volume into a book that's about to floor instead of
+holding it.** Not yet fixed; the likely site is `SELL_TO_MAKE_ROOM` or shed pressure overriding the
+reservation logic in the late-season sell block.
+
+**Field never buys a 4th quadrant.** Every one of 20 top-ladder seats sampled finishes at exactly 3
+quadrants; the 15th/16th daily hire costs $610/$987 in Fibonacci pricing at that crew size —
+marginal at best. Not worth chasing ahead of the dump above.
+
+**The ladder runs on ONE fixed board, not a random per-seed draw — this changes what "seed
+variance" means for the ladder specifically.** 16 downloaded games of the ladder's then-current #1
+(カワシギ, 15-1, bank range $44.9k-$150.0k) plus 4 of our own games are hash-identical on
+world/market/tiles observation (terrain, land parcels, town positions, opening prices) across all 20
+games and both seats. **The project's "seed variance ~15%" figure describes `kagg.arena`'s randomly
+drawn boards and does not apply to the ladder**, which deals the same board every game; only the
+shop-unlock draw and weed placement vary.
+
+**This also corrects the standing "winners are open-loop" framing for the current #1 specifically**
+(`the_field.md`'s finding still holds for the players it measured — this is additive, not a
+reversal of that evidence). All 16 of カワシギ's games are byte-identical for exactly the first 74
+turns (d0 through d3 hour 1) — the exact window before the first shop-unlock draw
+(`townShopUnlockInterval=3`). After that, pairwise action-vector identity drops to 26%-82% and
+divergence tracks the **shop draw**, not the opponent (same-opponent pairs diverge as early as d5
+h15). Hour 1 stays identical across all 16 games through d23; hour 0 is the most divergent hour from
+d14 on. `SHOP_ADAPT_HERD` is our nearest analog but starts later (day 6) and reads only shop
+presence for a narrow cow/sheep split; カワシギ's response reaches the whole plan from day 3. Diffing
+his fixed 74-turn opening op-for-op against ours is cheap and unexplored.
+
+### OPEN-13 — `run_arena`'s seat swap corrupts any agent with a baked-in seat
+
+Owner: nobody. `docs/arena_state_leak_2026-08-09.md` (folded in here; file deleted). Found while
+fixing the state-leak bug below (C-25) and deliberately not chased in the same pass.
+
+`run_arena` swaps seats to measure both orderings, but has no way to tell an agent factory which
+seat it is building for. An agent constructed as `make_agent(schedule, me=0)` and then placed in
+seat 1 by the swap still believes it is seat 0. `confirm_late_sell_bias.py` handles this correctly
+(rebuilds per match, per seat); `run_arena` cannot as written. **The shipped artifact is immune**
+(`submission/main.py` reads `obs["player"]` rather than baking in a seat), so this is a harness gap,
+not a shipped bug — but any future arena measurement using a seat-baked factory through `run_arena`
+will silently corrupt half its games the same way C-25 did.
 
 ---
 
@@ -387,9 +574,9 @@ Do not reopen without new evidence that contradicts the named artifact.
 | C-18 | `sh:wheat -139` from d8 is a defect | NOT a defect. HARVEST identical (2/2), net market delta identical (+10/+10). The -1 lives in the DROP / dusk-sweep / PICKUP mix and is the opposite way round from the assumption: **the tape** holds 3 units until the dusk auto-drop, we drop mid-day. Verified by an exact accounting identity holding every day for both sides. No fix, deliberately — forcing our order to match would be cloning the tape. | `experiment_log.md` §23 |
 | C-19 | The d10 melon is a delivery defect | FALSE, after seven arms. Both sides wake with three tiles at 5/6; a one-shot cannot be harvested before it fills, so **neither side could harvest earlier**. The WATER ran seven hours late. | `experiment_log.md` §19, `tests/test_the_filling_water_carries_the_harvest.py` |
 | C-20 | Dropping the harvest earlier is free money | FALSE. Four arms; the one that worked mechanically moved the first DROP h19 → h5 and still lost $8,292, because `DROP 116 → 137` bought `HARVEST 300 → 294`. A late harvest is already priced. | `experiment_log.md` §20 |
-| C-21 | Pen geometry is a lever | FALSE. His exact tiles buy 2 cells of 150, and the Manhattan sum from (4,4) is 22 for both day-0 blocks. `DEPOT_RING_FIRST` ships off; its money sign reversed on a held-out draw. | `experiment_log.md` §21 |
+| C-21 | Pen geometry is a lever | FALSE, confirmed a third time on two fresh loss episodes (`91229682`, `91231728`, 2026-08-09, folded in from `docs/geometry_of_the_herd_2026-08-09.md`, file deleted). His exact tiles buy 2 cells of 150, and the Manhattan sum from (4,4) is 22 for both day-0 blocks. `DEPOT_RING_FIRST` ships off; its money sign reversed on a held-out draw. **Third confirmation:** our pens form a smear (21 tiles, row-3 x=0-9, ring-depth 3.25, mean shed-distance 2.86) against the opponent's compact block (14 tiles, ring-depth 1.90, mean shed-distance 1.21) — geometrically worse by every measure — yet **walk-per-work-op is BETTER for us in both episodes** (1.028 vs 1.118; 1.210 vs 1.445), and total realized walking (position-diffed, not raw move-op counts) is roughly level or lower for us despite the worse layout. The real divergence between winning and losing sides in both episodes is PASS (1.5-1.7x more for us) and WATER (1.6-1.9x more for the opponent) — production/idle time, not walking. A previously-cited "1.86 vs 2.93" ring-depth figure does **not reproduce** under either Manhattan (3.25/1.90) or Euclidean (2.69/1.50) recomputation — do not cite it going forward; use the figures above. Pen siting (`_refresh_pins` in `schedule_agent.py`) falls through an empty `PEN_SPOTS`, then shed-access tiles, then (only from day 11) nearest-depot search, defaulting before that to the same boustrophedon field-order sweep used for crops — mechanically why pens land late and far, since crops eat the near ground first. `PEN_NEAREST_DEPOT=True` was reverted historically on a cell-count-vs-tape proxy metric, never actually tested on bank or win rate — still technically open, but low-expected-value given walking isn't the binding cost. | `experiment_log.md` §21 |
 | C-22 | `Node.service` under-counting is a bug to fix | It is the packing calibration that matches the tape. Correct prices, worse reproduction, every arm. Both constants ship at 0 and will not move. | `experiment_log.md` §22 |
-| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. | `kagg/search/schedule_agent_1455mh.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
+| C-23 | `SHOP_ADAPT_CROPS` should swap crops toward the shop draw | Tried and reverted, three pairs. `WHEAT<->CARROT` / `TOMATO<->STRAWBERRY` shipped, measured 0.806 vs HEAD's 0.871 over 232 matched games — both swap toward crops the ladder plants 0.2%/0.0% of the time. `STRAWBERRY<->MELON` produces an identical 54/4 split on every board tested, because no shop carries melon so its drain is 29 everywhere — a pair with one board-independent member cannot adapt. Flag OFF as of 2026-08-11. **Measured before the SELLABLE fix (`c99a8a5`, 2026-08-13): our own agent could not sell CARROT at all, so `WHEAT<->CARROT`'s 0.806 was measured with carrot's revenue line disconnected. Not re-verified since; treat as UNVERIFIED, not re-affirmed.** | `kagg/search/schedule_agent_1455mh.py:2129` (`SHOP_ADAPT_CROPS = False`), full record in the flag's own docstring; `docs/the_ladder_is_two_scripts.md` |
 | C-24 | Fertilizer priced at its $100 base when deciding whether to fertilize | Fixed. The live market quote (`obs["market"]["prices"]["FERTILIZER"]`) is read every turn and threaded into `_router_acts` as `fertilizer_price` — nothing eats fertilizer, so its book only ratchets up ($50 by day 17, $20 by day 26 in 85/85 recorded games), and pricing at base meant refusing to fertilize a tile for a price nobody would pay. Shipped, unconditional (no flag to disable). | `kagg/search/schedule_agent_1455mh.py:2602-2612` |
 
 ---

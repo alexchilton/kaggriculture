@@ -36,6 +36,7 @@ This says nothing about WHERE a crop should go -- the row names exact tiles -- a
 with no `land` in the row, where the dawn board is already the whole board.
 """
 import importlib
+import kagg.plan as _PLAN
 import json
 import pathlib
 
@@ -44,7 +45,7 @@ from kaggle_environments import make
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 REPLAY = REPO / "data/seed_scripts/top2/91854176.json"
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 TEAM = "Victor @ Tufa Labs"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 SEED = 11
@@ -57,7 +58,7 @@ LAND_DAY = 10
 @pytest.fixture(scope="module")
 def dawn():
     """`{day: (plants_planned, plants_uncovered, locked_row_tiles)}` for each day's h0 plan."""
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     DP = importlib.import_module("kagg.search.cover")
     CREW = importlib.import_module("kagg.search.crew")
 

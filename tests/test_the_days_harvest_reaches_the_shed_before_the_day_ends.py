@@ -28,7 +28,7 @@ from $238 to $133 selling his own flush across d20 and d21. Our 36 units realise
 units realised $21,743. That single product is $13,522 of the $14,810 game.
 
 Note what this is NOT. It is not a decision to hold stock for a better price: `HOLD_A_FLOORED_BOOK`
-(`schedule_agent_1455mh.py:2576`) already refuses to do that for melon, and its docstring records the
+(`schedule_agent.py:2576`) already refuses to do that for melon, and its docstring records the
 measurement -- the town drains melon at 1/day, so `d_rem >= supply` is false and the guard correctly
 does not fire. The stock was never in the shed for any sell rule to see.
 
@@ -42,6 +42,7 @@ The second says nothing about whether the day SHOULD sell, only that it must be 
 crew picks nothing is skipped by both.
 """
 import collections
+import kagg.plan as _PLAN
 import json
 import pathlib
 import sys
@@ -68,7 +69,7 @@ def season():
     import breakdown as B
     from kaggle_environments import make
 
-    import kagg.search.schedule_agent_1455mh as sa
+    import kagg.search.schedule_agent as sa
 
     raw = json.loads(REPLAY.read_text())
     names = raw["info"]["TeamNames"]
@@ -76,7 +77,7 @@ def season():
     team = names[1 - OUR_SEAT]
 
     sched = {int(k): v for k, v in json.loads(
-        (REPO / "data/seed_scripts/victor/schedule.json").read_text()).items()}
+        (_PLAN.SHIPPED_PLAN).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in B.TAPE_ONLY} for d, r in sched.items()}
 
     #: The board that was ACTUALLY played, not `env_config`'s economy subset. `ECONOMY_KEYS` is

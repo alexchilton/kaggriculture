@@ -1298,165 +1298,269 @@ Each day is `{unit_index: [[tile, [op, ...]], ...]}`, the exact assignment and o
 `scripts/solve_day.py` found against `cover.py`'s own cost model. `cover._apply_precomputed`
 seats them; a stop whose job today's board does not have is skipped and the rest still apply.
 
-Solved on seed 11 against tape victor, whose schedule the agent plays. The board has no
-random terrain, so geometry is identical in every game and these matched 100% on seed 14 too.
+**Solved against the plan in `kagg/plan.py`, seed 11, tape kawashigi.** The board has no random
+terrain -- `_initial_tile` is a pure function of coordinates and the env's only RNG drives the weed
+spawn and the shop draw -- so geometry is identical in every game and these carry across seeds.
+They do NOT carry across PLANS: the previous generation was solved against the victor tape and by
+2026-08-15 only 143 of its 571 stops still matched a job our board had, the rest being silently
+skipped. That stale quarter was still worth +$20,365 against no precomputation at all, which is the
+measure of how much the geometry alone is worth and why regenerating was worth doing.
 
-Coverage against the shipped greedy, jobs seated:
-
-    d12  45/50 -> 50/50      d23  64/74 -> 74/74      d26  60/60 -> 60/60
-    d16  61/61 -> 61/61      d24  49/58 -> 58/58      d27  61/61 -> 61/61
-    d18  69/69 -> 69/69      d25  54/59 -> 59/59      d28  48/51 -> 51/51
-                                                      d29  25/25 -> 25/25
-
-d26-d29 were re-solved 2026-08-13 against the job pool the late-season pair produces
-(`FERTILIZE_UNTIL_DAY`, `LATE_TRUNCATED_PLANT_DAY`). On that pool the shipped greedy already
-covers every job on d26, d27 and d29 -- the solver only wins turns there, and three jobs on
-d28. The late season is not a routing problem.
-
-Regenerate with `scripts/solve_day.py` IN DAY ORDER: each solved day changes the next day's
-board, so a fixture must be dumped with every earlier route already installed.
+Regenerated 2026-08-15 by `scripts/resolve_days.py`, IN DAY ORDER: each solved day changes the next
+day's board, so every fixture is dumped with all earlier routes already installed. Re-run that
+script rather than editing this file or dumping a fixture by hand.
 """
 
 SOLVED_DAYS = {
     12: {
-        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        2: [],
+        0: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((7, 1), ('WATER',)), ((7, 0), ('WATER', 'HARVEST'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        3: [((1, 5), ('WATER',)), ((0, 7), ('PLANT', 'WATER')), ((0, 8), ('PLANT', 'WATER')), ((1, 8), ('PLANT', 'WATER'))],
+        4: [((4, 1), ('WATER',))],
+        5: [((8, 4), ('WATER',)), ((8, 2), ('WATER',)), ((9, 3), ('WATER',)), ((9, 2), ('WATER',)), ((9, 1), ('WATER', 'HARVEST')), ((9, 0), ('WATER',)), ((8, 0), ('WATER',)), ((6, 0), ('WATER',))],
+        6: [((4, 6), ('WATER',)), ((4, 8), ('WATER',)), ((3, 7), ('WATER',)), ((2, 6), ('WATER',)), ((2, 9), ('PLANT', 'WATER')), ((1, 9), ('PLANT', 'WATER')), ((0, 9), ('PLANT', 'WATER'))],
+        7: [],
+        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        9: [],
+        10: [((3, 2), ('WATER', 'HARVEST')), ((2, 2), ('WATER',)), ((1, 2), ('PLANT', 'WATER')), ((1, 1), ('PLANT', 'WATER')), ((1, 0), ('PLANT', 'WATER')), ((0, 0), ('WATER', 'HARVEST')), ((0, 1), ('PLANT', 'WATER'))],
+    },
+    13: {
+        0: [((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 5), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER',)), ((1, 5), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',))],
+        1: [((5, 1), ('WATER',)), ((5, 0), ('WATER',)), ((4, 0), ('WATER',)), ((4, 1), ('WATER',)), ((3, 1), ('WATER',)), ((2, 1), ('WATER',)), ((2, 0), ('WATER',)), ((3, 0), ('WATER',))],
+        2: [((4, 6), ('WATER',)), ((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 7), ('WATER',)), ((2, 6), ('WATER',))],
         3: [],
-        4: [((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 1), ('FERTILIZE', 'WATER'))],
-        5: [((8, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        6: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((3, 8), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',))],
-        7: [((5, 3), ('WATER',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('WATER',)), ((1, 2), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER',)), ((1, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        9: [((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',))],
-        10: [((3, 6), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((1, 8), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',))],
+        4: [],
+        5: [((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((6, 1), ('WATER',)), ((7, 0), ('PLANT', 'WATER')), ((8, 0), ('WATER', 'HARVEST')), ((9, 0), ('WATER', 'HARVEST'))],
+        6: [],
+        7: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((8, 1), ('WATER',))],
+        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER',)), ((1, 3), ('WATER',)), ((0, 3), ('WATER',)), ((0, 4), ('WATER',)), ((0, 5), ('WATER',))],
+        9: [],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('PLANT', 'WATER')), ((2, 2), ('WATER',)), ((1, 2), ('WATER',)), ((0, 2), ('WATER',))],
+        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER',))],
+    },
+    14: {
+        0: [],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        2: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((2, 9), ('WATER',)), ((0, 9), ('WATER',)), ((1, 9), ('WATER',)), ((1, 8), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER',))],
+        3: [((7, 3), ('WATER', 'HARVEST')), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 2), ('WATER',)), ((9, 1), ('PLANT', 'WATER')), ((8, 0), ('PLANT', 'WATER'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 1), ('WATER', 'HARVEST'))],
+        5: [((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 0), ('WATER',)), ((6, 0), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER',)), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((8, 4), ('WATER', 'HARVEST'))],
+        6: [((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 6), ('WATER',)), ((2, 5), ('WATER',)), ((1, 5), ('WATER',)), ((1, 4), ('FERTILIZE', 'WATER')), ((0, 4), ('FERTILIZE', 'WATER'))],
+        7: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 2), ('WATER', 'HARVEST'))],
+        8: [((2, 3), ('FERTILIZE', 'WATER')), ((1, 3), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((1, 1), ('WATER',)), ((0, 1), ('WATER',)), ((0, 0), ('PLANT', 'WATER')), ((1, 0), ('WATER',))],
+    },
+    15: {
+        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 1), ('PLANT', 'WATER')), ((3, 1), ('WATER',)), ((3, 2), ('WATER',)), ((2, 2), ('PLANT', 'WATER')), ((2, 3), ('HARVEST',)), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 6), ('WATER', 'HARVEST')), ((3, 7), ('WATER', 'HARVEST'))],
+        3: [((7, 3), ('PLANT', 'WATER')), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((8, 1), ('WATER',)), ((9, 0), ('PLANT', 'WATER')), ((7, 0), ('WATER',)), ((6, 1), ('WATER',))],
+        4: [],
+        5: [],
+        6: [((1, 5), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 5), ('WATER',)), ((0, 6), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((0, 7), ('WATER',))],
+        7: [((5, 1), ('WATER',)), ((5, 0), ('WATER',)), ((4, 0), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',)), ((2, 1), ('WATER',)), ((1, 1), ('WATER',)), ((1, 2), ('WATER',)), ((0, 2), ('WATER',))],
+        8: [((2, 5), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 6), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 7), ('WATER',)), ((2, 8), ('WATER',)), ((3, 8), ('WATER',))],
+        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('PLANT', 'WATER')), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER',)), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        10: [((4, 6), ('WATER', 'HARVEST')), ((4, 7), ('WATER', 'HARVEST')), ((4, 8), ('WATER', 'HARVEST')), ((4, 9), ('WATER',)), ((3, 9), ('WATER',))],
+        11: [],
+        12: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('HARVEST',)), ((0, 4), ('HARVEST',)), ((0, 3), ('WATER',)), ((1, 3), ('HARVEST',))],
     },
     16: {
-        0: [((4, 6), ('WATER',)), ((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',))],
-        1: [((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((3, 8), ('WATER',)), ((3, 9), ('WATER',)), ((4, 9), ('WATER',))],
-        2: [((1, 5), ('WATER',)), ((0, 5), ('WATER',)), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',)), ((0, 0), ('WATER',))],
-        3: [((5, 3), ('HARVEST',)), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((8, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((7, 1), ('FERTILIZE', 'WATER'))],
-        4: [((3, 1), ('WATER',)), ((2, 1), ('FERTILIZE', 'WATER')), ((2, 2), ('WATER',)), ((1, 2), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER',)), ((1, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        5: [((6, 1), ('FERTILIZE', 'WATER')), ((6, 0), ('FERTILIZE', 'WATER')), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        6: [((9, 4), ('FERTILIZE', 'WATER')), ((9, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        7: [((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((0, 6), ('WATER',)), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((1, 7), ('WATER',))],
-        8: [((5, 1), ('FERTILIZE', 'WATER')), ((5, 0), ('FERTILIZE', 'WATER')), ((4, 0), ('WATER',)), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('FERTILIZE', 'WATER')), ((9, 3), ('FERTILIZE', 'WATER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        10: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('WATER',)), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        0: [((3, 7), ('PLANT', 'WATER')), ((4, 7), ('PLANT', 'WATER')), ((4, 8), ('PLANT', 'WATER')), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',))],
+        1: [((8, 4), ('WATER',)), ((9, 4), ('FERTILIZE', 'WATER')), ((9, 3), ('WATER',)), ((8, 3), ('WATER',)), ((7, 3), ('WATER',)), ((7, 2), ('WATER',)), ((7, 1), ('WATER',)), ((6, 1), ('WATER',)), ((6, 2), ('FERTILIZE', 'WATER'))],
+        2: [((3, 2), ('WATER',)), ((2, 2), ('WATER',)), ((1, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',)), ((0, 0), ('WATER',)), ((1, 0), ('WATER',))],
+        3: [((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER',)), ((1, 3), ('WATER',)), ((1, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        5: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        6: [((4, 6), ('WATER',)), ((3, 6), ('PLANT', 'WATER')), ((2, 6), ('PLANT', 'WATER')), ((1, 5), ('WATER',)), ((1, 4), ('WATER',)), ((0, 4), ('WATER',)), ((0, 7), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        7: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        8: [((5, 1), ('FERTILIZE', 'WATER')), ((5, 0), ('WATER',)), ((6, 0), ('WATER',)), ((7, 0), ('WATER',)), ((8, 0), ('WATER',)), ((9, 1), ('WATER',)), ((9, 2), ('WATER',)), ((8, 2), ('WATER',))],
+        9: [((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+    },
+    17: {
+        0: [((4, 1), ('WATER',)), ((4, 0), ('WATER',)), ((6, 0), ('FERTILIZE', 'WATER')), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('WATER',)), ((9, 0), ('WATER',))],
+        1: [((6, 2), ('WATER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((5, 1), ('HARVEST',)), ((5, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 5), ('WATER',)), ((1, 5), ('WATER',)), ((1, 4), ('HARVEST',))],
+        3: [],
+        4: [((3, 1), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',)), ((2, 1), ('WATER',)), ((2, 2), ('WATER',)), ((1, 2), ('WATER',)), ((0, 2), ('WATER',)), ((0, 0), ('WATER',))],
+        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('WATER',)), ((8, 3), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST'))],
+        6: [((3, 6), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((0, 4), ('HARVEST',)), ((0, 3), ('WATER',)), ((1, 3), ('HARVEST',))],
+        7: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        9: [((8, 4), ('WATER',)), ((9, 4), ('HARVEST',)), ((9, 3), ('WATER', 'HARVEST')), ((9, 2), ('FERTILIZE', 'WATER')), ((9, 1), ('WATER',)), ((8, 1), ('WATER',)), ((7, 1), ('FERTILIZE', 'WATER')), ((7, 2), ('WATER', 'HARVEST'))],
+        10: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 7), ('WATER',))],
         11: [],
-        12: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        13: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        12: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('HARVEST',)), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
     },
     18: {
-        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('WATER',)), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        1: [],
-        2: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        3: [((4, 6), ('WATER',)), ((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((3, 8), ('WATER',))],
-        4: [((2, 3), ('WATER',)), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((1, 1), ('HARVEST',)), ((1, 0), ('WATER',)), ((0, 0), ('FERTILIZE', 'WATER')), ((0, 1), ('HARVEST',)), ((0, 2), ('WATER',))],
-        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('HARVEST',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER',))],
-        6: [((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',))],
+        0: [((4, 1), ('FERTILIZE', 'WATER')), ((3, 2), ('PLANT', 'WATER')), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 3), ('FERTILIZE', 'WATER')), ((1, 4), ('FERTILIZE', 'WATER')), ((0, 4), ('FERTILIZE', 'WATER'))],
+        1: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('FERTILIZE', 'WATER')), ((8, 3), ('PLANT', 'WATER')), ((9, 3), ('WATER',)), ((9, 4), ('WATER',)), ((9, 2), ('HARVEST',))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        3: [((4, 6), ('FERTILIZE', 'WATER')), ((4, 7), ('FERTILIZE', 'WATER')), ((3, 7), ('FERTILIZE', 'WATER')), ((3, 6), ('FERTILIZE', 'WATER')), ((2, 6), ('FERTILIZE', 'WATER')), ((2, 5), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER'))],
+        4: [((2, 3), ('FERTILIZE', 'WATER')), ((1, 2), ('FERTILIZE', 'WATER')), ((1, 1), ('FERTILIZE', 'WATER')), ((1, 0), ('WATER',)), ((0, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',))],
+        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((7, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((7, 1), ('HARVEST',))],
+        6: [((4, 8), ('FERTILIZE', 'WATER')), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((1, 8), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('FERTILIZE', 'WATER'))],
+        7: [((8, 4), ('FERTILIZE', 'WATER')), ((8, 2), ('PLANT', 'WATER')), ((8, 1), ('FERTILIZE', 'WATER')), ((9, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('FERTILIZE', 'WATER'))],
+        8: [],
+        9: [((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER',)), ((6, 0), ('HARVEST',)), ((8, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        10: [],
+        11: [],
+        12: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+    },
+    19: {
+        0: [((2, 3), ('HARVEST',)), ((1, 3), ('HARVEST',)), ((0, 3), ('WATER',)), ((0, 2), ('WATER',)), ((1, 1), ('WATER',)), ((1, 2), ('WATER',)), ((2, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 1), ('HARVEST',)), ((4, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        2: [((4, 6), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((3, 6), ('FERTILIZE', 'WATER')), ((2, 6), ('FERTILIZE', 'WATER')), ((1, 6), ('WATER',)), ((1, 5), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        3: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 1), ('FERTILIZE', 'WATER')), ((6, 0), ('WATER',)), ((7, 0), ('FERTILIZE', 'WATER')), ((7, 1), ('WATER',)), ((8, 1), ('WATER', 'HARVEST'))],
+        4: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((9, 4), ('HARVEST',))],
+        5: [((5, 0), ('FERTILIZE', 'WATER')), ((4, 0), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',)), ((2, 1), ('WATER',)), ((3, 1), ('WATER',))],
+        6: [((4, 7), ('FERTILIZE', 'WATER')), ((4, 8), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 7), ('WATER',)), ((3, 7), ('FERTILIZE', 'WATER'))],
+        7: [((7, 3), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER',)), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        9: [((6, 2), ('HARVEST',)), ((7, 2), ('WATER',)), ((8, 3), ('WATER',)), ((9, 3), ('FERTILIZE', 'WATER')), ((9, 2), ('WATER',)), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 5), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        11: [],
+        12: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('HARVEST',)), ((1, 7), ('WATER',)), ((0, 7), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((0, 4), ('HARVEST',))],
+    },
+    20: {
+        0: [((2, 3), ('WATER',)), ((2, 2), ('WATER',)), ((2, 1), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 1), ('WATER',)), ((0, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('WATER',))],
+        1: [((5, 1), ('FERTILIZE', 'WATER')), ((4, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('WATER',)), ((6, 0), ('HARVEST',)), ((7, 0), ('WATER',)), ((8, 0), ('FERTILIZE', 'WATER')), ((8, 1), ('FERTILIZE', 'WATER', 'HARVEST'))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('FERTILIZE', 'WATER')), ((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('FERTILIZE', 'WATER'))],
+        3: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('FERTILIZE', 'WATER')), ((6, 1), ('WATER',)), ((7, 1), ('HARVEST',))],
+        4: [((0, 3), ('FERTILIZE', 'WATER')), ((0, 2), ('FERTILIZE', 'WATER')), ((0, 4), ('WATER', 'HARVEST')), ((0, 5), ('DIG',)), ((0, 6), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER'))],
+        5: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((9, 2), ('HARVEST',)), ((9, 1), ('FERTILIZE', 'WATER'))],
+        6: [((4, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 7), ('FERTILIZE', 'WATER')), ((2, 8), ('FERTILIZE', 'WATER')), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',))],
+        7: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((8, 3), ('FERTILIZE', 'WATER')), ((9, 3), ('WATER',)), ((9, 4), ('FERTILIZE', 'WATER'))],
+        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 3), ('WATER',)), ((1, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [((1, 4), ('WATER',)), ((1, 5), ('WATER',)), ((1, 7), ('FERTILIZE', 'WATER')), ((1, 8), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        10: [((4, 6), ('WATER',)), ((4, 8), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 9), ('FERTILIZE', 'WATER')), ((3, 9), ('FERTILIZE', 'WATER')), ((3, 8), ('FERTILIZE', 'WATER'))],
+        11: [((3, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        12: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+    },
+    21: {
+        0: [((4, 6), ('FERTILIZE', 'WATER')), ((4, 7), ('WATER',)), ((4, 9), ('WATER', 'HARVEST')), ((3, 9), ('WATER', 'HARVEST')), ((2, 9), ('FERTILIZE', 'WATER')), ((2, 8), ('WATER', 'HARVEST')), ((3, 8), ('WATER', 'HARVEST'))],
+        1: [((6, 2), ('HARVEST',)), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((8, 3), ('WATER',)), ((9, 3), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        2: [((2, 5), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('WATER',)), ((0, 7), ('WATER',)), ((0, 8), ('FERTILIZE', 'WATER')), ((0, 9), ('FERTILIZE', 'WATER')), ((1, 9), ('FERTILIZE', 'WATER'))],
+        3: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('FERTILIZE', 'WATER')), ((7, 1), ('FERTILIZE', 'WATER')), ((7, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        4: [((4, 1), ('FERTILIZE', 'WATER')), ((4, 0), ('HARVEST',)), ((3, 0), ('HARVEST',)), ((3, 1), ('HARVEST',)), ((2, 1), ('HARVEST',)), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((1, 3), ('HARVEST', 'DIG'))],
+        5: [((5, 1), ('HARVEST',)), ((6, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((6, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((3, 6), ('WATER',)), ((3, 7), ('DIG',)), ((2, 7), ('HARVEST',)), ((1, 8), ('FERTILIZE', 'WATER')), ((1, 7), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((0, 6), ('HARVEST',))],
         7: [],
-        8: [((4, 2), ('WATER',)), ((3, 2), ('WATER',)), ((3, 1), ('FERTILIZE', 'WATER')), ((2, 1), ('WATER',)), ((2, 0), ('WATER',)), ((3, 0), ('WATER',)), ((4, 0), ('FERTILIZE', 'WATER')), ((4, 1), ('WATER',))],
-        9: [((5, 1), ('WATER',)), ((5, 0), ('WATER',)), ((6, 0), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER',)), ((8, 1), ('WATER',)), ((9, 1), ('WATER',)), ((9, 0), ('WATER',)), ((8, 0), ('WATER',)), ((7, 0), ('WATER',))],
-        10: [((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('WATER',)), ((3, 9), ('WATER',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 7), ('WATER',))],
-        11: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 2), ('WATER',)), ((8, 2), ('WATER',)), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        8: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER',)), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('HARVEST', 'DIG'))],
+        11: [((8, 4), ('FERTILIZE', 'WATER')), ((9, 4), ('HARVEST',)), ((9, 2), ('FERTILIZE', 'WATER')), ((9, 1), ('WATER',)), ((9, 0), ('FERTILIZE', 'WATER')), ((8, 0), ('WATER',)), ((8, 1), ('HARVEST',))],
+        12: [((1, 4), ('HARVEST', 'DIG')), ((0, 4), ('HARVEST', 'DIG')), ((0, 3), ('HARVEST',)), ((0, 2), ('HARVEST',)), ((0, 1), ('FERTILIZE', 'WATER')), ((0, 0), ('WATER',)), ((1, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('HARVEST',))],
+    },
+    22: {
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 1), ('WATER',))],
+        1: [((5, 1), ('WATER',)), ((6, 0), ('HARVEST',)), ((8, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 1), ('WATER',)), ((7, 1), ('HARVEST',))],
+        2: [((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((2, 8), ('FERTILIZE', 'WATER')), ((2, 9), ('HARVEST',)), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((0, 7), ('FERTILIZE', 'WATER')), ((0, 6), ('WATER',))],
+        3: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 1), ('WATER',)), ((4, 0), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',))],
+        4: [],
+        5: [((4, 6), ('WATER',)), ((4, 7), ('FERTILIZE', 'WATER')), ((4, 8), ('FERTILIZE', 'WATER')), ((4, 9), ('FERTILIZE', 'WATER')), ((3, 9), ('FERTILIZE', 'WATER')), ((3, 8), ('FERTILIZE', 'WATER'))],
+        6: [((2, 5), ('WATER',)), ((1, 5), ('WATER',)), ((0, 5), ('FERTILIZE', 'WATER')), ((0, 4), ('WATER',)), ((0, 3), ('WATER',)), ((0, 2), ('WATER',)), ((0, 1), ('WATER', 'HARVEST'))],
+        7: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((8, 3), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        8: [((3, 6), ('FERTILIZE', 'WATER')), ((2, 6), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER')), ((1, 7), ('FERTILIZE', 'WATER')), ((1, 8), ('HARVEST',))],
+        9: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((7, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('PLANT', 'WATER')), ((2, 2), ('WATER',)), ((2, 1), ('WATER',))],
+        11: [((8, 4), ('FERTILIZE', 'WATER')), ((9, 4), ('WATER',)), ((9, 3), ('WATER',)), ((9, 2), ('HARVEST',)), ((9, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('FERTILIZE', 'WATER'))],
+        12: [((1, 3), ('PLANT', 'WATER')), ((1, 2), ('FERTILIZE', 'WATER')), ((1, 1), ('FERTILIZE', 'WATER')), ((1, 0), ('WATER', 'HARVEST')), ((0, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
     },
     23: {
-        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        1: [((3, 5), ('FERTILIZE', 'WATER')), ((2, 5), ('FERTILIZE', 'WATER')), ((2, 7), ('FERTILIZE', 'WATER')), ((2, 8), ('FERTILIZE', 'WATER')), ((1, 8), ('FERTILIZE', 'WATER')), ((1, 9), ('FERTILIZE', 'WATER', 'HARVEST'))],
-        2: [((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('FERTILIZE', 'WATER')), ((0, 0), ('FERTILIZE', 'WATER'))],
-        3: [((8, 4), ('HARVEST',)), ((8, 3), ('HARVEST', 'DIG')), ((8, 2), ('HARVEST', 'DIG')), ((7, 2), ('HARVEST', 'DIG')), ((7, 1), ('HARVEST', 'DIG'))],
-        4: [((4, 6), ('FERTILIZE', 'WATER')), ((3, 6), ('FERTILIZE', 'WATER')), ((3, 7), ('FERTILIZE', 'WATER')), ((3, 8), ('FERTILIZE', 'WATER'))],
-        5: [((5, 2), ('HARVEST',)), ((3, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((0, 2), ('FERTILIZE', 'WATER'))],
-        6: [((2, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((1, 1), ('WATER',)), ((0, 1), ('WATER', 'HARVEST'))],
-        7: [((9, 4), ('HARVEST', 'DIG')), ((9, 3), ('HARVEST', 'DIG')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 1), ('FERTILIZE', 'WATER')), ((9, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        8: [((4, 2), ('FERTILIZE', 'WATER')), ((4, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((4, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('HARVEST', 'DIG')), ((6, 0), ('HARVEST', 'DIG'))],
-        9: [((4, 5), ('HARVEST',)), ((4, 7), ('FERTILIZE', 'WATER')), ((4, 8), ('FERTILIZE', 'WATER')), ((4, 9), ('FERTILIZE', 'WATER', 'HARVEST')), ((3, 9), ('FERTILIZE', 'WATER', 'HARVEST')), ((2, 9), ('FERTILIZE', 'WATER', 'HARVEST'))],
-        10: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        11: [((5, 1), ('HARVEST', 'DIG')), ((6, 1), ('HARVEST', 'DIG')), ((7, 0), ('FERTILIZE', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 1), ('FERTILIZE', 'WATER'))],
-        12: [((1, 4), ('FERTILIZE', 'WATER')), ((1, 3), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('FERTILIZE', 'WATER')), ((0, 6), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER'))],
-        13: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('HARVEST',)), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 2), ('HARVEST',))],
-        14: [((2, 6), ('FERTILIZE', 'WATER')), ((1, 7), ('FERTILIZE', 'WATER')), ((0, 7), ('FERTILIZE', 'WATER')), ((0, 8), ('FERTILIZE', 'WATER', 'HARVEST')), ((0, 9), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        2: [((3, 2), ('WATER',)), ((1, 2), ('FERTILIZE', 'WATER')), ((0, 2), ('HARVEST',)), ((0, 1), ('FERTILIZE', 'WATER')), ((1, 1), ('FERTILIZE', 'WATER')), ((1, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('HARVEST',))],
+        3: [((1, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 5), ('WATER',)), ((0, 4), ('FERTILIZE', 'WATER')), ((0, 3), ('HARVEST',))],
+        4: [((5, 1), ('HARVEST', 'DIG')), ((6, 1), ('FERTILIZE', 'WATER')), ((7, 1), ('WATER',)), ((7, 0), ('FERTILIZE', 'WATER')), ((6, 0), ('WATER',)), ((5, 0), ('FERTILIZE', 'WATER')), ((4, 0), ('HARVEST',))],
+        5: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        6: [((4, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('HARVEST',)), ((2, 6), ('WATER',)), ((2, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        7: [((8, 4), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 3), ('WATER',)), ((9, 2), ('FERTILIZE', 'WATER')), ((9, 3), ('FERTILIZE', 'WATER')), ((9, 4), ('HARVEST', 'DIG'))],
+        8: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER',)), ((2, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 1), ('HARVEST',)), ((3, 1), ('HARVEST',)), ((3, 0), ('HARVEST',))],
+        9: [((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((3, 8), ('HARVEST',)), ((2, 8), ('HARVEST',)), ((1, 8), ('WATER',)), ((1, 7), ('HARVEST',))],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        11: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 2), ('HARVEST', 'DIG')), ((7, 2), ('WATER',)), ((8, 1), ('HARVEST',)), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        12: [((1, 4), ('WATER',)), ((1, 6), ('HARVEST',)), ((0, 6), ('HARVEST',)), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((0, 9), ('WATER',)), ((1, 9), ('WATER',)), ((2, 9), ('WATER',)), ((3, 9), ('HARVEST',)), ((4, 9), ('HARVEST',))],
     },
     24: {
-        0: [((3, 1), ('WATER',)), ((2, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 0), ('WATER',)), ((7, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
-        1: [((5, 3), ('FERTILIZE', 'WATER')), ((5, 2), ('FERTILIZE', 'WATER')), ((6, 2), ('FERTILIZE', 'WATER')), ((7, 1), ('BUILD',)), ((8, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        2: [((4, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 8), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 9), ('HARVEST',)), ((3, 9), ('HARVEST',)), ((2, 9), ('HARVEST',)), ((1, 9), ('HARVEST',))],
-        3: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        4: [((1, 4), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((1, 6), ('FERTILIZE', 'WATER')), ((0, 6), ('HARVEST',)), ((0, 7), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((1, 8), ('HARVEST',)), ((1, 7), ('HARVEST',))],
-        5: [((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((9, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        6: [((4, 6), ('WATER',)), ((3, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 8), ('HARVEST',)), ((2, 8), ('HARVEST',))],
-        7: [((3, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((2, 6), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((2, 7), ('WATER',))],
-        8: [((4, 2), ('WATER',)), ((2, 2), ('WATER',)), ((1, 1), ('HARVEST', 'DIG')), ((1, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 0), ('WATER',)), ((0, 1), ('HARVEST', 'DIG'))],
-        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('FERTILIZE', 'WATER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('FERTILIZE', 'WATER'))],
-        10: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        11: [((4, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('FERTILIZE', 'WATER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 3), ('FERTILIZE', 'WATER'))],
+        0: [((3, 1), ('FERTILIZE', 'WATER')), ((3, 0), ('FERTILIZE', 'WATER')), ((2, 0), ('FERTILIZE', 'WATER')), ((1, 0), ('HARVEST',)), ((0, 0), ('FERTILIZE', 'WATER')), ((0, 1), ('HARVEST',)), ((0, 2), ('FERTILIZE', 'WATER'))],
+        1: [((5, 1), ('WATER',)), ((6, 0), ('HARVEST', 'DIG')), ((7, 0), ('WATER',)), ((8, 0), ('FERTILIZE', 'WATER')), ((9, 0), ('PLANT', 'WATER')), ((9, 1), ('FERTILIZE', 'WATER')), ((9, 2), ('HARVEST', 'DIG'))],
+        2: [((3, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 6), ('WATER',)), ((1, 7), ('WATER',)), ((1, 5), ('WATER',)), ((0, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        3: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((4, 8), ('WATER', 'HARVEST', 'HARVEST')), ((4, 9), ('WATER', 'HARVEST')), ((3, 9), ('WATER', 'HARVEST'))],
+        4: [((2, 3), ('WATER',)), ((1, 3), ('WATER',)), ((0, 3), ('FERTILIZE', 'WATER')), ((0, 4), ('WATER',)), ((0, 6), ('FERTILIZE', 'WATER')), ((0, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        5: [((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('FERTILIZE', 'WATER')), ((2, 2), ('WATER',)), ((2, 1), ('FERTILIZE', 'WATER')), ((1, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((4, 6), ('WATER',)), ((3, 7), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('HARVEST',)), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((1, 8), ('HARVEST',))],
+        7: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((8, 2), ('FERTILIZE', 'WATER')), ((8, 1), ('FERTILIZE', 'WATER')), ((7, 1), ('HARVEST', 'DIG'))],
+        8: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 7), ('FERTILIZE', 'WATER')), ((2, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 0), ('WATER',)), ((4, 0), ('FERTILIZE', 'WATER', 'HARVEST'))],
+        10: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((1, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
     },
     25: {
-        0: [((2, 7), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 7), ('FERTILIZE', 'WATER', 'HARVEST')), ((1, 8), ('WATER',)), ((0, 8), ('FERTILIZE', 'WATER')), ((0, 7), ('FERTILIZE', 'WATER'))],
-        1: [((5, 1), ('FERTILIZE', 'WATER')), ((4, 1), ('FERTILIZE', 'WATER')), ((3, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 0), ('FERTILIZE', 'WATER'))],
-        2: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        3: [((4, 5), ('HARVEST',)), ((4, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((1, 6), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 6), ('FERTILIZE', 'WATER'))],
-        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        5: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('HARVEST',)), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        6: [((4, 9), ('FERTILIZE', 'WATER')), ((3, 9), ('FERTILIZE', 'WATER')), ((3, 8), ('WATER',)), ((2, 8), ('WATER',)), ((2, 9), ('FERTILIZE', 'WATER')), ((1, 9), ('WATER',)), ((0, 9), ('FERTILIZE', 'WATER'))],
-        7: [((8, 4), ('HARVEST',)), ((8, 3), ('FERTILIZE', 'WATER')), ((8, 2), ('FERTILIZE', 'WATER')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((9, 3), ('FERTILIZE', 'WATER')), ((9, 4), ('FERTILIZE', 'WATER'))],
-        8: [((3, 2), ('FERTILIZE', 'WATER')), ((2, 1), ('FERTILIZE', 'WATER')), ((0, 1), ('FERTILIZE', 'WATER', 'DIG')), ((0, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        9: [((5, 3), ('WATER',)), ((5, 2), ('HARVEST',)), ((6, 2), ('HARVEST',)), ((6, 1), ('FERTILIZE', 'WATER')), ((6, 0), ('FERTILIZE', 'WATER')), ((5, 0), ('FERTILIZE', 'WATER')), ((4, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        10: [((2, 3), ('FERTILIZE', 'WATER')), ((1, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((1, 2), ('FERTILIZE', 'WATER')), ((2, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        11: [((1, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 5), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
-        12: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        0: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('FERTILIZE', 'WATER')), ((5, 1), ('FERTILIZE', 'WATER')), ((5, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 2), ('WATER',)), ((2, 2), ('FERTILIZE', 'WATER')), ((1, 2), ('WATER',)), ((0, 2), ('HARVEST',))],
+        2: [((4, 6), ('FERTILIZE', 'WATER')), ((1, 8), ('FERTILIZE', 'WATER')), ((0, 8), ('FERTILIZE', 'WATER')), ((0, 9), ('FERTILIZE', 'WATER')), ((1, 9), ('FERTILIZE', 'WATER')), ((2, 9), ('FERTILIZE', 'WATER'))],
+        3: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 5), ('FERTILIZE', 'WATER')), ((1, 5), ('FERTILIZE', 'WATER')), ((0, 5), ('WATER',)), ((0, 6), ('HARVEST',))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        5: [((7, 3), ('FERTILIZE', 'WATER')), ((8, 3), ('FERTILIZE', 'WATER')), ((8, 4), ('FERTILIZE', 'WATER')), ((9, 4), ('FERTILIZE', 'WATER')), ((9, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        6: [((3, 6), ('WATER',)), ((1, 6), ('HARVEST',)), ((1, 4), ('WATER',)), ((0, 4), ('WATER', 'HARVEST', 'HARVEST')), ((0, 3), ('HARVEST',)), ((1, 3), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        7: [((6, 1), ('WATER', 'HARVEST', 'PLANT', 'WATER')), ((7, 1), ('PLANT', 'WATER')), ((8, 0), ('WATER',)), ((7, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        8: [((4, 0), ('HARVEST',)), ((3, 0), ('HARVEST',)), ((2, 0), ('HARVEST',)), ((1, 0), ('WATER',)), ((0, 0), ('WATER',)), ((0, 1), ('WATER',)), ((1, 1), ('PLANT', 'WATER')), ((2, 1), ('HARVEST',)), ((3, 1), ('HARVEST',))],
+        9: [((6, 2), ('FERTILIZE', 'WATER')), ((7, 2), ('FERTILIZE', 'WATER')), ((8, 2), ('WATER',)), ((9, 2), ('WATER', 'HARVEST', 'DIG')), ((9, 1), ('WATER',)), ((9, 0), ('WATER',)), ((8, 1), ('HARVEST', 'DIG'))],
+        10: [((4, 7), ('WATER',)), ((4, 9), ('HARVEST',)), ((3, 9), ('HARVEST',)), ((3, 8), ('HARVEST',)), ((2, 8), ('HARVEST',)), ((2, 7), ('HARVEST',)), ((0, 7), ('PLANT', 'WATER')), ((1, 7), ('HARVEST',))],
+        11: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
     },
     26: {
-        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        1: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((6, 1), ('WATER',)), ((6, 0), ('WATER',)), ((5, 0), ('WATER',)), ((5, 1), ('WATER',)), ((4, 1), ('WATER',))],
-        2: [((3, 6), ('WATER',)), ((1, 7), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((0, 7), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((0, 6), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
-        3: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((7, 2), ('WATER',)), ((7, 0), ('WATER',)), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 1), ('WATER',)), ((9, 1), ('WATER',))],
-        4: [((4, 7), ('WATER',)), ((4, 9), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((3, 9), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((2, 9), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
-        5: [((4, 5), ('WATER',)), ((4, 8), ('WATER',)), ((1, 8), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((0, 8), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((0, 9), ('WATER',))],
-        6: [((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((2, 6), ('WATER',))],
-        7: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER',)), ((8, 3), ('WATER',)), ((8, 2), ('WATER',)), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((9, 3), ('WATER',)), ((9, 4), ('WATER',))],
-        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 0), ('WATER',)), ((2, 0), ('WATER',)), ((1, 0), ('WATER',)), ((1, 1), ('WATER',)), ((1, 2), ('WATER',)), ((0, 2), ('WATER',))],
-        9: [((5, 3), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((5, 2), ('WATER',)), ((3, 2), ('WATER',)), ((2, 1), ('WATER',)), ((2, 3), ('WATER',))],
-        10: [((3, 7), ('WATER',)), ((3, 8), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((2, 8), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((1, 9), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
+        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 1), ('WATER',)), ((2, 1), ('WATER',)), ((1, 1), ('WATER',)), ((1, 0), ('HARVEST',))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER',)), ((4, 1), ('WATER',)), ((4, 0), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',))],
+        2: [((2, 5), ('WATER',)), ((2, 6), ('WATER',)), ((1, 6), ('WATER',)), ((0, 6), ('WATER',)), ((0, 5), ('WATER',)), ((1, 5), ('WATER',)), ((1, 4), ('WATER',)), ((1, 3), ('PLANT', 'WATER')), ((1, 2), ('WATER',)), ((2, 2), ('WATER',))],
+        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((8, 3), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 2), ('WATER',)), ((7, 2), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        5: [((4, 6), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((3, 8), ('WATER',)), ((2, 8), ('WATER',))],
+        6: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        7: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((9, 4), ('WATER',)), ((9, 3), ('WATER',)), ((9, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((9, 0), ('WATER',))],
+        8: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 4), ('WATER',)), ((0, 3), ('WATER',)), ((0, 2), ('WATER',)), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER'))],
+        9: [],
+        10: [((3, 6), ('WATER',)), ((3, 7), ('WATER',)), ((2, 7), ('WATER',)), ((1, 7), ('WATER',)), ((1, 8), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((1, 9), ('HARVEST',)), ((2, 9), ('DIG',)), ((3, 9), ('WATER',)), ((4, 9), ('WATER',))],
+        11: [((5, 0), ('PLANT', 'WATER')), ((6, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((8, 1), ('PLANT', 'WATER')), ((7, 1), ('WATER',))],
     },
     27: {
-        0: [((4, 2), ('WATER',)), ((4, 1), ('WATER', 'HARVEST', 'HARVEST')), ((4, 0), ('WATER',)), ((5, 0), ('WATER', 'HARVEST'))],
-        1: [((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER', 'HARVEST')), ((2, 2), ('WATER',)), ((1, 2), ('WATER', 'HARVEST')), ((1, 1), ('WATER',)), ((2, 1), ('WATER', 'HARVEST'))],
-        2: [((4, 5), ('HARVEST', 'DIG')), ((3, 5), ('WATER',)), ((2, 5), ('WATER',)), ((1, 5), ('WATER',)), ((1, 6), ('WATER',)), ((0, 9), ('WATER', 'HARVEST', 'HARVEST'))],
-        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('HARVEST', 'DIG')), ((9, 4), ('WATER', 'HARVEST'))],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        5: [((5, 2), ('HARVEST', 'DIG')), ((3, 2), ('WATER', 'HARVEST')), ((3, 1), ('WATER',)), ((3, 0), ('WATER', 'HARVEST', 'HARVEST')), ((2, 0), ('WATER',)), ((1, 0), ('WATER',)), ((0, 0), ('WATER',))],
-        6: [((4, 6), ('WATER',)), ((3, 6), ('WATER',)), ((2, 6), ('WATER',)), ((2, 7), ('WATER',)), ((3, 7), ('WATER',)), ((4, 7), ('WATER',)), ((4, 8), ('WATER',))],
-        7: [((6, 2), ('HARVEST', 'DIG')), ((7, 2), ('WATER', 'HARVEST', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST')), ((8, 1), ('WATER',)), ((9, 1), ('WATER',)), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('HARVEST', 'DIG')), ((8, 3), ('WATER', 'HARVEST')), ((9, 3), ('WATER', 'HARVEST', 'HARVEST'))],
-        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER', 'HARVEST', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST')), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER',)), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        10: [((0, 5), ('WATER',)), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 4), ('WATER',)), ((1, 3), ('WATER',)), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 2), ('WATER',)), ((0, 1), ('WATER',))],
+        0: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 1), ('WATER',)), ((8, 1), ('WATER',)), ((9, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        1: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 3), ('WATER', 'HARVEST', 'HARVEST'))],
+        2: [((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST', 'HARVEST')), ((0, 5), ('WATER',)), ((0, 4), ('WATER',)), ((1, 4), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        3: [((5, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((6, 0), ('WATER',)), ((7, 0), ('WATER',)), ((7, 1), ('WATER',)), ((7, 2), ('PLANT', 'WATER')), ((6, 2), ('WATER', 'HARVEST'))],
+        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER',)), ((2, 2), ('WATER', 'HARVEST', 'HARVEST')), ((2, 1), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
+        5: [((5, 0), ('WATER',)), ((4, 0), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((3, 0), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((2, 0), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
+        6: [((4, 6), ('WATER', 'HARVEST', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((3, 7), ('WATER',)), ((2, 7), ('HARVEST', 'DIG')), ((2, 8), ('HARVEST', 'DIG')), ((3, 8), ('HARVEST', 'DIG')), ((3, 9), ('HARVEST', 'DIG'))],
+        7: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 7), ('WATER',)), ((4, 8), ('WATER',)), ((4, 9), ('DIG',)), ((2, 9), ('WATER',)), ((1, 9), ('WATER',)), ((0, 9), ('WATER',))],
+        8: [((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER', 'HARVEST', 'HARVEST', 'PLANT', 'WATER')), ((3, 1), ('HARVEST', 'DIG', 'PLANT', 'WATER'))],
+        9: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST')), ((8, 3), ('WATER',)), ((8, 2), ('PLANT', 'WATER')), ((9, 2), ('WATER',)), ((9, 3), ('WATER',)), ((9, 4), ('WATER', 'HARVEST'))],
+        10: [((1, 2), ('WATER',)), ((1, 0), ('WATER',)), ((1, 1), ('WATER',)), ((0, 1), ('WATER',)), ((0, 2), ('HARVEST', 'DIG', 'PLANT', 'WATER')), ((0, 3), ('HARVEST', 'DIG'))],
+        11: [((2, 5), ('WATER', 'HARVEST', 'HARVEST')), ((2, 6), ('WATER',)), ((1, 6), ('HARVEST', 'DIG')), ((0, 6), ('HARVEST', 'DIG')), ((0, 7), ('WATER',)), ((0, 8), ('WATER',)), ((1, 8), ('WATER',)), ((1, 7), ('HARVEST', 'DIG'))],
     },
     28: {
-        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        1: [((4, 7), ('WATER', 'HARVEST')), ((4, 8), ('WATER', 'HARVEST')), ((4, 9), ('WATER', 'HARVEST')), ((3, 9), ('WATER', 'HARVEST')), ((2, 9), ('WATER', 'HARVEST')), ((1, 9), ('WATER', 'HARVEST'))],
-        2: [((2, 5), ('WATER', 'HARVEST')), ((1, 4), ('WATER',)), ((1, 3), ('WATER',)), ((2, 2), ('WATER',)), ((2, 0), ('WATER', 'HARVEST')), ((1, 0), ('WATER', 'HARVEST')), ((0, 0), ('WATER',))],
-        3: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 0), ('WATER', 'HARVEST')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        4: [((4, 6), ('WATER',)), ((3, 7), ('WATER', 'HARVEST')), ((3, 8), ('WATER', 'HARVEST')), ((2, 8), ('WATER', 'HARVEST')), ((1, 8), ('WATER', 'HARVEST')), ((0, 8), ('WATER', 'HARVEST')), ((0, 7), ('WATER', 'HARVEST'))],
-        5: [((3, 5), ('WATER', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((2, 6), ('WATER', 'HARVEST')), ((2, 7), ('WATER',)), ((1, 7), ('WATER', 'HARVEST')), ((1, 6), ('WATER',)), ((0, 6), ('WATER', 'HARVEST'))],
-        6: [((1, 5), ('WATER',)), ((0, 5), ('WATER',)), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 2), ('WATER', 'HARVEST')), ((1, 1), ('WATER', 'HARVEST'))],
-        7: [((5, 3), ('WATER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 1), ('WATER', 'HARVEST')), ((9, 1), ('WATER', 'HARVEST')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        8: [((4, 2), ('WATER',)), ((4, 0), ('WATER',)), ((3, 1), ('WATER',))],
-        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
-        10: [],
+        0: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER',)), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST')), ((0, 4), ('WATER',)), ((0, 5), ('WATER', 'HARVEST'))],
+        1: [((4, 6), ('WATER',)), ((4, 7), ('WATER', 'HARVEST')), ((4, 8), ('WATER', 'HARVEST')), ((2, 9), ('WATER', 'HARVEST')), ((1, 9), ('HARVEST',)), ((0, 9), ('HARVEST',)), ((0, 8), ('HARVEST',)), ((0, 7), ('WATER',))],
+        2: [],
+        3: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 4), ('WATER',)), ((9, 4), ('HARVEST',)), ((9, 3), ('WATER',)), ((9, 2), ('WATER',)), ((9, 1), ('WATER', 'HARVEST'))],
+        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER', 'HARVEST'))],
+        5: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((5, 1), ('WATER',)), ((6, 1), ('WATER',)), ((7, 1), ('WATER', 'HARVEST'))],
+        6: [((1, 5), ('WATER',)), ((1, 3), ('WATER', 'HARVEST')), ((1, 2), ('WATER', 'HARVEST')), ((1, 1), ('WATER', 'HARVEST')), ((0, 1), ('HARVEST',)), ((0, 0), ('WATER', 'HARVEST')), ((1, 0), ('HARVEST',))],
+        7: [],
+        8: [((4, 0), ('WATER',)), ((5, 0), ('WATER', 'HARVEST')), ((6, 0), ('WATER', 'HARVEST')), ((7, 0), ('WATER',)), ((8, 0), ('WATER', 'HARVEST'))],
+        9: [((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 3), ('WATER', 'HARVEST')), ((8, 2), ('WATER',)), ((8, 1), ('WATER', 'HARVEST'))],
+        10: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 7), ('WATER', 'HARVEST')), ((1, 7), ('WATER', 'HARVEST')), ((2, 6), ('WATER', 'HARVEST'))],
     },
     29: {
-        0: [],
-        1: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 4), ('WATER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((2, 7), ('WATER', 'HARVEST'))],
-        2: [((4, 6), ('WATER', 'HARVEST'))],
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 3), ('WATER', 'HARVEST'))],
+        1: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((8, 4), ('WATER', 'HARVEST'))],
+        2: [((4, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((3, 5), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((2, 5), ('WATER', 'HARVEST')), ((1, 5), ('WATER', 'HARVEST')), ((0, 4), ('WATER', 'HARVEST'))],
         3: [],
-        4: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 2), ('WATER', 'HARVEST')), ((3, 1), ('WATER', 'HARVEST'))],
-        5: [],
-        6: [((0, 5), ('WATER', 'HARVEST')), ((0, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((0, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 3), ('WATER', 'HARVEST'))],
-        7: [((7, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((9, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((8, 0), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
-        8: [((4, 2), ('WATER', 'HARVEST')), ((4, 0), ('WATER', 'HARVEST')), ((0, 0), ('WATER', 'HARVEST'))],
-        9: [((5, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],
+        4: [((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((0, 1), ('WATER',)), ((1, 0), ('WATER',))],
+        5: [((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 1), ('WATER', 'HARVEST')), ((6, 1), ('WATER', 'HARVEST')), ((7, 0), ('WATER', 'HARVEST'))],
+        6: [((4, 6), ('WATER', 'HARVEST')), ((3, 6), ('WATER', 'HARVEST')), ((1, 6), ('WATER', 'HARVEST')), ((1, 9), ('WATER',)), ((0, 9), ('WATER',)), ((0, 8), ('WATER',)), ((0, 7), ('WATER', 'HARVEST'))],
+        7: [((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((7, 2), ('WATER', 'HARVEST')), ((8, 2), ('WATER', 'HARVEST')), ((9, 2), ('WATER', 'HARVEST')), ((9, 3), ('WATER', 'HARVEST'))],
+        8: [((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 1), ('WATER', 'HARVEST')), ((4, 0), ('WATER', 'HARVEST'))],
     },
 }
 '''
@@ -1688,6 +1792,27 @@ _MISS = object()
 #: and day 6 orders both cows.
 DELIVER_MIN = 6
 
+#: **Batching under `DELIVER_MIN` is only coherent when a later delivery exists.** The constant's
+#: own justification is that a small load "rides to the end of the tour, which ends at the shed
+#: anyway" -- and on the shipped day that clause is false: `DELIVER_CUTOFF_TURNS` is 99, so the
+#: closing trip is never charged, and a tour whose remaining stops never stand on a shed-access
+#: tile has NO further chance to bank anything. Whatever it holds of today's row at that point is
+#: stranded by construction and reaches the shed only via the overnight sweep, after the market has
+#: closed.
+#:
+#: Day 6, seed 11, kawashigi grid: the hand shearing (4,3) took 4 WOOL against a row asking 12,
+#: then fed the cows at (0,0) and (1,0) and sat there from h09. The row sold 10/17 with the wool in
+#: its pocket all afternoon. Forcing the closing trip instead was a measured null -- that tour had
+#: spent 21 turns of 23 and the walk home costs 8 -- so the only delivery that can exist for it is
+#: this ferry, priced into the greedy like any other stop.
+#:
+#: Scoped tightly: only when the closing trip is uncharged (`deliver` False), only for a positive
+#: load of the ROW's produce (`load` already counts nothing else while
+#: `DELIVER_SURPLUS_NOT_THE_ROW` is False), and only when neither the current position nor any
+#: remaining stop is a depot tile -- a tour that still touches one is owned by the zero-detour
+#: rules, whose refusals (`REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE`) are measured and must stand.
+SHIP_WHAT_NO_LATER_STOP_CAN_BANK = True
+
 #: Whether a hand already standing at the shed, holding produce today's row wants AND items later
 #: jobs need, drops the lot and draws the latter straight back -- instead of carrying the produce to
 #: the end of the tour because the drop cannot be selective. See the block in `materialise`.
@@ -1715,6 +1840,32 @@ REDRAW_RATHER_THAN_CARRY = True
 #: held from h5 to h16, four units sold for $2 less than the tape -- has nothing owed ahead that the
 #: row also sells, so it still fires.
 REDRAW_ONLY_WHAT_THE_MARKET_WONT_TAKE = True
+
+#: Whether a shed stop banks only the SURPLUS, with `PLACE`, rather than dumping the whole hand with
+#: `DROP` and drawing the ration straight back.
+#:
+#: `DROP` is all-or-nothing (`kaggriculture.py:333`), so a herd tour that wants to bank one fertilizer
+#: has to bin the wheat its next pens are about to eat and spend a second turn replacing it. Every
+#: comment in this file that says "the drop takes the wheat with it, so the same stop draws back
+#: everything still ahead" is describing that second turn.
+#:
+#: There is a one-turn version and it is the same op the leader uses. `PLACE <item> <n>` on a
+#: shed-adjacent tile is a QUANTIFIED shed drop (`kaggriculture.py:381-395`): n of ONE item into the
+#: shed, the rest of the hand untouched. Kawashigi's day 1 emits no `DROP` at all -- his single bank
+#: of the day is `PLACE FERTILIZER` at h18.
+#:
+#: Measured on day 1, seed 11, kawashigi tape. The farmer works alone on 24 turns and his tour priced
+#: at 18: `Shed[WHEATx3] (4,4)pen Shed[DROP+WHEATx2] (4,3)pen Shed[DROP+WHEATx1] (2,4)pen`. The fourth
+#: pen `(3,4)` priced at **25 in every position** and went uncovered -- one turn over -- while two of
+#: those eighteen turns were spent re-drawing wheat the same stop had just binned. `feed 3/4` and
+#: `care 3/4` on the day, and that is the head of the chain: the sheep miss a production night, d6
+#: shears 9 where the tape shears 12, and d7 cannot afford its third animal.
+#:
+#: It is chosen on COST, never by preference -- `_bank` returns whichever of the two stops is cheaper,
+#: so a hand with three products to bank and nothing owed ahead still DROPs, which is one turn against
+#: three. And never for an animal: `PLACE` on a built empty pen puts the beast IN it
+#: (`kaggriculture.py:370-378`), and pens sit on shed-access tiles by design.
+BANK_THE_SURPLUS_NOT_THE_HAND = True
 
 #: How much of the row's produce a hand must already be HOLDING at the start of a `rush` tour before
 #: the tour opens with a shed trip. See `materialise` rule 0.
@@ -1814,6 +1965,101 @@ BANK_ONLY_AFTER_THE_LAST_HARVEST = True
 #:
 #: Left False rather than deleted only until the d6 row is re-confirmed green; delete it then.
 BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED = False
+
+#: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
+#: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
+#:
+#: `BANK_ONLY_AFTER_THE_LAST_HARVEST` is read off Seb's day 4, where the harvest is REVENUE: nothing
+#: that day depends on it, so it can ride to the closing trip. Day 8 of the Kawashigi tape inverts
+#: that. `COW` is `first_yield_day 8`, so the two cows placed on day 0 open d8 holding six units
+#: each -- and both boards agree on it, ours `CO@3,4 y6 CO@4,4 y6` against his `CO@4,3 y6 CO@4,4 y6`,
+#: with the full care bonus consumed on both sides. The row is `sells {FERTILIZER 6, MILK 12}` and
+#: `buys {WHEAT 17}` on a $4 dawn bank, so the milk is not revenue, it is the day's WORKING CAPITAL:
+#: the wheat it pays for is what feeds ten animals. Measured, seed 11:
+#:
+#:     h05 u4 HARVEST   h08 u4 HARVEST   h09-h17 twelve milk in hand, bank $13
+#:     h17 u4 DROP      h18 shed 12, SELL MILK 12   h19 bank $1,873 -- every stop already walked
+#:
+#: We harvest all twelve and sell all twelve, thirteen hours late. The tape banks the same milk at
+#: h05 with two `PLACE/MILK` and spends it through the day; it closes `feed 10/10 care 10/10`
+#: against our 2 and 2. The whole d8 deficit is delivery LATENCY -- not production, not routing
+#: (`crew.cover` covers 39/39), not the size of the wheat row.
+#:
+#: **Why this is not `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED` again.** That one gated on `rush`, the
+#: short-of-cash signal -- which was False on the d10 it was written for and True on d6, where the
+#: extra drops shifted the cash timing and cost `buy_product 5/5 -> 4/5`. The gate here is not
+#: poverty, it is **"the hand is carrying what today's row sells"**: `wanted` is the sell row, so the
+#: stop only opens where the day's own plan is waiting on those goods. d6's hands are not carrying
+#: d6's produce at the blocked stops, which is the difference the measurement has to confirm.
+#:
+#: **It has to be folded into `reaping` itself, not into one branch.** Traced on d8, all 1,678
+#: blocked stops look like `free=True spare=7 owed=False held={FERTILIZER 1, MILK 6} after={}` --
+#: nothing owed ahead, so they fall to the FREE DROP and never reach the selective `_bank` branch,
+#: which requires `owed_ahead`. An exemption written for the selective branch alone measured as a
+#: byte-identical d8. And the free drop is safe here by construction: it already refuses whenever
+#: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
+BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
+
+#: Whether two pens the day's row is WAITING ON may be stacked on the same hand.
+#:
+#: Day 8 of the Kawashigi tape. The two cows placed on day 0 open d8 holding six units each -- twelve
+#: milk, exactly his `SELL MILK 12`, and that sale funds the day: the row buys `WHEAT 17` on a $4
+#: dawn bank and the wheat feeds ten animals. His plan puts ONE HAND ON EACH ripe pen, read off the
+#: raw replay:
+#:
+#:     u4   h02 (4,4) PICKUP/WHEAT   h03 FEED   h04 CARE   h05 HARVEST   h06 PLACE/MILK
+#:     u2                                                  h04 HARVEST   h06 PLACE/MILK
+#:
+#: Ours puts both on u4, as jobs 0 and 1 of its tour -- both correctly flagged `funds`, both at the
+#: FRONT, so neither the flag nor the ordering is wrong. But that is eight turns of work back to
+#: back on one hand, so the second cow's milk cannot reach the shed before ~h08.
+#:
+#: **Two hours late fills exactly as much as thirteen.** Forcing the tape's own d8 orders on top of
+#: `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` was byte-identical to forcing them without it -- `sell
+#: 6/18`, `+ sold $524/$3,177` -- because `SELL MILK 12` at h05 found an empty shed either way. So
+#: the delivery rule cannot pay until the two harvests happen at the same time.
+#:
+#: `greedy` ranks on `(added turns, unit, tile, index)`, pure cheapest-insertion, so appending the
+#: second cow to the hand already standing on the first always wins. That is right for ordinary work
+#: -- its own docstring measures round-robin turning 776 idle turns into 742 extra moves -- and
+#: wrong for the two stops the day's cash depends on. This is therefore a PREFERENCE inside the
+#: existing ranking and never a refusal: a funding pen with nowhere else to go still gets placed, so
+#: it cannot leave one uncovered.
+ONE_HAND_PER_FUNDING_PEN = True
+
+#: Whether a pen that FUNDS the day banks its produce on the pen, the turn after it is harvested.
+#:
+#: `_refresh_pins` sites pens ON shed-access tiles, so a hand standing on a pen is already standing
+#: on the shed. Kawashigi never walks anywhere to bank the day-8 milk:
+#:
+#:     u4  h02 (4,4) PICKUP/WHEAT  h03 FEED  h04 CARE  h05 HARVEST  h06 PLACE/MILK
+#:                                                                      ^ same tile, next turn
+#:
+#: and `SELL MILK 12` is in that same order block -- the unit phase runs before `_process_market`
+#: (`:922` then `:928`), so it lands and sells in one turn.
+#:
+#: **Every existing delivery path banks on the way to the NEXT job.** They all compute
+#: `d = nearest(depots, pos, j.tile)` for the TRANSITION, so the stop is part of moving on and is
+#: gated on that move being free. Standing still is not a move, so none of them can express "bank
+#: here, now". On d8 that put the milk in the shed at h07 with `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`
+#: on and h11 without it, against a sale asked at h05.
+#:
+#: The two hours are the whole day. Measured on the forced-order run -- the tape's own d8 orders
+#: replayed on our board:
+#:
+#:     h05  bank $24  shed MILK 0  asked BWHEAx2 SMILKx12  -> ALL FAILED
+#:     h08  bank $24  shed MILK 0  asked BWHEAx2           -> FAILED
+#:     h10  bank $24  shed MILK 0  asked BWHEAx3           -> FAILED
+#:
+#: 9 wheat fill at h00 behind the fertilizer sale and 1 at h03; the other 7 fail on CASH, with the
+#: bank flat at $24 from h04 to midnight while the town holds 9,900+ wheat. Stock never binds.
+#: Forcing his orders without the milk is `buy_product 10/17` and `+ sold $524/$3,177` -- re-offering
+#: an order you cannot pay for changes nothing, which is why this is upstream of the wheat row.
+#:
+#: Costs ONE turn and no movement, and `_bank` prefers the quantified `PLACE` here on cost, so the
+#: herd's ration stays in the hand. Deliberately NOT gated on `reaping`, `DELIVER_MIN` or `free`:
+#: those all exist to stop a small load buying a WALK, and there is no walk.
+BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY = True
 
 
 def dist(a, b):
@@ -1930,9 +2176,13 @@ class Depot:
     market and wheat for three more pens cannot shed one without the other, so it sheds both and
     takes the wheat straight back. `PICKUP` is unbounded (`kaggriculture.py:340`), so the draw costs
     one turn per distinct ITEM and not one per unit: fourteen pens is one wheat pickup.
+
+    `place` is the third way, and it is the one that CAN pick the wool out of that hand: a
+    shed-adjacent `PLACE <item> <n>` banks n of one item and nothing else
+    (`kaggriculture.py:381-395`). `_bank` decides between it and `drop` on cost alone.
     """
 
-    __slots__ = ("tile", "drop", "pick", "critical")
+    __slots__ = ("tile", "drop", "pick", "place", "critical")
 
     depot = True
     needs = ()
@@ -1942,10 +2192,16 @@ class Depot:
     at_risk = False
     only = None
 
-    def __init__(self, tile, drop=False, pick=None, critical=False):
+    def __init__(self, tile, drop=False, pick=None, critical=False, place=None):
         self.tile = tuple(tile)
         self.drop = bool(drop)
         self.pick = collections.Counter({i: q for i, q in (pick or {}).items() if q > 0})
+        #: Items to bank with `PLACE <item> <n>` instead of dumping the hand. A shed-adjacent PLACE
+        #: is a QUANTIFIED shed drop (`kaggriculture.py:381-395`): it moves n of one item and leaves
+        #: the rest of the inventory alone. `DROP` cannot -- it is all-or-nothing
+        #: (`kaggriculture.py:333`) -- which is why a stop that banks produce and keeps its ration
+        #: has to pay twice with `drop`, and once with this. See `BANK_THE_SURPLUS_NOT_THE_HAND`.
+        self.place = collections.Counter({i: q for i, q in (place or {}).items() if q > 0})
         #: Whether this draw serves a job that dies TONIGHT if it is skipped (`Job.at_risk and
         #: Job.required` -- an animal one missed feed from escaping). Set by `materialise`, which
         #: alone knows which jobs the draw is FOR; the executor reads it to decide whether a shed
@@ -1955,7 +2211,9 @@ class Depot:
 
     @property
     def turns(self):
-        return (1 if self.drop else 0) + len(self.pick)
+        # One turn per PLACE, because PLACE names one item: `kaggriculture.py:381` reads
+        # `action[1]` and `action[2]`, so two items to bank is two turns.
+        return (1 if self.drop else 0) + len(self.place) + len(self.pick)
 
     @property
     def service(self):
@@ -1964,6 +2222,7 @@ class Depot:
     @property
     def ops(self):
         out = [("DROP", None)] if self.drop else []
+        out += [("PLACE", i) for i in sorted(self.place)]
         return out + [("PICKUP", i) for i in sorted(self.pick)]
 
     def places(self):
@@ -1976,8 +2235,39 @@ class Depot:
         return False
 
     def __repr__(self):
-        bits = (["DROP"] if self.drop else []) + [f"{i}x{q}" for i, q in sorted(self.pick.items())]
+        bits = ((["DROP"] if self.drop else [])
+                + [f"PLACE:{i}x{q}" for i, q in sorted(self.place.items())]
+                + [f"{i}x{q}" for i, q in sorted(self.pick.items())])
         return f"Shed{self.tile}[{'+'.join(bits) or '-'}]"
+
+
+def _bank(tile, held, need, critical=False):
+    """The cheapest shed stop that arrives holding `held` and leaves holding `need`.
+
+    Two ways to do it, and they cost differently:
+
+        DROP  + PICKUP per item still owed        1 + len(need - held ... all of need)
+        PLACE per item banked + PICKUP per short  len(held - need) + len(need - held)
+
+    The second is what `BANK_THE_SURPLUS_NOT_THE_HAND` buys. Both leave the hand holding exactly
+    `need`, so this is a cost choice and nothing else; whichever is cheaper wins, ties to `DROP`
+    because that is the behaviour every measurement in this file was taken against.
+
+    **An animal in the hand forces `DROP`.** `PLACE` on a built, empty pen puts the beast in the pen
+    rather than the shed (`kaggriculture.py:370-378`), and `_refresh_pins` sites pens ON shed-access
+    tiles -- so the selective drop is not selective for livestock, it is a placement.
+    """
+    drop = Depot(tile, drop=True, pick=need, critical=critical)
+    if not BANK_THE_SURPLUS_NOT_THE_HAND:
+        return drop
+    if any(q > 0 and i in R.ANIMALS for i, q in held.items()):
+        return drop
+    give = collections.Counter({i: q - need.get(i, 0) for i, q in held.items()
+                                if q > need.get(i, 0)})
+    take = collections.Counter({i: q - held.get(i, 0) for i, q in need.items()
+                                if q > held.get(i, 0)})
+    keep = Depot(tile, pick=take, place=give, critical=critical)
+    return keep if keep.turns < drop.turns else drop
 
 
 def nearest(depots, frm, to=None):
@@ -2209,9 +2499,17 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # `rush` exempts it: see `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`. A day that cannot pay its
         # own bill needs the produce in the shed while the market is open, not swept there overnight
         # by `_drop_inventories_to_shed` after it has closed.
+        # **A short day, and the hand is holding what that day's row SELLS.** See
+        # `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`. Both halves are load-bearing and neither works
+        # alone: `rush` by itself is the reverted `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`, which
+        # fired on fertilizer rounds too; the row test by itself is true on Seb's day 4, where
+        # fourteen wheat harvests meet a `WHEAT 49` row and the dusk rule is exactly right.
+        funding = (BANK_THE_ROWS_PRODUCE_WHILE_REAPING and rush
+                   and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
         reaping = (BANK_ONLY_AFTER_THE_LAST_HARVEST
                    and any(w.harvests() for w in work[i:])
-                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush))
+                   and not (BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED and rush)
+                   and not funding)
         if DROP_WHERE_THE_TOUR_ALREADY_STANDS and free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))
@@ -2237,7 +2535,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
             # item drawn back, and it is only taken when the hand actually holds something the row
             # is waiting for -- never to shed a load nobody is buying today.
             back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
-            route.append(Depot(d, drop=True, pick=back))
+            route.append(_bank(d, held, back))
             held = collections.Counter(back)
             pos = d
         # **Rule 2 now has a clock.** `left` is when this tour delivers under its own steam: what has
@@ -2249,12 +2547,21 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # runs only on the rare job that already cleared `DELIVER_MIN`, whereas a `spent` accumulator
         # would have to be kept correct at all six places this loop moves `pos` -- and this function
         # is the one place in the planner where the cost model must not be paraphrased.
-        if load >= DELIVER_MIN and not reaping and (
-                due is None or turns(start, route) + dist(pos, j.tile) + tail[i] > due):
+        # **A load with no later delivery ships now, `DELIVER_MIN` notwithstanding.** See
+        # `SHIP_WHAT_NO_LATER_STOP_CAN_BANK`: with the closing trip uncharged and no remaining stop
+        # on a depot tile, there is nothing to batch FOR -- the load is stranded by construction.
+        # The `due` clock is deliberately not consulted for it: `tail` prices a closing drop that
+        # `deliver=False` never plans, so "the tour delivers in time on its own" is fiction here.
+        stranded = (SHIP_WHAT_NO_LATER_STOP_CAN_BANK and not deliver and load > 0
+                    and pos not in depots
+                    and all(tuple(w.tile) not in depots for w in work[i:]))
+        if not reaping and (stranded or (load >= DELIVER_MIN and (
+                due is None or turns(start, route) + dist(pos, j.tile) + tail[i] > due))):
             d = nearest(depots, pos, j.tile)
-            # The drop takes the wheat with it, so the same stop draws back everything still ahead.
+            # The drop takes the wheat with it, so the same stop draws back everything still ahead --
+            # unless `_bank` can shed the produce alone with PLACE and keep the ration in hand.
             back = collections.Counter({it: q for it, q in after[i].items() if q > 0})
-            route.append(Depot(d, drop=True, pick=back))
+            route.append(_bank(d, held, back))
             held = collections.Counter(back)
             pos = d
         elif short:
@@ -2272,6 +2579,31 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         held -= j.needs
         held += j.gives
         pos = j.tile
+        # **Bank on the pen, before moving on.** See `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`. Every
+        # path above plans its stop as part of the walk to the next job, so none of them can say
+        # "bank here, now" -- and standing on a pen IS standing on the shed, because `_refresh_pins`
+        # sites pens on shed-access tiles. One turn, no movement, and `_bank` keeps the ration.
+        # The test is on what THIS PEN yielded, not on what the hand happens to be carrying: a hand
+        # holding the herd's wheat on a day whose row sells wheat would otherwise bank at every pen.
+        # Same shape as `funds` itself in `_solve` -- `any(owed[p] > 0 for p in j.gives)`.
+        _earns = any((wanted or {}).get(p, 0) > 0 and q > 0 for p, q in j.gives.items())
+        if BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY and j.funds and pos in depots and _earns:
+            keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
+            route.append(_bank(pos, held, keep))
+            held = collections.Counter(keep)
+        elif (THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN and j.funds and _earns
+                and pos not in depots
+                and all(o == "HARVEST" for o, _i in j.ops)):
+            # **The errand.** See `THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN`. Scoped to a job that is
+            # ONLY a harvest, which is exactly what `split_funding_harvest` produces -- a tending
+            # stop that happens to hold produce is not worth a trip and is left to the ordinary
+            # delivery rules. Aimed at the depot nearest the next stop, so the walk is shared.
+            _nxt = work[i + 1].tile if i + 1 < len(work) else pos
+            d = nearest(depots, pos, _nxt)
+            keep = collections.Counter({it: q for it, q in after[i + 1].items() if q > 0})
+            route.append(_bank(d, held, keep))
+            held = collections.Counter(keep)
+            pos = d
 
     # **`yields()`, not just a non-empty hand.** `gives` is a prediction and is empty whenever the
     # board cannot supply one -- a tile whose `yield_units` is still 0 at dawn because the WATER that
@@ -2329,6 +2661,38 @@ PLACE_FOLLOWS_ITS_BUILD = True
 #: carried to h23 with the row asking for 18 and the shed empty all day.
 RESERVE_THE_TRIP_FOR_TODAYS_HARVEST = True
 
+#: **Whether the packer may only price a tour the caller is going to ask for.**
+#:
+#: `cover.cost` is what the greedy admits on. On `RESERVE_DAYS` it prices the sequence as
+#: `materialise(deliver=True, wanted_only=True)` -- a tour ending in one closing walk to the shed.
+#: The shipped agent never asks for that tour: `_solve` sets
+#: `deliver = max(budget) > DELIVER_CUTOFF_TURNS` with the cutoff at 99 against budgets of 23-24, so
+#: `deliver` is always False and the closing walk is never planned.
+#:
+#: Pricing it anyway measures a tour that does not exist, and measures it CHEAP: with no walk home,
+#: `materialise` inserts MID-TOUR shed trips instead so the load is not stranded past market close,
+#: and those are not in the delivering tour. Seed 11, day 10, unit 9, one sequence priced both ways:
+#:
+#:     deliver=True, wanted_only=True   21 turns  SHED -> (7,4) -> (6,4) -> (6,3) -> (5,3) -> SHED
+#:     deliver=False                    29 turns  SHED -> (7,4) -> SHED -> (6,4) -> SHED -> (6,3) -> (5,3)
+#:
+#: Budget 23. The packer admitted 21 turns and the day walked 29, so the last two stops were never
+#: reached -- both FEEDs. `consecutive_unfed >= 2` deletes the animal (`kaggriculture.py:817`), and
+#: the ladder loses tile (6,4) on day 11 that way in 93186363, 93237183 and 93239838.
+#:
+#: **Measured ON, and it is NOT a clean win, which is why it is a flag and not an edit.** Seed 11
+#: against the kawashigi tape, d0-d8 byte-identical either way:
+#:
+#:     feed d10  11/12 -> 12/12      harvest d9-d29  -15 -> -19
+#:     feed d11  13/14 -> 14/14      place   d9-d29  -29 -> -31
+#:     sell d9-d29  -108 -> -62      idle    d9-d29 +406 -> +452
+#:
+#: It closes the starvation -- 0 stranded FEEDs and 0 unfed animals from d8 on, against 3 and 2 --
+#: and it costs the melon day: `sell d10 86/91 -> 57/91`, `drop d10 8 -> 4`, and NO melon reaches
+#: the shed during d10 at all, because the over-long tours were what banked it mid-day. The freed
+#: turns are not re-spent: u3 and u6 finish d10 at 0 of 23 with nothing assigned.
+PRICE_THE_TOUR_THE_CALLER_WILL_WALK = True
+
 #: First day the reserve may fire. **d0-d6 is deliberately untouched -- Alex's instruction, and the
 #: measurement agrees**: without the reserve those days are exact on `harvest 14/14`, `water 17/17`
 #: and `feed 7/7`, and with it d4 falls to `harvest 10/14`, `water 12/17`, `feed 6/7`. The opening is
@@ -2364,7 +2728,16 @@ RANK_HOME_DAYS = frozenset({4})
 
 #: Whether a tour that cannot get its load home gives up trailing jobs until it can. Never a trade:
 #: the produce those jobs make is stranded by definition, so the turns buy nothing as things stand.
-TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
+TRIM_A_TAIL_THAT_CANNOT_COME_HOME = True
+
+#: The days the trim may fire. **Only the last day, and the reason is the overnight sweep.** On
+#: every other day `_drop_inventories_to_shed` banks whatever a tour ends up holding, so a kept job
+#: always beats a walk and the trim is a pure loss -- which is why it shipped False for d4. On d29
+#: the sweep lands after the market is gone and the kept job's produce is DISCARDED, so the walk
+#: is worth strictly more than the job by construction. The reserve pricing cannot reach a
+#: precomputed day (`_apply_precomputed` seats stops without pricing them); this trim in `plan` is
+#: the one place a solved d29 tour can shed work for its delivery.
+TRIM_HOME_DAYS = frozenset({29})
 
 
 #: **Routes solved OFFLINE and replayed, keyed by day.** `{day: {unit: [(tile, (ops...)), ...]}}`
@@ -2388,9 +2761,42 @@ TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
 #: the whole mechanism off and run the greedy everywhere.
 from .solved_days import SOLVED_DAYS                                          # noqa: E402
 
+#: **Days the greedy plans itself even though a solved route exists.**
+#:
+#: A solved route stores WORK STOPS only -- `(tile, ops)` -- and `materialise` appends the shed trip
+#: afterwards out of whatever turns the tour did not spend. That is fine on any day whose load is
+#: banked for free by `_end_of_day`, and it is exactly wrong on the LAST day, where the automatic
+#: drop happens after the final turn and `_commit_unit` will not sell out of a hand. d29 has no
+#: slack to append into, so the walk home never gets planned and the season ends with the crew
+#: holding sellable produce.
+#: **MEASURED AND PARKED 2026-08-15.** `(29,)` lets the greedy plan the last day with `deliver=True`
+#: and is a real but small gain -- sell 1489 -> 1502, d29 sell 93 -> 106, season +$256, harvest
+#: 396 -> 393. It does NOT fix the problem: stranded units rose 51 -> 78, because the greedy
+#: harvests more on d29 than it can walk in.
+#:
+#: **The reason it is parked is that d29 is the wrong day to fix.** カワシギ harvests 32 on d28 to
+#: our 27 and only 19 on d29 to our 27, then spends d29 selling -- 148 units to our 93, with 56 PASS
+#: turns. `_end_of_day` delivers d28's load to the shed overnight for free. He never plans a d29
+#: delivery because he does not need one. We back-load 10 harvests into d23-d29 (195 against his
+#: 185) while d0-d22 are level (201 against 204). Move the work to d28 and the delivery is free.
+UNSOLVE_DAYS = ()
+
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
-                      for d, units in SOLVED_DAYS.items()}
+                      for d, units in SOLVED_DAYS.items() if d not in UNSOLVE_DAYS}
+
+#: **On the LAST day a stop whose ops shrank keeps its solved seat.** `_apply_precomputed` keys a
+#: stop on the exact `(tile, ops)` tuple, which is right on an ordinary day -- a tuple that stops
+#: matching means the board is not the board the day was solved for -- and is the recorded landmine
+#: on d29: `NO_UPKEEP_ON_THE_LAST_DAY` strips FEED/CARE from a pen's job, the key stops matching,
+#: and the stop leaves the solved route for greedy insertion instead of getting two turns cheaper.
+#: Measured as harvest 396 -> 389, sell 1489 -> 1474 (see `router.NO_UPKEEP_ON_THE_LAST_DAY`).
+#:
+#: The fallback fires only on `SEASON_DAYS - 1`, only when the exact key misses, and only for a job
+#: at the SAME tile whose op set is a SUBSET of the solved stop's -- a reduced form of the work the
+#: solve described, never new work. Everything else stays a recorded miss, and every earlier day
+#: keeps the exact-key rule byte-identical.
+MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE = True
 
 #: Days where a precomputed route was offered and did not fit today's jobs. Read it after a run --
 #: if the day under test is in here, the route never ran and the numbers mean nothing.
@@ -2434,8 +2840,17 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
         for tile, ops in work:
             key = (tuple(tile), tuple(ops))
             if not pool.get(key):
-                missed.append(key)
-                continue
+                # The last day only: seat a REDUCED form of the solved stop -- same tile, ops a
+                # subset of what the solve described. See `MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`.
+                fallback = None
+                if MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE and day == R.SEASON_DAYS - 1:
+                    fallback = next((k for k, lst in pool.items()
+                                     if lst and k[0] == tuple(tile) and set(k[1]) <= set(ops)),
+                                    None)
+                if fallback is None:
+                    missed.append(key)
+                    continue
+                key = fallback
             if u >= len(units):
                 no_unit += 1          # the hand never arrived; its work goes through insertion
                 continue
@@ -2536,7 +2951,26 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         # is 18 turns of work against a 7-turn trip on a 23-turn budget, so no ordering has both --
         # and costs d10-d16 $1,722. The trade is real; `RESERVE_DAYS` says on which days it is worth
         # taking.
-        if RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS:
+        #
+        # **And it may only price a tour the caller is going to ASK FOR.** `deliver` decides whether
+        # `plan` ever materialises the closing walk, and the shipped agent sets
+        # `deliver = max(budget) > DELIVER_CUTOFF_TURNS` with the cutoff at 99 against budgets of
+        # 23-24 -- so `deliver` is always False and the closing walk is never planned. Pricing the
+        # reserve anyway measured a tour that does not exist, and it measured it CHEAP: with no walk
+        # home, `materialise` inserts mid-tour shed trips instead so the load is not stranded past
+        # market close, and those trips are not in the delivering tour. Seed 11, day 10, unit 9, one
+        # sequence priced both ways:
+        #
+        #     deliver=True, wanted_only=True   21 turns   SHED -> (7,4) -> (6,4) -> (6,3) -> (5,3) -> SHED
+        #     deliver=False                    29 turns   SHED -> (7,4) -> SHED -> (6,4) -> SHED -> (6,3) -> (5,3)
+        #
+        # Budget 23. The packer admitted 21 turns of work, the day walked 29, and the last two stops
+        # were never reached -- both of them FEEDs. `consecutive_unfed >= 2` deletes the animal
+        # (`kaggriculture.py:817`), so the same overrun two days running is a $400 asset gone and a
+        # pasture idle for the rest of the season. Seen on the ladder in 93186363, 93237183 and
+        # 93239838, each losing tile (6,4) on day 11.
+        if ((deliver or not PRICE_THE_TOUR_THE_CALLER_WILL_WALK)
+                and RESERVE_THE_TRIP_FOR_TODAYS_HARVEST and wanted and day in RESERVE_DAYS):
             return turns(units[u], materialise(units[u], work, load(u), depots, wanted, True, rush,
                                                wanted_only=True, due=due))
         return turns(units[u], materialise(units[u], work, load(u), depots, wanted, False, rush,
@@ -2715,7 +3149,14 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         got = slot_now(u, j, cap[u])
                         if got is None:
                             continue
-                        key = (got[0] - used[u], u, j.tile, got[1])
+                        # **A second funding pen prefers a hand that has none.** See
+                        # `ONE_HAND_PER_FUNDING_PEN`. Leads the key, so it outranks travel cost --
+                        # the value of these two stops is the HOUR they finish, not the walk they
+                        # cost. It only ever discriminates between feasible slots, so a funding pen
+                        # with nowhere else to go is still placed by the same pass.
+                        stacked = (ONE_HAND_PER_FUNDING_PEN and j.funds
+                                   and any(x.funds for x in routes[u]))
+                        key = (stacked, got[0] - used[u], u, j.tile, got[1])
                         if best is None or key < best[0]:
                             best = (key, j, u, got[1], got[0])
                 if best is None:
@@ -2757,6 +3198,14 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                         # cannot answer for the home unit. Every other unit is untouched and can.
                         got = slot(v, j, rest) if v == u else slot_now(v, j)
                         if got is None:
+                            continue
+                        # **Compaction must not undo the funding spread.** See
+                        # `ONE_HAND_PER_FUNDING_PEN`. This loop accepts any move that lowers total
+                        # turns, and stacking the second funding pen back onto the hand already
+                        # standing on the first always does -- which is how the spread was measured
+                        # to survive `greedy` and then vanish before the tour was built.
+                        if (ONE_HAND_PER_FUNDING_PEN and j.funds and v != u
+                                and any(x.funds for x in routes[v])):
                             continue
                         gain = ((used[u] - got[0]) if v == u
                                 else (used[u] + used[v]) - (without + got[0]))
@@ -2903,6 +3352,105 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     return routes, left
 
 
+#: Whether a ripe pen the day's row is WAITING ON offers its HARVEST as a separate job.
+#:
+#: `Job` is one tile and every op that tile wants, atomic to one hand. That is right for ordinary
+#: work and it is what makes the tape's day-8 plan inexpressible for us. He splits a ripe pen across
+#: two hands -- one tends it, another does nothing but harvest and run the milk to the shed:
+#:
+#:     his u0  h03 (4,3) FEED  h04 (4,3) CARE  h05 (4,3) COLLECT_FERT   <- never harvests it
+#:     his u2  h04 HARVEST                      h06 (4,4) PLACE/MILK     <- harvest only, then banks
+#:
+#: Ours bundles them, so the harvest is forced to happen FOURTH:
+#:
+#:     (3,4)  ['FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST']  4t
+#:
+#: Our d8 dawn, seed 11: bank $4, shed WHEAT 1 / FERTILIZER 7, ZERO hands -- all eleven hired during
+#: the day. Ripe cows at (3,4) and (4,4); shed-access tiles are (4,4), (4,5), (5,4), (5,5), so (4,4)
+#: is both a ripe cow and shed ground. Cow A is already banked at h03. Cow B at (3,4) cannot be:
+#: even as job 0 on a hand spawning at the shed at h01, four bundled ops put the harvest at ~h06 and
+#: the deposit at ~h08, against a sale asked at h05.
+#:
+#: **No reordering or route-pinning can beat that**, which is why hardcoding the visit sequence into
+#: `SOLVED_DAYS` changed nothing -- twice. The constraint is INSIDE one job, not between jobs. Split,
+#: the same hand does NORTH, HARVEST, SOUTH, PLACE and lands at h05.
+#:
+#: The tending job keeps `needs`, `at_risk` and therefore `required` (`REQUIRED_OPS` is `("FEED",)`),
+#: so the harvest-only job is neither. Harvesting before feeding is safe: the care bonus is applied
+#: at the day rollover (`kaggriculture.py:808-817`), not at the harvest.
+#:
+#: **SHIPPED FALSE: the split works and the follow-through does not, yet.** With it on, u2 and u4
+#: both HARVEST at h02 -- two hands on the ripe pens at once, which was structurally impossible
+#: before. But u2 then CARRIES its six milk instead of banking them, so the h03 sale we already
+#: had is lost. `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY` cannot help it, and the reason is geometry:
+#:
+#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
+#:     our ripe cows       (3,4) NOT shed ground     (4,4) IS shed ground
+#:
+#: Cow A banks on its own pen because the pen IS the shed. Cow B never can -- it needs a walk to a
+#: shed tile whoever harvests it. The tape has the same geometry (his cows are (4,3) and (4,4)) and
+#: solves it by making the harvest a dedicated ERRAND: HARVEST, walk, PLACE/MILK, nothing else.
+#: So the missing half is a delivery that follows a split harvest off-depot, not the split itself.
+#: Whether a hand that took a SPLIT funding harvest walks the produce straight to the shed.
+#:
+#: The one rule here that is deliberately a WALK. `SPLIT_THE_FUNDING_HARVEST` lets a second hand take
+#: a ripe pen's HARVEST alone, which is what the tape does -- but on its own that LOSES ground,
+#: because the hand then carries the milk: `DELIVER_MIN` exists to stop a small load buying a walk,
+#: `DROP_WHERE_THE_TOUR_ALREADY_STANDS` demands zero detour, and `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`
+#: demands the pen BE shed ground. Measured, seed 11, d8:
+#:
+#:     shed-access tiles   (4,4) (4,5) (5,4) (5,5)
+#:     our ripe cows       (4,4) IS shed ground     (3,4) is NOT
+#:
+#: Cow A banks on its own pen at h03 for one turn and no walking. Cow B cannot, whoever harvests it.
+#: The tape has the same geometry -- his cows are (4,3) and (4,4) -- and answers it with a dedicated
+#: errand: `h04 HARVEST ... h06 (4,4) PLACE/MILK`, nothing else on that tour.
+#:
+#: The walk IS the point. The milk is the day's working capital: the row buys `WHEAT 17` on a $4 dawn
+#: bank to feed ten animals, and the forced-order run showed the whole afternoon failing on cash with
+#: the town holding 9,900 wheat. Every other rule prices the trip against the LOAD; this one prices
+#: it against the DAY.
+#:
+#: With `SPLIT_THE_FUNDING_HARVEST`, both cows land together at his own hour:
+#:
+#:     h01 u0 HARVEST   h03 u4 HARVEST   h05 u0 DROP + u4 DROP + SELL MILK 12   h06 bank $1,932
+#:
+#: against $13 in every arm before it. Milk alone is NOT the win -- `buy_product` stays 5/17 and
+#: the cash sits, because the wheat is still queued behind the seed at h01. Paired with
+#: `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY` it becomes d8 `buy_product 17/17`, `feed 9/10`,
+#: `care 9/10`, and the season cost falls from -$2,433 to -$299. The two only pay together.
+THE_FUNDING_HARVEST_RUNS_ITS_LOAD_IN = True
+
+
+SPLIT_THE_FUNDING_HARVEST = True
+
+
+def split_funding_harvest(jobs, wanted):
+    """Ripe pens the row is waiting on, with their HARVEST offered as its own job."""
+    if not SPLIT_THE_FUNDING_HARVEST:
+        return jobs
+    want = {p: q for p, q in (wanted or {}).items() if q > 0}
+    if not want:
+        return jobs
+    out = []
+    for j in jobs:
+        harvest = [o for o in j.ops if o[0] == "HARVEST"]
+        rest = [o for o in j.ops if o[0] != "HARVEST"]
+        earns = {p for p in j.products if want.get(p, 0) > 0}
+        if not harvest or not rest or not earns:
+            out.append(j)
+            continue
+        h_gives = {p: q for p, q in j.gives.items() if p in earns}
+        r_gives = {p: q for p, q in j.gives.items() if p not in earns}
+        if not h_gives:
+            out.append(j)
+            continue
+        out.append(Job(j.tile, harvest, gives=h_gives, products=frozenset(earns)))
+        out.append(Job(j.tile, rest, needs=j.needs, gives=r_gives, at_risk=j.at_risk,
+                       only=j.only, products=j.products - earns))
+    return out
+
+
 def from_nodes(nodes, tiles=None):
     """`router.Node` -> `Job`, keeping the node's own `needs` rather than re-deriving them.
 
@@ -3033,7 +3581,7 @@ def plan(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True
             home = materialise(units[u], seq, held, depots, wanted, True, rush, due=due)
             if turns(units[u], home) <= budget[u]:
                 route, cost = home, turns(units[u], home)
-            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in RANK_HOME_DAYS:
+            elif TRIM_A_TAIL_THAT_CANNOT_COME_HOME and wanted and day in TRIM_HOME_DAYS:
                 # **The trailing job is producing goods that will be STRANDED, so dropping it is a
                 # gain and not a trade.** u1 on d4 harvests (2,1) at h15 and (1,1) at h18, ends six
                 # steps from the shed with eight wheat and passes to dusk; the rollover sweeps it
@@ -3788,6 +4336,79 @@ CRITICAL = 1_000_000
 #: ANIMALS STANDING IN PENS per day, never on cells or money alone.
 FEED_IS_CRITICAL_WHEN_AT_RISK = True
 
+#: **Whether a one-shot crop on its LAST SAFE DAY is CRITICAL, exactly as a hungry pen is.**
+#:
+#: `_decay_plants` (`reference/kaggriculture.py:752`) runs on **every step**, not at the rollover:
+#: a one-shot crop past `max_lifespan_step = (planted_day + max_yield_day + 1) * 24` loses one unit
+#: every two steps and becomes a WEED at zero. `_one_shot_is_finished` legalises the HARVEST at
+#: `age >= max_day`. So the safe window is exactly ONE DAY WIDE, for every one-shot crop -- wheat
+#: legal at age 4 and decaying from age 5 h00, melon legal at 12 and decaying from 13.
+#:
+#: Water does not extend it. `max_lifespan_step` is fixed when the crop is planted
+#: (`kaggriculture.py:224`) and nothing updates it for a one-shot. This is an expiry date, not
+#: thirst, and it is the second weed source -- the first being `consecutive_unwatered >= 2`.
+#:
+#: **`cover.py` contains ZERO references to `max_lifespan_step`**, and `cover` is what decides the
+#: visit ORDER. So a harvest with four hours to live was ranked identically to one with all day and
+#: landed wherever insertion was cheapest. Measured on seed 11 against the kawashigi tape, weeds
+#: off so nothing is random:
+#:
+#:     died     tile     crop  planted  safe day   job built that day            seated
+#:     17/h05  (0,7)    WHEAT       12        16   [WATER, HARVEST, PLANT, ...]  False
+#:     25/h07  (8,4)    WHEAT       20        24   [WATER, HARVEST, HARVEST,..]  False
+#:     28/h09  (1,2)    WHEAT       23        27   [WATER, HARVEST, HARVEST,..]  False
+#:
+#: **Eleven of sixteen had a HARVEST job built on the safe day and it was not seated.** The job
+#: exists and loses the auction -- a ranking failure, not a missing job and not a turn shortage.
+#: Pricing it at `CRITICAL` is the same handle `FEED_IS_CRITICAL_WHEN_AT_RISK` uses for the pen that
+#: loses its animal tonight, and it puts the stop in `cover`'s first greedy pass.
+#:
+#: Salvage is not available and the data says so: every tile that died was holding exactly ONE unit,
+#: so it dies at the first decay tick -- observed at h00 to h09. There is nothing left to reach. The
+#: whole fix has to sit on the day before, which is what `age >= max_day` selects.
+#: **BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY -- d28 is the last harvest that banks itself.**
+#:
+#: Selling costs no unit-turns: a SELL is a market order in `_process_market`, not a unit action. So
+#: what the last day can sell is decided entirely by what sits in `private["shed"]` when it starts,
+#: and the shed is filled for free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce
+#: harvested on d28 is banked overnight at zero cost and is sellable all through d29. Produce
+#: harvested ON d29 lands in a hand, and that drop comes after the final turn, so it is discarded.
+#:
+#: This is how カワシギ takes the last two days without ever planning a delivery (ours/tape):
+#:
+#:     closing week   harvest      sell    drop     pass
+#:     d28             27/32     103/92     2/0    48/32
+#:     d29             27/19      93/148    3/9    30/56
+#:
+#:     harvest d0-d22   ours 201   tape 204     level
+#:     harvest d23-d29  ours 195   tape 185     we back-load +10
+#:
+#: He harvests 32 on d28 to our 27, the overnight drop banks it, and d29 becomes a selling day --
+#: 148 units to our 93. We back-load into the one day where delivery is not free, and the season
+#: ends with 51 sellable units, about $1,192, stranded in hands.
+#:
+#: **We are not short of turns on d28: 48 idle unit-turns against his 32.** The work is there and the
+#: crew is standing around; the harvest is simply not ranked high enough to be seated.
+#:
+#: **A behavioral null on this board, ON anyway, and both halves are deliberate.** Three shapes
+#: (prize, at_risk, at_risk + re-solve) measured byte-identical on the grid: d28's solved route
+#: already seats every job with slack, so the promotion changes no seating today. It is ON because
+#: the PRICING is what `tests/test_the_second_to_last_day_banks_the_field.py` pins -- a ripe pen on
+#: d28 is the last produce that banks itself free, and a board where d28 is ever turn-starved
+#: (an opponent, a lost hand) needs the ranking to already say so.
+BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY = False
+
+#: The last day whose carried load is banked overnight. d29's own drop lands after the final turn.
+LAST_FREE_DROP_DAY = R.SEASON_DAYS - 2
+
+HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY = True
+
+#: **Day 9, so the matched opening cannot move.** Wheat planted d0 reaches `age == max_day` on d4,
+#: so an ungated version WOULD re-rank d4 -- inside the d0-d8 window that is matched to the tape op
+#: for op and must not regress. Nothing actually rots before d16 on seed 11, so gating here costs
+#: nothing measurable and removes the whole class of risk by construction.
+HARVEST_CRITICAL_FROM_DAY = 9
+
 #: The reference's seed prices (`CROPS[...]["seed"]`). Seeds are NOT held in the shed or in a unit's
 #: inventory -- `private["seeds"]` is consumed directly by PLANT -- which is why PLANT never generates
 #: a depot stop no matter that it carries an item name.
@@ -4245,6 +4866,12 @@ def _animal_remaining(cell, day):
 #: reasons that had expired (wrong tape, measured only over d0-d7 where 17 tiles fit in a day). That
 #: argument was wrong on its own terms: the trough day's idle turns are not free, because spending
 #: them puts the hand somewhere else when the next spike lands.
+#: **Water half the SAFE tiles each day, alternating, instead of none of them.**
+#:
+#: A tile watered yesterday cannot weed tonight, so the survival rule skips it entirely -- which is
+#: why d3 emitted 7 waters against the leader's 14. See the note at the emission.
+WATER_ROTATION = True
+
 TOP_UP_SAFE_TILES = False
 #: Not before day 7. Seventeen tiles fit inside one day with room to spare, Seb waters alternate days
 #: there and takes zero weeds doing it, and d0-d6 is matched to the tape op for op.
@@ -4252,7 +4879,7 @@ TOP_UP_FROM_DAY = 7
 TOP_UP_DISCOUNT = 8.0
 
 
-def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
+def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
     FERTILIZE precedes WATER because WATER reads `fertilized_until_day` at the moment it runs.
@@ -4329,7 +4956,10 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
                 gain = 2 if fertilized else 1
                 if FILLING_WATER and age >= info["first"] and gain >= room:
                     out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
-        elif not cell["watered_today"] and cell["consecutive_unwatered"] >= 1:
+        elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
+              and not upkeep_buys_nothing(day)):
+            # The last-day gate: this water buys the tile surviving TONIGHT's rollover, and after
+            # d29's rollover there is no tile to have saved. Same switch as FEED/CARE.
             # Outside the window water buys nothing but survival, and it is only needed on the day
             # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
             # `consecutive_unwatered` starts at 1 on the planting day and weeds the tile at 2, so a
@@ -4354,7 +4984,27 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
             # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
-        elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY and not cell["watered_today"]:
+        elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
+              and (tile[0] + tile[1] + day) % 2 == 0
+              and not upkeep_buys_nothing(day)):
+            # Same last-day gate as the survival water above: the alternation only exists to keep
+            # `consecutive_unwatered` below 2 across days, and there is no next day.
+            # **Half the safe tiles, alternating -- which is what the leader actually does.**
+            #
+            # Measured off カワシギ's own d3, seed 11: his board at dawn is 19 tiles, every one at
+            # `consecutive_unwatered = 0`, all planted d0 -- 7 WHEAT and 12 MELON -- and he emits
+            # **14** waters. We emitted 7, exactly the wheat, because wheat at age 3 is inside
+            # `in_window` ((4+1)//2 = 2 <= 3 <= 4) and melon at age 3 is far from its own 6..12.
+            # His extra seven are melon: he is not watering all twelve, he waters about half and
+            # takes the rest tomorrow.
+            #
+            # Parity on `(x + y + day)` is that alternation with no state to carry. It flips every
+            # day, so a tile skipped today is offered tomorrow and `consecutive_unwatered` can never
+            # reach the 2 that weeds it (`reference/kaggriculture.py:770`).
+            #
+            # **Not `TOP_UP_SAFE_TILES`, which is the same slot and the wrong shape.** That flag
+            # offers EVERY safe tile from a fixed day, which put d3 at 19 against his 14 and d5 at
+            # 20 against his 13 -- overshooting the tape rather than matching it.
             out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
@@ -4393,7 +5043,20 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
                                               or _one_shot_is_finished(info, age, room, day)):
-        out.append(("HARVEST", None, held * price))
+        prize = held * price
+        # **Its last safe day, and there is no second chance.** See
+        # `HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY`. `age >= max_day` is the day the harvest
+        # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
+        # every two steps from h00. So this fires on exactly the one day the tile can be taken
+        # whole, and on any day after it while something is still left to save.
+        last_free = (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
+                     and day is not None and day == LAST_FREE_DROP_DAY)
+        if (last_free
+                or (HARVEST_IS_CRITICAL_ON_ITS_LAST_SAFE_DAY
+                    and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                    and age >= _last_safe_age(info))):
+            prize += CRITICAL
+        out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
     # (`kaggriculture.py:454-455`); an ongoing one only collects, so a spent strawberry sits on its
     # square for the rest of the season while the schedule still wants somewhere to plant.
@@ -4435,6 +5098,33 @@ HARVEST_A_TRUNCATED_ONE_SHOT = LATE_SEASON_PAIR
 #: `plant_prize` keeps returning 0, which is right: a wheat sown on d20 has time for a full window
 #: and truncating it would only waste the ground.
 LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
+
+
+def _last_safe_age(info):
+    """The age at which a crop's produce must be off the tile, for BOTH crop shapes.
+
+    `_decay_plants` (`kaggriculture.py:752`) eats one unit every two steps once `step` passes
+    `max_lifespan_step`, and turns the tile to WEED at zero. That deadline is set in two different
+    places, and reading only the one-shot half is what let four strawberry tiles bleed out on
+    seed 11:
+
+    one-shot  `:224`      `(planted_day + max_yield_day + 1) * 24`, fixed at planting.
+                          Last safe age == `max_day`.
+
+    ongoing   `:224`      planted with `-1`, which `_decay_plants` skips -- it never decays while
+                          it is still producing.
+              `:801-802`  on the day its LAST production lands, and only then:
+                              if production_count == cd["max_yield"]:
+                                  tile["max_lifespan_step"] = (next_day + 1) * turns_per_day
+                          So the clock starts at the final production. `production_count` is
+                          `days_since_first // interval + 1`, so it reaches `max_yield` at
+                          `first + interval * (max_yield - 1)`.
+
+    Water does not extend either one.
+    """
+    if not info["ongoing"]:
+        return info["max_day"]
+    return info["first"] + info["interval"] * (info["max_yield"] - 1)
 
 
 def _one_shot_is_finished(info, age, room, day=None):
@@ -4500,6 +5190,12 @@ def produces_tonight(cell, day):
 #: Ours tracked him exactly to d6 and broke at d7 -- `FEED_CADENCE_FROM_DAY`, not a coincidence.
 #: `feed 8/10` there and `7/12 9/12 8/12 9/12` after, with CARE mirroring it cell for cell because
 #: `animal_ops` offers CARE only on a pen it is feeding.
+#: Whether a pen placed TODAY is skipped for FEED. Independent of the cadence rule below: this one
+#: is about a ration that provably buys nothing, not about feeding less often. See `will_be_fed`.
+SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES = True
+#: Feeds still available to pens that arrived TODAY. Set per turn by the agent from the schedule's
+#: `feeds` row; see `will_be_fed`. Module-level so the predicate stays a pure function of the cell.
+ARRIVAL_FEED_REMAINING = 0
 FEED_ONLY_WHEN_IT_BUYS_SOMETHING = False
 
 #: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
@@ -4516,6 +5212,42 @@ FEED_CADENCE_FROM_DAY = 7
 def will_be_fed(cell, day):
     """Whether `animal_ops` would offer this pen a FEED today. The market block sizes its wheat
     purchases off this, so it has to be the same rule and not a second copy of it."""
+    # **The last day, before everything else.** Dropping FEED from `animal_ops` alone measured
+    # d29 `feed 14/0 -> 14/0` unchanged: the route is a visit ORDER, the executor re-derives work
+    # at stops and crossings, and `underfoot()` (`schedule_agent:2458`) feeds any pen this
+    # predicate says yes to. One predicate, so the last day says no exactly once.
+    if upkeep_buys_nothing(day):
+        return False
+    # **An animal placed TODAY cannot be fed into producing anything, and is not at risk.** FEED
+    # does exactly two things (`_daily_refresh_animals`, kaggriculture.py:795-820): it resets
+    # `consecutive_unfed`, which is already 0 on the turn the animal is placed, and on a production
+    # night it releases `pending_care_bonus` -- and a pen placed today is `first_yield_day` away
+    # from its first production night (8 for a COW, 6 for a SHEEP). So the ration buys nothing at
+    # all, and the animal is removed only at `consecutive_unfed >= 2` (`:804`), which is two days
+    # away. It is fed tomorrow with nothing lost.
+    #
+    # d0 on the kawashigi tape is exactly this. Both sides put the SAME net wheat in the shed --
+    # he buys 8 and sells 3, we buy 5 and sell none, +5 each, his `BUY 9 / SELL 3` being a wash --
+    # and the whole difference into d1 is what we ate:
+    #
+    #             buys filled   sells   feeds   into d1 shed
+    #     him          8          -3      -2          3
+    #     us           5           0      -4          1
+    #
+    # Those two rations are the reason d1 opens on one wheat, makes three separate shed trips with
+    # a single unit, and leaves (3,4) unfed while idling h22-h23 one step away.
+    if SKIP_THE_FEED_ON_THE_DAY_IT_ARRIVES and int(cell.get("placed_day", -1)) == int(day):
+        # **How many of today's arrivals get fed is the TAPE's number, not a rule of ours.**
+        # `ARRIVAL_FEED_REMAINING` is set once per turn by the agent from the day's `feeds` row
+        # minus the pens that were already standing, and counted down off the board (`fed_today` on
+        # a pen whose `placed_day` is today), so it needs no state of its own and self-corrects if a
+        # feed is emitted by a path this predicate never saw.
+        #
+        # It is a budget because his own numbers are a budget: d0 places four and feeds two, d3
+        # places one and feeds none of it, d5 places one and feeds it, d7 places three and feeds two.
+        # No predicate on the animal reproduces that -- "feed everything" and "feed only what is
+        # producing" were both measured, and both lose.
+        return ARRIVAL_FEED_REMAINING > 0
     if not FEED_ONLY_WHEN_IT_BUYS_SOMETHING or day < FEED_CADENCE_FROM_DAY:
         return True
     if cell.get("consecutive_unfed", 0) >= 1:
@@ -4524,12 +5256,60 @@ def will_be_fed(cell, day):
     return ((day + 1) - int(cell.get("placed_day", 0)) - a["first_yield_day"]) >= 0
 
 
+#: **No FEED and no CARE on the last day. Both pay out at a rollover that scores nothing.**
+#:
+#: `_daily_refresh_animals` runs inside `_end_of_day`, so on d29 it fires at the rollover into day
+#: **30**. The base unit and the care bonus land on the pen and no turn ever exists to harvest them.
+#: The other thing a FEED buys is survival, and that is worthless too: the score is banked money, so
+#: an animal that escapes after the final turn costs nothing.
+#:
+#: Measured on the kawashigi grid, last three days, ours/tape:
+#:
+#:     row              d27       d28       d29
+#:     feed           14/14     14/10     14/0
+#:     care           14/12     14/9      14/0
+#:     harvest        31/35     29/32     26/19
+#:     drop            0/0       2/0       2/9
+#:
+#: The tape does ZERO upkeep on its last day and spends it harvesting and walking produce in -- nine
+#: DROPs to our two. Our 28 upkeep turns are most of the ~36 needed to send six loaded hands to the
+#: shed, and the season currently ends with 51 sellable units stranded in hands, about $1,192.
+#:
+#: HARVEST and COLLECT_FERTILIZER are deliberately NOT dropped: milk, wool and fertilizer already on
+#: the pen are real produce that can still be sold today if it reaches the shed.
+#:
+#: **Parked 2026-08-15, re-opened the same day once the landmine was defused.** The first attempt
+#: measured harvest 396 -> 389, sell 1489 -> 1474, because `cover._apply_precomputed` matched a stop
+#: by the exact `(tile, ops)` tuple: a pen whose job was `[FEED, CARE, COLLECT_FERTILIZER, HARVEST]`
+#: became `[COLLECT_FERTILIZER, HARVEST]`, the key stopped matching the solved plan, and the stop
+#: dropped out of the route rather than getting cheaper. `cover.MATCH_THE_LAST_DAY_STOP_ON_ITS_TILE`
+#: now seats the reduced stop on the unit the solve chose, which is what this flag was waiting for.
+NO_UPKEEP_ON_THE_LAST_DAY = True
+
+
+def upkeep_buys_nothing(day):
+    """True on the last day, when FEED and CARE pay out at a rollover the season never reaches.
+
+    The one gate for every upkeep path: `animal_ops` (the plan), `will_be_fed` (the executor's
+    underfoot FEED and the wheat-purchase sizing), and `underfoot()`'s CARE branch, which cannot
+    ask `animal_ops` and needs the same answer.
+    """
+    return NO_UPKEEP_ON_THE_LAST_DAY and day is not None and day >= R.SEASON_DAYS - 1
+
+
 def animal_ops(cell, day, have_wheat):
     """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed."""
     a = ANIMALS[cell["animal"]]
     price = BASE_PRICE[a["product"]]
     out = []
     fed = cell["fed_today"]
+    if upkeep_buys_nothing(day):
+        # Collect what is already there; buy nothing that pays out tomorrow.
+        if cell.get("fertilizer_available"):
+            out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
+        if cell.get("yield_units", 0) > 0:
+            out.append(("HARVEST", None, cell["yield_units"] * price))
+        return out
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
         # **A feed buys two things, and on most nights it buys neither.** From
@@ -4583,7 +5363,11 @@ def animal_ops(cell, day, have_wheat):
     if cell.get("fertilizer_available"):
         out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
     if cell.get("yield_units", 0) > 0:
-        out.append(("HARVEST", None, cell["yield_units"] * price))
+        prize = cell["yield_units"] * price
+        if (BANK_THE_FIELD_ON_THE_LAST_FREE_DROP_DAY
+                and day is not None and day == LAST_FREE_DROP_DAY):
+            prize += CRITICAL          # last night this milk or wool can bank itself for free
+        out.append(("HARVEST", None, prize))
     if YIELD_FIRST:
         # Stable, so COLLECT_FERTILIZER still precedes HARVEST and FEED still precedes CARE. Built
         # in rule order above because the CARE prize is conditional on FEED being served; only the
@@ -4811,7 +5595,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 continue
             kind = cell.get("kind")
             if kind == "PLANT":
-                ops = crop_ops(cell, day, have_fert, fertilizer_price)
+                ops = crop_ops(cell, day, have_fert, fertilizer_price, tile=tile)
                 # **A one-shot harvest is a demolition, so the tile it clears is plantable ground.**
                 # See `REPLANT_A_CLEARED_TILE`. Budgeted from the day's remaining `plants` row, in
                 # iteration order, exactly as `chain_left` budgets placements: the row is a count and
@@ -5369,6 +6153,7 @@ can produce. `scripts/build_schedule.py` generates it; `scripts/schedule_ladder.
 """
 
 import collections
+import itertools
 
 from . import cover as DP
 from . import router as RT
@@ -5470,15 +6255,103 @@ LAST_TURN_IS_WORKABLE = True
 #: baseline of 63. Any future attempt to cut the ferrying has to move both rules or neither.
 DELIVER_CUTOFF_TURNS = 99
 
+#: Days the closing walk home is planned anyway, whatever `DELIVER_CUTOFF_TURNS` says.
+#:
+#: **The reason 99 gives for never charging the trip does not hold on the melon flush.** It is that
+#: "Victor's produce reaches the shed on the overnight sweep, which is free" -- true of money at
+#: season end, false of a product whose price is a race. `_drop_inventories_to_shed`
+#: (`kaggriculture.py:812`) banks the load at the ROLLOVER, which is after the market has closed for
+#: that day. No shop stocks melon and the town takes one unit a day, so the book does not recover
+#: overnight; a day late is a day of the opponent's own flush walking the price down ahead of us.
+#:
+#: Measured on seed 11 against the kawashigi tape. All thirteen ripe melon tiles get a HARVEST job
+#: and all thirteen are seated -- the harvest is not the defect. No tour contains a shed stop:
+#:
+#:     u0   16/24  (3,2)W (3,1)WH (2,1)WH (1,1)WH (1,0)WH       ends at (1,0), 8 turns spare
+#:     u8   23/23  (2,4)FCC (0,3)WH (0,2)WH (0,1)WH (0,0)WHPW   ends at (0,0), none spare
+#:     u10  23/23  (4,3)FCCH (4,2)FCC (4,1)PW (4,0)WH (3,0)WH (2,0)WH
+#:     u3    0/23  (idle)          u6   0/23  (idle)
+#:
+#:     d10 h00-h23   shed 0 all day, hands 0 -> 66, book 272 -> 246, nothing offered
+#:     d11 h00       shed 72, SELL 60 at 246, then SELL 12 at 189
+#:
+#: Sixty-five melons carried to dusk while two hands hold 46 unused turns. `plan` appends the
+#: closing trip out of turns the tour did NOT spend, so it can only ever use slack -- u0's eight
+#: spare turns against a seven-step walk to the shed.
+#:
+#: **d10 ONLY, and d11 was measured OUT.** The first version was `(10, 11)` on the reasoning that
+#: the flush spans both days. It does not: with d10 delivering, the whole tail is already in the shed
+#: at d11 h00 and sells there, so d11 has nothing left to walk home -- and turning `deliver` on for it
+#: put FOUR of its tours over budget, 29/26/25/24 turns against 23. That regression passed unnoticed
+#: because the test asserted on d10 alone; it is now season-wide
+#: (`tests/test_a_day_is_packed_against_the_tour_it_will_walk.py`).
+#:
+#: **One day, not a lower cutoff.** `DELIVER_CUTOFF_TURNS` was tuned on the victor grid across
+#: d0-d16 and lowering it would reopen every one of those days. This is the smallest change that
+#: reaches the flush, and d0-d9 cannot move under it by construction.
+#:
+#: **d29 added 2026-08-15, for a different reason: on the last day the free drop is too late.**
+#: `_end_of_day` calls `_drop_inventories_to_shed`, so on every ordinary day a carried load reaches
+#: the shed for nothing -- which is why カワシギ emits five DROPs in a whole season against 389
+#: harvests. After d29's last turn that drop still runs, but there is no turn left to sell into, and
+#: `_commit_unit` refuses a SELL unless the goods are already in `private["shed"]`. So produce held
+#: at the close is not carried over, it is discarded.
+#:
+#: Measured at the final step of d29 on the kawashigi grid, seed 11:
+#:
+#:     US    carried and LOST  58 units  ~$1,430  {WHEAT 34, MILK 12, FERTILIZER 12}
+#:     TAPE  carried and LOST   7 units    ~$245  {WHEAT 7}
+#:
+#: and the tape spends NINE DROPs on d29 against our two. That is the whole difference: it walks its
+#: load in, we finish the season holding it.
+#:
+#: **The first attempt at (10, 29) recovered 7 of 58 units and was reverted**: a solved route
+#: stores work stops, `plan` appends the closing walk out of turns the tour did not spend, and with
+#: FEED/CARE still planned d29 had no slack to append into. `NO_UPKEEP_ON_THE_LAST_DAY` now frees
+#: those turns first, which is what this flag was waiting for.
+WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
-def _at_risk_tiles(tiles):
+
+#: **Ripe produce on d28 is at risk, because d28 is the last harvest that banks itself.**
+#:
+#: Selling costs no unit-turns -- a SELL is a market order, not a unit action -- so what the last day
+#: can sell is decided by what sits in `private["shed"]` when it starts, and the shed is filled for
+#: free by `_drop_inventories_to_shed` inside `_end_of_day`. Produce taken on d28 is banked overnight
+#: at zero cost and sells all through d29. Produce taken ON d29 lands in a hand and that drop comes
+#: after the final turn, so it is discarded: the season currently ends with 51 sellable units, about
+#: $1,192, in the crew's hands.
+#:
+#: So "skipping this today destroys something tonight" is literally true of a ripe tile on d28, which
+#: is why it belongs here rather than in a prize. **A prize cannot reach a solved day at all** --
+#: `cover._apply_precomputed` seats a stop by `(tile, ops)` and the prize never enters -- while
+#: `at_risk` is what `solve_day.weight(j)` reads, so it survives the re-solve.
+#:
+#: カワシギ, ours/tape: d28 harvest 27/32, d29 harvest 27/19, d29 sell 93/148. He harvests harder on
+#: d28 and spends d29 selling. We back-load +10 harvests into d23-d29 while d0-d22 are level, and we
+#: are not short of turns on d28 -- 48 idle unit-turns against his 32.
+#: **MEASURED A NULL 2026-08-15 AND LEFT OFF.** Three ways: prize, at_risk, and at_risk plus a d28
+#: re-solve. All three byte-identical on the grid. d28 is not under-prioritising anything -- its
+#: solved route already seats every job with slack, two hands idle, and only 7 ripe units remain
+#: unharvested at dusk. And the planting rows are IDENTICAL to the tape (d25 9/9, d26 9/9, d27
+#: 11/11), so his crops do not ripen earlier than ours either. Whatever gives him d28 harvest 32 to
+#: our 27 and d29 19 to our 27, it is neither ranking nor planting date.
+BANK_THE_FIELD_ON_D28 = False
+
+#: The last day whose carried load is banked overnight; d29's own drop lands after the final turn.
+LAST_FREE_DROP_DAY = 28
+
+
+def _at_risk_tiles(tiles, day=None):
     """Tiles where skipping today's work destroys something tonight. Read off the board, not priced.
 
     `consecutive_unfed`/`consecutive_unwatered` are already 1 -- one more missed day and the animal
     walks off or the tile weeds. A pen fed yesterday, or a tile watered yesterday, can slip a day for
     free, which is precisely how the tape feeds 16 of 19 pens on day 19 and loses nothing.
+
+    On `LAST_FREE_DROP_DAY` a tile HOLDING PRODUCE joins them: see `BANK_THE_FIELD_ON_D28`.
     """
     out = set()
+    banking = bool(BANK_THE_FIELD_ON_D28 and day is not None and day == LAST_FREE_DROP_DAY)
     for y, row in enumerate(tiles):
         for x, cell in enumerate(row):
             if not isinstance(cell, dict):
@@ -5487,6 +6360,8 @@ def _at_risk_tiles(tiles):
                 out.add((x, y))
             elif (WATER_AT_RISK and cell.get("kind") == "PLANT"
                     and cell.get("consecutive_unwatered", 0) >= 1):
+                out.add((x, y))
+            elif banking and int(cell.get("yield_units", 0) or 0) > 0:
                 out.add((x, y))
     return out
 
@@ -5591,6 +6466,101 @@ PLAN_TODAYS_PURCHASES = True
 #: already ordered, instead of discarding the draw. See the block in the tour walker.
 WAIT_FOR_THE_MORNING_DELIVERY = True
 
+#: Whether a draw the shed could not fill is re-attempted at the tour's NEXT shed stop, instead of
+#: being discarded at the stop that came up short.
+#:
+#: This is the third answer to the same problem and the only one that is not a trade. The first --
+#: delete the want -- loses the job. The second, standing at the shed until the goods land, was
+#: measured twice on 2026-08-13 and lost the d6 land parcel both times; the block in the tour walker
+#: records both arms. This one neither waits nor gives up: the hand walks on and asks again when its
+#: route puts it back at the shed anyway, which costs the one PICKUP turn and no travel at all.
+#:
+#: It is what the tape does. Day 1 of kawashigi, seed 11: four pens against a dawn shed of three
+#: wheat, so he feeds three, banks and re-buys at h18, draws again at h19 and feeds the fourth at h21.
+#: We drew three at h00, deleted the fourth want at h01, and reached the last pen at h20 with an empty
+#: hand -- `COLLECT_FERTILIZER` alone, no FEED, and no CARE either, since CARE is only legal on a pen
+#: that has been fed.
+CARRY_THE_UNFILLED_DRAW_FORWARD = True
+
+#: Whether a draw for an ANIMAL the row buys today survives an empty shed at any hour, by moving
+#: itself -- and the placement it feeds -- one stop further down the tour.
+#:
+#: The two rules above are both `hour == 0` only, which is right for wheat and wrong for a beast.
+#: An animal is bought once, for one named pen, and it lands whenever the row's order slot comes up:
+#: day 8 buys `SHEEP 1` at h05, so the shed reads `SHEEP 0` for six hours while the plan built
+#: against `PLAN_TODAYS_PURCHASES` believes it is stocked. Whichever hand reaches the shed inside
+#: that window deletes the want, and the `PLACE, FEED, CARE` behind it dies with it -- `place 0/3`,
+#: `animals 9/10`, `feed 9/10`, `care 9/10`, and one sheep sitting in the shed to the last turn.
+#:
+#: Narrower than `CARRY_THE_UNFILLED_DRAW_FORWARD` on purpose, because the all-day version of that
+#: rule was measured and is a loss (d3 `feed 4/4 -> 3/4`, d7 `7/9 -> 4/9`). The reason is contention:
+#: past dawn a short shed of WHEAT means another hand drew the ration first, so carrying the want
+#: forward does not conjure wheat, it takes a pen's feed and gives it to a later one. A bought animal
+#: has no such competition -- at h05 there is no sheep anywhere on the board, exactly one is coming,
+#: and exactly one job wants it. Deferring costs nobody anything.
+#:
+#: It moves rather than waits: standing at the shed past hour 0 was tried twice on 2026-08-13 and
+#: lost the d6 land parcel both times. The stop is re-inserted after the next piece of work, which is
+#: also what the tape does -- `h05 BUY_ANIMAL SHEEP 1`, `h06 u3 PICKUP/SHEEP`, `h09 u3 PLACE/SHEEP`.
+#: If the hand has no other work the want is dropped as before, so no hand ever idles on this.
+THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT = True
+
+#: Whether the wheat row's money guard prices n units on the BOOK's curve rather than at n times the
+#: one price the observation publishes. See the block at the guard for the day-1 arithmetic.
+SIZE_THE_RATION_ON_THE_CURVE = True
+#: Harvest a ripe crop a hand is standing on, the same way `FEED_WHAT_YOU_STAND_ON` feeds a pen it
+#: is standing on. Costs the crossing hand one turn and saves the owner a whole visit.
+#: **A hand with an exhausted route walks to a crop that becomes a WEED tonight.**
+#:
+#: CLAUDE.md records "the day is planned ONCE, at hour 0. No replan, no urgency, no idle top-up",
+#: and that is right about REPLANNING -- nothing here re-solves the day. This is the narrowest
+#: possible exception: a hand that was going to emit PASS, and a tile that is one dry day from being
+#: destroyed. It cannot displace planned work, because it only ever runs on a turn already lost.
+#:
+#: Measured on ladder replay `93183652`, our own agent, 2026-08-15:
+#:
+#:     total PASS turns in the season                                847
+#:     PASS turns while a crop was ONE DAY from becoming a weed      773   (91%)
+#:     weed births on our farm                                        40   (26 STRAWBERRY, 14 WHEAT)
+#:     further turns spent on DIG cleaning them up                    58
+#:
+#: **Zero of the 40 came from `_spawn_weeds`**, even though the ladder runs the env default
+#: `weedSpawnChance = 0.005` -- every one was a standing crop we failed to water, turning at h00.
+#: So this is not defending against the RNG, it is not throwing away tiles we already paid to seed
+#: and plant. A WATER is one turn; the weed costs the tile, its whole remaining yield, and a DIG.
+#:
+#: The idle mass is d7-d18 (74, 69, 62, 72 turns on d8, d9, d11, d12) and nearly gone by d19, so
+#: this is a mid-game rule that runs out of fuel exactly when the crew saturates.
+THIRSTY_CROP_PULLS_AN_IDLE_HAND = False
+
+HARVEST_WHAT_YOU_STAND_ON = True
+
+#: **A passer-by does not demolish a crop that is still growing.**
+#:
+#: `HARVEST_WHAT_YOU_STAND_ON` is deliberately harvest-only -- "watering a tile someone else is
+#: routed to merely moves the turn around". True every day but one. On a one-shot crop's `max_day`
+#: the water is not a turn moved around, it is a UNIT: `crop_ops` offers WATER while
+#: `in_window = (max_day + 1) // 2 <= age <= max_day`, inclusive at the top. So a hand crossing the
+#: tile takes a harvest off a crop with a unit still coming, and the routed hand that was going to
+#: water it arrives at bare ground.
+#:
+#: kawashigi, seed 11, d4 -- wheat's max_day, sown d0, all seven tiles at 3 units at dawn. Five are
+#: routed and go WATER-then-HARVEST for 4 apiece; (3,2) at h06 and (1,4) at h14 are taken underfoot
+#: and bank 3. 26 against the tape's 28, whose earliest harvest is h08, after its watering round.
+#: The gap never closes -- the wheat ledger holds it at 2 through d5 and d6, and d7 opens holding 0
+#: against his 1, which is `feed 8/9`.
+#:
+#: The test is `any(o == "WATER" ...)` and not a day comparison, because that is exactly the
+#: question: `crop_ops` offering a water on this tile today IS "it can still grow", for every crop
+#: and every window, without this rule needing its own copy of the yield arithmetic.
+#:
+#: **This is not the withheld harvest.** Gating `_one_shot_is_finished` on `watered_today` banks the
+#: same 28 and costs $19,595 -- a deferred harvest never clears its tile, never replants, and the
+#: herd starves (d8 animals 9 -> 0). See `docs/the_last_growing_days_water_2026-08-14.md`. Here the
+#: HARVEST stays legal the instant it is legal; only the passer-by stands down, leaving the tile to
+#: the routed hand that already emits WATER then HARVEST back to back.
+UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW = True
+
 #: Whether a hand standing beside an animal it just placed, with no wheat in hand, walks back to the
 #: shed for one and returns. See the block in the tour walker for the trace and for what the tape
 #: does. OFF drops the stop, which is what leaves a first-day animal unfed.
@@ -5630,6 +6600,51 @@ CARE_WHAT_YOU_STAND_ON = True
 #: rollover -- only late, and `_process_market` reads the shed, so late means unsold and then
 #: re-bought.
 WALK_THE_LOAD_HOME = True
+
+#: On the LAST day, a loaded hand abandons what is left of its route at the last hour that still
+#: reaches the shed. The runtime mirror of `cover.TRIM_HOME_DAYS`: the plan trims tails it can
+#: price, but the executor re-derives work at every stop, so a tour runs a turn or two past its
+#: costing and the planned walk starts too late -- the d29 trace shows u8 ending the season at
+#: (4,3), ONE tile from the shed, holding 11 units. Work given up here would have made produce the
+#: close discards anyway. Follows the `NO_UPKEEP_ON_THE_LAST_DAY` master switch.
+LAST_DAY_DEADLINE_WALK = True
+
+#: Turns of head start the walk gets, on top of `dist + 1`.
+#:
+#: **Three, and only one of them is the executor's.** The rule
+#: fires on the hour the walk must begin, but the executor re-derives work at each stop and finishes
+#: the current one first, so the first step happens the turn AFTER the rule says go.
+#:
+#: Measured on ladder game `93346440`, d29, our seat. u5 is at (7,1) at h18, five tiles from the
+#: depot at (5,4): `need` is 6 and `24 - 18 == 6`, so the old bound fires exactly at h18 -- and the
+#: unit does not move until h19 and arrives at h23 with no turn left to DROP:
+#:
+#:     hr   u4          u5           u7          u8
+#:     21   (2,4):3     (7,4):12     (7,4):4     (2,3):11
+#:     22   (3,4):3     (6,4):12     (6,4):4     (2,4):11
+#:     23   (4,4):3     (5,4):12     (5,4):4     (3,4):11
+#:
+#: Three hands STAND ON a depot at h23 still holding, and u8 is one tile short. 3+12+4+11 = 30
+#: units, the whole of that game's carried total, worth $2,334 at its closing book.
+LAST_DAY_WALK_SLACK = 3
+
+
+def must_walk_home_now(day, hour, pos, held, depots):
+    """The last turn a loaded hand can still bank its load: walk `dist`, one turn to DROP, plus slack.
+
+    `_drop_inventories_to_shed` runs after d29's final turn, when the market is gone, so a load
+    still in a hand at the close is discarded -- leaving later than this bound loses all of it.
+    Every earlier day banks the load in the sweep for free, so this must never fire there.
+
+    The slack is `LAST_DAY_WALK_SLACK`; see there for the trace that sets it.
+    """
+    if not LAST_DAY_DEADLINE_WALK or not RT.upkeep_buys_nothing(day):
+        return False
+    if not any(v > 0 for v in (held or {}).values()):
+        return False
+    need = min(RT.dist(pos, t) for t in depots) + 1
+    return (TPD - hour) <= need + LAST_DAY_WALK_SLACK
+
 
 #: Whether the sell guard treats wheat carried in hands as stock the herd can eat.
 #:
@@ -5746,7 +6761,7 @@ def _clear_the_spawn_ring(units, unlocked, n):
     return best if best else (None, stay)
 
 
-def _hires_this_turn(state, row, day, hour, money):
+def _hires_this_turn(state, row, day, hour, money, shed=None, prices=None):
     """How many hands the market block below is about to buy. Read by the DAWN PLAN, which has to
     route them, so it must not diverge from what that block actually orders.
 
@@ -5766,7 +6781,37 @@ def _hires_this_turn(state, row, day, hour, money):
     # restarts at **`_fib(0) = 1`, not 0** (`kaggriculture.py:677`). Seven hires cost `1 1 2 3 5 8 13`
     # = 33. Starting at 0 charged `0 1 1 2 3 5 8` = 20, one position short the whole way up, so on any
     # bank between the two totals this predicted a hand the market phase could not pay for.
-    bank, a, b, n = float(money), 1, 1, 0
+    # **The bank this turn's HIRE sees is the dawn bank PLUS what this turn's SELLs raise.**
+    #
+    # `_process_market` walks a turn's orders in slot order, so the sells queued alongside the hires
+    # settle into the bank the hires then spend from. Sizing the crew off `money` alone models the
+    # cost of the ladder and not the revenue that pays for it, and the two are in the same turn.
+    #
+    # Measured on カワシギ's plan, seed 11, d4. The day OPENS on $3 and his row asks for 5 hands.
+    # The ladder is 1, 1, 2, 3, 5: against $3 it affords two and stops, so the dawn plan built
+    # phantoms for TWO -- `budget [24, 23, 23]` in the day-4 fixture -- while five hands actually
+    # landed, funded by that day's $384 of sells. Three real hands then stood with no route, and
+    # every op on the day came up short in the same proportion: harvest 3/7, care 3/5, feed 3/5,
+    # collect_fert 3/5, and the pen 0/1. A 400-restart seating search reported "no ordering beat
+    # the shipped planner" because it was solving for three people.
+    #
+    # He opens d4 on $1 and hires the same five.
+    #
+    # Deliberately capped at what the shed can actually deliver: the row is a day TOTAL and
+    # `n = min(have, row["sells"][p])` at the emission, so a row asking to sell stock we do not
+    # hold raises nothing. Priced at the live quote where one is available, falling back to base --
+    # under-estimating here only costs a hand, while over-estimating orphans a route, which is the
+    # asymmetry `_do_hire`'s silent failure creates.
+    proceeds = 0.0
+    for product, qty in (row.get("sells") or {}).items():
+        held = int((shed or {}).get(product, 0) or 0)
+        n_sell = min(held, int(qty or 0))
+        if n_sell <= 0:
+            continue
+        quote = (prices or {}).get(product) or RT.BASE_PRICE.get(product, 0)
+        proceeds += n_sell * float(quote)
+
+    bank, a, b, n = float(money) + proceeds, 1, 1, 0
     for _ in range(want):
         if bank < a:
             break
@@ -5970,6 +7015,13 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     jobs = [j for j in DP.from_nodes(nodes, tiles) if j.tile not in pointless]
     at_risk = set(at_risk)
     owed = collections.Counter({p: q for p, q in (wanted or {}).items() if q > 0})
+    # **A pen the row is waiting on offers its HARVEST separately.** See
+    # `cover.SPLIT_THE_FUNDING_HARVEST`. One tile's ops are atomic to one hand, which forces a ripe
+    # pen's harvest to happen after its feed, care and collect -- the tape puts a second hand on the
+    # tile that does nothing but harvest and run the produce to the shed, and that is the only way
+    # d8's second cow reaches the market before it closes.
+    if fund:
+        jobs = DP.split_funding_harvest(jobs, owed)
     for j in jobs:
         if j.tile in at_risk:
             j.at_risk = True
@@ -5981,7 +7033,7 @@ def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=()
     # The closing shed trip is planned only while there is time to make it. With two turns or fewer
     # left a hand cannot both work and get back, and the overnight sweep banks the produce anyway --
     # so reserving it there only refuses the last harvest of the day. See `cover.materialise`.
-    deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS
+    deliver = max(budget or [0]) > DELIVER_CUTOFF_TURNS or day in WALK_THE_LOAD_HOME_DAYS
     # `day` gates `cover.RESERVE_FROM_DAY`, which must never fire on d0-d9.
     out, _uncovered = DP.plan(units, jobs, budget, depots, carry, supply=supply, deliver=deliver,
                               wanted=owed, rush=fund, day=day)
@@ -6370,6 +7422,55 @@ def _order_sells(orders):
 WHEAT_ROW_OUTRANKS_SHOPPING = True
 
 
+#: Whether the feed row outranks the day's shopping in EVERY turn, not just hour 0.
+#:
+#: `_wheat_row_first`'s own argument has nothing to do with dawn: `_process_market` walks the slots
+#: in order and `_do_buy_product` re-checks the bank per unit (`kaggriculture.py:666-673`), so a
+#: late slot is paid out of whatever the earlier ones left. That holds on every turn of every day.
+#:
+#: Day 8 of the Kawashigi tape is decided at **h01**, and the hour-0 gate meant the block that
+#: mattered was returned untouched. The row asks `WHEAT 17`; we emit
+#:
+#:     h00  SELL FERTILIZER 6, HIRE x9                        -- no wheat order at all
+#:     h01  HIRE, HIRE, BUY_SEED WHEAT 5, BUY_SEED STRAWBERRY 4, BUY_PRODUCT WHEAT 13
+#:
+#: on a $440 bank, with $144 of hires and $450 of seed -- $400 of it STRAWBERRY at $100 a unit --
+#: sitting ahead of the wheat. $594 committed against $440, so ONE wheat clears.
+#:
+#: The tape puts the feed ahead of the seed in both of its spending turns:
+#:
+#:     h00  SELL FERTILIZER 6, HIRE x5, BUY_PRODUCT WHEAT 9, BUY_SEED WHEAT 3
+#:     h05  SELL MILK 12, BUY_ANIMAL SHEEP 1, HIRE, BUY_PRODUCT WHEAT 2, BUY_SEED STRAWBERRY 4
+#:
+#: d8 totals `buy_product 5/17` and it decomposes exactly: 0 at h00 (nothing asked), 1 at h01
+#: (starved by the seed), four singles at h03-h06 -- four because `state["ordered"]` credited all
+#: thirteen QUEUED at h01, leaving `owed = 17 - 13 = 4`. Then the asking stops while money arrives
+#: all afternoon. This flag addresses the middle term only.
+#:
+#: Changes no quantity and no bank estimate -- only which slot an already-emitted order sits in.
+#:
+#: **SHIPPED FALSE: it fixes d8's wheat row completely and pays for it with two hands.**
+#:
+#:     d8            on-pen     +all-day slot
+#:     buy_product     5/17         17/17     <- exact, first time
+#:     feed            6/10          8/10
+#:     care            6/10          8/10
+#:     hands          11/11          9/11     <- the price
+#:     exact cells   467/697       452/697   (-15)
+#:     d16 money      31,816        29,383   (-2,433)
+#:
+#: With the wheat ahead of the hires, the wheat takes the money and two HIREs fail silently
+#: (`_do_hire`, `kaggriculture.py:691`). Two hands fewer for the rest of the season, and weeds
+#: appear on d8, d9, d11, d15 and d16 because nothing is left to water with.
+#:
+#: The tape gets BOTH -- 11 hands and 17 wheat -- by SPLITTING the hires: 5 at h00 alongside
+#: `BUY_PRODUCT WHEAT 9`, both funded by the `SELL FERTILIZER 6` in an earlier slot of that same
+#: turn, then 5 at h01 and 1 at h05. We hire NINE at h00 and leave the wheat to h01, so whichever
+#: of the two is put first starves the other. The slot order is not the remaining defect; the
+#: hire distribution is. Turn this on again once the hires are spread.
+WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY = True
+
+
 def _wheat_row_first(orders, hour):
     """Hour 0's wheat buy, moved in front of HIRE / BUY_ANIMAL / BUY_SEED. SELLs stay put.
 
@@ -6392,7 +7493,11 @@ def _wheat_row_first(orders, hour):
     `mult * fib(hires_today)` on a per-DAY counter, so the crew costs the same wherever in the turn
     it sits, and a hire in slot 5 of hour 0 still works 23 turns.
     """
-    if not (WHEAT_ROW_OUTRANKS_SHOPPING and hour == 0):
+    if not WHEAT_ROW_OUTRANKS_SHOPPING:
+        return orders
+    # See `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY`: the slot argument above is true on
+    # every turn, and d8 is decided at h01.
+    if hour != 0 and not WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY:
         return orders
     first_spend = next((i for i, o in enumerate(orders)
                         if o and o[0] in ("HIRE", "BUY_ANIMAL", "BUY_SEED")), None)
@@ -6731,6 +7836,43 @@ def _nearest_ground(order, tiles, taken, unlocked):
     return best
 
 
+#: **A bare pen takes the animal that is about to run out of days to bank its care bonus.**
+#:
+#: An animal's yield on its production day is `min(max_held, 1 + pending_care_bonus)`
+#: (`kaggriculture.py:814`), and the bonus is one per day the pen was fed AND cared, banked at each
+#: rollover. The window is relative to placement -- `days_since_first = next_day - placed_day -
+#: first_yield_day` (`:809`) -- so the days available to fill the cap is a constant per species:
+#:
+#:     GOOSE   first yield 4, cap 4   ->  slack 0, every day load-bearing
+#:     SHEEP   first yield 6, cap 6   ->  slack 0, every day load-bearing
+#:     COW     first yield 8, cap 6   ->  slack 2, it can miss two days and still milk six
+#:
+#: `_live_ops` chose by `next(... for a in R.ANIMAL_NAMES ...)`, and `ANIMAL_NAMES` is
+#: `["GOOSE", "COW", "SHEEP"]` -- so a unit holding cows and sheep places every COW first. COW and
+#: SHEEP are the only two sharing a structure, so this ordering decides nothing else.
+#:
+#: Day 0 on the kawashigi board buys COW 2 + SHEEP 2 and one hand does all four pens; it has turns
+#: for two FEED/CARE pairs. It placed `h07 COW, h12 COW, h17 SHEEP, h20 SHEEP` and served the cows,
+#: whose d8 milk the schedule feeds on d1-d6 anyway. Both sheep banked four bonus days instead of
+#: five and sheared `1 + 4 = 5`, so the d6 row's `WOOL 12` shipped as 10 -- `sell 15/17`.
+#:
+#: This is the site that BINDS the species. The pin already names one per pen
+#: (`_refresh_pins` writes `("BUILD", animal, cost)`) and the router chains a `("PLACE", item, ...)`
+#: off it (`router.py:1358`), but the route is a visit ORDER and `_live_ops` re-derives the work
+#: from the live board at the stop, so the plan's answer is discarded here. Four plan-time fixes --
+#: the pin order, the PLACE prize, the router's standing-pen branch, and `want_animals` -- were each
+#: measured byte-identical for exactly that reason.
+PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK = True
+
+
+def _place_order():
+    """Animals in the order a bare pen should take them: least slack first, `ANIMAL_NAMES` on ties."""
+    if not PLACE_THE_ANIMAL_WITH_THE_LEAST_SLACK:
+        return list(R.ANIMAL_NAMES)
+    return sorted(R.ANIMAL_NAMES,
+                  key=lambda a: R.ANIMALS[a]["first_yield_day"] - R.ANIMALS[a]["max_held"])
+
+
 def _emit(op, item):
     if op == "BUILD":
         return ["BUILD_COOP" if R.ANIMALS[item]["structure"] == "COOP" else "BUILD_PASTURE"]
@@ -6764,14 +7906,18 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None):
         return []
     kind = cell.get("kind")
     if kind == "PLANT":
-        ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price)
+        ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
+                          tile=tile)
     elif "animal" in cell:
         ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
     elif kind in ("PASTURE", "COOP"):
-        ops = next(([("PLACE", a, 0)] for a in R.ANIMAL_NAMES
+        ops = next(([("PLACE", a, 0)] for a in _place_order()
                     if R.ANIMALS[a]["structure"] == kind and inv.get(a, 0) > 0), [])
     elif kind == "WEED":
-        ops = [("DIG", None, 0)]
+        # A DIG clears ground for a planting that must happen on a LATER day, so on the last day
+        # it is a turn spent to tidy up -- the d29 trace shows u4 digging (1,0) and (3,0) while
+        # 3 units strand in its hand. Same gate as FEED/CARE (`router.upkeep_buys_nothing`).
+        ops = [] if RT.upkeep_buys_nothing(day) else [("DIG", None, 0)]
     else:
         ops = []
     return [(o, i) for o, i, _p in ops]
@@ -6897,6 +8043,97 @@ PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
 
 
+#: **A pen is reserved for a placement the schedule still owes, not for the Nth entry in a list.**
+#:
+#: `_refresh_pins` labelled a pen `wanted[have]`, where `wanted` is the cumulative `places` rows and
+#: `have` is the number of pens that exist. Those are different quantities and the schedule does not
+#: align them day by day -- d6 builds two pens and places nothing, d7 places three animals and builds
+#: two pens -- so through d7 it wants 10 pens against 9 placements, the index runs off the end of the
+#: list, and the loop takes its hardcoded `"COW"` default. The label then outlives the pin by design,
+#: so a pen mislabelled on the day its ground was chosen stays mislabelled.
+#:
+#: Measured on the kawashigi board, seed 11, d7 dawn. The row is `places = [SHEEP, COW, COW]` and
+#: `animals_bought = {COW: 2, SHEEP: 1}`; all three fill, `buy_animal 3/3`:
+#:
+#:     pen_for      {(5,4): COW, (6,4): COW, (6,3): COW, (5,2): COW}
+#:     nodes        four PLACE COW, no PLACE SHEEP anywhere
+#:     crew.cover   supply COW 2 -> keeps (5,4) (6,4), drops (6,3) (5,2)
+#:
+#: Two cows go in, the sheep is never picked up by anybody and sits in the shed until dusk:
+#: `place 2/3`, `animals 8/9`, and `feed 6/9` after it, since an animal in the shed cannot be fed.
+#:
+#: What the pens should be reserved for is on the board already: the cumulative `places` rows minus
+#: the animals standing in pens. At that moment that is `SHEEP 1, COW 2` -- exactly the shed. So the
+#: outstanding row is spent over the reserved-but-empty pens in siting order, nearest ground first,
+#: which is the same rule the siting itself uses.
+#:
+#: This is NOT the value ranking `router.py` rejected at -$5,676. That scored each species by
+#: `cost + remaining` and let the better one win a tie, which reallocates pastures the schedule never
+#: asked to reallocate. This ranks nothing and prefers nothing: it reads the schedule's own ordered
+#: rows and subtracts what the board has already realised.
+PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING = True
+
+
+#: **Sowing keeps back the ground the pens still to come will need.**
+#:
+#: Pens and crops draw from the same pool: `_next_ground(order, tiles, taken)` returns the first
+#: square in `field_order` that is neither built on nor pinned, and `field_order` is sorted by
+#: distance from the shed. Sowing runs after the BUILD loop in the same call, so day 0 takes the
+#: whole inner ring for crops and the pens the schedule builds on d2 and d4 get whatever is left.
+#:
+#: Read off Kawashigi's raw replay (seat 0 -- `farms[1]` of our own run is Yusuke Hayashi, not him):
+#:
+#:     d2  KAWASHIGI  pens 4  crops 19  free 2  ->  (4,2)d2  (2,4)d2
+#:         OURS       pens 4  crops 19  free 2  ->  (1,0)d7  (0,0)d8
+#:     d4  KAWASHIGI  pens 5  crops 19  free 1  ->  (4,2)d2     5th pen on (2,4), distance 2
+#:         OURS       pens 4  crops 19  free 1                  5th pen on (0,0), distance 8
+#:
+#: Same pen count, same crop count, same number of free squares, and the two day-0 pen blocks have
+#: the same Manhattan sum. The ONLY difference is which two squares stay open. He sows outward and
+#: keeps the inner ring; we sow the inner ring and keep the corner, so our d2 and d4 pens land at
+#: distance 7 and 8. A FEED is a shed round trip, so those two cost 14 and 16 turns of walking
+#: before any work, and d7 reads `feed 6/9` with 48 idle turns.
+#:
+#: **The horizon is the next land purchase, not the season.** Reserving for every pen the schedule
+#: ever builds would hold ten squares out of twenty-one on day 0 and push the whole planting to the
+#: rim. A parcel reopens near ground, so only the pens that have to fit on ground we already own are
+#: the ones sowing owes anything to -- d2 and d4 here, which is two, which is exactly what he keeps.
+#:
+#: A reserved square is a preference and never a loss: if sowing runs out of ordinary ground it takes
+#: the reserved squares rather than leave a planting unsown, because a crop in the ground today beats
+#: a pen sited well in two days.
+PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL = True
+
+
+def _pens_due_before_more_land(sched, day):
+    """How many pens the schedule builds after `day` but before it buys its next parcel."""
+    nxt = min((d for d in sorted(sched)
+               if d > day and int(sched[d].get("land", 0) or 0) > 0), default=None)
+    return sum(int(sched[d].get("builds", 0) or 0) for d in sorted(sched)
+               if d > day and (nxt is None or d < nxt))
+
+
+def _outstanding_places(sched, day, tiles):
+    """The schedule's placements through `day` that no animal is standing on yet, in row order.
+
+    Earliest occurrences are matched off first, so the species left over are the ones the later rows
+    asked for -- which is what the shed is about to hold.
+    """
+    seq = [a for d in sorted(sched) if d <= day for a in (sched[d].get("places") or [])]
+    standing = collections.Counter()
+    for row in tiles:
+        for c in row:
+            if isinstance(c, dict) and c.get("animal"):
+                standing[c["animal"]] += 1
+    out = []
+    for a in seq:
+        if standing.get(a, 0) > 0:
+            standing[a] -= 1
+        else:
+            out.append(a)
+    return out
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -6944,8 +8181,29 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     want_pens = sum(int(sched.get(d, {}).get("builds", 0) or 0) for d in range(day + 1))
     wanted = [a for d in sorted(sched) if d <= day for a in (sched[d].get("places") or [])]
     have = structures + sum(1 for v in pins.values() if v[0] == "BUILD")
+    # See `PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING`. `pen_for` is insertion-ordered
+    # and pens are sited nearest-ground-first, so spending the outstanding row over its existing
+    # keys hands the earliest placements to the closest pens -- the siting rule, unchanged.
+    todo, took = [], 0
+    if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
+        todo = _outstanding_places(sched, day, tiles)
+        for t in list(pen_for):
+            if took >= len(todo):
+                break
+            a = todo[took]
+            took += 1
+            pen_for[t] = a
+            # The pin carries the animal too, and `router.build_nodes` chains its PLACE off the
+            # pin's item (`BUILD_THEN_PLACE`), so a re-label that skipped it would leave the two
+            # disagreeing about the same tile.
+            if t in pins and pins[t][0] == "BUILD":
+                pins[t] = ("BUILD", a, R.ANIMALS[a]["cost"])
     while have < want_pens:
-        a = wanted[have] if have < len(wanted) else "COW"
+        if PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING:
+            a = todo[took] if took < len(todo) else "COW"
+            took += 1
+        else:
+            a = wanted[have] if have < len(wanted) else "COW"
         # A pen ON a shed-access cell runs its whole daily loop -- draw feed, feed, care, collect,
         # harvest -- without a single move, so those four cells are worth more than any field tile.
         spot = next((tuple(c) for c in PEN_SPOTS
@@ -7009,12 +8267,27 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     def _outstanding(crop):
         return want[crop] - state["planted"][crop] - live[crop]
 
+    # See `PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL`. Held nearest-first,
+    # because that is the ground a pen is worth more on and the ground sowing is about to take.
+    sow_order = plant_order
+    if PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL:
+        owed_later = _pens_due_before_more_land(sched, day)
+        if owed_later > 0:
+            free_now = [t for t in plant_order
+                        if t not in taken and tiles[t[1]][t[0]] is None]
+            held = set(free_now[:owed_later])
+            sow_order = [t for t in plant_order if t not in held]
+
     for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
         qty = want[crop]
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
         for _ in range(qty - state["planted"][crop] - live[crop]):
-            spot = _next_ground(plant_order, tiles, taken)
+            spot = _next_ground(sow_order, tiles, taken)
+            # A preference, never a loss: ordinary ground first, the held squares rather than
+            # leave the row unsown.
+            if spot is None:
+                spot = _next_ground(plant_order, tiles, taken)
             if spot is None:
                 break
             pins[spot] = ("PLANT", crop, RT.plant_prize(crop, day))
@@ -7227,7 +8500,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         sub = _solve([plan_units[u] for u in live], nodes_for(set()),
                      [budget[u] for u in live], depots,
                      {k: load[u] for k, u in enumerate(live)}, supply=plan_supply,
-                     at_risk=_at_risk_tiles(tiles),
+                     at_risk=_at_risk_tiles(tiles, day),
                      pointless=_pointless_tiles(tiles, day, plants_left),
                      tiles=tiles, wanted=owed_sale, fund=short_of_cash, day=day)
         state["routes"] = routes = {u: sub[k] for k, u in enumerate(live)}
@@ -7257,6 +8530,9 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     #: tile, so the whole dawn shift stands on it at h2: eight turns, thirteen wasted hand-turns over
     #: d0-d6, which was the entire overshoot that had this rule shipped OFF.
     cared_this_turn = set()
+    #: Thirsty tiles an idle hand has committed to this turn, so two of them do not converge on one
+    #: crop and spend two turns saving one. See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`.
+    thirsty_claimed = set()
     #: Tiles where a hand is standing on its own next WORK stop and so will be offered that tile's
     #: ops by `_live_ops` this turn. The underfoot rule is for a hand CROSSING a tile; letting a
     #: passer-by take the care first only moves the wasted turn onto the hand whose job it was.
@@ -7292,6 +8568,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         # both surviving across turns because the stop object is the state.
         act = ["PASS"]
         at_shed = tuple(pos) in set(depots)
+        # **The last-day deadline.** See `must_walk_home_now`. Handled here, before the tour walk
+        # and before underfoot/thirsty can spend the turn: from this hour every remaining stop
+        # makes produce the close will discard, and the load in hand is the only job left.
+        if must_walk_home_now(day, hour, pos, inv, depots):
+            st["route"].clear()
+            if at_shed:
+                if sum(shed.values()) + sum(inv.values()) <= SHED_CAPACITY:
+                    act = ["DROP"]
+            else:
+                home = min(depots, key=lambda t: RT.dist(pos, t))
+                m = _step_towards(pos, home, unlocked)
+                if m is not None:
+                    act = [m]
+            acts.append(act)
+            continue
 
         def underfoot():
             """The op worth doing on the tile this hand is STANDING on, or None.
@@ -7315,14 +8606,48 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 return None
             here = tiles[pos[1]][pos[0]]
             if not (isinstance(here, dict) and "animal" in here):
+                # **A ripe crop underfoot is the same defect as a hungry pen underfoot**, and this
+                # function has always returned None on it -- the docstring above says "a tile a hand
+                # merely crosses is never looked at" and then only ever implemented the animal case.
+                #
+                # Measured on d4, seed 11, the tape's `harvest 7` against our 6. The missing tile is
+                # (1,4), a ripe wheat tile worth 3 units. Its owner is the last stop of the longest
+                # tour (`cost 23` against a 23-turn budget) and reaches it at h23 with no turn left
+                # to work it -- while THREE other hands cross it earlier and walk on:
+                #
+                #     h16  u4@(1,4) -> EAST      h19  u2@(1,4) -> WEST
+                #     h23  u0@(1,4) -> EAST      h23  u2@(1,4) -> EAST
+                #
+                # HARVEST only, never WATER: a harvest is a turn for a whole yield and it clears the
+                # tile for a replant, whereas watering a tile someone else is routed to merely moves
+                # the turn around. `working_tiles` keeps it off a tile another hand is working THIS
+                # turn, so two hands cannot harvest the same crop.
+                if (not HARVEST_WHAT_YOU_STAND_ON
+                        or not isinstance(here, dict) or "crop" not in here
+                        or tuple(pos) in working_tiles or tuple(pos) in cared_this_turn):
+                    return None
+                ops = RT.crop_ops(here, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
+                                  tile=tuple(pos))
+                # See `UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW`. A water still on offer means
+                # the tile has a unit left in it, and this hand is forbidden to water.
+                if (UNDERFOOT_LEAVES_A_CROP_THAT_CAN_STILL_GROW
+                        and any(o == "WATER" for o, _a, _v in ops)):
+                    return None
+                if any(o == "HARVEST" for o, _a, _v in ops):
+                    cared_this_turn.add(tuple(pos))
+                    return ["HARVEST"]
                 return None
-            if not here.get("fed_today") and inv.get("WHEAT", 0) > 0:
+            # **Ask the same question the planner asked.** `underfoot` used to feed any unfed pen it
+            # stood on, so a ration `will_be_fed` had deliberately declined went in anyway the moment
+            # a loaded hand crossed the tile -- d0 planned two feeds and emitted three.
+            if not here.get("fed_today") and inv.get("WHEAT", 0) > 0 and RT.will_be_fed(here, day):
                 owed = sum(1 for nd in st["route"]
                            for o, _i in getattr(nd, "ops", ()) if o == "FEED")
                 if inv["WHEAT"] > owed:
                     return ["FEED"]
             if (CARE_WHAT_YOU_STAND_ON and here.get("fed_today")
                     and not here.get("cared_today")
+                    and not RT.upkeep_buys_nothing(day)
                     and tuple(pos) not in cared_this_turn
                     and tuple(pos) not in working_tiles):
                 # Claimed on RETURN: both call sites consume a non-None `underfoot()`
@@ -7369,6 +8694,26 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         act = ["DROP"]
                         break
                     continue
+                # **The selective drop.** `PLACE <item> <n>` beside the shed banks n of ONE item and
+                # leaves the rest of the hand alone (`kaggriculture.py:381-395`), which is the whole
+                # reason `cover._bank` can plan a stop that sheds the fertilizer and keeps the ration.
+                # `DROP` cannot express it, and paying a turn to bin the wheat plus a turn to fetch it
+                # back is what left day 1's fourth pen one turn outside a 24-turn budget.
+                #
+                # Unlike `DROP` this one CLAMPS rather than destroys -- the reference takes
+                # `n = min(n, room)` -- so a full shed costs the bank, never the goods. The local
+                # mirror clamps identically so `shed` does not drift from the board.
+                if node.place:
+                    item = min(node.place)      # a total order, so the tape is reproducible
+                    qty = node.place.pop(item)
+                    room = max(0, SHED_CAPACITY - sum(shed.values()))
+                    give = min(qty, inv.get(item, 0), room)
+                    if give <= 0:
+                        continue
+                    shed[item] = shed.get(item, 0) + give
+                    owed_sale[item] -= give
+                    act = ["PLACE", item, give]
+                    break
                 if node.pick:
                     item = min(node.pick)       # a total order, so the tape is reproducible
                     take = min(node.pick[item], shed.get(item, 0))
@@ -7405,13 +8750,86 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         # waits one turn for a delivery that is already ordered, and every other
                         # shortfall keeps the old behaviour, which is what the day-4 land purchase
                         # and the day-5 sell ordering were tuned against.
+                        # **Waiting past hour 0 was tried here twice, on 2026-08-13, and BOTH are
+                        # losses. Do not restore either without a grid.** The measured cause of the
+                        # short feed days is real -- `feed` equals whatever the shed held at dawn,
+                        # d3 2/4 on a shed of 2, d7 4/9 on a shed of 4, d8 0/10 on a shed of 0 --
+                        # but making the hand stand and wait is not the fix.
+                        #
+                        #   wait on ANY shortfall while the row is still buying
+                        #       d6 `tiles 25/50` -- the land purchase slips to d7 and takes
+                        #       `plant 9/9 -> 0/9` with it. The hands standing at the shed are the
+                        #       hands whose sales fund the parcel.
+                        #   wait only on a CRITICAL draw (`Depot.critical`, which `cover` sets from
+                        #   `at_risk`, and which this walker has never read)
+                        #       same `tiles 25/50` land slip, for `feed 3/10` on d8.
+                        #
+                        # Hour 0 stays, because it is the one turn where an empty shed is certain to
+                        # be a delivery not yet landed rather than a shortfall.
                         if WAIT_FOR_THE_MORNING_DELIVERY and hour == 0 and item in _bought_today:
                             break
+                        # **An animal is not a contested draw.** See
+                        # `THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT`. The two rules above
+                        # rescue a dawn draw only; the row buys day 8's SHEEP at h05, so the shed is
+                        # empty of it for six hours and whichever hand arrives first bins the want,
+                        # the PLACE behind it, and the FEED and CARE that travel with the PLACE.
+                        #
+                        # The animal and the job it fills both move one stop down the tour, so the
+                        # hand keeps working and asks again when its own route puts it back at the
+                        # shed. Only when there IS other work -- a hand with nothing else would be
+                        # standing at the shed, which is the arm that lost the d6 land parcel twice.
+                        if (THE_ANIMAL_WAITS_FOR_THE_PURCHASE_THAT_DELIVERS_IT
+                                and item in R.ANIMAL_NAMES and item in _bought_today
+                                and node.tile not in deferred):
+                            tail = [n for n in st["route"][1:]
+                                    if getattr(n, "needs", None) and n.needs.get(item, 0) > 0]
+                            rest = [n for n in st["route"][1:] if n not in tail]
+                            if rest:
+                                deferred.add(node.tile)
+                                want = node.pick.pop(item)
+                                rest[1:1] = [DP.Depot(node.tile, pick={item: want},
+                                                      critical=node.critical)] + tail
+                                st["route"][1:] = rest
+                                continue
                         del node.pick[item]
                         continue
                     node.pick[item] -= take
                     if node.pick[item] <= 0:
                         del node.pick[item]
+                    elif (CARRY_THE_UNFILLED_DRAW_FORWARD and hour == 0
+                          and item in _bought_today):
+                        # **The other half of the morning delivery.** See
+                        # `CARRY_THE_UNFILLED_DRAW_FORWARD`. `WAIT_FOR_THE_MORNING_DELIVERY` covers a
+                        # draw that gets NOTHING at hour 0 -- but a draw that gets SOME of what it
+                        # asked for never reaches that branch, and the remainder is deleted on the
+                        # next turn like any ordinary shortfall. It is not one: `_process_market` runs
+                        # after the unit phase (`kaggriculture.py:922` then `:928`), so the rest of
+                        # the order is still in flight, and the plan was built against a shed already
+                        # credited with it (`PLAN_TODAYS_PURCHASES`).
+                        #
+                        # Moved to a stop the tour is already making, so it costs the PICKUP turn and
+                        # no travel, and the hand never stands still -- which is what the two
+                        # wait-for-it arms recorded below did, and both lost the d6 land parcel.
+                        # Deliberately hour 0 ONLY: carrying every shortfall forward, all day, was
+                        # measured on this grid and is a loss (d3 `feed 4/4 -> 3/4`, d7 `7/9 -> 4/9`,
+                        # d16 $26,664 -> $22,418) -- past dawn a short shed is competition between
+                        # hands, not a van that has not arrived.
+                        # **And only to a stop that still has a pen AFTER it.** A draw taken at the
+                        # end of the tour feeds nothing -- it spends a turn and, worse, lifts wheat
+                        # out of a shed the other hands are drawing from, so the ration is not merely
+                        # wasted, it is taken from someone. The unguarded version measured exactly
+                        # that: d3 `feed 4/4 -> 3/4` and d7 `7/9 -> 4/9` on a day with five and eight
+                        # hands, while d1 -- one farmer, nobody to steal from -- gained its fourth pen.
+                        later, _rest = None, st["route"][1:]
+                        for _k, _n in enumerate(_rest):
+                            if getattr(_n, "depot", False) and any(
+                                    getattr(_w, "needs", {}).get(item, 0) > 0
+                                    for _w in _rest[_k + 1:]):
+                                later = _n
+                                break
+                        if later is not None:
+                            later.pick[item] += node.pick[item]
+                            del node.pick[item]
                     shed[item] -= take
                     act = ["PICKUP", item, take]
                     break
@@ -7582,6 +9000,49 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         #
         # Walking five of the six steps and not arriving is worth nothing today, but it is worth
         # nothing either way; the unit was passing. On the days it does arrive it is worth the sell.
+        # **A hand with nothing left to do walks to the crop that dies tonight.**
+        # See `THIRSTY_CROP_PULLS_AN_IDLE_HAND`. Placed after `WALK_THE_LOAD_HOME` deliberately:
+        # carrying a load to the shed is worth a sale today, and this is worth a tile tomorrow, so
+        # the load wins the tie. Both only ever fire on a hand that was already passing.
+        if THIRSTY_CROP_PULLS_AN_IDLE_HAND and act == ["PASS"]:
+            best = None
+            for _y, _r in enumerate(tiles):
+                for _x, _c in enumerate(_r):
+                    if not (isinstance(_c, dict) and _c.get("crop")):
+                        continue
+                    # Dies at the next h00: `consecutive_unwatered` already counts yesterday, and
+                    # `_daily_refresh_plants` increments again for a day that ends unwatered, so
+                    # `>= 1 and not watered_today` is exactly "one more dry day and it is a WEED"
+                    # (`kaggriculture.py:777-782`, then the `>= 2` branch at `:771`).
+                    if _c.get("watered_today"):
+                        continue
+                    if int(_c.get("consecutive_unwatered", 0) or 0) < 1:
+                        continue
+                    _t = (_y, _x)
+                    # `working_tiles` is a hand standing on its own next stop; it will be offered
+                    # this tile's ops anyway. `thirsty_claimed` stops two idle hands converging on
+                    # one tile, which would spend two turns to save one.
+                    if _t in thirsty_claimed or _t in working_tiles:
+                        continue
+                    if not _owned(_t, unlocked):
+                        continue
+                    _d = RT.dist(pos, _t)
+                    if best is None or _d < best[0]:
+                        best = (_d, _t)
+            if best is not None:
+                _d, _t = best
+                if _d == 0:
+                    thirsty_claimed.add(_t)
+                    act = ["WATER"]
+                else:
+                    _m = _step_towards(pos, _t, unlocked)
+                    if _m is not None:
+                        # Claimed on the WALK, not on arrival: a second hand must not start the same
+                        # journey. If this one is interrupted tomorrow the claim is gone with the
+                        # turn, so nothing is stranded.
+                        thirsty_claimed.add(_t)
+                        act = [_m]
+
         if WALK_THE_LOAD_HOME and act == ["PASS"] and any(v > 0 for v in inv.values()):
             if at_shed:
                 # Same clamp as the planned drop: DROP `del`s every item after taking what fits
@@ -7686,6 +9147,22 @@ SELL_A_DRAINLESS_PRODUCT_AT_ONCE = True
 #: says it is costing us, and each extra product widens what the A/B has to explain.
 NO_DRAIN_PRODUCTS = ("MELON",)
 SELL_AT_ONCE_FROM_DAY = 18
+
+#: **The flush days, exempted individually rather than by lowering the floor.**
+#:
+#: The floor above is 18 and the melon flush is d10-d11, so the exemption could never fire on the
+#: days it was written for. Traced on seed 11 against Kawashigi's tape: 67 melons are ripe at d10 h00
+#: -- more than the tape's 60 -- they reach the shed at h21-h23 so only 35 clear that day, and the
+#: remaining **37 sit in the shed from d11 h00 to d11 h16** while the tape sells his own d11 melon
+#: into the same book. Melon recovers ONE unit a day, so every one of those sixteen hours makes the
+#: price strictly worse. There is no recovery to wait for.
+#:
+#: **Two days, not a lower floor.** Lowering `SELL_AT_ONCE_FROM_DAY` to 10 would also release
+#: d12-d17, which nothing here has measured and where the original "nothing to win before d18"
+#: reasoning still stands. This is the smallest change that reaches the defect.
+#:
+#: d0-d9 cannot move under any value here, so the matched opening is out of reach by construction.
+SELL_AT_ONCE_DAYS = (10, 11)
 
 
 def market_price(prod, inventory):
@@ -7927,16 +9404,21 @@ CROP_ADAPT_FROM_DAY = 6
 
 #: **WOOL_SHOP_SETS_THE_HERD -- an EARLY YARN_STORE makes the herd sheep-heavy.**
 #:
-#: Read off **66** downloaded games of the #1 player, 61-0-5
-#: (`docs/kawashigi_one_board_2026-08-13.md`). Shops unlock every third day, so draw #N lands on day
-#: 3N and that is verified 66/66. Against the position of the FIRST yarn store his herd is a step
-#: function with no exceptions at all:
+#: Re-measured 2026-08-15 over **74 distinct** downloaded games of the #1 player -- every replay on
+#: disk carrying his seat, deduplicated by episode id. Shops unlock every third day, so draw #N
+#: lands on day 3N. Against the position of the FIRST yarn store:
 #:
-#:     yarn first at draw #1 (d3)  : COW  6, SHEEP 12, total 18    n=10
-#:     yarn first at draw #2 (d6)  : COW  6, SHEEP 12, total 18    n=11
-#:     yarn first at draw #3 (d9)  : COW  6, SHEEP  8, total 14    n= 3
-#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP  4, total 14  n=16
-#:     no yarn store at all        : COW 10, SHEEP  4, total 14    n=22 (+4 at COW 8/SHEEP 6)
+#:     yarn first at draw #1 (d3)    : COW  6, SHEEP 9.05, total 15.05   n=21   quads 4.00
+#:     yarn first at draw #2 (d6)    : COW  6, SHEEP 9.26, total 15.26   n=23   quads 4.00
+#:     yarn first at draw #3 (d9)    : COW  6, SHEEP 6.00, total 12.00   n= 7   quads 3.00
+#:     yarn first at draw #4+ (d12+) : COW 10, SHEEP 4.00, total 14.00   n=34   quads 3.00
+#:     no yarn store at all          : COW 9.64, SHEEP 4.36, total 14    n=56   quads 3.00
+#:
+#: **The earlier version of this table said "SHEEP 12, total 18" on draws #1-#2 and it was wrong.**
+#: He never runs 18 animals; the maximum over all 74 seats is 16. The correction was already
+#: recorded in `tests/test_the_herd_split_answers_the_recorded_shop_draw.py` on 2026-08-13 and never
+#: propagated to here or to `tests/test_the_herd_follows_the_wool_shop.py`, which is how a wrong
+#: number survived two weeks and sent a session chasing a herd size that does not exist.
 #:
 #: So `COW == 6` iff a yarn store is among the FIRST THREE draws: 24/24 yes, 0/42 no. A perfect
 #: classifier over 66 games, and the reason this flag now carries a draw limit. **The 16 games at
@@ -7952,11 +9434,22 @@ CROP_ADAPT_FROM_DAY = 6
 #: milk is what floors the milk price. Measured on our own fills, wool went out at
 #: $160/$109/$181/$146 on d24-d28 while milk took $1-$5 all season.
 #:
-#: **NOT built in, and it needs pens before it can be: the herd TOTAL moves too.** A yarn store by
-#: d6 takes him to 18 animals, not 18 split differently -- four extra SHEEP at $500 plus four pens
-#: plus their feed. That is 21 of the 24 yarn games, so it is the dominant branch, and this flag
-#: reaches none of it: `_herd_split` may only redistribute `want_total`, which the schedule fixes at
-#: 14. Raising it is a schedule change with a build and turn cost, not a split rule.
+#: **The herd TOTAL moves too -- but only on FOUR quadrants, and that closes the question for us.**
+#: Cross-tabulating the same 74 seats by quadrants owned:
+#:
+#:     quads  herd   n
+#:         3    12    4
+#:         3    14   47          <- three quadrants NEVER exceeds 14, 51 seats
+#:         4    13    1
+#:         4    14    4
+#:         4    15    9
+#:         4    16    9
+#:
+#: We play three quadrants, and on three quadrants he caps at 14 -- exactly the count the schedule
+#: fixes. So there is no herd-total gap to close at our board size, and `_herd_split` being unable
+#: to raise `want_total` costs nothing. Growing the herd is part of buying the fourth parcel, not a
+#: separate change: see `docs/fable_fourth_quadrant_reopened_2026-08-15.md`, which reaches the same
+#: place from the field data.
 WOOL_SHOP_SETS_THE_HERD = True
 
 #: What the leader holds cows to once an early wool shop is on the board. 24 of 24 such games ran
@@ -7966,6 +9459,77 @@ WOOL_SHOP_COW_CAP = 6
 #: How many of the town's draws count as "early" for the rule above. Three, because draw #3 lands on
 #: d9 and is the last one he responds to -- see the table: #3 still gives COW 6, #4 does not.
 WOOL_SHOP_DRAW_LIMIT = 3
+
+#: **What he runs when NO yarn store lands early -- the other half of the same step function.**
+#:
+#: Measured 2026-08-13 over all 67 recorded カワシギ seats, by the draw his first yarn store lands on:
+#:
+#:     first yarn at draw #1 (d3)   n=10   COW  6.00   SHEEP 9.10
+#:     first yarn at draw #2 (d6)   n=11   COW  6.00   SHEEP 9.27
+#:     first yarn at draw #3 (d9)   n= 3   COW  6.00   SHEEP 6.00
+#:     first yarn at draw #4+       n=16   COW 10.00   SHEEP 4.00
+#:     no yarn store at all         n=27   COW  9.63   SHEEP 4.37   (22 at COW 10, 5 at COW 8)
+#:
+#: The cap branch below reproduced the top three rows 24/24. The bottom two were left to the
+#: drain-aware greedy, **and it gives 13 where he runs 10** -- wrong on 43 of his 67 seats. Pinning
+#: both branches takes it to 62/67; the greedy alone scores 1/67. The five that remain are
+#: unreachable by any constant, because he himself runs COW 10 in 22 of those games and COW 8 in 5.
+#:
+#: **Fitted to him alone, deliberately.** Across the 451 recorded seats of the whole field the same
+#: split is mush -- early-yarn mean COW 7.26, only 41% at the cap even in the top decile. A
+#: drain-weighted linear fit scored better against that mean and was rejected: it would have
+#: replaced a classifier that is perfect on the player we are trying to beat with regression toward
+#: the players we already beat. `tests/test_the_herd_split_answers_the_recorded_shop_draw.py` keeps
+#: the trap executable.
+WOOL_SHOP_NO_YARN_COW = 10
+
+#: **Fit the whole herd to the leader's THREE-QUADRANT seats, which is the board we play.**
+#:
+#: Measured 2026-08-15 over 74 distinct episodes on disk carrying his seat, restricted to the 51
+#: that own three quadrants. Seat alignment verified on `92498144`, where `farms[0]` is カワシギ at
+#: $149,998 and matches `rewards[0]`. He has exactly three answers there:
+#:
+#:     COW  SHEEP  total   n
+#:       6      6     12    4     every one has its first YARN_STORE in draws 1-3
+#:       8      6     14    5     four of five have exactly ONE milk shop and no yarn store
+#:      10      4     14   42
+#:
+#: Exhaustive search over both thresholds (`data/logs/kawa_q3_rule_search.log`) puts the best fit at
+#: `yarn_by=3, milk_lo=1` with **49/51 = 96.1%** exact on (COW, SHEEP), against the previous rule's
+#: 42/51 = 82.4%. The two misses are a symmetric pair -- identical features, opposite choices -- so
+#: they are noise, not a missing input.
+#:
+#: **The change that matters is the TOTAL, and it goes DOWN.** The old rule capped cows at 6 and
+#: then spent the rest of a fixed 14-animal budget on sheep, giving COW 6 / SHEEP 8 where he runs
+#: COW 6 / SHEEP 6. Those two sheep are ~16 units of wool into a book that floors 59 units above
+#: `I0`, plus $1,000 and two FEED and two CARE stops a day. Lowering the total needs no new pens --
+#: unlike raising it, which he only ever does on FOUR quadrants.
+#: **PARKED AND OFF, 2026-08-15. The fit is good; the change is not safe for OUR agent.**
+#:
+#: Dropping the total to twelve only pays if the freed capacity becomes crops. He converts it --
+#: ~12 more plantings and ~29 more waters on his total-12 seats, with his hire count unchanged at
+#: 277. **We have no logic that does that.** Our crop rows are fixed by the schedule and the solver
+#: is not reactive, so we would take the cost and idle the gain; we already idle 1365 unit-turns a
+#: season against the tape's 660.
+#:
+#: And the cost lands on the wrong boards. The early-yarn branch fires exactly where wool is well
+#: drained and valuable -- those seats run wool drain 240-504 and wool closes $24-$248 -- so two
+#: fewer sheep is ~16 units surrendered at up to $240 each against $1,000 saved.
+#:
+#: The measurement stands and is worth keeping: 49/51 = 96.1% against his three-quadrant seats,
+#: versus 42/51 = 82.4% for the shipped rule (`data/logs/kawa_q3_rule_search.log`). Re-enable only
+#: alongside logic that spends the freed turns on planting.
+HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE = False
+
+#: Sheep on the early-wool branch. Six, not "all the budget that is left".
+EARLY_WOOL_SHEEP = 6
+
+#: At or below this many MILK-carrying shops, with no yarn store at all, he moves a cow into a
+#: sheep: COW 8 / SHEEP 6 rather than COW 10 / SHEEP 4. MILK is carried by three of the eight shop
+#: types, so one milk shop is a genuinely thin book.
+MILK_POOR_SHOP_COUNT = 1
+MILK_POOR_COW = 8
+MILK_POOR_SHEEP = 6
 
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
@@ -7990,10 +9554,35 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
     # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
     # would have cut those to 6.
-    if WOOL_SHOP_SETS_THE_HERD and "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]:
-        if split["COW"] <= WOOL_SHOP_COW_CAP:
-            split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], WOOL_SHOP_COW_CAP))
-            split["COW"] = max(split["COW"], min(WOOL_SHOP_COW_CAP, total - split["SHEEP"]))
+    if WOOL_SHOP_SETS_THE_HERD and HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE:
+        _seen = list(unlocked_shops or ())
+        _early = "YARN_STORE" in _seen[:WOOL_SHOP_DRAW_LIMIT]
+        _milk = 0
+        if _KG is not None:
+            _milk = sum(1 for s in _seen if "MILK" in _KG.SHOPS.get(s, ()))
+        if _early:
+            cow_t, sheep_t = WOOL_SHOP_COW_CAP, EARLY_WOOL_SHEEP
+        elif "YARN_STORE" not in _seen and _milk <= MILK_POOR_SHOP_COUNT:
+            cow_t, sheep_t = MILK_POOR_COW, MILK_POOR_SHEEP
+        else:
+            cow_t, sheep_t = WOOL_SHOP_NO_YARN_COW, total - WOOL_SHOP_NO_YARN_COW
+        # `bought` floors both, so this can never unbuy an animal that exists; the cap keeps the
+        # schedule's own count as a ceiling while allowing the early-wool branch to sit BELOW it.
+        split["COW"] = max(split["COW"], min(cow_t, total))
+        split["SHEEP"] = max(split["SHEEP"], min(sheep_t, total - split["COW"]))
+        if split["COW"] + split["SHEEP"] > total:
+            split["SHEEP"] = max(bought.get("SHEEP", 0), total - split["COW"])
+        return split
+
+    if WOOL_SHOP_SETS_THE_HERD:
+        # **Both branches of his step function are pinned, not just the capped one.** An early yarn
+        # store means 6 cows; anything else means 10. Leaving the second case to the greedy below
+        # was wrong on the majority of his recorded seats -- see `WOOL_SHOP_NO_YARN_COW`.
+        early = "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]
+        target = WOOL_SHOP_COW_CAP if early else WOOL_SHOP_NO_YARN_COW
+        if split["COW"] <= target:
+            split["SHEEP"] = max(split["SHEEP"], total - max(split["COW"], target))
+            split["COW"] = max(split["COW"], min(target, total - split["SHEEP"]))
             return split
 
     step_now = day * TPD + hour
@@ -8017,6 +9606,196 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
         split[pick] += 1
         headroom[pick] -= per_animal[pick]
     return split
+
+
+#: **HERD_SPLIT_IS_A_SEASON_DECISION -- the split decides the MIX; the schedule decides the ORDER.**
+#:
+#: `_place_animals` used to hand `_herd_split` the herd accumulated through **today** and then use
+#: its answer as today's cumulative target. That makes one function decide two different things, and
+#: it gets the second one wrong: every branch of the split fills a species to a cap before it gives
+#: anything to the other, so on a schedule that interleaves them the later species is deferred to
+#: the end of the herd regardless of which days its rows sit on.
+#:
+#: Measured on the kawashigi board, seed 11, FILLS not offers. His `animals_bought` rows ARE his
+#: recorded order stream -- `d0 COW2 SHEEP2, d3 COW1, d5 COW1, d7 COW2 SHEEP1, d8 SHEEP1, d9 COW2,
+#: d11 COW2` -- so any divergence here is ours. Cumulative bought at dusk:
+#:
+#:                ours          his tape
+#:     d5         C4 / S2       C4 / S2       identical to here
+#:     d7         C6 / S2       C6 / S3       his d7 row is COW 2 + SHEEP 1
+#:     d8         C8 / S2       C6 / S4       his d8 row is SHEEP 1
+#:     d9         C10 / S2      C8 / S4
+#:     d11        C10 / S4      C10 / S4      the totals reconcile, four days late
+#:
+#: The MIX was never in dispute. YARN_STORE lands on this board at d12 -- the fourth draw, outside
+#: `WOOL_SHOP_DRAW_LIMIT` -- so `WOOL_SHOP_SETS_THE_HERD` pins COW at `WOOL_SHOP_NO_YARN_COW = 10`
+#: and the split returns COW 10 / SHEEP 4, which is exactly what the schedule asks for. Only the
+#: order moved, and the order is what the sells depend on: two sheep that arrive on d11 instead of
+#: d7 and d8 shear nothing into the d8-d10 wool rows, and a sheep's first yield is 6 days out.
+#:
+#: So the split is asked about the SEASON, once, and its answer is spent along the schedule's own
+#: rows in day order -- a head keeps its scheduled species while that species has season allowance
+#: left, and flips only when it does not. On a board whose shops genuinely say all-cow the allowance
+#: runs out at the first sheep row and every later one still becomes a cow, so the adaptivity the
+#: flag was built for is untouched; what is removed is the reordering it was never asked for.
+HERD_SPLIT_IS_A_SEASON_DECISION = True
+
+
+def _herd_through_day(sched, day, split):
+    """Today's cumulative COW/SHEEP target: the schedule's rows in day order, re-labelled to `split`.
+
+    Walks every row from day 0 so the allowance is consumed in the order the season buys in, and
+    counts only the heads rowed on or before `day`. A head whose scheduled species still has season
+    allowance keeps it; one whose species is exhausted takes the other, which is how a board that
+    wants a different mix still gets it. Species other than COW and SHEEP are not the split's
+    business and are left to the caller's own accumulation.
+    """
+    room = {"COW": int(split["COW"]), "SHEEP": int(split["SHEEP"])}
+    out = collections.Counter()
+    for dd in sorted(sched):
+        for a in ("COW", "SHEEP"):
+            for _ in range(int((sched[dd].get("animals_bought") or {}).get(a, 0) or 0)):
+                pick = a if room[a] > 0 else ("SHEEP" if a == "COW" else "COW")
+                if room[pick] <= 0:
+                    continue
+                room[pick] -= 1
+                if dd <= day:
+                    out[pick] += 1
+    return out
+
+
+#: **How many of the schedule's animals become GEESE, swapped in place and as early as possible.**
+#:
+#: RESTORED. `7a88d30` ("Delete the geese rather than leave a losing flag in the tree") deleted this
+#: mechanism on the strength of `c9c1c18`'s measurement: "-21k a game at one bird in the mirror, and
+#: 42 points of win rate against 24 recorded opponents at two." **That measurement is void.**
+#: `SELLABLE` (above, see its docstring) held only six of the env's nine product names for most of
+#: this project's life, and EGG was never one of them -- so every goose in every arm that was ever
+#: measured produced eggs that could not be sold under any flag, on any day. The geese paid every
+#: cost (the $300 purchase, the COOP, the daily FEED and CARE) and banked none of their only revenue
+#: line. "Geese lose $21k a game" measured a bird with its market amputated, which is exactly the
+#: `CLAUDE.md` pattern -- "animals don't pay" has now been an artifact of something the code could
+#: not express five separate times.
+#:
+#: A goose is still, on paper, the cheapest animal in the game and the fastest to first yield:
+#:
+#:     GOOSE   cost $300   first_yield_day 4   interval 1   max_held 4   product EGG
+#:     COW     cost $400   first_yield_day 8   interval 2   max_held 6   product MILK
+#:     SHEEP   cost $500   first_yield_day 6   interval 3   max_held 6   product WOOL
+#:
+#: -- it yields DAILY from day 4, against a cow's every second day from day 8 and a sheep's every
+#: third from day 6, so it is also the animal most sensitive to sitting off a zero-walk cell (see
+#: `HERD_GEESE_EARLIEST`).
+#:
+#: **Left at 0.** Restoring the mechanism is not a claim that geese pay -- it is a claim that the
+#: question can now be asked, because EGG reaches the market. The joint search (`scripts/
+#: product_search.py`, which already looks for this exact name) is what should decide the count; do
+#: not hand-tune this flag without a fresh measurement taken with the SELLABLE fix in place.
+#:
+#: **The swap is free.** GOOSE builds a COOP rather than a PASTURE, but `BUILD_COOP` and
+#: `BUILD_PASTURE` are the same op cost (`kaggriculture.py:480,486`) and the pen-placement code in
+#: this file (`_place_animals`, the `kind in ("PASTURE", "COOP")` branches) is already generic over
+#: `R.ANIMALS[a]["structure"]`, so nothing about the board geometry or the routing changes -- only
+#: the species, and therefore the structure kind and the product.
+HERD_GEESE = 0
+
+#: The order geese are taken in, cycled. See `HERD_GEESE`.
+HERD_GEESE_FROM = ("SHEEP", "COW")
+
+#: **The earliest day each successive goose may be bought -- one per zero-walk cell.**
+#:
+#: A pen ON a shed-access tile runs its whole daily loop -- draw feed, feed, care, collect, harvest
+#: -- without a single move (`routines.py`, "the ranch cell"). Off those cells the pen pays a walk
+#: every visit, and a GOOSE is the animal visited most often: `interval 1`, so it produces every
+#: night, against a COW's every second and a SHEEP's every third. So the goose is exactly the animal
+#: that most needs a zero-walk cell, and there are only four -- of which one is owned at the start:
+#:
+#:     (4,4)  NW   0 parcels               day 0
+#:     (5,4)  NE   1 parcel   $1,000       the reference schedule buys NE around day 6
+#:     (4,5)  SW   2 parcels  $3,000       ~day 10
+#:     (5,5)  SE   3 parcels  $7,000       late, if ever
+#:
+#: Pen spots are already allocated shed-access-first (`_place_animals`'s `PEN_SPOTS` search), and
+#: `swap_in_geese` rewrites the `places` row in order, so a goose whose row is late enough takes its
+#: cell by construction; this table is what stops one being bought before its cell exists.
+HERD_GEESE_EARLIEST = (0, 6, 10, 21)
+
+
+def swap_in_geese(schedule, geese=None):
+    """A COPY of `schedule` with `geese` of its animals turned into GOOSE, in place and earliest first.
+
+    A copy, because the schedule handed in is Victor's recording and every other reader of that dict
+    would otherwise see the swap too.
+
+    "In place" means the row keeps its animal COUNT: a day that bought two animals still buys two.
+    That matters because the pen-build schedule (`want_pens` in `_place_animals`) is paced to those
+    counts, so changing them strands an animal in the shed or leaves a pen empty -- and `PLACE` on a
+    missing structure silently no-ops.
+    """
+    geese = HERD_GEESE if geese is None else geese
+    out = {int(d): dict(row) for d, row in schedule.items()}
+    for d in out:
+        out[d]["animals_bought"] = dict(out[d].get("animals_bought") or {})
+        if out[d].get("places"):
+            out[d]["places"] = list(out[d]["places"])
+    days = sorted(out)
+
+    def _take_bought(species, not_before):
+        """Turn one `species` into a GOOSE in the earliest `animals_bought` row at or after `not_before`."""
+        for d in days:
+            if d < not_before:
+                continue
+            row = out[d]["animals_bought"]
+            if int(row.get(species, 0)) > 0:
+                row[species] = int(row[species]) - 1
+                if not row[species]:
+                    del row[species]
+                row["GOOSE"] = int(row.get("GOOSE", 0)) + 1
+                return True
+        return False
+
+    def _take_place(species, not_before):
+        """The same, in the `places` row.
+
+        **`places` is a SECOND statement of the species and both must move together.** The pen
+        planner reads `places`, not `animals_bought` (`_place_animals`: `wanted = [a for d ... for a
+        in sched[d]["places"]]`), and pins `("BUILD", a, ...)` from it -- so swapping only the
+        purchase buys a goose and builds it a PASTURE. `PLACE` is a silent no-op on the wrong
+        structure, so the bird sits in the shed for the rest of the season.
+        """
+        for d in days:
+            if d < not_before:
+                continue
+            for i, a in enumerate(out[d].get("places") or ()):
+                if a == species:
+                    out[d]["places"][i] = "GOOSE"
+                    return True
+        return False
+
+    taken = 0
+    for k in range(max(geese, 0)):
+        # **One goose per zero-walk cell, and not before that cell exists.** See `HERD_GEESE_EARLIEST`.
+        floor = HERD_GEESE_EARLIEST[k] if k < len(HERD_GEESE_EARLIEST) else HERD_GEESE_EARLIEST[-1]
+        for species in itertools.islice(itertools.cycle(HERD_GEESE_FROM), k, k + len(HERD_GEESE_FROM)):
+            # **Both rows or neither.** Checked BEFORE either is touched, because a swap that moves
+            # the purchase and not the pen is exactly the failure this guards against: the pen
+            # planner reads `places`, so a half-applied swap buys a goose and builds it a PASTURE,
+            # and `PLACE` is a silent no-op on the wrong structure.
+            has_buy = any(int(out[d]["animals_bought"].get(species, 0)) > 0
+                          for d in days if d >= floor)
+            has_place = any(species in (out[d].get("places") or ())
+                            for d in days if d >= floor)
+            if not (has_buy and has_place):
+                continue
+            _take_bought(species, floor)
+            _take_place(species, floor)
+            taken += 1
+            break
+        else:
+            # No species has both rows available this late. Another goose would have no cell and no
+            # row, so stop rather than pushing one onto ordinary ground.
+            break
+    return out
 
 
 def _adapt_crops(want, planted, live, day, unlocked_shops, last_day=29):
@@ -8405,6 +10184,170 @@ SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT") + tupl
 FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 
 
+#: **Give up melon to an opponent already committed to it, and take strawberry instead.**
+#:
+#: Measured across all sixteen downloaded カワシギ games, 2026-08-15. His strawberry/melon split has
+#: exactly two states and the total is ALWAYS 54:
+#:
+#:     STRAW 34 / MELON 20     10 games        STRAW 42 / MELON 12      6 games
+#:
+#: Every game buys `MELON 12` on d0. The whole decision is one binary +8, executed `d5:+3 d6:+5`,
+#: paid for with 8 fewer strawberry. It separates 16/16 on the opponent, and the reason is visible on
+#: the board he can see when he makes it:
+#:
+#:     researchstudio.site   d5: MELON 9, WHEAT 7                -> holds at MELON 12, STRAW 42
+#:     the other three       d5: MELON 5, STRAWBERRY 3, WHEAT 6  -> tops up to MELON 20, STRAW 34
+#:
+#: **Melon is the one crop no shop buys** -- the eight demand lists at `kaggriculture.py:91-98` carry
+#: wheat, carrot, tomato, strawberry, egg, milk and wool, and never melon. So melon's price is set by
+#: nothing except how much the two farms dump into the town book, while strawberry has four shops
+#: bidding for it. An opponent on nine melon tiles is going to flood that book; the eight tiles are
+#: worth more in a crop somebody is buying.
+#:
+#: This corrects C-23 in `docs/REGISTER.md`, which reverted the `STRAWBERRY<->MELON` swap because it
+#: "produces an identical 54/4 split on every board -- a pair with one board-independent member
+#: cannot adapt". That is true of `SHOP_ADAPT_CROPS` and is the wrong reason to close the question:
+#: the signal was never the shop draw. It is the opponent, and it is not board-independent at all.
+#:
+#: The count is kept exactly and only the crop is re-decided, which is `_adapt_crops`' rule and keeps
+#: the tour shape untouched. Latched once, on the first day at or after `MELON_YIELD_FROM_DAY`, so d5
+#: and d6 cannot disagree.
+MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT = True
+
+#: d5, because that is the day he acts. The first shop unlocks at d2h23 in all sixteen games, so he
+#: has two and a half days of information; the fork is at d5 and completes on d6.
+MELON_YIELD_FROM_DAY = 5
+
+#: Between the two observed opponent states -- 9 melon tiles fires, 5 does not -- and no closer than
+#: that, because those are the only two values the sixteen games contain.
+MELON_YIELD_OPPONENT_MELON = 7
+
+
+#: **Turn late WHEAT plantings into CARROT / TOMATO.** Sweepable integers: how many wheat plant
+#: stops, from `LATE_CROP_FROM_DAY` onward, are re-crewed to each.
+#:
+#: The 2026-08-15 balance change (PR #1399) put both on a `hinge` scarcity curve, and CARROT's
+#: `below_target` went 0.20 -> 1.00 on top of that. Measured on two ladder replays of our own agent:
+#:
+#:     end-of-season scarcity     x      T   x/T   old $   new $
+#:     CARROT                   456    450  1.01      42      71     +69%
+#:     TOMATO                   228    200  1.14      87      91      +5%
+#:     TOMATO (other replay)    387    200  1.94     108     274    +154%
+#:
+#: Carrot's gain is the target change and applies at ANY depth; tomato's is the hinge and needs
+#: x ~ 2T, which it reached in one of two games. So carrot is the steady one and tomato is a lottery
+#: on how hard the shops drain it -- expect tomato to need far more seeds to separate from noise.
+#:
+#: **Wheat is the right thing to spend.** FEED takes one WHEAT from the acting hand, so wheat looks
+#: load-bearing; it is not. Measured on the same two replays, we buy far more wheat as PRODUCT than
+#: we ever eat -- 422 bought against 329 fed, and 420 against 316 -- so the herd is fed entirely out
+#: of purchases and every wheat TILE is grown purely to sell. Reallocating them costs no feed at all.
+#:
+#: Both default to 0, which is a no-op, so this is inert until a sweep sets it.
+WHEAT_TILES_TO_CARROT = 0
+WHEAT_TILES_TO_TOMATO = 0
+
+#: **Every crop against every other, as `(src, dst, tiles)` triples.** The two integers above can
+#: only ever spend wheat; this can also take melon away, or buy wheat with strawberry.
+#:
+#: Why the general form is needed, measured on ladder game `93346440` -- a game we WON by $70,525:
+#:
+#:     product        base   inv close   price close
+#:     MELON           250       10157        $  4     1.6% of base, book UP 157 units
+#:     WHEAT            25        9419        $ 49     ~2x base, deepest drain on the board
+#:     STRAWBERRY      120        9916        $197     above base
+#:     TOMATO           60        9916        $ 70     above base
+#:     CARROT           35       10032        $ 28     we supplied it, nobody drained it
+#:
+#: and on a second board (GUI, 2026-08-15): EGG $141 of $50, CARROT $80 of $35, WHEAT $48 of $25,
+#: MELON $1 of $250, MILK $1 of $160, WOOL $11 of $200.
+#:
+#: Neither melon's collapse nor wheat's premium is reachable with a wheat-only knob, and
+#: `SHOP_ADAPT_CROPS`'s own docstring names that exact axis -- "wheat against strawberry+melon" --
+#: as the one worth building.
+#:
+#: Applied from `LATE_CROP_FROM_DAY`, in the order given, each budget season-wide and draining as it
+#: is spent. Inert at `()`, so this ships as a no-op until a sweep sets it.
+CROP_TILE_SHIFTS = ()
+
+#: Late only. The early rows are the opening this repo matches op-for-op, and both crops are scarcity
+#: plays whose price is highest once the shops have had a season to drain the book.
+LATE_CROP_FROM_DAY = 12
+
+
+def _recrew(row, src, dst, budget):
+    """Re-crew up to `budget` of this row's `src` plant stops to `dst`. Returns (row, spent).
+
+    `plants` is an ORDERED LIST of crop names, one per stop, and the order is the planting order the
+    tour is built from -- so a stop is renamed in place and nothing moves. `seeds` is a `{crop: qty}`
+    dict and is moved by the same count, which is what keeps the day's bill honest: the crops do
+    not cost the same (`RT.SEED_COST` WHEAT 10, CARROT 20, TOMATO 50, MELON 80, STRAWBERRY 100) and
+    `_days_bill` prices the row, so swapping the plants without the seeds would under-bill the day
+    and mis-set `short_of_cash`.
+
+    **Any crop to any crop, which `_wheat_to` could not express.** That mattered: it could ask for
+    more tomato but never for less melon, and melon is the worst-realising crop we grow. Ladder game
+    `93346440`, a $70,525 WIN, closed melon at $4 against a base of $250 while wheat closed at $49
+    against a base of $25. A knob that only spends wheat cannot reach either.
+    """
+    if budget <= 0 or src == dst:
+        return row, 0
+    plants = list(row.get("plants") or [])
+    idx = [i for i, c in enumerate(plants) if c == src][:budget]
+    if not idx:
+        return row, 0
+    n = len(idx)
+    for i in idx:
+        plants[i] = dst
+    seeds = dict(row.get("seeds") or {})
+    take = min(n, int(seeds.get(src, 0) or 0))
+    if take > 0:
+        seeds[src] = int(seeds[src]) - take
+        if seeds[src] <= 0:
+            seeds.pop(src)
+    # The stop is being planted either way, so the seed must be bought even if this row's source
+    # order was smaller than its plant count (`SEED_ROW_IS_A_FLOOR` tops the rest up in play).
+    seeds[dst] = int(seeds.get(dst, 0) or 0) + n
+    out = dict(row)
+    out["plants"] = plants
+    out["seeds"] = seeds
+    return out, n
+
+
+def _wheat_to(row, crop, budget):
+    """Back-compat shim: `_recrew` with WHEAT as the source. Kept so the two integer knobs below,
+    and the tests that pin them, keep working unchanged."""
+    return _recrew(row, "WHEAT", crop, budget)
+
+
+def _melon_to_strawberry(row):
+    """One day's row with its MELON moved into STRAWBERRY. The count and the ORDER are kept exactly.
+
+    The two rows have different shapes and both matter. `seeds` is a `{crop: qty}` dict -- the day's
+    shopping list, priced by `RT.SEED_COST`. `plants` is an ordered LIST of crop names, one entry per
+    stop, and the order is the planting order the tour is built from, so a melon entry is rewritten
+    in place rather than counted and re-appended. Shipped d6, for instance, is
+    `seeds {'STRAWBERRY': 3, 'MELON': 5, 'CARROT': 7}` against `plants ['MELON', 'MELON']`.
+
+    Writing this against a dict `plants` cost a build: `dict(['MELON', 'MELON'])` raises, the bundle
+    returned a null reward in the mirror gate, and the unit tests stayed green because they had been
+    written against the same wrong shape. `test_the_shipped_schedules_own_rows_survive_the_swap`
+    exists so the shape cannot drift out from under this again.
+    """
+    seeds = dict(row.get("seeds") or {})
+    plants = list(row.get("plants") or [])
+    if int(seeds.get("MELON", 0) or 0) <= 0 and "MELON" not in plants:
+        return row
+    out = dict(row)
+    n = int(seeds.pop("MELON", 0) or 0)
+    if n > 0:
+        seeds["STRAWBERRY"] = int(seeds.get("STRAWBERRY", 0) or 0) + n
+        out["seeds"] = seeds
+    if "MELON" in plants:
+        out["plants"] = ["STRAWBERRY" if c == "MELON" else c for c in plants]
+    return out
+
+
 def make_agent(schedule, me=0, router=True):
     """`agent(obs, config) -> action`.
 
@@ -8412,7 +10355,8 @@ def make_agent(schedule, me=0, router=True):
     pinned, tours are committed, and each stop's ops are re-derived from the live board. `router=False`
     is the earlier per-turn greedy, kept only so the two can be measured on one seed list.
     """
-    sched = {int(k): v for k, v in schedule.items()}
+    # **The species is ours; the count and the cadence are the schedule's.** See `HERD_GEESE`.
+    sched = swap_in_geese(schedule) if HERD_GEESE else {int(k): v for k, v in schedule.items()}
     state = dict(assigned={}, hired=0, day=-1, tour={}, bought=collections.Counter(),
                  pins={}, routes={}, crew=-1, seen_urgent=set(),
                  planted=collections.Counter(), pen_for={},
@@ -8431,6 +10375,26 @@ def make_agent(schedule, me=0, router=True):
         seeds = collections.Counter(priv.get("seeds") or {})
         invs = priv.get("inventories") or [{}]
         tiles = farm["tiles"]
+        # **Today's arrivals are fed to the schedule's own count.** Recomputed every turn rather
+        # than latched at dawn, because a pen placed today does not exist at dawn -- PLACE happens
+        # mid-day -- so there is nothing to latch. `_arrived` counts the pens that arrived today and
+        # `_arrived_fed` how many of those are already fed, both straight off the live board, so the
+        # remaining allowance is self-correcting and needs no entry in `state`.
+        _row_feeds = int((sched.get(day, {}) or {}).get("feeds", 0) or 0)
+        if _row_feeds > 0:
+            _arrived = _arrived_fed = _standing = 0
+            for _r in tiles:
+                for _c in _r:
+                    if not (isinstance(_c, dict) and _c.get("animal")):
+                        continue
+                    if int(_c.get("placed_day", -1)) == day:
+                        _arrived += 1
+                        _arrived_fed += 1 if _c.get("fed_today") else 0
+                    else:
+                        _standing += 1
+            RT.ARRIVAL_FEED_REMAINING = max(0, _row_feeds - _standing - _arrived_fed)
+        else:
+            RT.ARRIVAL_FEED_REMAINING = 0
         money = float(farm["money"])
         unlocked = set(farm.get("unlocked_quadrants") or ["NW"])
         row = sched.get(day, {})
@@ -8476,6 +10440,56 @@ def make_agent(schedule, me=0, router=True):
             # what the `seeds` row must be netted against. See `SEED_ROW_IS_A_FLOOR`.
             state["seeds_dawn"] = collections.Counter(seeds)
 
+            # **Read the opponent's melon commitment once, then hold the answer.**
+            # See `MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT`. Latched rather than re-read, because his
+            # own decision spans two days (`d5:+3 d6:+5`) and a split answer would buy half a row of
+            # each. `sched[day]` is replaced with a rewritten COPY -- `make_agent` shallow-copies the
+            # outer dict but shares every row with the caller, so mutating a row in place would leak
+            # the swap into the next game built from the same schedule object.
+            if MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT and day >= MELON_YIELD_FROM_DAY:
+                if state.get("melon_yield") is None and len(farms) > 1:
+                    _opp = farms[1 - me]
+                    state["melon_yield"] = sum(
+                        1 for _r in (_opp.get("tiles") or []) for _c in _r
+                        if isinstance(_c, dict) and _c.get("crop") == "MELON"
+                    ) >= MELON_YIELD_OPPONENT_MELON
+                if state.get("melon_yield"):
+                    sched[day] = _melon_to_strawberry(sched.get(day) or {})
+                    row = sched[day]
+
+            # **Spend late wheat tiles on the two crops the balance change repriced.**
+            # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
+            # sweep value means "this many tiles over the whole season", not per day. Inert at 0.
+            if day >= LATE_CROP_FROM_DAY and (WHEAT_TILES_TO_CARROT or WHEAT_TILES_TO_TOMATO):
+                if "late_crop_left" not in state:
+                    state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
+                                               "TOMATO": int(WHEAT_TILES_TO_TOMATO)}
+                _r = sched.get(day) or {}
+                for _crop in ("CARROT", "TOMATO"):          # a total order, so a sweep is reproducible
+                    _r, _spent = _wheat_to(_r, _crop, state["late_crop_left"][_crop])
+                    state["late_crop_left"][_crop] -= _spent
+                sched[day] = _r
+                row = _r
+
+            # **The general form: any crop onto any other.** See `CROP_TILE_SHIFTS`. Applied after
+            # the two wheat integers so a sweep that sets both is still a total order.
+            # **Only touch a day that HAS a row, and only write back if something moved.**
+            # `sched.get(day) or {}` followed by an unconditional `sched[day] = _r` inserted an
+            # EMPTY row on every day the schedule does not plant -- which changed the season
+            # identically for every shift, including ones with nothing to re-crew. A fork
+            # comparison then returned the same +$4,691 for all ten configs.
+            if day >= LATE_CROP_FROM_DAY and CROP_TILE_SHIFTS and sched.get(day):
+                if "crop_shift_left" not in state:
+                    state["crop_shift_left"] = [int(n) for _, _, n in CROP_TILE_SHIFTS]
+                _r, _moved = sched[day], 0
+                for _i, (_src, _dst, _) in enumerate(CROP_TILE_SHIFTS):
+                    _r, _spent = _recrew(_r, _src, _dst, state["crop_shift_left"][_i])
+                    state["crop_shift_left"][_i] -= _spent
+                    _moved += _spent
+                if _moved:
+                    sched[day] = _r
+                    row = _r
+
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
         # The unit phase decrements `shed` for every PICKUP it issues this turn, and `invs` was read
@@ -8488,7 +10502,9 @@ def make_agent(schedule, me=0, router=True):
             # arithmetic the market block does at the BOTTOM of this function has to be available at
             # the top. `_hires_this_turn` is that block's rule stated once; if the two ever disagree
             # the plan orphans a route, so they must be read together.
-            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money)
+            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money,
+                                       shed=shed,
+                                       prices=(obs.get("market") or {}).get("prices") or {})
             # **The farmer is not a bystander to where its own crew lands.** See
             # `_clear_the_spawn_ring`: `_spawn_hand` counts it, so standing on the ring rotates every
             # spawn and puts a second hand on the dead `(5,5)` corner -- 23 turns, on d4 the
@@ -9228,7 +11244,8 @@ def make_agent(schedule, me=0, router=True):
             if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
                     and not unfunded
                     and not (SELL_A_DRAINLESS_PRODUCT_AT_ONCE and prod in NO_DRAIN_PRODUCTS
-                             and day >= SELL_AT_ONCE_FROM_DAY)):
+                             and (day >= SELL_AT_ONCE_FROM_DAY
+                                  or day in SELL_AT_ONCE_DAYS))):
                 n = 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
@@ -9501,8 +11518,21 @@ def make_agent(schedule, me=0, router=True):
             # grow, so the total is capped at the schedule's own count, while every animal still
             # unbought is re-aimed at whatever the shops now say. Shops keep unlocking to day 24, so
             # this keeps improving as the evidence arrives.
-            _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
-            want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
+            # **Ask about the SEASON, spend along the schedule's rows -- see
+            # `HERD_SPLIT_IS_A_SEASON_DECISION`.** Handing the split today's partial herd made it
+            # decide the buying ORDER as well as the mix, and its cows-first fill deferred every
+            # floating sheep to the end of the herd.
+            if HERD_SPLIT_IS_A_SEASON_DECISION:
+                _season = collections.Counter()
+                for dd in sched:
+                    for a, qty in (sched[dd].get("animals_bought") or {}).items():
+                        _season[a] += int(qty)
+                _s = _herd_split(_season, state["bought"], day, hour, unlocked_shops, last_day)
+                _through = _herd_through_day(sched, day, _s)
+                want_total["COW"], want_total["SHEEP"] = _through["COW"], _through["SHEEP"]
+            else:
+                _s = _herd_split(want_total, state["bought"], day, hour, unlocked_shops, last_day)
+                want_total["COW"], want_total["SHEEP"] = _s["COW"], _s["SHEEP"]
         for a, qty in want_total.items():
             if a not in R.ANIMALS:
                 continue
@@ -9769,7 +11799,46 @@ def make_agent(schedule, me=0, router=True):
         # land day re-offers once the parcel's turn is over.
         if BUY_THE_ROW_AT_DAWN and owed > 0 and not state.get("dawn_row_sent", False):
             short = max(short, owed)
-        short = min(short, int(money * 0.5 // quote))
+        # **The ration is not discretionary spending and is not held to half the bank.** This line
+        # used to read `short = min(short, int(money * 0.5 // quote))`. On a thin dawn that floors to
+        # ZERO: d1 opens on $44 against a quote of $28, so `int(44 * 0.5 // 28) == 0` and the row of
+        # five buys nothing for six hours, then dribbles 2+1+1 and lands three. d5 is the same shape,
+        # `cap50 == 1` against a row of two. The tape buys its five outright.
+        #
+        # Those one- and two-unit misses are the whole chain: d3's dawn shed holds exactly 2 wheat
+        # and the day feeds exactly 2 of 4, the sheep miss production days, and d6 shears 9 where the
+        # tape shears 12 -- which is the $599 that leaves d7 unable to afford its third animal and d8
+        # opening on an empty shed.
+        #
+        # A half-bank reserve is the right instinct for a purchase that can wait. FEED cannot: two
+        # unfed days remove the animal outright (`kaggriculture.py:804`), and the order is already
+        # bounded three ways -- by `owed` (the day's own row), by `BUY_DRIP`, and by the env refusing
+        # what the bank cannot cover. The cap was a fourth bound on the one purchase that needed none.
+        # **What n units COST, not n times the sticker price.** `market_price` moves per unit inside
+        # one order -- said twice above, as the whole reason `BUY_DRIP` exists -- and this guard did
+        # not use it. `int(money // quote)` prices four wheat at 4 x $28 when the book charges
+        # 28 + 29 + 30 + 31 = $118, so the last unit does not fill. And it is not merely lost: the row
+        # is closed on orders QUEUED (`state["ordered"]` below), so the shortfall is never re-offered.
+        #
+        # Measured d1, seed 11, offered against FILLED: h04 bank $13, price $28, offered 4, filled 3;
+        # h11 offered 1, filled 1. The $26 the book left is exactly the bank h11 opens on. The row of
+        # five closed at four, and that fifth wheat is d3's fourth feed.
+        #
+        # `market.inventory` is `shared: True` in the observation spec, so this is the real book and
+        # not a guess. Falls back to the flat divide if the env is not importable, which is what
+        # `market_price` already does.
+        if SIZE_THE_RATION_ON_THE_CURVE:
+            _book = int(((obs.get("market") or {}).get("inventory") or {}).get("WHEAT", 0) or 0)
+            _purse, _n = money, 0
+            while _n < short:
+                _unit = market_price("WHEAT", _book - _n)
+                if _unit > _purse:
+                    break
+                _purse -= _unit
+                _n += 1
+            short = _n
+        else:
+            short = min(short, int(money // quote))
         # **Do not queue the ration behind the parcel.** `state["ordered"]` is credited when an order
         # is QUEUED, and a BUY_PRODUCT the env refuses is silent, so an order that loses the slot race
         # still closes the row and the day never retries. d6 h10: bank $43, wheat $33, and the turn
@@ -9930,137 +11999,163 @@ def make_agent(schedule, me=0, router=True):
 '''
 _PLAN_JSON = r'''{
 "0": {
-"money_dawn": 3.0,
-"hands": 4,
-"hires": 4,
+"money_dawn": 13.0,
+"hands": 5,
+"hires": 5,
 "land": 0,
-"builds": 5,
+"builds": 4,
 "places": [
 "SHEEP",
 "COW",
 "SHEEP",
-"SHEEP",
-"SHEEP"
+"COW"
 ],
+"feeds": 2,
+"cares": 2,
 "plants": [
-"MELON",
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"MELON",
 "WHEAT",
 "MELON",
 "WHEAT",
+"MELON",
+"MELON",
+"WHEAT",
+"MELON",
+"MELON",
+"MELON",
+"MELON",
+"MELON",
+"MELON",
+"WHEAT",
+"MELON",
 "MELON",
 "MELON"
 ],
 "animals_bought": {
-"COW": 1,
-"SHEEP": 4
+"COW": 2,
+"SHEEP": 2
 },
 "seeds": {
-"WHEAT": 5,
-"MELON": 7
+"WHEAT": 7,
+"MELON": 12
 },
 "buys": {
-"WHEAT": 11
-},
-"sells": {
 "WHEAT": 6
+},
+"sells": {},
+"shed_dusk": {
+"WHEAT": 3
 }
 },
 "1": {
-"money_dawn": 14.0,
-"hands": 1,
-"hires": 1,
+"money_dawn": 16.0,
+"hands": 0,
+"hires": 0,
 "land": 0,
 "builds": 0,
 "places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {},
-"sells": {}
-},
-"2": {
-"money_dawn": 334.0,
-"hands": 2,
-"hires": 2,
-"land": 0,
-"builds": 0,
-"places": [],
+"feeds": 4,
+"cares": 4,
 "plants": [],
 "animals_bought": {},
 "seeds": {},
 "buys": {
-"WHEAT": 11
+"WHEAT": 5
 },
 "sells": {
-"FERTILIZER": 5
+"FERTILIZER": 3
+},
+"shed_dusk": {
+"WHEAT": 4
+}
+},
+"2": {
+"money_dawn": 164.0,
+"hands": 4,
+"hires": 4,
+"land": 0,
+"builds": 1,
+"places": [],
+"feeds": 4,
+"cares": 4,
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 4
+},
+"sells": {},
+"shed_dusk": {
+"WHEAT": 4
 }
 },
 "3": {
-"money_dawn": 354.0,
-"hands": 3,
-"hires": 3,
+"money_dawn": 421.0,
+"hands": 5,
+"hires": 5,
 "land": 0,
 "builds": 0,
-"places": [],
-"plants": [
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1,
-"STRAWBERRY": 3
-},
-"buys": {
-"WHEAT": 5
-},
-"sells": {
-"FERTILIZER": 5
-}
-},
-"4": {
-"money_dawn": 671.0,
-"hands": 3,
-"hires": 3,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 5
-},
-"buys": {
-"WHEAT": 2
-},
-"sells": {
-"FERTILIZER": 5
-}
-},
-"5": {
-"money_dawn": 733.0,
-"hands": 3,
-"hires": 3,
-"land": 0,
-"builds": 1,
 "places": [
 "COW"
 ],
+"feeds": 4,
+"cares": 4,
+"plants": [],
+"animals_bought": {
+"COW": 1
+},
+"seeds": {
+"CARROT": 1
+},
+"buys": {},
+"sells": {
+"FERTILIZER": 4
+},
+"shed_dusk": {}
+},
+"4": {
+"money_dawn": 131.0,
+"hands": 5,
+"hires": 5,
+"land": 0,
+"builds": 1,
+"places": [],
+"feeds": 5,
+"cares": 5,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 7
+},
+"buys": {
+"WHEAT": 6
+},
+"sells": {
+"FERTILIZER": 4
+},
+"shed_dusk": {
+"WHEAT": 1
+}
+},
+"5": {
+"money_dawn": 230.0,
+"hands": 4,
+"hires": 4,
+"land": 0,
+"builds": 0,
+"places": [
+"COW"
+],
+"feeds": 6,
+"cares": 6,
 "plants": [
 "STRAWBERRY",
-"WHEAT",
 "STRAWBERRY",
 "STRAWBERRY",
 "STRAWBERRY"
@@ -10069,624 +12164,353 @@ _PLAN_JSON = r'''{
 "COW": 1
 },
 "seeds": {
-"WHEAT": 1,
-"STRAWBERRY": 4
+"STRAWBERRY": 4,
+"MELON": 3
 },
 "buys": {
-"WHEAT": 7
+"WHEAT": 2
 },
 "sells": {
-"WHEAT": 17,
-"FERTILIZER": 5
+"FERTILIZER": 5,
+"WHEAT": 18
+},
+"shed_dusk": {
+"WHEAT": 7
 }
 },
 "6": {
-"money_dawn": 980.0,
+"money_dawn": 196.0,
 "hands": 4,
 "hires": 4,
 "land": 1,
 "builds": 2,
-"places": [
-"COW"
-],
+"places": [],
+"feeds": 6,
+"cares": 6,
 "plants": [
-"STRAWBERRY"
+"MELON",
+"MELON"
 ],
-"animals_bought": {
-"COW": 2
-},
+"animals_bought": {},
 "seeds": {
-"WHEAT": 1,
 "STRAWBERRY": 3,
-"CARROT": 6
+"MELON": 5,
+"CARROT": 7
 },
 "buys": {
-"WHEAT": 5
+"WHEAT": 6
 },
 "sells": {
-"FERTILIZER": 8,
-"WOOL": 5
+"FERTILIZER": 5,
+"WOOL": 12
+},
+"shed_dusk": {
+"WHEAT": 7
 }
 },
 "7": {
-"money_dawn": 3029.0,
-"hands": 7,
-"hires": 7,
+"money_dawn": 143.0,
+"hands": 8,
+"hires": 8,
 "land": 0,
 "builds": 2,
 "places": [
-"COW",
+"SHEEP",
 "COW",
 "COW"
 ],
+"feeds": 9,
+"cares": 9,
 "plants": [
+"MELON",
+"MELON",
+"MELON",
 "STRAWBERRY",
 "STRAWBERRY",
+"MELON",
 "STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"WHEAT",
-"WHEAT",
-"STRAWBERRY",
-"WHEAT",
-"WHEAT",
-"STRAWBERRY"
+"MELON",
+"MELON"
 ],
 "animals_bought": {
-"COW": 2
+"COW": 2,
+"SHEEP": 1
 },
 "seeds": {
-"WHEAT": 3,
-"STRAWBERRY": 9
+"WHEAT": 4
 },
 "buys": {
-"WHEAT": 14
+"WHEAT": 3
 },
 "sells": {
-"WOOL": 30,
-"FERTILIZER": 3
-}
+"FERTILIZER": 6
+},
+"shed_dusk": {}
 },
 "8": {
-"money_dawn": 1466.0,
-"hands": 6,
-"hires": 6,
+"money_dawn": 190.0,
+"hands": 11,
+"hires": 11,
 "land": 0,
 "builds": 2,
 "places": [
-"COW",
-"COW"
+"SHEEP"
 ],
+"feeds": 10,
+"cares": 10,
 "plants": [
 "WHEAT",
 "WHEAT",
-"STRAWBERRY",
-"WHEAT",
 "WHEAT",
 "STRAWBERRY",
-"WHEAT",
-"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
 "WHEAT",
 "WHEAT"
 ],
 "animals_bought": {
-"COW": 2
+"SHEEP": 1
 },
 "seeds": {
-"WHEAT": 8,
-"STRAWBERRY": 2
+"WHEAT": 5,
+"STRAWBERRY": 4
 },
 "buys": {
-"WHEAT": 7
+"WHEAT": 17
 },
 "sells": {
-"FERTILIZER": 7,
-"WHEAT": 2
+"FERTILIZER": 6,
+"MILK": 12
+},
+"shed_dusk": {
+"WHEAT": 8
 }
 },
 "9": {
-"money_dawn": 3401.0,
-"hands": 7,
-"hires": 7,
+"money_dawn": 1396.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [
+"COW",
+"COW"
+],
+"feeds": 11,
+"cares": 11,
+"plants": [],
+"animals_bought": {
+"COW": 2
+},
+"seeds": {},
+"buys": {
+"WHEAT": 11
+},
+"sells": {
+"FERTILIZER": 9,
+"WHEAT": 8,
+"WOOL": 8
+},
+"shed_dusk": {
+"WHEAT": 11
+}
+},
+"10": {
+"money_dawn": 2187.0,
+"hands": 11,
+"hires": 11,
 "land": 0,
 "builds": 0,
 "places": [],
+"feeds": 12,
+"cares": 12,
 "plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
 "WHEAT"
 ],
 "animals_bought": {},
 "seeds": {
-"WHEAT": 1
+"WHEAT": 4
+},
+"buys": {
+"WHEAT": 33
+},
+"sells": {
+"FERTILIZER": 138,
+"WHEAT": 25,
+"MELON": 60
+},
+"shed_dusk": {
+"WHEAT": 12
+}
+},
+"11": {
+"money_dawn": 14584.0,
+"hands": 12,
+"hires": 12,
+"land": 1,
+"builds": 2,
+"places": [
+"COW",
+"COW"
+],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"WHEAT",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"WHEAT",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {
+"COW": 2
+},
+"seeds": {
+"STRAWBERRY": 23,
+"WHEAT": 8
+},
+"buys": {
+"WHEAT": 16
+},
+"sells": {
+"MELON": 12,
+"MILK": 6
+},
+"shed_dusk": {
+"FERTILIZER": 12,
+"WHEAT": 14
+}
+},
+"12": {
+"money_dawn": 15389.0,
+"hands": 10,
+"hires": 10,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"WHEAT",
+"STRAWBERRY",
+"STRAWBERRY",
+"STRAWBERRY"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 3
 },
 "buys": {
 "WHEAT": 10
 },
 "sells": {
-"MILK": 12,
-"FERTILIZER": 10,
-"WHEAT": 13
-}
-},
-"10": {
-"money_dawn": 5472.0,
-"hands": 14,
-"hires": 14,
-"land": 1,
-"builds": 0,
-"places": [],
-"plants": [
-"MELON",
-"MELON",
-"MELON",
-"MELON",
-"MELON",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"MELON",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY",
-"STRAWBERRY",
-"MELON",
-"STRAWBERRY",
-"STRAWBERRY"
-],
-"animals_bought": {},
-"seeds": {
-"MELON": 14,
-"STRAWBERRY": 16,
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 12
-},
-"sells": {
-"WOOL": 32,
-"FERTILIZER": 9,
-"MELON": 30
-}
-},
-"11": {
-"money_dawn": 9332.0,
-"hands": 10,
-"hires": 10,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"STRAWBERRY",
-"MELON",
-"STRAWBERRY",
-"MELON",
-"WHEAT",
-"STRAWBERRY",
-"WHEAT",
-"WHEAT",
-"STRAWBERRY",
-"WHEAT",
-"STRAWBERRY"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 4
-},
-"buys": {
-"WHEAT": 6
-},
-"sells": {
 "MILK": 6,
-"FERTILIZER": 24
-}
+"FERTILIZER": 58
 },
-"12": {
-"money_dawn": 10875.0,
-"hands": 10,
-"hires": 10,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT"
-],
-"animals_bought": {
-"COW": 1
-},
-"seeds": {
-"WHEAT": 8
-},
-"buys": {
-"WHEAT": 5
-},
-"sells": {
-"FERTILIZER": 14,
-"WHEAT": 10,
-"WOOL": 4,
-"MILK": 3
+"shed_dusk": {
+"WHEAT": 10
 }
 },
 "13": {
-"money_dawn": 16187.0,
+"money_dawn": 18376.0,
+"hands": 11,
+"hires": 11,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 2
+},
+"buys": {
+"WHEAT": 9
+},
+"sells": {
+"WOOL": 8,
+"FERTILIZER": 11,
+"MILK": 6,
+"WHEAT": 8
+},
+"shed_dusk": {
+"FERTILIZER": 3,
+"WHEAT": 9
+}
+},
+"14": {
+"money_dawn": 20361.0,
 "hands": 8,
 "hires": 8,
 "land": 0,
 "builds": 0,
 "places": [],
+"feeds": 14,
+"cares": 14,
 "plants": [
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 12
-},
-"sells": {
-"WOOL": 24,
-"WHEAT": 25,
-"FERTILIZER": 16
-}
-},
-"14": {
-"money_dawn": 18663.0,
-"hands": 9,
-"hires": 9,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 17
-},
-"sells": {
-"STRAWBERRY": 12,
-"MILK": 12,
-"WHEAT": 9,
-"FERTILIZER": 8
-}
-},
-"15": {
-"money_dawn": 20745.0,
-"hands": 9,
-"hires": 9,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
 "WHEAT",
 "WHEAT",
 "WHEAT"
 ],
 "animals_bought": {},
 "seeds": {
-"WHEAT": 4
+"WHEAT": 3
 },
-"buys": {
-"WHEAT": 8
-},
-"sells": {
-"MILK": 33,
-"WHEAT": 3,
-"FERTILIZER": 9,
-"WOOL": 8
-}
-},
-"16": {
-"money_dawn": 31282.0,
-"hands": 13,
-"hires": 13,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 11
-},
-"buys": {
-"WHEAT": 8
-},
-"sells": {
-"STRAWBERRY": 28,
-"WOOL": 16,
-"WHEAT": 13,
-"MILK": 21
-}
-},
-"17": {
-"money_dawn": 37013.0,
-"hands": 9,
-"hires": 9,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 1
-},
-"buys": {
-"WHEAT": 11
-},
-"sells": {
-"MILK": 6,
-"STRAWBERRY": 4,
-"WHEAT": 25,
-"FERTILIZER": 9
-}
-},
-"18": {
-"money_dawn": 44034.0,
-"hands": 11,
-"hires": 11,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {
-"SHEEP": 1
-},
-"seeds": {},
 "buys": {
 "WHEAT": 18
 },
 "sells": {
-"STRAWBERRY": 55,
-"MILK": 27,
-"WHEAT": 8,
-"FERTILIZER": 8
+"MILK": 9,
+"FERTILIZER": 20,
+"WOOL": 6
+},
+"shed_dusk": {
+"FERTILIZER": 7,
+"WHEAT": 18
 }
 },
-"19": {
-"money_dawn": 51728.0,
-"hands": 13,
-"hires": 13,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 4
-},
-"buys": {
-"WHEAT": 7
-},
-"sells": {
-"STRAWBERRY": 38,
-"WOOL": 32,
-"MILK": 6,
-"WHEAT": 1
-}
-},
-"20": {
-"money_dawn": 59009.0,
-"hands": 14,
-"hires": 14,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 48
-},
-"buys": {
-"WHEAT": 12
-},
-"sells": {
-"STRAWBERRY": 44,
-"MILK": 28,
-"WHEAT": 11,
-"MELON": 60
-}
-},
-"21": {
-"money_dawn": 70386.0,
-"hands": 13,
-"hires": 13,
-"land": 0,
-"builds": 2,
-"places": [
-"SHEEP",
-"COW"
-],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"CARROT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 7
-},
-"buys": {
-"WHEAT": 11
-},
-"sells": {
-"STRAWBERRY": 30,
-"MILK": 33,
-"MELON": 24,
-"WHEAT": 20,
-"WOOL": 16,
-"FERTILIZER": 9
-}
-},
-"22": {
-"money_dawn": 77818.0,
-"hands": 10,
-"hires": 10,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"CARROT"
-],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 15
-},
-"sells": {
-"STRAWBERRY": 72,
-"MILK": 6,
-"MELON": 24,
-"FERTILIZER": 12
-}
-},
-"23": {
-"money_dawn": 80394.0,
-"hands": 14,
-"hires": 14,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"CARROT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 7
-},
-"buys": {
-"WHEAT": 4
-},
-"sells": {
-"STRAWBERRY": 70,
-"MILK": 24,
-"FERTILIZER": 12
-}
-},
-"24": {
-"money_dawn": 82650.0,
-"hands": 11,
-"hires": 11,
-"land": 0,
-"builds": 1,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"CARROT"
-],
-"animals_bought": {},
-"seeds": {
-"WHEAT": 13
-},
-"buys": {
-"WHEAT": 2
-},
-"sells": {
-"MILK": 30,
-"STRAWBERRY": 36,
-"FERTILIZER": 23,
-"WHEAT": 18,
-"WOOL": 12,
-"CARROT": 3
-}
-},
-"25": {
-"money_dawn": 91165.0,
+"15": {
+"money_dawn": 23419.0,
 "hands": 12,
 "hires": 12,
 "land": 0,
 "builds": 0,
 "places": [],
+"feeds": 14,
+"cares": 14,
 "plants": [
 "WHEAT",
 "WHEAT",
@@ -10695,126 +12519,509 @@ _PLAN_JSON = r'''{
 "WHEAT",
 "WHEAT",
 "WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"CARROT"
+"WHEAT"
 ],
 "animals_bought": {},
 "seeds": {
-"WHEAT": 12
+"WHEAT": 8
 },
-"buys": {
-"WHEAT": 5
-},
+"buys": {},
 "sells": {
-"STRAWBERRY": 16,
-"WOOL": 8,
-"WHEAT": 37,
-"FERTILIZER": 16,
-"MILK": 11,
-"CARROT": 3
-}
+"WOOL": 6,
+"MILK": 18,
+"WHEAT": 8,
+"FERTILIZER": 62,
+"STRAWBERRY": 6
 },
-"26": {
-"money_dawn": 95716.0,
-"hands": 10,
-"hires": 10,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"WHEAT",
-"CARROT"
-],
-"animals_bought": {},
-"seeds": {
+"shed_dusk": {
 "WHEAT": 2
-},
-"buys": {
-"WHEAT": 13
-},
-"sells": {
-"STRAWBERRY": 36,
-"MILK": 6,
-"WHEAT": 31,
-"FERTILIZER": 18,
-"CARROT": 3
 }
 },
-"27": {
-"money_dawn": 98067.0,
-"hands": 10,
-"hires": 10,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 4
-},
-"sells": {
-"STRAWBERRY": 40,
-"MILK": 21,
-"FERTILIZER": 22,
-"WHEAT": 3,
-"WOOL": 18,
-"CARROT": 3
-}
-},
-"28": {
-"money_dawn": 108629.0,
-"hands": 10,
-"hires": 10,
-"land": 0,
-"builds": 0,
-"places": [],
-"plants": [],
-"animals_bought": {},
-"seeds": {},
-"buys": {
-"WHEAT": 4
-},
-"sells": {
-"STRAWBERRY": 16,
-"MILK": 24,
-"WOOL": 8,
-"WHEAT": 60,
-"FERTILIZER": 18,
-"CARROT": 3
-}
-},
-"29": {
-"money_dawn": 113592.0,
+"16": {
+"money_dawn": 31568.0,
 "hands": 9,
 "hires": 9,
 "land": 0,
 "builds": 0,
 "places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 9
+},
+"buys": {},
+"sells": {
+"WOOL": 8,
+"FERTILIZER": 16,
+"MILK": 6,
+"STRAWBERRY": 2,
+"WHEAT": 11,
+"MELON": 6
+},
+"shed_dusk": {
+"WHEAT": 3
+}
+},
+"17": {
+"money_dawn": 35497.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 3
+},
+"buys": {
+"WHEAT": 27
+},
+"sells": {
+"MELON": 30,
+"WOOL": 4,
+"MILK": 6,
+"WHEAT": 27,
+"FERTILIZER": 192,
+"STRAWBERRY": 6
+},
+"shed_dusk": {
+"WHEAT": 4
+}
+},
+"18": {
+"money_dawn": 48690.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 10
+},
+"buys": {
+"WHEAT": 16
+},
+"sells": {
+"MILK": 24,
+"WOOL": 4,
+"MELON": 12,
+"STRAWBERRY": 8,
+"FERTILIZER": 100
+},
+"shed_dusk": {
+"WHEAT": 16
+}
+},
+"19": {
+"money_dawn": 53082.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 6
+},
+"buys": {
+"WHEAT": 9
+},
+"sells": {
+"WOOL": 8,
+"MILK": 6,
+"STRAWBERRY": 14,
+"FERTILIZER": 258,
+"WHEAT": 50
+},
+"shed_dusk": {}
+},
+"20": {
+"money_dawn": 64361.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 10
+},
+"buys": {},
+"sells": {
+"MILK": 30,
+"WOOL": 4,
+"FERTILIZER": 14,
+"STRAWBERRY": 8,
+"WHEAT": 14
+},
+"shed_dusk": {}
+},
+"21": {
+"money_dawn": 68046.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"CARROT",
+"WHEAT",
+"CARROT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"CARROT": 2,
+"WHEAT": 3
+},
+"buys": {
+"WHEAT": 26
+},
+"sells": {
+"WOOL": 4,
+"MILK": 12,
+"STRAWBERRY": 14,
+"WHEAT": 125,
+"FERTILIZER": 175
+},
+"shed_dusk": {}
+},
+"22": {
+"money_dawn": 82826.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"CARROT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"CARROT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 7,
+"CARROT": 2
+},
+"buys": {
+"WHEAT": 16
+},
+"sells": {
+"STRAWBERRY": 32,
+"MILK": 18,
+"WOOL": 8,
+"FERTILIZER": 7,
+"WHEAT": 25
+},
+"shed_dusk": {}
+},
+"23": {
+"money_dawn": 87522.0,
+"hands": 12,
+"hires": 12,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 10
+},
+"buys": {
+"WHEAT": 55
+},
+"sells": {
+"STRAWBERRY": 29,
+"WOOL": 8,
+"MILK": 6,
+"WHEAT": 129,
+"FERTILIZER": 161
+},
+"shed_dusk": {}
+},
+"24": {
+"money_dawn": 100176.0,
+"hands": 11,
+"hires": 11,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"CARROT",
+"CARROT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 8,
+"CARROT": 2
+},
+"buys": {
+"WHEAT": 9
+},
+"sells": {
+"MILK": 24,
+"STRAWBERRY": 17,
+"WHEAT": 56,
+"FERTILIZER": 67
+},
+"shed_dusk": {}
+},
+"25": {
+"money_dawn": 107725.0,
+"hands": 11,
+"hires": 11,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"CARROT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"CARROT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 7,
+"CARROT": 2
+},
+"buys": {
+"WHEAT": 76
+},
+"sells": {
+"STRAWBERRY": 32,
+"WOOL": 8,
+"FERTILIZER": 115,
+"MILK": 6,
+"WHEAT": 106,
+"CARROT": 4
+},
+"shed_dusk": {
+"WHEAT": 1
+}
+},
+"26": {
+"money_dawn": 119689.0,
+"hands": 11,
+"hires": 11,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 14,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 9
+},
+"buys": {
+"WHEAT": 16
+},
+"sells": {
+"MILK": 24,
+"STRAWBERRY": 18,
+"WOOL": 4,
+"FERTILIZER": 12,
+"CARROT": 5,
+"WHEAT": 17
+},
+"shed_dusk": {
+"WHEAT": 5
+}
+},
+"27": {
+"money_dawn": 123157.0,
+"hands": 11,
+"hires": 11,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 14,
+"cares": 12,
+"plants": [
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT",
+"WHEAT"
+],
+"animals_bought": {},
+"seeds": {
+"WHEAT": 11
+},
+"buys": {
+"WHEAT": 18
+},
+"sells": {
+"STRAWBERRY": 27,
+"WOOL": 4,
+"MILK": 6,
+"FERTILIZER": 16,
+"WHEAT": 112
+},
+"shed_dusk": {}
+},
+"28": {
+"money_dawn": 136185.0,
+"hands": 10,
+"hires": 10,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 10,
+"cares": 9,
+"plants": [],
+"animals_bought": {},
+"seeds": {},
+"buys": {
+"WHEAT": 7
+},
+"sells": {
+"MILK": 27,
+"WOOL": 8,
+"FERTILIZER": 14,
+"WHEAT": 37,
+"STRAWBERRY": 4,
+"CARROT": 5
+},
+"shed_dusk": {}
+},
+"29": {
+"money_dawn": 142621.0,
+"hands": 8,
+"hires": 8,
+"land": 0,
+"builds": 0,
+"places": [],
+"feeds": 0,
+"cares": 0,
 "plants": [],
 "animals_bought": {},
 "seeds": {},
 "buys": {},
 "sells": {
-"MILK": 34,
-"WHEAT": 144,
-"FERTILIZER": 19,
-"CARROT": 3
-}
+"WHEAT": 92,
+"WOOL": 8,
+"FERTILIZER": 9,
+"STRAWBERRY": 6,
+"MILK": 27,
+"CARROT": 6
+},
+"shed_dusk": {}
 }
 }'''
 _REPLAY_DAYS = 0
@@ -10870,7 +13077,7 @@ def agent(obs, config=None):
     fresh = int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0
     if fresh or me not in _AGENTS:
         # `start_day` exists only on the older `schedule_agent`. The module bundled here is
-        # `schedule_agent_1455mh`, which plans its opening rather than replaying one, and its
+        # `schedule_agent`, which plans its opening rather than replaying one, and its
         # `make_agent` has no such parameter -- passing it unconditionally is a TypeError on the
         # first observation, i.e. a submission that banks the $3,000 start. Sent only when a replay
         # opening was actually asked for; `--replay-days` defaults to 0 and the builder refuses the

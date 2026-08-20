@@ -21,7 +21,7 @@ can reach the defect first.
 
 ```
 python -u -m pytest tests/test_each_day_matches_the_tape.py -q          # one test per day
-python -u scripts/breakdown.py --module schedule_agent_1455mh --days 7  # the table
+python -u scripts/breakdown.py --module schedule_agent --days 7  # the table
 ```
 
     d0  PASSES

@@ -67,7 +67,7 @@ def _sells(make_me, replay, team, thin, economy, seed=11, tpd=24):
 def test_day_ten_gets_every_unit_away_that_the_tape_does():
     import breakdown as B
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     CREW = importlib.import_module("kagg.search.crew")
     replay, schedule, team = B.TAPES["victor"]
     raw = json.loads(pathlib.Path(schedule).read_text())

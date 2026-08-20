@@ -32,7 +32,7 @@ import pytest
 from kaggle_environments import make
 
 import scripts.breakdown as B
-from kagg.search import schedule_agent_1455mh as SA
+from kagg.search import schedule_agent as SA
 
 SEED = 11
 DAY = 11

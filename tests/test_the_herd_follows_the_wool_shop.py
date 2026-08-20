@@ -1,14 +1,18 @@
 """The wool shop is what moves the herd -- but only if it lands EARLY, and it moves the total too.
 
-Measured over **66** downloaded games of カワシギ, the #1 player, 61-0-5
-(`docs/kawashigi_one_board_2026-08-13.md`). Shops unlock every third day, so draw #N lands on day 3N
-(verified 66/66). Against the position of the FIRST yarn store the herd is a step function:
+Re-measured 2026-08-15 over **74 distinct** downloaded games of カワシギ, the #1 player -- every
+replay on disk carrying his seat, deduplicated by episode id. Shops unlock every third day, so draw
+#N lands on day 3N. Against the position of the FIRST yarn store the herd is a step function:
 
-    yarn first at draw #1 (d3)    : COW  6, SHEEP 12, total 18    n=10
-    yarn first at draw #2 (d6)    : COW  6, SHEEP 12, total 18    n=11
-    yarn first at draw #3 (d9)    : COW  6, SHEEP  8, total 14    n= 3
-    yarn first at draw #4+ (d12+) : COW 10, SHEEP  4, total 14    n=16
-    no yarn store at all          : COW 10, SHEEP  4, total 14    n=22  (+4 at COW 8/SHEEP 6)
+    yarn first at draw #1 (d3)    : COW  6, SHEEP 9.05, total 15.05   n=21   quads 4.00
+    yarn first at draw #2 (d6)    : COW  6, SHEEP 9.26, total 15.26   n=23   quads 4.00
+    yarn first at draw #3 (d9)    : COW  6, SHEEP 6.00, total 12.00   n= 7   quads 3.00
+    yarn first at draw #4+ (d12+) : COW 10, SHEEP 4.00, total 14.00   n=34   quads 3.00
+    no yarn store at all          : COW 9.64, SHEEP 4.36, total 14    n=56   quads 3.00
+
+**This file previously claimed "SHEEP 12, total 18" on draws #1-#2. That was wrong** -- his maximum
+over all 74 seats is 16, and every seat above 14 owns FOUR quadrants. The correction was recorded
+in `test_the_herd_split_answers_the_recorded_shop_draw.py` on 2026-08-13 and never propagated here.
 
 `COW == 6` iff a yarn store is among the first three draws: **24/24 yes, 0/42 no**. Milk-shop count
 predicts nothing yarn does not already explain -- at zero milk shops the mean cow count is still
@@ -23,7 +27,7 @@ a passing rule.
 """
 import pytest
 
-from kagg.search import schedule_agent_1455mh as S
+from kagg.search import schedule_agent as S
 
 
 WANT = {"COW": 10, "SHEEP": 4}
@@ -75,17 +79,17 @@ def test_a_yarn_store_that_arrives_late_does_not_trigger_the_rule():
         "the wool rule fired on a draw-#4 yarn store, which the leader ignores; got %r" % (got,))
 
 
-@pytest.mark.xfail(reason="the headroom greedy, not the wool rule: it swings to the COW FLOOR of 4 "
-                          "on any yarn store, early or late. Pre-existing, and changing it means "
-                          "changing the greedy rather than adding a rule -- flagged, not fixed",
-                   strict=True)
 def test_a_late_yarn_store_still_leaves_the_herd_cow_heavy():
-    """What he actually does once the rule correctly declines to fire, and what we do instead.
+    """What he actually does once the rule correctly declines to fire.
 
-    With the yarn store at draw #4 the rule is out of the way and the headroom greedy decides. It
-    answers a wool shop -- at ANY position -- by falling to `HERD_FLOOR_COW` and putting the rest
-    into sheep, giving COW 4 / SHEEP 10 where all sixteen of his late-yarn games run COW 10 /
-    SHEEP 4. So the greedy is not merely un-tuned here, it is inverted.
+    **This was `xfail(strict)` until 2026-08-13, and the reason it was is worth keeping.** With the
+    yarn store at draw #4 the rule used to step aside and leave the headroom greedy to decide, and
+    the greedy answered a wool shop -- at ANY position -- by falling to `HERD_FLOOR_COW` and putting
+    the rest into sheep. That gave COW 4 / SHEEP 10 where all sixteen of his late-yarn games run
+    COW 10 / SHEEP 4: not merely un-tuned, inverted.
+
+    `WOOL_SHOP_NO_YARN_COW` fixed it by pinning the second branch of his step function rather than
+    leaving it to the greedy, so the marker came off.
     """
     got = split_for(["BAKERY", "PIZZA_SHOP", "BRUNCH_SPOT", "YARN_STORE"], day=12)
     assert got["COW"] >= 9, (
@@ -120,10 +124,18 @@ def test_no_wool_shop_keeps_the_herd_cow_heavy():
 
 
 def test_the_total_is_never_exceeded():
-    """`want_total` is the schedule's count and the split may only redistribute it."""
+    """`want_total` is the schedule's count and the split may not go ABOVE it.
+
+    This asserted equality until 2026-08-15. It is now a ceiling: on a board whose first YARN_STORE
+    lands in draws 1-3 the leader buys twelve animals on three quadrants, not fourteen, and
+    `HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE` reproduces that. Buying fewer frees $1,000, two
+    FEED and two CARE stops a day, and ~16 units of wool out of a book that floors 59 units above
+    `I0`; it needs no new pens, which is why it is expressible where raising the total is not.
+    """
     for shops in ([], ["YARN_STORE"], ["YARN_STORE", "YARN_STORE"], ["PIZZA_SHOP"]):
         got = split_for(shops)
-        assert got["COW"] + got["SHEEP"] == WANT["COW"] + WANT["SHEEP"], shops
+        assert got["COW"] + got["SHEEP"] <= WANT["COW"] + WANT["SHEEP"], shops
+        assert got["COW"] + got["SHEEP"] >= 12, shops
 
 
 def test_animals_already_bought_are_never_unbought():

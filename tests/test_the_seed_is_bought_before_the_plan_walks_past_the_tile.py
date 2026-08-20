@@ -6,7 +6,7 @@ refuses a PLANT outright when `private["seeds"].get(crop, 0) <= 0` (`kaggricultu
 that reaches its tile before the seed is bought does not wait, does not come back, and leaves no trace:
 the tile is simply never sown.
 
-Seeds are bought dearest-BLOCK-first (`schedule_agent_1455mh.py:3971`, `-SEED_COST[crop] * qty`). That
+Seeds are bought dearest-BLOCK-first (`schedule_agent.py:3971`, `-SEED_COST[crop] * qty`). That
 rule was measured and TAKEN on 2026-08-07 and its docstring is right about what it was measured on --
 under a thin bank, filling the dear block whole beats spreading. What it never consulted is **when the
 plan needs each crop**, and on a day where those two orders disagree it funds the later crop first.
@@ -44,6 +44,7 @@ It says nothing about WHICH crop should be planted -- the row names exact tiles 
 seed to buy, only about the order the rows are offered in.
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -57,7 +58,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO))
 
 REPLAY = REPO / "data/seed_scripts/top2/91854176.json"
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 TEAM = "Victor @ Tufa Labs"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 SEED = 11
@@ -74,7 +75,7 @@ def season():
     `first_need_hour` is the earliest hour a unit stands on a tile the dawn plan holds a PLANT stop
     for, in that crop. `seed_hour` is the first hour `private["seeds"][crop]` is positive, or None.
     """
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     DP = importlib.import_module("kagg.search.cover")
 
     raw = json.loads(SCHEDULE.read_text())
