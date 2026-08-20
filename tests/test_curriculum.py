@@ -30,6 +30,23 @@ import pytest
 from kagg.rl import curriculum, jax_act as A, jax_obs
 from kagg.sim import jax_sim as J
 
+
+# The bundle legality mask needs the vocabulary. It is loaded once here rather than threaded through
+# every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
+# must be byte-identical across labelling, fitting and play or every bundle index means something
+# different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+_BUNDLE_SELLS = None
+
+
+def _bundle_sells():
+    global _BUNDLE_SELLS
+    if _BUNDLE_SELLS is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
 pytestmark = pytest.mark.skipif(not curriculum.available(), reason="replay data not downloaded")
 
 
@@ -96,7 +113,7 @@ def test_a_seeded_state_encodes_and_steps():
         assert np.isfinite(np.asarray(arr)).all(), f"{name} has non-finite entries"
     assert np.asarray(tiles).shape[-1] == jax_obs.TILE_FEATURES
 
-    masks = A.masks_for(state)
+    masks = A.masks_for(state, _bundle_sells())
     assert np.asarray(masks["op"]).any(axis=-1).all(), "a unit has no legal op at all"
 
     nxt = J.step(state, curriculum.noop_actions(6))

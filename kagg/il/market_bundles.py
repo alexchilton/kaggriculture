@@ -295,3 +295,35 @@ def orders_from_heads(vocab, index, sell_bucket, buy_product_bucket, buy_seed_bu
         elif op == BUY_ANIMAL and item in animals:
             out.append([BUY_ANIMAL, item, 1])
     return out
+
+
+DEFAULT_VOCAB = "data/il/bundle_vocab.json"
+
+
+def load_vocab(path=DEFAULT_VOCAB, max_size=None):
+    """Load the vocabulary artifact. It must be the SAME file everywhere.
+
+    Labelling, fitting and playing all index bundles through this. If any of them uses a different
+    file every index means something else, and nothing offline shows it because every index is still
+    a valid index -- the policy simply plays a different order than the one it learned.
+
+    `max_size` defaults to the head width, so a vocabulary that outgrew the head raises here rather
+    than silently truncating into a bundle the policy can never emit.
+    """
+    import json
+    import pathlib
+
+    from kagg.rl import jax_policy as _P
+
+    p = pathlib.Path(path)
+    if not p.exists():
+        raise FileNotFoundError(
+            "no bundle vocabulary at %s -- build it with scripts/build_bundle_vocab.py. It is an "
+            "artifact, not a constant, and guessing one silently re-indexes every market decision."
+            % p)
+    raw = json.loads(p.read_text())
+    n = int(max_size or _P.N_BUNDLES)
+    if len(raw) > n:
+        raise ValueError("vocabulary at %s has %d bundles against a %d-wide head: %d bundles could "
+                         "never be emitted" % (p, len(raw), n, len(raw) - n))
+    return Vocabulary([tuple(tuple(pair) for pair in b) for b in raw])

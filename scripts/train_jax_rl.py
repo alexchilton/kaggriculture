@@ -57,6 +57,23 @@ from kagg.rl.jax_policy import NEG_INF
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
+
+# The bundle legality mask needs the vocabulary. It is loaded once here rather than threaded through
+# every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
+# must be byte-identical across labelling, fitting and play or every bundle index means something
+# different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+_BUNDLE_SELLS = None
+
+
+def _bundle_sells():
+    global _BUNDLE_SELLS
+    if _BUNDLE_SELLS is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
 # TF32 tensor cores for matmuls. Ender runs `--matmul-precision high` by default; JAX's own default
 # on this card is the slowest, most precise setting, which buys nothing for a 643k-parameter policy
 # whose inputs are already normalised counts.
@@ -313,7 +330,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
             # Values for the bootstrap come from `value_params`, which is either the live params
             # (default) or a slow EMA copy. Actions always come from the live policy.
             _h_t, value = model.apply(value_params, *obs)
-            masks = A.masks_for(state)
+            masks = A.masks_for(state, _bundle_sells())
             actions, logp, _ent = A.sample(sub, heads, masks)
 
             # **Opponent pool.** In pure self-play both seats share parameters, so a mutual draw is

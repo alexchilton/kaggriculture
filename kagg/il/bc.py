@@ -45,6 +45,23 @@ from kagg.il import replays
 from kagg.rl import adapter, jax_act as A, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
 
+
+# The bundle legality mask needs the vocabulary. It is loaded once here rather than threaded through
+# every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
+# must be byte-identical across labelling, fitting and play or every bundle index means something
+# different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+_BUNDLE_SELLS = None
+
+
+def _bundle_sells():
+    global _BUNDLE_SELLS
+    if _BUNDLE_SELLS is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
 # `trade` is the one head with no counterpart in a replay -- agents name quantities, not a mode -- so
 # it is not scored. See point 1 in the module docstring for what that must *not* also mean.
 SCORED_HEADS = A.ALL_HEADS
@@ -150,7 +167,7 @@ def rank_seats(paths, min_bank=None, cache=INDEX, max_bank=None):
 def _features(state):
     """Observation tensors and every legality mask for a batch-of-one state, network-flat."""
     tiles, units, glob = jax_obs.encode(state)
-    return A._flat(tiles), A._flat(units), A._flat(glob), A.masks_for(state)
+    return A._flat(tiles), A._flat(units), A._flat(glob), A.masks_for(state, _bundle_sells())
 
 
 def build_rows(refs, max_turns=None, log_every=0):

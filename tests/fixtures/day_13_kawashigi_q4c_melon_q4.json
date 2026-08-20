@@ -5,22 +5,6 @@
    4
   ],
   [
-   4,
-   4
-  ],
-  [
-   5,
-   4
-  ],
-  [
-   5,
-   5
-  ],
-  [
-   4,
-   4
-  ],
-  [
    5,
    4
   ],
@@ -45,8 +29,24 @@
    5
   ],
   [
+   5,
+   5
+  ],
+  [
    4,
    4
+  ],
+  [
+   5,
+   4
+  ],
+  [
+   4,
+   5
+  ],
+  [
+   4,
+   5
   ]
  ],
  "budget": [
@@ -371,8 +371,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -552,8 +552,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -688,8 +688,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "FERTILIZER",
-    "MILK"
+    "MILK",
+    "FERTILIZER"
    ]
   },
   {
@@ -761,26 +761,29 @@
    ],
    "ops": [
     [
-     "PLACE",
-     "SHEEP"
-    ],
-    [
      "FEED",
      "WHEAT"
     ],
     [
      "CARE",
      null
+    ],
+    [
+     "COLLECT_FERTILIZER",
+     null
     ]
    ],
    "needs": {
-    "SHEEP": 1,
     "WHEAT": 1
    },
-   "gives": {},
-   "at_risk": false,
+   "gives": {
+    "FERTILIZER": 1
+   },
+   "at_risk": true,
    "funds": false,
-   "products": []
+   "products": [
+    "FERTILIZER"
+   ]
   },
   {
    "tile": [
@@ -1094,29 +1097,26 @@
    ],
    "ops": [
     [
+     "PLACE",
+     "SHEEP"
+    ],
+    [
      "FEED",
      "WHEAT"
     ],
     [
      "CARE",
      null
-    ],
-    [
-     "COLLECT_FERTILIZER",
-     null
     ]
    ],
    "needs": {
+    "SHEEP": 1,
     "WHEAT": 1
    },
-   "gives": {
-    "FERTILIZER": 1
-   },
-   "at_risk": true,
+   "gives": {},
+   "at_risk": false,
    "funds": false,
-   "products": [
-    "FERTILIZER"
-   ]
+   "products": []
   },
   {
    "tile": [
@@ -1324,7 +1324,7 @@
    "ops": [
     [
      "PLANT",
-     "STRAWBERRY"
+     "WHEAT"
     ],
     [
      "WATER",
@@ -1360,8 +1360,8 @@
   },
   {
    "tile": [
-    3,
-    0
+    7,
+    7
    ],
    "ops": [
     [
@@ -1381,29 +1381,8 @@
   },
   {
    "tile": [
-    9,
-    3
-   ],
-   "ops": [
-    [
-     "PLANT",
-     "WHEAT"
-    ],
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    3,
-    9
+    6,
+    8
    ],
    "ops": [
     [

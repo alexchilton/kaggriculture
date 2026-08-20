@@ -41,7 +41,7 @@
    4
   ],
   [
-   4,
+   5,
    5
   ]
  ],
@@ -158,6 +158,14 @@
     [
      "HARVEST",
      null
+    ],
+    [
+     "PLANT",
+     "STRAWBERRY"
+    ],
+    [
+     "WATER",
+     null
     ]
    ],
    "needs": {},
@@ -268,6 +276,14 @@
     [
      "HARVEST",
      null
+    ],
+    [
+     "PLANT",
+     "STRAWBERRY"
+    ],
+    [
+     "WATER",
+     null
     ]
    ],
    "needs": {},
@@ -326,6 +342,14 @@
     ],
     [
      "HARVEST",
+     null
+    ],
+    [
+     "PLANT",
+     "STRAWBERRY"
+    ],
+    [
+     "WATER",
      null
     ]
    ],
@@ -586,8 +610,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -623,8 +647,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -1168,6 +1192,27 @@
   {
    "tile": [
     6,
+    2
+   ],
+   "ops": [
+    [
+     "PLANT",
+     "MELON"
+    ],
+    [
+     "WATER",
+     null
+    ]
+   ],
+   "needs": {},
+   "gives": {},
+   "at_risk": false,
+   "funds": false,
+   "products": []
+  },
+  {
+   "tile": [
+    6,
     0
    ],
    "ops": [
@@ -1190,6 +1235,27 @@
    "tile": [
     8,
     0
+   ],
+   "ops": [
+    [
+     "PLANT",
+     "STRAWBERRY"
+    ],
+    [
+     "WATER",
+     null
+    ]
+   ],
+   "needs": {},
+   "gives": {},
+   "at_risk": false,
+   "funds": false,
+   "products": []
+  },
+  {
+   "tile": [
+    4,
+    9
    ],
    "ops": [
     [
@@ -1247,48 +1313,6 @@
     "SHEEP": 1,
     "WHEAT": 1
    },
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    6,
-    2
-   ],
-   "ops": [
-    [
-     "PLANT",
-     "MELON"
-    ],
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    4,
-    9
-   ],
-   "ops": [
-    [
-     "PLANT",
-     "STRAWBERRY"
-    ],
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
    "gives": {},
    "at_risk": false,
    "funds": false,
@@ -1437,7 +1461,7 @@
    "ops": [
     [
      "PLANT",
-     "STRAWBERRY"
+     "WHEAT"
     ],
     [
      "WATER",
@@ -1458,7 +1482,7 @@
    "ops": [
     [
      "PLANT",
-     "STRAWBERRY"
+     "WHEAT"
     ],
     [
      "WATER",
@@ -1479,7 +1503,7 @@
    "ops": [
     [
      "PLANT",
-     "STRAWBERRY"
+     "WHEAT"
     ],
     [
      "WATER",
@@ -1580,69 +1604,6 @@
    "tile": [
     8,
     6
-   ],
-   "ops": [
-    [
-     "PLANT",
-     "WHEAT"
-    ],
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    7,
-    7
-   ],
-   "ops": [
-    [
-     "PLANT",
-     "WHEAT"
-    ],
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    6,
-    8
-   ],
-   "ops": [
-    [
-     "PLANT",
-     "WHEAT"
-    ],
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    5,
-    9
    ],
    "ops": [
     [

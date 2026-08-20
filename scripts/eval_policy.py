@@ -29,6 +29,23 @@ import numpy as np
 from kagg.rl import jax_act as A, jax_masks, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
 
+
+# The bundle legality mask needs the vocabulary. It is loaded once here rather than threaded through
+# every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
+# must be byte-identical across labelling, fitting and play or every bundle index means something
+# different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+_BUNDLE_SELLS = None
+
+
+def _bundle_sells():
+    global _BUNDLE_SELLS
+    if _BUNDLE_SELLS is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
 EPISODE_TURNS = 719
 
 
@@ -53,7 +70,7 @@ def random_legal_actions(key, state):
     Uniform-over-legal is a much stronger floor than uniform-over-all: it never wastes a turn on an
     illegal op, so it moves, waters and harvests by accident at a reasonable rate.
     """
-    masks = A.masks_for(state)
+    masks = A.masks_for(state, _bundle_sells())
     keys = jax.random.split(key, len(A.ALL_HEADS))
     out = {}
     for k, sub in zip(A.ALL_HEADS, keys):
@@ -84,7 +101,7 @@ def play(params_a, params_b, model, batch, key, greedy=True, swap=False):
         key, ka, kb = jax.random.split(key, 3)
 
         tiles, units, glob = jax_obs.encode(state)
-        masks = A.masks_for(state)
+        masks = A.masks_for(state, _bundle_sells())
 
         heads_a, _ = model.apply(params_a, A._flat(tiles), A._flat(units), A._flat(glob))
         act_a = _greedy(heads_a, masks) if greedy else A.sample(ka, heads_a, masks)[0]

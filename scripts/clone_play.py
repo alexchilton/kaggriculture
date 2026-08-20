@@ -289,6 +289,17 @@ def main():
                     "market": st.get("market") or []}
         env.step(a)
 
+    # **The number that says whether it PLAYS.** Op counts can match while the farm earns nothing:
+    # the board-keyed clone scored 79.3% error with FEED 0/85 and would have banked its $3,000
+    # start. Money is not the grading criterion -- the market is shared, so a clone facing a
+    # different opponent banks a different number -- but it is the check that the agent is alive.
+    final = env.state[seat].observation["farms"][seat].get("money")
+    if final is None:
+        final = (env.state[seat].reward or 0.0)
+    teacher_bank = [(q.get("reward") or 0.0) for q in d["steps"][-1]][seat]
+    print("clone banked $%s   |   teacher banked $%s in this game\n"
+          % (format(int(float(final)), ","), format(int(teacher_bank), ",")))
+
     his = collections.defaultdict(collections.Counter)
     steps = d["steps"]
     for i, step in enumerate(steps):

@@ -18,6 +18,23 @@ from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
 
+# The bundle legality mask needs the vocabulary. It is loaded once here rather than threaded through
+# every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
+# must be byte-identical across labelling, fitting and play or every bundle index means something
+# different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+_BUNDLE_SELLS = None
+
+
+def _bundle_sells():
+    global _BUNDLE_SELLS
+    if _BUNDLE_SELLS is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
+
 def _state(batch=4, seed=0):
     return J.reset(batch, seed=seed)
 
@@ -209,7 +226,7 @@ def test_the_ppo_ratio_is_still_exactly_one_with_commitments_running():
     model = P.Policy()
     params = model.init(jax.random.PRNGKey(0), *obs)
     heads, _v = model.apply(params, *obs)
-    masks = A.masks_for(s)
+    masks = A.masks_for(s, _bundle_sells())
 
     actions, _lp, _e = A.sample(jax.random.PRNGKey(1), heads, masks)
     _op, _crop, _it, _qt, _cm, decided = C.resolve(
@@ -236,7 +253,7 @@ def test_masking_a_turn_out_actually_changes_the_density():
     params = model.init(key, *obs)
     # Zero-init heads are uniform, so log-probs are non-zero and dropping a term must move the sum.
     heads, _v = model.apply(params, *obs)
-    masks = A.masks_for(s)
+    masks = A.masks_for(s, _bundle_sells())
     actions, _lp, _e = A.sample(jax.random.PRNGKey(3), heads, masks)
 
     all_on = jnp.ones(actions["op"].shape, dtype=bool)

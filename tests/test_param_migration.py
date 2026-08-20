@@ -19,10 +19,27 @@ from kagg.rl import jax_act as A, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
 
 
+# The bundle legality mask needs the vocabulary. It is loaded once here rather than threaded through
+# every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
+# must be byte-identical across labelling, fitting and play or every bundle index means something
+# different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+_BUNDLE_SELLS = None
+
+
+def _bundle_sells():
+    global _BUNDLE_SELLS
+    if _BUNDLE_SELLS is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
+
 def _obs(seed=0, batch=2):
     state = J.reset(batch, seed=seed)
     tiles, units, glob = jax_obs.encode(state)
-    return (A._flat(tiles), A._flat(units), A._flat(glob)), A.masks_for(state)
+    return (A._flat(tiles), A._flat(units), A._flat(glob)), A.masks_for(state, _bundle_sells())
 
 
 def _old_style_params(template, key):
