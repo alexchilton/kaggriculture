@@ -41,6 +41,7 @@ that the PPO run will use.
 """
 
 import argparse
+import json
 import pathlib
 import pickle
 import time
@@ -51,6 +52,7 @@ import numpy as np
 import optax
 
 from kagg.rl import jax_act as A, jax_heuristic as HEUR, jax_obs, jax_policy as P
+from kagg.il import market_bundles as MB
 from kagg.rl import jax_rancher as RANCH
 from kagg.sim import jax_sim as J
 
@@ -70,12 +72,17 @@ def _bucket_index(raw, buckets):
     return jnp.argmin(d, axis=-1)
 
 
-def teacher_labels(sim_actions):
+def teacher_labels(sim_actions, tables):
     """`J.Actions` -> the head-index dict the student's `evaluate` scores against.
 
-    Every head the simulator reads gets a label. `trade` is the one head with no teacher counterpart
-    -- neither scripted agent has a trade mode, they just name quantities -- so it is left at mode 0
-    and excluded from the loss below.
+    Every head the simulator reads gets a label, and now every head HAS one. The old `trade` mode
+    was a latent no teacher could supply -- it was labelled 0 and excluded from the loss, which also
+    meant only the mode-0 slice of `sell` and `buy_product` was ever trained while play sampled the
+    mode. The bundle removes the problem rather than working around it: a teacher's order list IS
+    the bundle, so `bundle_index_of` reads the label straight off the actions it played.
+
+    `tables` is `market_bundles.tables(vocab)` in `jnp` form, the same object `to_sim_actions` uses,
+    so the label a teacher gets and the orders a student emits are indexed identically.
     """
     b2 = lambda x, buckets: _bucket_index(x, buckets)          # noqa: E731
     return {
@@ -83,21 +90,19 @@ def teacher_labels(sim_actions):
         "crop": sim_actions.unit_crop.astype(jnp.int32),
         "item": sim_actions.unit_item.astype(jnp.int32),
         "qty": b2(sim_actions.unit_qty, P.UNIT_QTY_BUCKETS),
-        "sell": b2(sim_actions.sell, P.SELL_BUCKETS),
-        "buy_product": b2(sim_actions.buy_product, P.BUY_BUCKETS),
-        "buy_seed": b2(sim_actions.buy_seed, P.BUY_BUCKETS),
-        "buy_animal": (sim_actions.buy_animal > 0).astype(jnp.int32),
-        "hire": sim_actions.hire.astype(jnp.int32),
-        "buy_land": sim_actions.buy_land.astype(jnp.int32),
-        "trade": jnp.zeros(sim_actions.hire.shape, dtype=jnp.int32),
+        "bundle": A.bundle_index_of(sim_actions, tables),
+        "qty_sell": b2(sim_actions.sell, P.SELL_BUCKETS),
+        "qty_buy_product": b2(sim_actions.buy_product, P.BUY_BUCKETS),
+        "qty_buy_seed": b2(sim_actions.buy_seed, P.BUY_BUCKETS),
     }
 
 
-# `trade` has no teacher, and scoring it would train the student toward mode 0 for no reason.
-SCORED_HEADS = tuple(h for h in A.ALL_HEADS if h != "trade")
+# Every head is scored now. The exclusion here used to exist because `trade` had no teacher; the
+# bundle does, so there is nothing left to leave out.
+SCORED_HEADS = A.ALL_HEADS
 
 
-def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
+def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle_sells):
     """One DAgger round: roll the *student* out, label every state with the teacher, fit.
 
     `beta` is the probability that a turn is actually *executed* by the teacher rather than the
@@ -115,16 +120,16 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
 
             tiles, units, glob = jax_obs.encode(state)
             obs = (A._flat(tiles), A._flat(units), A._flat(glob))
-            masks = A.masks_for(state)
+            masks = A.masks_for(state, bundle_sells)
             student_actions, _lp, _e = A.sample(ka, model.apply(params, *obs)[0], masks)
 
             teacher_sim = teacher_fn(state)
-            labels = teacher_labels(teacher_sim)
+            labels = teacher_labels(teacher_sim, tables)
 
             # Who actually moves the world this turn.
             take_teacher = jax.random.uniform(kb, (batch,)) < beta
             flat_take = jnp.repeat(take_teacher, 2)
-            student_sim = A.to_sim_actions(student_actions, batch)
+            student_sim = A.to_sim_actions(student_actions, batch, tables)
             sim_actions = jax.tree_util.tree_map(
                 lambda s, t: jnp.where(
                     flat_take.reshape(batch, 2, *((1,) * (s.ndim - 2))), t, s),
@@ -156,9 +161,10 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta):
 
     def loss_fn(params, batch_data):
         heads, _v = model.apply(params, *batch_data["obs"])
-        # Both conditioning steps, keyed on the *teacher's* own trade mode and op -- the same
-        # slices `jax_act.evaluate` will score at rollout time. `condition_all` returns every head,
-        # conditioned or not, so there is no per-head branch to keep in step here.
+        # Conditioned on the *teacher's* own op -- the same slice `jax_act.evaluate` will score at
+        # rollout time. `condition_all` returns every head, conditioned or not, so there is no
+        # per-head branch to keep in step here. The market half needs no conditioning now: the
+        # bundle is the coordinating decision and it is a label, not a latent.
         cond = A.condition_all(heads, batch_data["labels"])
         total, n = 0.0, 0.0
         for h in SCORED_HEADS:
@@ -201,6 +207,11 @@ def main():
     ap.add_argument("--teacher", choices=("heuristic", "rancher"), default="rancher",
                     help="rancher teaches the animal economy (FEED/CARE/COLLECT_FERT); heuristic "
                          "teaches crops and CANNOT teach FEED -- its buy_animal is hard-zero")
+    ap.add_argument("--vocab", required=True,
+                    help="JSON list of bundles, from scripts/build_bundle_vocab.py. "
+                         "Required: a vocabulary that differs between labelling and "
+                         "play makes every bundle index mean something else, and "
+                         "nothing offline would show it.")
     ap.add_argument("--rounds", type=int, default=8)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--horizon", type=int, default=32)
@@ -233,6 +244,17 @@ def main():
     optimiser = optax.chain(optax.clip_by_global_norm(0.5), optax.adam(args.lr))
     opt_state = optimiser.init(params)
 
+    # **The vocabulary is an artifact, not a constant.** It must be the SAME one the labels were
+    # built with and the same one a later PPO run loads, or the bundle indices mean different things
+    # in the loss and at play time -- a mismatch nothing offline would show, because every index is
+    # still a valid index. `--vocab` is required for that reason.
+    vocab = MB.Vocabulary.from_bundles(
+        [tuple(tuple(pair) for pair in b) for b in json.loads(pathlib.Path(args.vocab).read_text())],
+        max_size=P.N_BUNDLES)
+    tables = {k: jnp.asarray(v) for k, v in MB.tables(vocab).items()}
+    bundle_sells = jnp.asarray(MB.sell_table(vocab))
+    print(f"bundle vocabulary: {vocab.size} of {P.N_BUNDLES} slots, from {args.vocab}", flush=True)
+
     run = RUN_DIR / f"{args.tag}-{time.strftime('%Y%m%d-%H%M%S')}"
     run.mkdir(parents=True, exist_ok=True)
     print(f"teacher: {args.teacher}   params: {n_params:,}   run dir: {run}")
@@ -243,7 +265,8 @@ def main():
     state = state0
     for rnd in range(args.rounds):
         beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, args.rounds - 1))
-        rollout, fit = make_step(model, teacher_fn, args.batch, args.horizon, optimiser, beta)
+        rollout, fit = make_step(model, teacher_fn, args.batch, args.horizon, optimiser, beta,
+                                 tables, bundle_sells)
         key, kr = jax.random.split(key)
         state, key, traj = rollout(params, state, kr)
 
