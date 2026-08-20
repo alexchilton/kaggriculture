@@ -103,8 +103,10 @@ def test_an_all_zero_action_really_is_the_do_nothing_agent():
     from kagg.sim import ops as O
 
     assert O.NOOP == 0
-    assert int(P.SELL_BUCKETS[0]) == 0
-    assert int(P.BUY_BUCKETS[0]) == 0
+    # Class 0 of a market quantity head is quantity zero, so "> 0" still reads as "actually
+    # traded". That survived the ladders being replaced by the integer itself, and the metric
+    # depends on it.
+    assert P.MAX_QTY > 1
 
 
 def test_idle_seats_are_excluded_from_the_policy_loss_and_counted_as_crossplay():

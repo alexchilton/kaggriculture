@@ -28,6 +28,7 @@ planned ops died with them.
 
 import collections
 
+from kagg.rl import jax_policy as P
 from kagg.sim import farm as F
 from kagg.sim import market as M
 
@@ -264,16 +265,34 @@ def sell_table(vocab, pad_to=None):
     return rows
 
 
-def orders_from_heads(vocab, index, sell_bucket, buy_product_bucket, buy_seed_bucket,
-                      sell_ladder, buy_ladder, products, crops, animals):
+def clamp_qty(n):
+    """A raw quantity -> the class index the quantity heads use. The index IS the quantity.
+
+    Clamped, never wrapped. The teacher's largest BUY_PRODUCT is 134 against a 64-wide head, and
+    `134 % 64 == 6` would be a different order emitted with full confidence. Clamping understates a
+    rare huge purchase; wrapping silently replaces it.
+
+    This is done here, in ordinary Python at the label end, because JAX clamps out-of-range gather
+    indices under jit without raising -- so an unclamped label would train the head toward a class
+    that exists and decode to something else entirely, with nothing to read anywhere.
+    """
+    return int(max(0, min(int(n), P.MAX_QTY - 1)))
+
+
+def orders_from_heads(vocab, index, qty_sell, qty_buy_product, qty_buy_seed,
+                      products, crops, animals):
     """Sampled heads -> the environment's `market` list.
 
     The bundle names WHICH orders; the per-product quantity heads name HOW MANY. They are indexed
     differently -- the bundle is a sorted multiset, the quantity heads are one entry per product --
     so this is where the two are joined, once, rather than at each call site.
 
-    A selected entry floors at one unit. Bucket 0 means "do nothing", which contradicts a bundle
-    that named the product, and the bundle is the decision carrying the coordination. Same rule as
+    **The quantity head's class index is the quantity itself.** It used to be a rung on
+    `SELL_BUCKETS`/`BUY_BUCKETS`, which cost a measured 27.2% on SELL and 35.3% on BUY_PRODUCT
+    against a teacher whose numbers are known exactly. See the comment on `jax_policy.MAX_QTY`.
+
+    A selected entry floors at one unit. Class 0 means "do nothing", which contradicts a bundle that
+    named the product, and the bundle is the decision carrying the coordination. Same rule as
     `to_sim_fields` and `jax_act.to_sim_actions`; all three must agree or a policy plays differently
     depending on which decoder ran.
     """
@@ -284,14 +303,11 @@ def orders_from_heads(vocab, index, sell_bucket, buy_product_bucket, buy_seed_bu
         elif op == BUY_LAND:
             out.append([BUY_LAND])
         elif op == SELL and item in products:
-            n = max(1, int(sell_ladder[int(sell_bucket[products.index(item)])]))
-            out.append([SELL, item, n])
+            out.append([SELL, item, max(1, int(qty_sell[products.index(item)]))])
         elif op == BUY_PRODUCT and item in products:
-            n = max(1, int(buy_ladder[int(buy_product_bucket[products.index(item)])]))
-            out.append([BUY_PRODUCT, item, n])
+            out.append([BUY_PRODUCT, item, max(1, int(qty_buy_product[products.index(item)]))])
         elif op == BUY_SEED and item in crops:
-            n = max(1, int(buy_ladder[int(buy_seed_bucket[crops.index(item)])]))
-            out.append([BUY_SEED, item, n])
+            out.append([BUY_SEED, item, max(1, int(qty_buy_seed[crops.index(item)]))])
         elif op == BUY_ANIMAL and item in animals:
             out.append([BUY_ANIMAL, item, 1])
     return out

@@ -2316,7 +2316,7 @@ def main():
         trade_counts = (jax.nn.one_hot(batch_data_full["actions"]["trade"],
                                        P.N_TRADE_MODES, dtype=jnp.float32)
                         * seat_rows[:, None]).sum(axis=0)
-        # Bucket 0 of `BUY_BUCKETS`/`SELL_BUCKETS` is quantity zero, so "> 0" is "actually traded".
+        # Class 0 of a market quantity head is quantity zero, so "> 0" is "actually traded".
         buy_rate = ((batch_data_full["actions"]["buy_product"] > 0).astype(jnp.float32)
                     * seat_rows[:, None]).sum(axis=0) / n_seat
         sell_rate = ((batch_data_full["actions"]["sell"] > 0).astype(jnp.float32)
@@ -2365,7 +2365,7 @@ def main():
         # too small to explain it; these three are the remaining ways to burn a bank quickly.
         # `buy_seed` is per crop so its action is [rows, N_CROPS]; `hire` and `buy_land` are single
         # binary decisions, so [rows]. "Any nonzero this turn" is the comparable rate across all
-        # three -- bucket 0 of `BUY_BUCKETS` is quantity zero.
+        # three -- class 0 of a market quantity head is quantity zero.
         def _spend(name):
             a = batch_data_full["actions"][name]
             fired = (a > 0).any(axis=tuple(range(1, a.ndim))) if a.ndim > 1 else (a > 0)

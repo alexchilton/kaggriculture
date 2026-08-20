@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
+from kagg.il import market_bundles as MB
 from kagg.rl import jax_policy as P
 from kagg.sim import ops as O
 from kagg.sim.jax_sim import MAX_UNITS
@@ -46,15 +47,16 @@ OP_CODE = {
 ANIMAL_INDEX = {"GOOSE": 0, "COW": 1, "SHEEP": 2}
 PRODUCTS = [k for k, v in sorted(ITEM_INDEX.items(), key=lambda kv: kv[1]) if v < 9]
 
-_SELL = np.asarray(P.SELL_BUCKETS)
-_BUY = np.asarray(P.BUY_BUCKETS)
 _QTY = np.asarray(P.UNIT_QTY_BUCKETS)
 
 
 def _bucket(value, buckets):
-    """Nearest bucket index. The heads are categorical over fixed quantities, so an exact
-    quantity the teacher used may not be representable; the closest bucket is the best label
-    available and the error is bounded by the bucket spacing."""
+    """Nearest bucket index, for the UNIT quantity ladder only.
+
+    The market quantity heads no longer use one: their class index is the quantity itself, via
+    `market_bundles.clamp_qty`. The rungs cost a measured 27.2% on SELL and 35.3% on BUY_PRODUCT
+    against a teacher whose numbers are known exactly, which in imitation is pure waste.
+    """
     return int(np.argmin(np.abs(buckets - value)))
 
 
@@ -88,18 +90,20 @@ def encode_action(action, n_units):
     buy_seed = np.zeros(len(CROP_INDEX), dtype=np.int32)
     buy_animal = np.zeros(len(ANIMAL_INDEX), dtype=np.int32)
 
-    for order in action.get("market") or []:
+    orders = action.get("market") or []
+
+    for order in orders:
         kind = order[0]
         if kind == "SELL" and len(order) > 2 and order[1] in ITEM_INDEX:
             idx = ITEM_INDEX[order[1]]
             if idx < len(PRODUCTS):
-                sell[idx] = _bucket(order[2], _SELL)
+                sell[idx] = MB.clamp_qty(order[2])
         elif kind == "BUY_PRODUCT" and len(order) > 2 and order[1] in ITEM_INDEX:
             idx = ITEM_INDEX[order[1]]
             if idx < len(PRODUCTS):
-                buy_product[idx] = _bucket(order[2], _BUY)
+                buy_product[idx] = MB.clamp_qty(order[2])
         elif kind == "BUY_SEED" and len(order) > 2 and order[1] in CROP_INDEX:
-            buy_seed[CROP_INDEX[order[1]]] = _bucket(order[2], _BUY)
+            buy_seed[CROP_INDEX[order[1]]] = MB.clamp_qty(order[2])
         elif kind == "BUY_ANIMAL" and len(order) > 1 and order[1] in ANIMAL_INDEX:
             # **Binary, not a quantity.** The `buy_animal` head is `N_ANIMALS x 2` and
             # `to_sim_actions` passes it through as the count, so the only values it can express are
@@ -122,13 +126,11 @@ def encode_action(action, n_units):
     #
     # So the bundle is read straight off the order list, where the multiplicity survives, and the
     # per-product buckets are kept as the conditioned quantity labels.
-    from kagg.il import market_bundles as _MB
-
-    vocab = _MB.load_vocab()
-    bundle = np.int32(vocab.index(_MB.bundle_of(orders)))
+    vocab = MB.load_vocab()
+    bundle = np.int32(vocab.index(MB.bundle_of(orders)))
 
     # A quantity is only a decision where the bundle asked for one. Without these weights the
-    # 78.9% of turns that send nothing train every quantity head toward bucket 0 -- the padding
+    # 78.9% of turns that send nothing train every quantity head toward class 0 -- the padding
     # mistake `bc.py` already warns about three times for the unit heads.
     w_sell = np.zeros(len(PRODUCTS), dtype=np.float32)
     w_buy_product = np.zeros(len(PRODUCTS), dtype=np.float32)

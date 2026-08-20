@@ -38,16 +38,15 @@ from kagg.sim.market import ANIMALS, ITEM_INDEX, PRODUCTS     # noqa: E402
 from kagg.sim.tiles import CROP_INDEX                         # noqa: E402
 
 CROPS = [c for c, _ in sorted(CROP_INDEX.items(), key=lambda kv: kv[1])]
-SELL_LADDER = np.asarray(P.SELL_BUCKETS)
-BUY_LADDER = np.asarray(P.BUY_BUCKETS)
 UNIT_LADDER = np.asarray(P.UNIT_QTY_BUCKETS)
 
 
 def nearest(value, ladder):
-    """Project a raw quantity onto the student's ladder.
+    """Project a raw quantity onto the UNIT quantity ladder.
 
-    Nearest, not floor: with SELL_BUCKETS [0,1,3,10,30] a teacher selling 7 is much better described
-    by 10 than by 3. Same rule as `bc_dagger._bucket_index`, which is the inverse of the decode.
+    Market quantities no longer go through here: their class index is the quantity itself, via
+    `market_bundles.clamp_qty`. The rungs were measured at 27.2% mean error on SELL against a
+    teacher whose numbers are exact, which in imitation is error we chose to have.
     """
     return int(np.argmin(np.abs(ladder - value)))
 
@@ -102,13 +101,13 @@ def market_labels(orders, vocab):
         n = float(o[2]) if len(o) > 2 else 1.0
         if op == "SELL" and name in PRODUCTS:
             i = PRODUCTS.index(name)
-            y_sell[i], w_sell[i] = nearest(n, SELL_LADDER), 1.0
+            y_sell[i], w_sell[i] = MB.clamp_qty(n), 1.0
         elif op == "BUY_PRODUCT" and name in PRODUCTS:
             i = PRODUCTS.index(name)
-            y_bp[i], w_bp[i] = nearest(n, BUY_LADDER), 1.0
+            y_bp[i], w_bp[i] = MB.clamp_qty(n), 1.0
         elif op == "BUY_SEED" and name in CROPS:
             i = CROPS.index(name)
-            y_bs[i], w_bs[i] = nearest(n, BUY_LADDER), 1.0
+            y_bs[i], w_bs[i] = MB.clamp_qty(n), 1.0
     return idx, y_sell, y_bp, y_bs, w_sell, w_bp, w_bs
 
 

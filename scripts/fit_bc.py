@@ -92,9 +92,9 @@ def to_loss_batch(b):
     out["m_item"] = np.ones((n, u, J.N_ITEMS), bool)
     out["m_qty"] = np.ones((n, u, len(P.UNIT_QTY_BUCKETS)), bool)
     out["m_bundle"] = np.ones((n, P.N_BUNDLES), bool)
-    out["m_qty_sell"] = np.ones((n, J.N_PRODUCTS, len(P.SELL_BUCKETS)), bool)
-    out["m_qty_buy_product"] = np.ones((n, J.N_PRODUCTS, len(P.BUY_BUCKETS)), bool)
-    out["m_qty_buy_seed"] = np.ones((n, J.N_CROPS, len(P.BUY_BUCKETS)), bool)
+    out["m_qty_sell"] = np.ones((n, J.N_PRODUCTS, P.MAX_QTY), bool)
+    out["m_qty_buy_product"] = np.ones((n, J.N_PRODUCTS, P.MAX_QTY), bool)
+    out["m_qty_buy_seed"] = np.ones((n, J.N_CROPS, P.MAX_QTY), bool)
     return out
 
 

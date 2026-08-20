@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kagg.il import replays
+from kagg.il import market_bundles as MB, replays
 from kagg.sim import ops as O
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -68,20 +68,31 @@ def test_encoded_heads_have_the_shapes_to_sim_actions_expects():
     """The labels have to be the same objects the policy emits, or training targets nothing real."""
     import jax.numpy as jnp
 
-    from kagg.rl import jax_act as A
+    from kagg.il import market_bundles as MB
+    from kagg.rl import jax_act as A, jax_policy as P
     from kagg.sim import jax_sim as J
 
     heads = replays.encode_action(
-        {"farmer": ["PLANT", "MELON"], "hands": [["WATER"]], "market": [["HIRE"]]}, n_units=2)
+        {"farmer": ["PLANT", "MELON"], "hands": [["WATER"]], "market": [["HIRE"]] * 10}, n_units=2)
+
+    # `to_sim_actions` decodes the bundle index through the static tables, so it needs the SAME
+    # vocabulary the labels were written against. A different file and every index means something
+    # else, with nothing offline to show it.
+    tables = {k: jnp.asarray(v)
+              for k, v in MB.tables(MB.load_vocab(), pad_to=P.N_BUNDLES).items()}
 
     # Two seats of one game, which is the layout `to_sim_actions` unflattens.
     batched = {k: jnp.broadcast_to(jnp.asarray(v), (2,) + np.shape(v)) for k, v in heads.items()}
-    sim = A.to_sim_actions(batched, batch=1)
+    sim = A.to_sim_actions(batched, batch=1, tables=tables)
 
     assert sim.unit_op.shape == (1, 2, J.MAX_UNITS)
     assert int(sim.unit_op[0, 0, 0]) == O.PLANT_OP
     assert int(sim.unit_crop[0, 0, 0]) == 4
-    assert bool(sim.hire[0, 0])
+
+    # **A COUNT, not a flag.** Ten HIRE orders must survive as ten. This is the whole reason the
+    # market became one bundle: `hire = np.int32(1)` in the label path capped the teacher's most
+    # common large market decision at a single hand.
+    assert int(sim.hire[0, 0]) == 10, "ten hires collapsed to %d" % int(sim.hire[0, 0])
 
 
 def test_market_orders_encode_to_the_right_buckets():
@@ -94,11 +105,23 @@ def test_market_orders_encode_to_the_right_buckets():
     }
     heads = replays.encode_action(action, n_units=1)
 
-    assert replays.P.SELL_BUCKETS[heads["sell"][4]] == 3        # MELON is product 4
-    assert replays.P.BUY_BUCKETS[heads["buy_product"][0]] == 5  # WHEAT is product 0
-    assert replays.P.BUY_BUCKETS[heads["buy_seed"][4]] == 2
-    assert heads["buy_animal"][1] == 1                          # COW
-    assert heads["hire"] == 1 and heads["buy_land"] == 1
+    # Exact, not nearest-rung. The quantity head's class index IS the quantity, so a teacher who
+    # sold 3 is labelled 3. On the old ladders these read back as 3, 5 and 2 only by luck of which
+    # rungs existed; `SELL 18` came back as 30.
+    assert heads["qty_sell"][4] == 3                            # MELON is product 4
+    assert heads["qty_buy_product"][0] == 5                     # WHEAT is product 0
+    assert heads["qty_buy_seed"][4] == 2
+
+    # BUY_ANIMAL, HIRE and BUY_LAND carry no quantity head at all: they are part of the BUNDLE
+    # identity, so `HIRE x10` is a different symbol from `HIRE x1`. `hire = 1` was the bug this
+    # whole change exists to remove -- the teacher hires ten hands in one turn, 18,666 times in
+    # 920,320 turns, and a flag capped every one of them at one hand.
+    assert "hire" not in heads and "buy_land" not in heads and "buy_animal" not in heads
+    assert heads["bundle"] == MB.load_vocab().index(MB.bundle_of(action["market"]))
+
+    # Only the products the bundle named are scored. Weighting every entry would train the other
+    # eight toward class 0 on a turn the teacher had no opinion about them.
+    assert heads["w_qty_sell"][4] == 1.0 and heads["w_qty_sell"][0] == 0.0
 
 
 def test_every_label_is_in_range_for_its_head():
@@ -114,13 +137,15 @@ def test_every_label_is_in_range_for_its_head():
     from kagg.sim import jax_sim as J
 
     sizes = {"op": O.N_OPS, "crop": J.N_CROPS, "item": J.N_ITEMS,
-             "qty": len(P.UNIT_QTY_BUCKETS), "sell": len(P.SELL_BUCKETS),
-             "buy_product": len(P.BUY_BUCKETS), "buy_seed": len(P.BUY_BUCKETS),
-             "buy_animal": 2, "hire": 2, "buy_land": 2}
+             "qty": len(P.UNIT_QTY_BUCKETS), "qty_sell": P.MAX_QTY,
+             "qty_buy_product": P.MAX_QTY, "qty_buy_seed": P.MAX_QTY,
+             "bundle": P.N_BUNDLES}
 
     worst = {}
     for _obs, _priv, action, _seat in replays.iter_turns(REPLAY):
         for k, v in replays.encode_action(action, n_units=24).items():
+            if k.startswith("w_"):
+                continue          # per-product loss weights, not class indices
             worst[k] = max(worst.get(k, 0), int(np.max(v)))
 
     over = {k: (worst[k], sizes[k]) for k in worst if worst[k] >= sizes[k]}
@@ -132,8 +157,11 @@ def test_a_pass_turn_encodes_to_all_noop():
     heads = replays.encode_action({"farmer": ["PASS"], "hands": [["PASS"]], "market": []}, 2)
 
     assert not heads["op"].any()
-    assert not heads["sell"].any() and not heads["buy_product"].any()
-    assert heads["hire"] == 0
+    assert not heads["qty_sell"].any() and not heads["qty_buy_product"].any()
+    assert heads["bundle"] == 0, "an empty market is the empty bundle, pinned at index 0"
+    # `hire` is no longer a head. It is part of the bundle identity, so an idle turn is idle by
+    # being bundle 0, not by a separate flag reading zero.
+    assert "hire" not in heads
 
 
 def test_the_dataset_is_big_enough_to_be_worth_it():

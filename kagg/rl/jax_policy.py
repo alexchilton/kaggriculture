@@ -92,8 +92,30 @@ DTYPE = jnp.float32
 # than trusting this number if the teacher changes.
 N_BUNDLES = 256
 
-SELL_BUCKETS = jnp.asarray([0, 1, 3, 10, 30], dtype=jnp.int32)
-BUY_BUCKETS = jnp.asarray([0, 1, 2, 5], dtype=jnp.int32)
+# **Market quantities are the integer itself, not a rung on a ladder.**
+#
+# They used to be `SELL_BUCKETS = [0,1,3,10,30]` and `BUY_BUCKETS = [0,1,2,5]`. Those were written
+# down, never measured. Measured against the teacher's own play (20,000 turns per shard,
+# `scripts/measure_quantity_ladders.py`, 2026-08-20):
+#
+#     SELL         70,411 orders  max 68   mean projection error 27.2%
+#     BUY_PRODUCT  ~18,000 orders max 134  mean projection error 35.3%
+#     BUY_SEED     28,123 orders  max 23   mean projection error 16.5%
+#
+# The distribution is flat, not peaky: SELL uses every value from 1 to 24 with no gaps. So the
+# ladder was a lossy encoding of a continuous quantity, and `SELL WHEAT 18` -- 2,983 orders -- came
+# out as 30. In imitation that error is pure waste, because the teacher's number is known exactly.
+#
+# A cap of 64 is exact for 99.79% of SELL and 97.50% of BUY_PRODUCT. Above it the label clamps
+# rather than wraps, which understates a rare huge order instead of emitting a different one.
+# `tests/test_a_traded_quantity_survives_the_round_trip.py` pins both the exactness and the cap.
+#
+# HIRE is not here and must not be: all 123,520 of the teacher's HIRE orders are qty 1, because
+# `HIRE x10` is ten orders and its multiplicity lives in the bundle symbol.
+MAX_QTY = 64
+
+# Unit-op quantities are still a ladder. PICKUP/DROP/PLACE carry inventory in small counts and have
+# not been measured the way the market ones now have; treat this as unexamined, not as agreed.
 UNIT_QTY_BUCKETS = jnp.asarray([1, 2, 5, 10], dtype=jnp.int32)
 
 
@@ -225,12 +247,12 @@ class Policy(nn.Module):
             # and are read only for the products the drawn bundle activates, so the coordination
             # lives in the bundle and the magnitude lives here. A wrong quantity is graceful; a
             # wrong bundle is catastrophic.
-            "qty_sell": nn.Dense(J.N_PRODUCTS * len(SELL_BUCKETS), **D)(gtok)
-                      .reshape(-1, J.N_PRODUCTS, len(SELL_BUCKETS)),
-            "qty_buy_product": nn.Dense(J.N_PRODUCTS * len(BUY_BUCKETS), **D)(gtok)
-                      .reshape(-1, J.N_PRODUCTS, len(BUY_BUCKETS)),
-            "qty_buy_seed": nn.Dense(J.N_CROPS * len(BUY_BUCKETS), **D)(gtok)
-                      .reshape(-1, J.N_CROPS, len(BUY_BUCKETS)),
+            "qty_sell": nn.Dense(J.N_PRODUCTS * MAX_QTY, **D)(gtok)
+                      .reshape(-1, J.N_PRODUCTS, MAX_QTY),
+            "qty_buy_product": nn.Dense(J.N_PRODUCTS * MAX_QTY, **D)(gtok)
+                      .reshape(-1, J.N_PRODUCTS, MAX_QTY),
+            "qty_buy_seed": nn.Dense(J.N_CROPS * MAX_QTY, **D)(gtok)
+                      .reshape(-1, J.N_CROPS, MAX_QTY),
         }
         # **The value head is bounded to [0, 1], and that bound is a fact, not a heuristic.**
         # The reward is 1 for a win and 0 for a loss, paid once, and gamma <= 1 -- so no state can

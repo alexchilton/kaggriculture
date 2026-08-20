@@ -88,11 +88,16 @@ def masks_for(state, bundle_sells):
     impossible = jnp.any(wants[None, None, :, :] & ~have[:, :, None, :], axis=-1)
     bundle = ~impossible                                             # [B, P, N_BUNDLES]
 
-    # Quantity ladders are always drawable; the bundle decides which entries are ever read, and
-    # bucket 0 is "do nothing", which is legal by construction.
-    qty_sell = jnp.ones((b, 2, J.N_PRODUCTS, len(P.SELL_BUCKETS)), dtype=bool)
-    qty_buy_product = jnp.ones((b, 2, J.N_PRODUCTS, len(P.BUY_BUCKETS)), dtype=bool)
-    qty_buy_seed = jnp.ones((b, 2, J.N_CROPS, len(P.BUY_BUCKETS)), dtype=bool)
+    # Every quantity is drawable; the bundle decides which entries are ever read, and class 0 is
+    # "do nothing", which is legal by construction.
+    #
+    # Deliberately NOT masked by what the shed holds. The bundle mask above already refuses a sell
+    # of a product the shed lacks, and a second constraint here would have to agree with it on every
+    # turn forever. The simulator clips an over-sell itself, so an over-large quantity is a wasted
+    # order rather than an illegal one.
+    qty_sell = jnp.ones((b, 2, J.N_PRODUCTS, P.MAX_QTY), dtype=bool)
+    qty_buy_product = jnp.ones((b, 2, J.N_PRODUCTS, P.MAX_QTY), dtype=bool)
+    qty_buy_seed = jnp.ones((b, 2, J.N_CROPS, P.MAX_QTY), dtype=bool)
 
     out = {"op": op, "crop": crop, "item": item, "qty": qty, "bundle": bundle,
            "qty_sell": qty_sell, "qty_buy_product": qty_buy_product,
@@ -295,16 +300,19 @@ def to_sim_actions(actions, batch, tables):
     common market decision is ten hires in a single turn.
 
     **A selected product always moves at least one unit.** The bundle says "sell wheat" and the
-    quantity head could still draw bucket 0, which means "do nothing" -- the two would contradict,
+    quantity head could still draw class 0, which means "do nothing" -- the two would contradict,
     and the bundle is the decision that carries the coordination. So a selected entry floors at 1,
     matching `market_bundles.to_sim_fields`, where a teacher naming no quantity means one unit.
+
+    **The quantity head's class index IS the quantity.** No ladder lookup: the rungs cost a measured
+    27.2% on SELL against a teacher whose numbers are exact. See `jax_policy.MAX_QTY`.
     """
     u = lambda k: _unflat(actions[k], batch)   # noqa: E731
     idx = u("bundle")
 
-    def gated(selected, buckets, head):
+    def gated(selected, head):
         want = selected[idx]                            # [B, P, K] counts from the bundle row
-        drawn = buckets[u(head)].astype(J._I)           # [B, P, K] magnitudes from the qty head
+        drawn = u(head).astype(J._I)                    # [B, P, K] the quantity, as itself
         return jnp.where(want > 0, jnp.maximum(drawn, 1), 0).astype(J._I)
 
     return J.Actions(
@@ -312,9 +320,9 @@ def to_sim_actions(actions, batch, tables):
         unit_crop=u("crop").astype(J._I),
         unit_item=u("item").astype(J._I),
         unit_qty=P.UNIT_QTY_BUCKETS[u("qty")].astype(J._I),
-        sell=gated(tables["sell"], P.SELL_BUCKETS, "qty_sell"),
-        buy_seed=gated(tables["buy_seed"], P.BUY_BUCKETS, "qty_buy_seed"),
-        buy_product=gated(tables["buy_product"], P.BUY_BUCKETS, "qty_buy_product"),
+        sell=gated(tables["sell"], "qty_sell"),
+        buy_seed=gated(tables["buy_seed"], "qty_buy_seed"),
+        buy_product=gated(tables["buy_product"], "qty_buy_product"),
         buy_animal=tables["buy_animal"][idx].astype(J._I),
         hire=tables["hire"][idx].astype(J._I),
         buy_land=tables["buy_land"][idx].astype(bool),

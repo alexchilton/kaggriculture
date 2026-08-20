@@ -61,15 +61,24 @@ RUN_DIR = pathlib.Path("data/bc_runs")
 
 
 def _bucket_index(raw, buckets):
-    """Nearest bucket index for a raw quantity -- the inverse of `A.to_sim_actions`'s lookup.
+    """Nearest bucket index for a raw quantity, for the UNIT quantity ladder only.
 
-    The teacher speaks in quantities (`sell=7`), the student in bucket indices, so a label has to be
-    projected onto the student's own action space or the cross-entropy is against something the
-    student cannot emit. Nearest rather than floor: with SELL_BUCKETS [0,1,3,10,30], a teacher
-    selling 7 is much better described by 10 than by 3.
+    Market quantities no longer go through here. Their class index is the quantity itself, so the
+    label is `clip(raw, 0, MAX_QTY - 1)` and the teacher's number survives exactly -- which is the
+    whole point in imitation, where that number is known.
     """
     d = jnp.abs(raw[..., None] - buckets.reshape((1,) * raw.ndim + (-1,)))
     return jnp.argmin(d, axis=-1)
+
+
+def _exact_qty(raw):
+    """A teacher quantity -> its own class index, clamped to the head width.
+
+    Clamped, never wrapped: the teacher's largest BUY_PRODUCT is 134 and `134 % 64 == 6` would be a
+    different order. `jnp.clip` matches `market_bundles.clamp_qty`, which is the Python path the
+    offline labeller uses; the two must agree or BC and DAgger train against different targets.
+    """
+    return jnp.clip(raw.astype(jnp.int32), 0, P.MAX_QTY - 1)
 
 
 def teacher_labels(sim_actions, tables):
@@ -91,9 +100,9 @@ def teacher_labels(sim_actions, tables):
         "item": sim_actions.unit_item.astype(jnp.int32),
         "qty": b2(sim_actions.unit_qty, P.UNIT_QTY_BUCKETS),
         "bundle": A.bundle_index_of(sim_actions, tables),
-        "qty_sell": b2(sim_actions.sell, P.SELL_BUCKETS),
-        "qty_buy_product": b2(sim_actions.buy_product, P.BUY_BUCKETS),
-        "qty_buy_seed": b2(sim_actions.buy_seed, P.BUY_BUCKETS),
+        "qty_sell": _exact_qty(sim_actions.sell),
+        "qty_buy_product": _exact_qty(sim_actions.buy_product),
+        "qty_buy_seed": _exact_qty(sim_actions.buy_seed),
     }
 
 

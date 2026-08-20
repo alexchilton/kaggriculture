@@ -257,7 +257,7 @@ def test_a_conditioned_head_is_cloned_under_every_trade_mode():
     market behaviour of a warm-started policy is untrained noise -- while the offline loss looks
     fine, because it only ever measured the slice it trained.
     """
-    n_prod, k = J.N_PRODUCTS, len(P.SELL_BUCKETS)
+    n_prod, k = J.N_PRODUCTS, P.MAX_QTY
     logits = np.zeros((2, n_prod, P.N_TRADE_MODES, k), dtype=np.float32)
     mask = np.ones((2, n_prod, k), dtype=bool)
     label = np.zeros((2, n_prod), dtype=np.int32)

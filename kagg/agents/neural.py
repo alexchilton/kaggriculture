@@ -120,7 +120,6 @@ def decode_action(heads, n_units, vocab, seat=0):
         np.asarray(heads["qty_sell"])[seat],
         np.asarray(heads["qty_buy_product"])[seat],
         np.asarray(heads["qty_buy_seed"])[seat],
-        np.asarray(P.SELL_BUCKETS), np.asarray(P.BUY_BUCKETS),
         PRODUCTS, CROPS_ORDERED, ANIMALS_ORDERED)
 
     # The environment accepts ten orders a turn and silently drops the rest, so the cut is made
