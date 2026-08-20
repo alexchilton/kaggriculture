@@ -1148,10 +1148,71 @@ def _apply_precomputed(day, units, jobs, budget, depots, carry, wanted, deliver,
 
     seated = {id(j) for work in routes.values() for j in work}
     left = [j for j in jobs if id(j) not in seated]
+    # **A hand is never given more tour than its day can walk.** See `_trim_to_the_day`. The stops
+    # this releases join `left`, so they go through the same at-risk-first insertion as everything
+    # else rather than sitting past the end of a tour nobody priced.
+    left += _trim_to_the_day(routes, units, budget, depots, carry, wanted, deliver, rush, due)
     if left:
         left = _insert_leftovers(routes, left, units, budget, depots, carry, wanted, deliver, rush,
                                  due)
     return routes, left
+
+
+def _trim_to_the_day(routes, units, budget, depots, carry, wanted, deliver, rush, due):
+    """Drop the tail of any seated tour that costs more turns than the unit has. Returns the drops.
+
+    **A hand is never given more tour than its day can walk.**
+
+    Every other seating path in this file already obeys that rule: `slot`/`claim` price a job
+    against `budget[u]` before taking it, and `_insert_leftovers` prices each insertion the same
+    way. `_apply_precomputed` is the exception -- it seats the solved stops by name and prices
+    nothing, which `TRIM_HOME_DAYS`' note above states outright. A day is 24 turns whether or not
+    anyone counted them, so the surplus stops do not happen; they are simply never reached, and
+    nothing reports it. `PRECOMPUTED_MISSES` records a stop the board could not FILL and has no
+    entry for a stop that was seated and then never walked to.
+
+    Measured on tape `kawashigi`, seed 11, `weedSpawnChance` 0.005 (`data/logs/over_budget_-
+    kawashigi_s11.log`): ten tours across d16-d28 are planned past the day, u3 on d23 by ten turns,
+    and eleven WATER stops sit past the cut. The tiles those waters name are the tiles that weed
+    that same night -- (1,4) and (0,4) on d16, (0,5) on d19, (6,2) on d26, (8,7) on d27. A
+    STRAWBERRY is `ongoing`, so a tile at `consecutive_unwatered == 1` has exactly one water
+    between it and a WEED, and that water was being planned into turns nobody had.
+
+    Trimming from the END is not a preference, it is what the runtime already does -- the tour is
+    walked in order and stops when the turns run out. The difference is that a released stop is now
+    VISIBLE: it joins `left`, and `_insert_leftovers` sorts `left` at-risk first, so a water on a
+    tile that dies tonight is re-seated on whichever hand still has slack instead of being
+    abandoned on the hand that ran out.
+
+    **TRIED AND REVERTED: give up the last SLIPPABLE stop rather than the last one**, so a tile one
+    dry night from weeding outranks a stop that only costs a day's delay. The clause is not dead --
+    on seed 11 it fires on 2 of the 13 over-budget tours and picks a different stop
+    (`data/logs/does_slip_fire_s11.log`) -- and it is a MEASURED NULL: the acceptance gates return
+    a byte-identical failing set (359 failed, 542 passed, 115 xfailed, 35 xpassed) and the season
+    weeds exactly the same nine tiles on exactly the same days. The reason is that the released
+    stop goes to `_insert_leftovers` either way, and that already sorts at-risk first, so the
+    ordering was being applied twice. Reverted per protocol; recorded so it is not re-derived.
+
+    This does not decide what to give up when the day is genuinely too full. That was already
+    `_insert_leftovers`' job; this only makes it reachable on a solved day.
+    """
+    dropped = []
+    for u, seq in routes.items():
+        held = (carry or {}).get(u) or {}
+
+        def fits(work):
+            tour = materialise(units[u], list(work), held, depots, wanted, deliver, rush, due=due)
+            return tour is not None and turns(units[u], tour) <= budget[u]
+
+        if fits(seq):
+            continue
+        # `deliver` is the same question `plan` asks of the finished tour, so a tour trimmed here
+        # is trimmed against the cost model it will actually be charged at.
+        keep = list(seq)
+        while keep and not fits(keep):
+            dropped.append(keep.pop())
+        routes[u] = keep
+    return dropped
 
 
 def _insert_leftovers(routes, left, units, budget, depots, carry, wanted, deliver, rush, due):
