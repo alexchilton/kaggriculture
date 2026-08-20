@@ -51,7 +51,9 @@ def main():
     ap.add_argument("--team", required=True)
     ap.add_argument("--dirs", nargs="+", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--coverage", type=float, default=0.985)
+    # 1.0, not 0.985. Truncating drops 16.6% of HIRE turns while the headline OOV reads 1.49%.
+    # See `kagg.il.bundles.build_vocabulary`.
+    ap.add_argument("--coverage", type=float, default=1.0)
     args = ap.parse_args()
 
     paths = []
