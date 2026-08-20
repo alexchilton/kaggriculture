@@ -172,6 +172,9 @@ def main():
     rng = np.random.default_rng(args.seed)
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path = out.with_name(out.stem + ".log.jsonl")
+    metrics_path.write_text("")
+    best_traded = -1.0
 
     for epoch in range(args.epochs):
         t0, seen, tot = time.time(), 0, 0.0
@@ -248,16 +251,52 @@ def main():
         # agent would emit a different order for every class -- confidently, with the right shapes,
         # and with nothing anywhere to indicate it. The file is 18 KB; the failure is silent and
         # total. Embedding it makes the mismatch checkable at load.
+        payload = {"params": params,
+                   "epoch": epoch,
+                   "vocab_size": vocab.size,
+                   "vocab": [[list(pair) for pair in vocab.bundle(i)]
+                             for i in range(vocab.size)],
+                   "tile_features": jax_obs.TILE_FEATURES,
+                   "unit_features": jax_obs.UNIT_FEATURES,
+                   "global_features": jax_obs.GLOBAL_FEATURES,
+                   "n_bundles": P.N_BUNDLES,
+                   "holdout": {"shard": pathlib.Path(holdout_path).name,
+                               "bundle_agreement": agree_all,
+                               "bundle_agreement_traded": agree_traded,
+                               "op_agreement": agree_op,
+                               "empty_rate": empty_rate}}
+
+        # **Every epoch is kept, and the best is kept separately.** This used to write one path and
+        # overwrite it, so an epoch that overfitted destroyed the epoch before it -- and there is no
+        # reason to expect the last epoch to be the best one.
         with out.open("wb") as fh:
-            pickle.dump({"params": params,
-                         "vocab_size": vocab.size,
-                         "vocab": [[list(pair) for pair in vocab.bundle(i)]
-                                   for i in range(vocab.size)],
-                         "tile_features": jax_obs.TILE_FEATURES,
-                         "unit_features": jax_obs.UNIT_FEATURES,
-                         "global_features": jax_obs.GLOBAL_FEATURES,
-                         "n_bundles": P.N_BUNDLES}, fh)
-        print("  checkpoint -> %s" % out, flush=True)
+            pickle.dump(payload, fh)
+        with out.with_name(out.stem + ".ep%d.pkl" % epoch).open("wb") as fh:
+            pickle.dump(payload, fh)
+
+        # Selected on agreement over the turns the teacher TRADED, not on loss and not on overall
+        # agreement. Overall agreement is 78.9% for a model that never trades at all, so selecting
+        # on it selects the degenerate policy.
+        if agree_traded > best_traded:
+            best_traded = agree_traded
+            with out.with_name(out.stem + ".best.pkl").open("wb") as fh:
+                pickle.dump(payload, fh)
+            print("  new best: %.3f agreement on trading turns" % agree_traded, flush=True)
+
+        # One JSON row per epoch, for `scripts/plot_run.py`. Same shape as `train_jax_rl`'s
+        # `log.jsonl` so one plotter reads both.
+        with metrics_path.open("a") as fh:
+            fh.write(json.dumps({
+                "epoch": epoch, "loss": tot / max(1, seen),
+                "seconds": time.time() - t0,
+                **{"loss_" + h: head_tot[h] / max(1, seen) for h in head_tot},
+                "holdout_bundle_agreement": agree_all,
+                "holdout_bundle_agreement_traded": agree_traded,
+                "holdout_op_agreement": agree_op,
+                "holdout_empty_rate": empty_rate,
+                "teacher_empty_rate": teacher_empty,
+            }) + "\n")
+        print("  checkpoint -> %s   metrics -> %s" % (out, metrics_path), flush=True)
 
 
 if __name__ == "__main__":
