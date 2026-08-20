@@ -574,6 +574,12 @@ def _animal_remaining(cell, day):
 #: reasons that had expired (wrong tape, measured only over d0-d7 where 17 tiles fit in a day). That
 #: argument was wrong on its own terms: the trough day's idle turns are not free, because spending
 #: them puts the hand somewhere else when the next spike lands.
+#: **Water half the SAFE tiles each day, alternating, instead of none of them.**
+#:
+#: A tile watered yesterday cannot weed tonight, so the survival rule skips it entirely -- which is
+#: why d3 emitted 7 waters against the leader's 14. See the note at the emission.
+WATER_ROTATION = True
+
 TOP_UP_SAFE_TILES = False
 #: Not before day 7. Seventeen tiles fit inside one day with room to spare, Seb waters alternate days
 #: there and takes zero weeds doing it, and d0-d6 is matched to the tape op for op.
@@ -581,7 +587,7 @@ TOP_UP_FROM_DAY = 7
 TOP_UP_DISCOUNT = 8.0
 
 
-def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
+def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
     FERTILIZE precedes WATER because WATER reads `fertilized_until_day` at the moment it runs.
@@ -683,7 +689,24 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None):
             # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
             # day 1 is 17 work turns and ~31 walk turns for nothing at all.
             out.append(("WATER", None, _crop_remaining(cell, day)))
-        elif TOP_UP_SAFE_TILES and day >= TOP_UP_FROM_DAY and not cell["watered_today"]:
+        elif (WATER_ROTATION and tile is not None and not cell["watered_today"]
+              and (tile[0] + tile[1] + day) % 2 == 0):
+            # **Half the safe tiles, alternating -- which is what the leader actually does.**
+            #
+            # Measured off カワシギ's own d3, seed 11: his board at dawn is 19 tiles, every one at
+            # `consecutive_unwatered = 0`, all planted d0 -- 7 WHEAT and 12 MELON -- and he emits
+            # **14** waters. We emitted 7, exactly the wheat, because wheat at age 3 is inside
+            # `in_window` ((4+1)//2 = 2 <= 3 <= 4) and melon at age 3 is far from its own 6..12.
+            # His extra seven are melon: he is not watering all twelve, he waters about half and
+            # takes the rest tomorrow.
+            #
+            # Parity on `(x + y + day)` is that alternation with no state to carry. It flips every
+            # day, so a tile skipped today is offered tomorrow and `consecutive_unwatered` can never
+            # reach the 2 that weeds it (`reference/kaggriculture.py:770`).
+            #
+            # **Not `TOP_UP_SAFE_TILES`, which is the same slot and the wrong shape.** That flag
+            # offers EVERY safe tile from a fixed day, which put d3 at 19 against his 14 and d5 at
+            # 20 against his 13 -- overshooting the tape rather than matching it.
             out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
@@ -1140,7 +1163,7 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 continue
             kind = cell.get("kind")
             if kind == "PLANT":
-                ops = crop_ops(cell, day, have_fert, fertilizer_price)
+                ops = crop_ops(cell, day, have_fert, fertilizer_price, tile=tile)
                 # **A one-shot harvest is a demolition, so the tile it clears is plantable ground.**
                 # See `REPLANT_A_CLEARED_TILE`. Budgeted from the day's remaining `plants` row, in
                 # iteration order, exactly as `chain_left` budgets placements: the row is a count and
