@@ -59,6 +59,8 @@ wall-clock cutoff, so the same board always yields the same tours.
 """
 
 import collections
+import random
+import time
 
 from . import routines as R
 
@@ -888,6 +890,145 @@ RANK_HOME_DAYS = frozenset({4})
 TRIM_A_TAIL_THAT_CANNOT_COME_HOME = False
 
 
+# ------------------------------------------------------------------------------- ruin and recreate
+#
+# The five priority passes in `greedy()`'s callers are an artifact of a ONE-SHOT insertion order:
+# an early cheap job silently consumes turns a later, more important job needed, and cheapest-
+# insertion never revisits that choice once made. Measured, seed 11, tape victor: d18 the greedy
+# covers 66 of 67 jobs where an offline solve found 67/67 is feasible, and d12 leaves a
+# `[WATER, HARVEST, PLANT]` job uncovered while 39+ turns of slack sit spread, unusably, across
+# eight-plus hands -- `MAKE_ROOM` cannot rescue it because widening its own two knobs gives
+# byte-identical grids (see `MAKE_ROOM_HANDS`/`MAKE_ROOM_MOVES` above). Neither `REPAIR` (moves
+# exactly one job) nor `MAKE_ROOM` (empties exactly one hand) explores a JOINT reassignment across
+# several hands at once; this does.
+#
+# This runs strictly AFTER `MAKE_ROOM`, on the greedy's own committed output -- it never replaces
+# the greedy, it perturbs it. Each iteration: pick a handful of ALREADY-COVERED jobs (never a
+# `PLACE`, see `_covered_for_ruin`), throw them back in the pool with whatever `left` already held,
+# and let the existing `greedy()` re-seat the whole pool in ONE pass -- no priority tiers, the same
+# cheapest-insertion-under-a-fair-share-cap the dawn solve already uses. Keep the result only if
+# `_lns_objective` says the day is better off; otherwise revert to the best configuration found so
+# far and try a different ruin. `left`/`routes`/`used`/`booked` never leave a state `cover`'s own
+# `cost`/`slot`/`materialise` did not price, because nothing here computes a cost of its own.
+
+#: Master switch. OFF (the default) is the exact `greedy -> COMPACT -> REPAIR -> MAKE_ROOM`
+#: pipeline above, untouched -- `test_ruin_and_recreate_off_is_byte_identical` pins that the grid
+#: does not move when this is False, including after a call that ran with it True.
+RUIN_AND_RECREATE = False
+
+#: Hard wall-clock deadline for the pass, in SECONDS -- **not an iteration count.** `actTimeout` is
+#: 1s/turn (`docs/competition_brief.md`) and the greedy alone already costs 0.37-0.5s by d10-d17
+#: (measured, `docs/lns_packer_2026-08-12.md`), so the LNS has roughly 0.3s and has to be a number
+#: the loop can check cheaply on every iteration and stop at instantly. `time.monotonic()` is
+#: sampled once per iteration, never inside `materialise` or `cost`, so an overrun past the
+#: deadline is bounded by the cost of one iteration -- a handful of `slot` calls over a small pool
+#: -- not by the granularity of the check.
+RUIN_AND_RECREATE_SECONDS = 0.25
+
+#: How many already-covered jobs one ruin step removes.
+RUIN_K = 6
+
+#: RNG seed for which jobs a ruin step picks. Fixed so the SEQUENCE of ruins tried is reproducible
+#: given a fixed deadline; the ITERATION COUNT still depends on wall clock and cannot be pinned --
+#: that is what makes this a time-boxed search and not a deterministic pass like the rest of the
+#: file. `test_ruin_and_recreate_never_returns_worse_than_it_started` is written to hold regardless
+#: of how many iterations actually ran.
+RUIN_SEED = 20260812
+
+#: What the LNS objective (below) charges for leaving `left` holding one job of each kind.
+#: **Not a market price** -- this file has none by design (see the module docstring) -- these
+#: numbers exist only so the accept/reject step refuses trades the greedy's own five-pass tier
+#: order already refuses to make, expressed as ONE scalar instead of five separate passes, which is
+#: what a search that has to weigh "keep this or try that" needs and five discrete tiers cannot
+#: give it.
+#:
+#: `LNS_DEATH_VALUE` prices a job that is `required` AND `at_risk` -- an animal that is one missed
+#: FEED from `consecutive_unfed >= 2`, which removes it outright (`kaggriculture.py:786`). That is
+#: not one FEED's worth of loss, it is the animal's purchase price plus every remaining day of its
+#: production, so this is set far above everything else.
+#:
+#: `LNS_TILE_DAY_VALUE` prices an `at_risk`-not-`required` job -- a tile one dry day from becoming
+#: a WEED (`kaggriculture.py:771`) -- at what losing the TILE costs for the REST OF THE SEASON:
+#: this constant times however many days are left, read from `day`. A weed dropped on d5 is priced
+#: worse than one dropped on d28, and both are priced far above ordinary work, which is the whole
+#: point: the ladder is Elo, so a farm with more money and nine weeds is a LOSS here, and an
+#: objective that let banking outbid a tile would rediscover exactly the trap this file's own
+#: history warns about (see `DELIVER_SURPLUS_NOT_THE_ROW`'s note on HARVEST-first arms that raised
+#: money and killed tiles).
+#:
+#: `LNS_FUNDS_VALUE` and `LNS_REQUIRED_VALUE` sit between those and ordinary work, in the same
+#: order the greedy's own passes already run in (`at_risk and required -> funds -> required ->
+#: at_risk -> everything else`) -- not because the LNS has priority classes, but because a single
+#: scalar reproducing that order is a legitimate objective and five separate acceptance rules are
+#: not.
+#:
+#: `LNS_TURN_WEIGHT` is a tie-break ONLY: it prefers a configuration that spends fewer total turns
+#: among two that cover exactly the same jobs, so the search does not happily trade a free future
+#: turn for nothing. Scaled so it can never outweigh even `LNS_ORDINARY_VALUE` -- a day has at most
+#: a few hundred turns of budget, and `LNS_TURN_WEIGHT * a_few_hundred` stays under 1.
+LNS_DEATH_VALUE = 1_000_000
+LNS_TILE_DAY_VALUE = 2_000
+LNS_FUNDS_VALUE = 20_000
+LNS_REQUIRED_VALUE = 5_000
+LNS_ORDINARY_VALUE = 1
+LNS_TURN_WEIGHT = 1e-3
+
+
+def _lns_objective(left, used, day=None):
+    """Higher is better. Prices what is LEFT UNCOVERED, never what is covered -- coverage is
+    derived from it, but what a dropped job costs depends on WHICH job, not on the day's raw count.
+
+    `used` is `cover`'s own per-unit turn tally (`{unit: turns}`), read only for the tie-break --
+    see `LNS_TURN_WEIGHT`. `day` prices the tile-day term; `None` (no day known) prices a dropped
+    `at_risk` job at one full season, the conservative direction -- it refuses MORE trades than a
+    dated call would, never fewer.
+    """
+    left_days = max(1, R.SEASON_DAYS - day if day is not None else R.SEASON_DAYS)
+    penalty = 0
+    for j in left:
+        if getattr(j, "depot", False):
+            continue
+        if j.required and j.at_risk:
+            penalty += LNS_DEATH_VALUE
+        elif j.funds:
+            penalty += LNS_FUNDS_VALUE
+        elif j.required:
+            penalty += LNS_REQUIRED_VALUE
+        elif j.at_risk:
+            penalty += LNS_TILE_DAY_VALUE * left_days
+        else:
+            penalty += LNS_ORDINARY_VALUE
+    return -penalty - LNS_TURN_WEIGHT * sum(used.values())
+
+
+PRECOMPUTED_ROUTES = {}
+PRECOMPUTED_MISSES = []
+
+
+def _apply_precomputed(day, units, jobs):
+    """Seat `jobs` per `PRECOMPUTED_ROUTES[day]`, or return None if it does not fit today's board."""
+    plan = PRECOMPUTED_ROUTES.get(day)
+    if not plan:
+        return None
+    pool = {}
+    for j in jobs:
+        pool.setdefault((tuple(j.tile), tuple(o[0] for o in j.ops)), []).append(j)
+    routes = {u: [] for u in range(len(units))}
+    for u_str, work in plan.items():
+        u = int(u_str)
+        if u >= len(units):
+            PRECOMPUTED_MISSES.append((day, "unit %s of %s" % (u, len(units))))
+            return None
+        for tile, ops in work:
+            key = (tuple(tile), tuple(ops))
+            if not pool.get(key):
+                PRECOMPUTED_MISSES.append((day, "no job %s %s" % (tile, ops)))
+                return None
+            routes[u].append(pool[key].pop())
+    seated = {id(j) for work in routes.values() for j in work}
+    return routes, [j for j in jobs if id(j) not in seated]
+
+
 def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=True, wanted=None,
           day=None,
           rush=False, due=None):
@@ -899,6 +1040,9 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     """
     depots = tuple(depots) or SHED
     carry = carry or {}
+    pre = _apply_precomputed(day, units, jobs)
+    if pre is not None:
+        return pre
     routes = {u: [] for u in range(len(units))}
     left = list(jobs)
     stock = collections.Counter(supply) if supply is not None else None
@@ -1296,6 +1440,90 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
                     break
                 if moved:
                     break                              # `left` has changed; rescan it
+
+    # ---------------------------------------------------------------------------- ruin and recreate
+    # See the module-level note above `RUIN_AND_RECREATE`. Nested here, rather than a free function,
+    # so it can reuse `cost`/`slot_now`/`greedy`/`touch`/`claim` -- the exact closures the greedy
+    # itself is scored and fed by -- instead of re-deriving any of them.
+    def _covered_for_ruin():
+        """`(unit, job)` for every job on any route, excluding `PLACE`.
+
+        A `PLACE` is excluded from what a ruin step may pick up: its shed claim is booked in
+        `booked` at the moment it is committed (`claim`, above), and nothing in this file
+        re-derives what a job claimed from the CARRY state it was inserted against. Pulling one out
+        here and running it back through `greedy` would either double-book the animal against a
+        second unit or silently free a stock slot another already-covered placement is relying on.
+        Ordinary crop and feed work carries no such state -- `claim` for those ops only ever reads
+        the CURRENT `held`, recomputed fresh by `cost`/`materialise` on every candidate.
+        """
+        return [(u, j) for u in range(len(units)) for j in routes[u] if not j.places()]
+
+    def _snapshot_plan():
+        return ({u: list(routes[u]) for u in range(len(units))}, dict(used), list(left),
+                collections.Counter(booked))
+
+    def _restore_plan(snap):
+        r, u_, l_, b_ = snap
+        for u in range(len(units)):
+            routes[u] = list(r[u])
+            touch(u)
+        used.clear()
+        used.update(u_)
+        left[:] = l_
+        booked.clear()
+        booked.update(b_)
+
+    def _ruin_and_recreate(deadline):
+        rng = random.Random(RUIN_SEED)
+        best = _snapshot_plan()
+        best_score = _lns_objective(left, used, day)
+        kinds = ("random", "same_unit", "cluster")
+        step = 0
+        while time.monotonic() < deadline:
+            covered = _covered_for_ruin()
+            if not covered:
+                break
+            kind = kinds[step % len(kinds)]
+            step += 1
+            if kind == "same_unit":
+                by_unit = collections.defaultdict(list)
+                for u, j in covered:
+                    by_unit[u].append(j)
+                u0 = rng.choice(list(by_unit))
+                cand = list(by_unit[u0])
+                rng.shuffle(cand)
+                victims = [(u0, j) for j in cand[:RUIN_K]]
+            elif kind == "cluster":
+                _au, anchor = rng.choice(covered)
+                victims = sorted(covered,
+                                  key=lambda uj: (dist(uj[1].tile, anchor.tile), uj[1].tile))[:RUIN_K]
+            else:
+                victims = rng.sample(covered, min(RUIN_K, len(covered)))
+
+            touched = set()
+            for u, j in victims:
+                routes[u] = [x for x in routes[u] if x is not j]
+                touched.add(u)
+            for u in touched:
+                used[u] = cost(u, routes[u])
+                touch(u)
+            left.extend(j for _u, j in victims)
+
+            # ONE pool, no priority split -- see the module note. `greedy` mutates
+            # `routes`/`used`/`booked` in place and removes what it seats from both `pool` and
+            # `left`; whatever it cannot seat stays in `left`, exactly as the dawn passes leave it.
+            greedy(list(left))
+
+            score = _lns_objective(left, used, day)
+            if score > best_score:
+                best = _snapshot_plan()
+                best_score = score
+            else:
+                _restore_plan(best)
+        _restore_plan(best)
+
+    if RUIN_AND_RECREATE:
+        _ruin_and_recreate(time.monotonic() + RUIN_AND_RECREATE_SECONDS)
 
     return routes, left
 

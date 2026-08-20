@@ -1553,6 +1553,21 @@ def _claimed_tiles(units, routes, idle, margin):
 PLANT_THE_SHED_RING_ONCE_NO_PEN_IS_OWED = True
 
 
+#: **Dig a weed when the day's own planting row cannot find ground.**
+#:
+#: OFF is the behaviour before 2026-08-12: `router.crop_ops` gates a weed's DIG on
+#: `tile in plantable`, and `_plantable` is built from PLANT pins, which are only ever sited on
+#: EMPTY squares -- so a weed is never plantable, never dug, and its square is dead for the season.
+#: Measured on seed 11 / tape victor: (7,1) is LOCKED until d6, spawns a weed the moment the
+#: quadrant unlocks (`weedSpawnChance`, the env default on the ladder), and is still a weed on the
+#: final day. Ground we paid $1,000-$2,000 for and never used.
+#:
+#: Gated on `_replant` being non-empty -- the row wanting ground it could not find -- because the
+#: `plantable` rule is otherwise correct and was itself a fix: ungated, digs measured `dig 5/0` on
+#: d5 against a tape that digs nothing all season, plus strays on d12-d14.
+DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
+
+
 def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     """Keep the schedule-derived tiles PINNED until the board resolves them.
 
@@ -1785,6 +1800,26 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 _replant.update(sched[d].get("plants") or [])
         _replant -= collections.Counter(state["planted"])
         _replant -= _pinned_plants
+
+    # **A weed on ground the day actually needs is dug; one on spare ground is furniture.**
+    #
+    # `router.crop_ops` offers a DIG on a WEED only where `tile in plantable`, and `_plantable`
+    # above is built from PLANT pins -- which `_refresh_pins` only ever sites on EMPTY squares.
+    # A weed is therefore never plantable, so never dug, so the square is dead for the season. The
+    # tile does not have to be a crop we lost: (7,1) on seed 11 was LOCKED until d6 and spawned a
+    # weed the moment the quadrant unlocked (`weedSpawnChance`, the env default on the ladder), so
+    # it is ground we paid $1,000-$2,000 for and can never use.
+    #
+    # The `plantable` gate is right in general and must stay -- without it we measured `dig 5/0` on
+    # d5 against a tape that digs nothing all season, plus stray digs on d12-d14. So the opening is
+    # the narrow one: `_replant` is exactly "what the cumulative plants row still wants and could
+    # find no dawn ground for". When that is non-empty the day is SHORT OF GROUND by its own
+    # accounting, and a weed square is the cheapest ground there is -- one turn, no seed, no walk
+    # beyond the tile itself. When it is empty we are not short and the weed stays furniture.
+    if DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND and sum(_replant.values()) > 0:
+        _plantable = set(_plantable) | {
+            t for t, c in ((t, tiles[t[1]][t[0]]) for t in RT.field_order(unlocked))
+            if isinstance(c, dict) and c.get("kind") == "WEED"}
 
     def nodes_for(skip):
         return [n for n in RT.build_nodes(tiles, day, plan_supply, carried, unlocked, pins, hour,
