@@ -78,12 +78,19 @@ DTYPE = jnp.float32
 # Size of the market bundle vocabulary: one class per observed combination of orders.
 #
 # This replaces the `N_TRADE_MODES = 3` coarse latent, which was a low-rank guess at the same
-# structure. Measured on ead81e2's own self-play (5,752 player-turns): 117 distinct bundles, top 100
-# covering 99.70% and top 200 covering 100%. 128 is therefore the whole distribution with headroom,
-# and `market_bundles.Vocabulary.coverage` reports what any truncation would cost -- so this is a
-# measured size, not a guessed one. Rebuild the vocabulary and re-check coverage if the teacher
-# changes; a bundle the head cannot express is one the policy can never emit.
-N_BUNDLES = 128
+# structure. Measured on ead81e2's own self-play, **920,320 player-turns across 640 games**:
+#
+#     non-empty market   193,837 (21.1%)
+#     distinct bundles   197
+#     top 100 cover      99.77%
+#     top 200 cover      100%
+#
+# **A four-game pilot said 117 and it was wrong.** 128 would have truncated 69 bundles -- rare ones,
+# about 0.1% of turns, but a truncated bundle is one the policy can NEVER emit, and that failure is
+# invisible until something replays it. 256 holds the measured 197 with room for a teacher that
+# drifts. `market_bundles.Vocabulary.coverage` reports what any truncation costs; re-run it rather
+# than trusting this number if the teacher changes.
+N_BUNDLES = 256
 
 SELL_BUCKETS = jnp.asarray([0, 1, 3, 10, 30], dtype=jnp.int32)
 BUY_BUCKETS = jnp.asarray([0, 1, 2, 5], dtype=jnp.int32)
