@@ -25,12 +25,19 @@ sys.path.insert(0, str(REPO))
 
 from kagg.rl import jax_policy as P                           # noqa: E402
 
-LADDERS = {
-    "SELL": np.asarray(P.SELL_BUCKETS),
-    "BUY_PRODUCT": np.asarray(P.BUY_BUCKETS),
-    "BUY_SEED": np.asarray(P.BUY_BUCKETS),
-    "BUY_ANIMAL": np.asarray(P.BUY_BUCKETS),
+#: **The ladders this script measured, kept as literals because they no longer exist in the code.**
+#:
+#: They were `P.SELL_BUCKETS` and `P.BUY_BUCKETS` until this script's own output killed them on
+#: 2026-08-20 -- at which point the script crashed at import, which is a poor way to treat the
+#: instrument behind a decision. Writing them down here keeps the measurement re-runnable, and lets
+#: a future ladder proposal be priced against both the old rungs and the exact integer.
+HISTORICAL_LADDERS = {
+    "SELL": np.asarray([0, 1, 3, 10, 30]),
+    "BUY_PRODUCT": np.asarray([0, 1, 2, 5]),
+    "BUY_SEED": np.asarray([0, 1, 2, 5]),
+    "BUY_ANIMAL": np.asarray([0, 1, 2, 5]),
 }
+LADDERS = HISTORICAL_LADDERS
 
 
 def projection_error(counts, ladder):
@@ -86,11 +93,19 @@ def main():
             print("    qty %-4d  %8s  %5.1f%%" % (q, format(k, ","), 100.0 * k / n))
         ladder = LADDERS.get(op)
         if ladder is not None:
-            print("    current ladder %-18s  mean projection error %5.1f%%"
+            print("    historical ladder %-18s  mean projection error %5.1f%%"
                   % (list(map(int, ladder)), 100 * projection_error(c, ladder)))
             fitted = best_ladder(c, len(ladder))
-            print("    fitted  ladder %-18s  mean projection error %5.1f%%"
-                  % (fitted, 100 * projection_error(c, np.asarray(fitted))))
+            print("    best %d-rung ladder %-17s  mean projection error %5.1f%%"
+                  % (len(ladder), str(fitted), 100 * projection_error(c, np.asarray(fitted))))
+            # What ships now: the class index IS the quantity, clamped at MAX_QTY. The only error
+            # left is the tail above the cap, so this is the number a narrower head would cost.
+            over = sum(v for q, v in c.items() if q >= P.MAX_QTY)
+            exact = np.arange(P.MAX_QTY)
+            print("    AS SHIPPED: integer 0..%-3d              mean projection error %5.1f%%"
+                  "   (%.2f%% of orders exceed the cap)"
+                  % (P.MAX_QTY - 1, 100 * projection_error(c, exact),
+                     100.0 * over / max(1, n)))
         print()
 
 
