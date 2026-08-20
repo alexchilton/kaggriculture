@@ -413,7 +413,7 @@ def _clear_the_spawn_ring(units, unlocked, n):
     return best if best else (None, stay)
 
 
-def _hires_this_turn(state, row, day, hour, money):
+def _hires_this_turn(state, row, day, hour, money, tiles=None, units=None):
     """How many hands the market block below is about to buy. Read by the DAWN PLAN, which has to
     route them, so it must not diverge from what that block actually orders.
 
@@ -425,10 +425,22 @@ def _hires_this_turn(state, row, day, hour, money):
     Affordability is checked because `_do_hire` fails SILENTLY when `farm["money"] < cost`
     (`kaggriculture.py:691`), and a hire that never lands leaves its route orphaned: work planned
     onto a unit that does not exist is work deleted, not work deferred.
+
+    **The wall check applies here too.** On a day that buys land, the market block caps `want` with
+    `_unwalled_landing_slots` before it orders anything (`HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS`) --
+    a hand that would land walled in is held back, not hired. Skipping that cap here over-predicted
+    by exactly the held-back count: measured on the Victor grid (`--tape victor`), seed 11, d6 --
+    the schedule's `hands` row is 4, `_unwalled_landing_slots` caps the market block's own `want` to
+    2, and this function returned 4 before this fix. `tiles`/`units` are optional so every existing
+    caller that has no land question this turn is unaffected; omitting them on a land day silently
+    restores the old over-count, so callers under `PLAN_THE_CREW_THAT_ARRIVES` must pass both.
     """
     if not (PLAN_THE_CREW_THAT_ARRIVES and HIRE_FIRST and day in HIRE_PINNED_DAYS and hour == 0):
         return 0
     want = int(row.get("hands", 0) or 0)
+    if (HOLD_A_HIRE_FOR_THE_GROUND_IT_NEEDS and int(row.get("land", 0) or 0) > 0
+            and tiles is not None and units is not None):
+        want = min(want, _unwalled_landing_slots(tiles, units, want))
     # `mult * fib(hires_today)`, a per-DAY counter, so the ladder restarts every dawn -- but it
     # restarts at **`_fib(0) = 1`, not 0** (`kaggriculture.py:677`). Seven hires cost `1 1 2 3 5 8 13`
     # = 33. Starting at 0 charged `0 1 1 2 3 5 8` = 20, one position short the whole way up, so on any
@@ -2979,7 +2991,8 @@ def make_agent(schedule, me=0, router=True):
             # arithmetic the market block does at the BOTTOM of this function has to be available at
             # the top. `_hires_this_turn` is that block's rule stated once; if the two ever disagree
             # the plan orphans a route, so they must be read together.
-            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money)
+            n_hires = _hires_this_turn(state, sched.get(day, {}) or {}, day, hour, money,
+                                        tiles=tiles, units=units)
             # **The farmer is not a bystander to where its own crew lands.** See
             # `_clear_the_spawn_ring`: `_spawn_hand` counts it, so standing on the ring rotates every
             # spawn and puts a second hand on the dead `(5,5)` corner -- 23 turns, on d4 the
