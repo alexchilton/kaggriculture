@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPO))
 
 from scripts.count_day_blocks import canonical                          # noqa: E402
 from scripts.player_self_consistency import (                           # noqa: E402
-    SHOP_BUYS, ANIMAL_PRODUCTS_ALL, plant_only, shops_of)
+    SHOP_BUYS, ANIMAL_PRODUCTS_ALL, plant_only, species_only, shops_of)
 
 TURNS_PER_DAY = 24
 CROPS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON")
@@ -163,7 +163,8 @@ def read(path, player, days):
             act = cell.get("action")
             if act is None:
                 continue
-            turns[day].append((hour, canonical(plant_only(act))))
+            turns[day].append((hour, canonical(plant_only(act)), canonical(act),
+                               canonical(species_only(act))))
             if hour == 0:
                 try:
                     feats[day] = features(obs, seat)
@@ -172,9 +173,14 @@ def read(path, player, days):
         for day, t in turns.items():
             if len(t) != TURNS_PER_DAY or day not in feats:
                 continue
-            body = "|".join(a for _h, a in sorted(t))
+            t = sorted(t)
+            digest = lambda parts: hashlib.md5(                           # noqa: E731
+                "|".join(parts).encode()).hexdigest()[:10]
             rows.append({"game": pathlib.Path(path).stem, "seat": seat, "day": day,
-                         "block": hashlib.md5(body.encode()).hexdigest()[:10],
+                         # `block` keeps the historical name and stays the default label.
+                         "block": digest([p for _h, p, _f, _s in t]),
+                         "block_full": digest([f for _h, _p, f, _s in t]),
+                         "block_species": digest([s for _h, _p, _f, s in t]),
                          "x": feats[day]})
     return rows
 

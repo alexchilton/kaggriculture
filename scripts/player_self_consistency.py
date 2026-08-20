@@ -61,6 +61,28 @@ def is_animal_op(op):
     return bool(rest & (ANIMAL_NAMES | ANIMAL_PRODUCTS_ALL))
 
 
+#: Alex, 2026-08-20: "as far as i am concerned the cow / sheep swaps are the same group". So the
+#: species is a substitution, not a different plan: keep the op and its timing, blank the species.
+#:
+#: Note this is STRICTLY WEAKER than `plant_only`. Stripping collapses every pair that this
+#: collapses, plus pairs differing by an animal op being present at all. Since stripping moved
+#: almost nothing (Kawashigi d8 3.2 -> 3.2), this cannot move more.
+SPECIES_TOKEN = "ANIMAL"
+
+
+def _blank_species(op):
+    if not op:
+        return op
+    return [op[0]] + [SPECIES_TOKEN if str(x) in ANIMAL_NAMES else x for x in op[1:]]
+
+
+def species_only(action):
+    """The same action with COW/SHEEP/GOOSE made interchangeable."""
+    return {"farmer": _blank_species(action.get("farmer")),
+            "hands": [_blank_species(a) for a in (action.get("hands") or [])],
+            "market": [_blank_species(o) for o in (action.get("market") or [])]}
+
+
 def plant_only(action):
     """The same action with every animal op removed, so PASS-vs-FEED does not count as a mismatch."""
     keep_unit = lambda a: None if (a and is_animal_op(a)) else a          # noqa: E731
