@@ -5416,6 +5416,18 @@ def make_agent(schedule, me=0, router=True):
         # herd, and holding the order costs nothing because the row is re-offered every turn.
         if any(o and o[0] == "BUY_LAND" for o in orders):
             short = 0
+        # **TRIED AND REVERTED 2026-08-20: `< ORDER_SLOTS` instead of `< 9`.** On tetsuya's d0 the
+        # turn sends six HIREs, two BUY_ANIMALs and a BUY_SEED -- exactly nine -- so the slot gate
+        # looked like the reason one wheat reached the shed and one of five animals got fed. It is
+        # not: opening the tenth slot left `feed 1/5` on d0 byte-for-byte and moved d0-d10 PASS from
+        # 911 to 959.
+        #
+        # The gate is downstream of `(alive or owed > 0)`, and at hour 0 no animal is on the board
+        # yet -- the row's five are placed h05-h08. A board read cannot see them, so the ration is
+        # never sized in the first place and the slot it would have taken is irrelevant.
+        #
+        # Whatever fixes this has to make the DAWN order know what the row will place, not find it
+        # a slot.
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             # The dawn block is SENT the moment any order sized by its boost is queued -- even one
