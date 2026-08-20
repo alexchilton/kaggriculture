@@ -2912,41 +2912,21 @@ MILK_CLASSIFIER_FROM_DAY = 9
 #:      10      4     14   42
 #:
 #: Exhaustive search over both thresholds (`data/logs/kawa_q3_rule_search.log`) puts the best fit at
-#: `yarn_by=3, milk_lo=1` with **49/51 = 96.1%** exact on (COW, SHEEP), against the previous rule's
-#: 42/51 = 82.4%. The two misses are a symmetric pair -- identical features, opposite choices -- so
-#: they are noise, not a missing input.
+#: **DELETED 2026-08-19: the better-FITTING herd rule, which is not the better rule for us.**
 #:
-#: **The change that matters is the TOTAL, and it goes DOWN.** The old rule capped cows at 6 and
-#: then spent the rest of a fixed 14-animal budget on sheep, giving COW 6 / SHEEP 8 where he runs
-#: COW 6 / SHEEP 6. Those two sheep are ~16 units of wool into a book that floors 59 units above
-#: `I0`, plus $1,000 and two FEED and two CARE stops a day. Lowering the total needs no new pens --
-#: unlike raising it, which he only ever does on FOUR quadrants.
-#: **PARKED AND OFF, 2026-08-15. The fit is good; the change is not safe for OUR agent.**
+#: `HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE` and its four constants (`EARLY_WOOL_SHEEP = 6`,
+#: `MILK_POOR_SHOP_COUNT = 1`, `MILK_POOR_COW = 8`, `MILK_POOR_SHEEP = 6`) shipped off from
+#: 2026-08-15 and are gone. Keep the finding, not the code:
 #:
-#: Dropping the total to twelve only pays if the freed capacity becomes crops. He converts it --
-#: ~12 more plantings and ~29 more waters on his total-12 seats, with his hire count unchanged at
-#: 277. **We have no logic that does that.** Our crop rows are fixed by the schedule and the solver
-#: is not reactive, so we would take the cost and idle the gain; we already idle 1365 unit-turns a
-#: season against the tape's 660.
+#: It predicted the leader's (COW, SHEEP) at **49/51 = 96.1%** against the shipped rule's
+#: 42/51 = 82.4% (`data/logs/kawa_q3_rule_search.log`), by taking the herd TOTAL down to twelve.
+#: That only pays if the freed capacity becomes crops -- he converts it into ~12 more plantings and
+#: ~29 more waters at an unchanged hire count -- and **we have no logic that does that**, so we
+#: would take the cost and idle the gain. We already idle 1365 unit-turns a season against his 660.
+#: Worse, the early-yarn branch fires exactly where wool is well drained ($24-$248 a close, drain
+#: 240-504), so it surrenders ~16 units at up to $240 each to save $1,000.
 #:
-#: And the cost lands on the wrong boards. The early-yarn branch fires exactly where wool is well
-#: drained and valuable -- those seats run wool drain 240-504 and wool closes $24-$248 -- so two
-#: fewer sheep is ~16 units surrendered at up to $240 each against $1,000 saved.
-#:
-#: The measurement stands and is worth keeping: 49/51 = 96.1% against his three-quadrant seats,
-#: versus 42/51 = 82.4% for the shipped rule (`data/logs/kawa_q3_rule_search.log`). Re-enable only
-#: alongside logic that spends the freed turns on planting.
-HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE = False
-
-#: Sheep on the early-wool branch. Six, not "all the budget that is left".
-EARLY_WOOL_SHEEP = 6
-
-#: At or below this many MILK-carrying shops, with no yarn store at all, he moves a cow into a
-#: sheep: COW 8 / SHEEP 6 rather than COW 10 / SHEEP 4. MILK is carried by three of the eight shop
-#: types, so one milk shop is a genuinely thin book.
-MILK_POOR_SHOP_COUNT = 1
-MILK_POOR_COW = 8
-MILK_POOR_SHEEP = 6
+#: Re-derive it only alongside logic that spends the freed turns on planting.
 
 
 def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
@@ -3001,26 +2981,6 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
     # every third day, so slicing it is slicing by day: [:3] is "unlocked by d9". He does not respond
     # to a yarn store that arrives at d12 or later -- 16 games, all COW 10 -- and the unsliced test
     # would have cut those to 6.
-    if WOOL_SHOP_SETS_THE_HERD and HERD_FOLLOWS_THE_LEADERS_THREE_QUADRANT_RULE:
-        _seen = list(unlocked_shops or ())
-        _early = "YARN_STORE" in _seen[:WOOL_SHOP_DRAW_LIMIT]
-        _milk = 0
-        if _KG is not None:
-            _milk = sum(1 for s in _seen if "MILK" in _KG.SHOPS.get(s, ()))
-        if _early:
-            cow_t, sheep_t = WOOL_SHOP_COW_CAP, EARLY_WOOL_SHEEP
-        elif "YARN_STORE" not in _seen and _milk <= MILK_POOR_SHOP_COUNT:
-            cow_t, sheep_t = MILK_POOR_COW, MILK_POOR_SHEEP
-        else:
-            cow_t, sheep_t = WOOL_SHOP_NO_YARN_COW, total - WOOL_SHOP_NO_YARN_COW
-        # `bought` floors both, so this can never unbuy an animal that exists; the cap keeps the
-        # schedule's own count as a ceiling while allowing the early-wool branch to sit BELOW it.
-        split["COW"] = max(split["COW"], min(cow_t, total))
-        split["SHEEP"] = max(split["SHEEP"], min(sheep_t, total - split["COW"]))
-        if split["COW"] + split["SHEEP"] > total:
-            split["SHEEP"] = max(bought.get("SHEEP", 0), total - split["COW"])
-        return split
-
     if WOOL_SHOP_SETS_THE_HERD:
         # **Both branches of his step function are pinned, not just the capped one.** An early yarn
         # store means 6 cows; anything else means 10. Leaving the second case to the greedy below
@@ -3547,9 +3507,8 @@ def reservation_units(prod, inventory, step, unlocked_shops, supply,
 
 
 
-#: Whether the day's outstanding seed bill is reserved before any BUY_ANIMAL is queued. See the
-#: block above the hire loop for the day-6 measurement. Off restores livestock-first spending.
-SEED_BEFORE_LIVESTOCK = True
+#: `SEED_BEFORE_LIVESTOCK` was DELETED 2026-08-19: it had no reader. Seed is reserved ahead of any
+#: BUY_ANIMAL unconditionally -- see the block above the hire loop for the day-6 measurement.
 #: The products the sell block actually offers, in its long-standing order. Named so the
 #: make-room release below can rank the same set by holding size without duplicating the tuple.
 #:
@@ -3738,6 +3697,9 @@ def _wheat_to(row, crop, budget):
 #:
 #: This costs the d4-d11 tape opening that the current route tables were solved against, so money on
 #: the existing arms is unmeasured until they are re-solved. Alex's call, made explicitly.
+#:
+#: And there is no tetsuya tape to swap in: his opening is a PLAN we follow, not a
+#: recording we play back.
 REPLAY_OPENING_DAYS = ()
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
@@ -3862,6 +3824,10 @@ def make_agent(schedule, me=0, router=True):
         #
         # His melon is deleted outright. The season we play is not the season the plan names, and
         # the docstring above already recorded that these measurements do NOT show a gain.
+        #
+        # It is also what made two measurements on 2026-08-19 return phantom nulls:
+        # q4-vs-q3 read +$0 on twelve seeds because BOTH arms armed it and got identical
+        # rows. tetsuya never buys the fourth quadrant at all.
         farms = obs.get("farms") or []
         if len(farms) <= me:
             return {"farmer": ["PASS"], "hands": [], "market": []}
@@ -3963,6 +3929,10 @@ def make_agent(schedule, me=0, router=True):
             # branch is also read off カワシギ games and also installs through `Branch.install`,
             # which clears every row from its split day on. It is the likelier culprit for the
             # MELON 8 -> 0 above, since it is the branch that decides melon.
+            #
+            # There is also nothing for it to switch TO: it picks between two of カワシギ's
+            # recorded seasons off the opponent's melon tiles, and we follow one tetsuya
+            # plan.
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a

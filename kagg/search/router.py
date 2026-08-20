@@ -220,14 +220,12 @@ YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 
 
 
-#: Cost an insertion as a CLOSED tour -- `delta + homeward(after) - homeward(before)` -- rather than
-#: charging a flat return reserve at acceptance. It is the textbook closed-tour marginal and it is
-#: exact at every insertion position, not only when the node lands at the current end of the route,
-#: so a far node can be resequenced onto the way back instead of being refused outright.
-#: It needs `SUPPLY_LEDGER`: on its own it MEASURED as day 3 `sell` 5/5 -> 3/5 and day 4 `place`
+#: `CLOSED_TOUR` was DELETED 2026-08-19: it had no reader, and `tests/test_router.py:1684` already
+#: records that the gate believed to cover it does not discriminate it. The closed-tour marginal --
+#: `delta + homeward(after) - homeward(before)` rather than a flat return reserve at acceptance -- is
+#: unconditional. Keep the caveat: on its own it MEASURED day 3 `sell` 5/5 -> 3/5 and day 4 `place`
 #: 1/1 -> 0/1, because costing the tour honestly sorts a phantom PLACE node to the tail of the day,
-#: which is exactly where a node that turns out to be fake does the most damage.
-CLOSED_TOUR = True
+#: which is where a node that turns out to be fake does the most damage. It needs `SUPPLY_LEDGER`.
 
 #: Turns charged for the DROP that ends a carrying tour. `delta` already prices the depot DRAW -- one
 #: turn per item picked up, plus the detour -- but nothing has ever priced putting the load DOWN, so
@@ -426,10 +424,12 @@ def _animal_remaining(cell, day):
     return max(0, days_left) // a["interval"] * price
 
 
-TOP_UP_SAFE_TILES = False
-#: Not before day 7. Seventeen tiles fit inside one day with room to spare, Seb waters alternate days
-#: there and takes zero weeds doing it, and d0-d6 is matched to the tape op for op.
-TOP_UP_FROM_DAY = 7
+#: How steeply a top-up water is discounted against the work the day actually owes.
+#:
+#: `TOP_UP_SAFE_TILES` and `TOP_UP_FROM_DAY` were deleted 2026-08-19: the flag shipped off, had no
+#: live reader left, and `TOP_UP_FROM_DAY` was read by nothing at all. **Do not reinstate the flag
+#: form** -- watering every safe ongoing tile measured $79,905 -> $63,645. The narrower rule that
+#: replaced it lives at the two `_crop_remaining(...) / TOP_UP_DISCOUNT` sites below.
 TOP_UP_DISCOUNT = 8.0
 
 
@@ -488,9 +488,7 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
                 # lost every auction: 3 weeds on d28, 4 on d29, and seven of d29's turns spent
                 # DIGging them. Held to d26+ purely for scope; the mispricing is not late-specific.
                 unit = price * (2 if fertilized else 1)
-                if (day >= min(LATE_TRUNCATED_PLANT_DAY,
-                               BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY)
-                        and cell["consecutive_unwatered"] >= 1):
+                if day >= LATE_TRUNCATED_PLANT_DAY and cell["consecutive_unwatered"] >= 1:
                     unit = max(unit, _crop_remaining(cell, day))
                 out.append(("WATER", None, unit))
                 # **The LAST water is not worth one unit, it is worth the tile.** See
@@ -707,16 +705,15 @@ LATE_TRUNCATED_PLANT_DAY = 26 if LATE_SEASON_PAIR else 99
 #: `consecutive_unwatered >= 1`, one night from death and visible in the observation, while we
 #: watered sixteen others. A producing wheat tile was being offered at $25.
 #:
-#: **This is NOT `TOP_UP_SAFE_TILES`.** That rule waters tiles which are SAFE, and it is measured
-#: and off -- $79,905 -> $63,645, because a spike day then spends its turns on tiles never at risk.
-#: This one only ever fires at `consecutive_unwatered >= 1`, which is a tile that weeds tonight;
-#: `test_a_tile_watered_yesterday_is_not_given_the_survival_price` pins the difference.
-#: **MEASURED A NULL 2026-08-15 AND OFF.** Byte-identical on seeds 3/7/11: same weeds,
-#: same bank. `crop_ops` IS on the path (1,364 calls on d8, 131 of them brink tiles) but
-#: `cover` chooses STOPS by rules on the board, not by price -- 'There is no price table
-#: in here, and that is the point.' The price only decides what to do at a stop already
-#: being visited. The lever is `cover.AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP`.
-BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY = 99
+#: **DELETED 2026-08-19: `BRINK_WATER_IS_WORTH_THE_TILE_FROM_DAY = 99` was INERT.** It only ever
+#: reached the board through `min(LATE_TRUNCATED_PLANT_DAY, 99)`, which is 26 either way, so the
+#: constant selected nothing and the call site now reads `LATE_TRUNCATED_PLANT_DAY` directly.
+#:
+#: It was measured a null in 2026-08-15 and that measurement was sound but misread: `crop_ops` IS on
+#: the path (1,364 calls on d8, 131 of them brink tiles), yet `cover` chooses STOPS by rules on the
+#: board and never by price. A price only decides what to do at a stop already being visited, so no
+#: number here can add a visit. Pricing is the wrong lever for "this tile dies tonight" -- the
+#: ordering of the greedy passes in `cover.plan` is the right one.
 
 
 def _last_safe_age(info):
@@ -781,6 +778,26 @@ def _one_shot_is_finished(info, age, room, day=None):
         # to collect; it is paired here with the `plant_prize` change that puts the crop in the ground.
         # Victor takes 26 wheat on d29 at age 2-3, `held 4 / max 6` (`91854176.json`).
         return True
+    # **MEASURED AND REVERTED 2026-08-19: `age >= info["first"]` -- take a one-shot as soon as it is
+    # LEGAL rather than once it is full. Do not re-derive it.**
+    #
+    # The theory was that ground is the bottleneck: tetsuya takes wheat at age 2-3 and re-sows, his
+    # d3 row sells WHEAT 30 which nothing four days old can supply, and his plan idles 1332-1553
+    # unit-turns against kawa's 831-992 while planting MORE.
+    #
+    # It did the OPPOSITE of the intended thing on both plans, 8 seeds, same opponent:
+    #
+    #     gate            wins            tets idle    kawa idle
+    #     max_day         kawa 3 tets 5   1332-1553     831- 992
+    #     first_yield     kawa 1 tets 1   1613-1962    1048-1368
+    #
+    # Idle went UP. Fewer units per tile means the same harvest turns bank less, and the tile is
+    # demolished before it grows -- the exact failure recorded above, five crop tiles lost on d3 of
+    # seed 11. Ground was never the bottleneck.
+    #
+    # **Read the WINS column, not money.** The money mean improved to +519 while the median fell to
+    # -10,044, because kawa collapsed on two seeds (101,807 -> 36,884 and 93,571 -> 42,219). A mean
+    # that moves the opposite way to the median is an outlier, not a result.
     return age >= info["max_day"] or room <= 0
 
 

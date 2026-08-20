@@ -105,13 +105,6 @@ YIELDING = ("HARVEST", "COLLECT_FERTILIZER")
 #: fed yesterday, may slip; missed yesterday, may not.
 REQUIRED_OPS = ("FEED",)
 
-#: Whether a tile one dry night from weeding is covered BEFORE a pen that was fed yesterday.
-#:
-#: `REQUIRED_OPS` above argues that a pen fed yesterday can slip a day for free while one that
-#: missed yesterday cannot. The same logic applies to tiles, and the pass order contradicted it:
-#: the routine feeds went first and the dying tiles took what was left.
-AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP = False
-
 #: Whether a job the greedy could not place gets a second chance by displacing one that is placed.
 #: Off leaves the plain cheapest-insertion greedy, which is what makes the repair attributable --
 #: and what a test asserts against, so a green suite with it disabled fails loudly instead of quietly.
@@ -147,32 +140,13 @@ MAKE_ROOM_MOVES = 8
 #: beside `slot_now` in `cover` for the profile and the episode.
 MEMOISE_SLOT = True
 
-#: Whether the shed limits EVERY item a job draws, or only the animals. See `claim` for the day-4
-#: failure this fixes: six FEEDs planned against a shed holding no wheat, two performed.
-#: `tests/test_day_four_feeds_the_whole_herd.py` is the reproduction.
-#: **SHIPS OFF. Measured three times, worse every time.** The diagnosis behind it is correct and
-#: worth keeping: day 4's dawn solve has one unit, which lifts all six wheat out of the shed, and
-#: the hour-1 replan then covers six FEEDs against a shed holding zero -- five of them on hands
-#: that can never obtain wheat. Two feeds happen, four animals go hungry with seventy idle turns.
-#:
-#: But refusing the job is the wrong answer to it. Seed 11, weeds off, against Seb's 1.32.6 tape,
-#: `days 0-16 totals` and the d16 board:
-#:
-#:     setting                        work  idle   d16 money   d16 cow/sheep
-#:     off (shipped)                  1144  1289       7,293        5 / 7
-#:     on, needs | places             1025  1441       3,280        6 / 7   and the 4th parcel never bought
-#:     on, FEED/FERTILIZE only         930  1372           0        3 / 0
-#:
-#: Each tightening moves work DOWN and idle UP, because a refused FEED is a hand with nothing to do
-#: and an animal that starves anyway. The shed being empty is a funding problem -- Seb answers it
-#: with 14-22 BUY_PRODUCT a day from d11 while we buy none -- and a planner constraint cannot buy
-#: wheat. Turn this on only together with a rule that raises the shortfall as a purchase.
-SUPPLY_LIMITS_EVERY_DRAW = False
-
-#: The ops whose drawn item is genuinely SPENT at the tile, so the shed has to hold it before the
-#: job can be planned. PLACE and BUILD are deliberately absent: their `needs` carry feed wheat that
-#: the op does not consume, and constraining on it refused animal placements outright.
-SUPPLY_CHECKED_OPS = ("FEED", "FERTILIZE")
+#: **DO NOT re-derive: the shed does NOT limit every item a job draws, only the animals.**
+#: `SUPPLY_LIMITS_EVERY_DRAW` and `SUPPLY_CHECKED_OPS` were deleted 2026-08-19; both shipped off and
+#: were measured three times, worse every time. Each tightening moved work DOWN and idle UP -- 1144
+#: work / 1289 idle at $7,293 shipped, against 1025/1441 at $3,280 and 930/1372 at $0 -- because a
+#: refused FEED is a hand with nothing to do and an animal that starves anyway. The empty shed is a
+#: FUNDING problem (Seb buys 14-22 BUY_PRODUCT a day from d11; we buy none) and a planner constraint
+#: cannot buy wheat. Reopen only alongside a rule that raises the shortfall as a purchase.
 
 #: Days on which a job whose tile dies tonight is kept OFF the tail of a tour.
 #:
@@ -220,58 +194,26 @@ DELIVER_MIN = 6
 #: still open.
 RUSH_BANK_MIN = 4
 
-#: Whether a hand is judged for a shed trip by what it CARRIES (True) or by what today's sell row
-#: still owes (False, shipped). See the long note in `materialise` for the defect it targets, which
-#: is real and measured: animal produce rides in a hand all day and reaches the shed only via the
-#: rollover sweep, so we sell yesterday's production every day of the season.
+#: **THE OPEN DEFECT, and two deleted attempts at it. Read this before writing a third.**
 #:
-#: **OFF, because the obvious fix costs more than the defect.** Measured, seed 11, weeds off, d0-d16,
-#: stacked on the day-12 stranded-feed fix:
+#: Animal produce rides in a hand all day and reaches the shed only via the rollover sweep, so we
+#: sell yesterday's production every day of the season. Traced on d8: twelve milk harvested at h05
+#: and h08, carried to h17, banked at h18, sold at h19 -- while the tape banks the same milk at h05
+#: with two quantified `PLACE/MILK` and spends it on the wheat that feeds ten animals, closing
+#: `feed 10/10 care 10/10` against our 2 and 2. The whole d8 deficit is delivery LATENCY, not
+#: production, not routing (`crew.cover` covers 39/39), not the size of the wheat row.
 #:
-#:               money@d16   cows   work   idle
-#:     both off     16,363    5/8   1273   1381
-#:     this on      14,342    3/8   1198   1436
+#: `DELIVER_SURPLUS_NOT_THE_ROW` (judge the hand by what it CARRIES, not what the row owes) and
+#: `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` (bank the row's own produce at a zero-detour depot mid-tour)
+#: both shipped off and were deleted 2026-08-19. The first measured $16,363 -> $14,342 at d16 with
+#: cows 5/8 -> 3/8: the extra trips came straight out of work turns, and work turns are feeds. The
+#: second was byte-identical, because all 1,678 blocked d8 stops have nothing owed ahead and fall to
+#: the FREE DROP, never reaching the selective branch the exemption was written for.
 #:
-#: The extra trips come straight out of work turns, and work turns are feeds. Delivering produce is
-#: still the right objective -- what is wrong is paying for it with a whole extra walk. The version
-#: worth trying next routes the drop into a stop the tour was ALREADY making, rather than adding one:
-#: pens sit on shed-access tiles by design, so a herd tour stands on a depot at most of its stops and
-#: the drop can be free. That is a different change to this one and needs its own measurement.
-DELIVER_SURPLUS_NOT_THE_ROW = False
-
-#: Whether a hand may bank produce **today's row is selling** at a zero-detour depot while harvests
-#: remain -- using the QUANTIFIED `PLACE`, never the all-or-nothing `DROP`.
-#:
-#: `BANK_ONLY_AFTER_THE_LAST_HARVEST` is read off Seb's day 4, where the harvest is REVENUE: nothing
-#: that day depends on it, so it can ride to the closing trip. Day 8 of the Kawashigi tape inverts
-#: that. `COW` is `first_yield_day 8`, so the two cows placed on day 0 open d8 holding six units
-#: each -- and both boards agree on it, ours `CO@3,4 y6 CO@4,4 y6` against his `CO@4,3 y6 CO@4,4 y6`,
-#: with the full care bonus consumed on both sides. The row is `sells {FERTILIZER 6, MILK 12}` and
-#: `buys {WHEAT 17}` on a $4 dawn bank, so the milk is not revenue, it is the day's WORKING CAPITAL:
-#: the wheat it pays for is what feeds ten animals. Measured, seed 11:
-#:
-#:     h05 u4 HARVEST   h08 u4 HARVEST   h09-h17 twelve milk in hand, bank $13
-#:     h17 u4 DROP      h18 shed 12, SELL MILK 12   h19 bank $1,873 -- every stop already walked
-#:
-#: We harvest all twelve and sell all twelve, thirteen hours late. The tape banks the same milk at
-#: h05 with two `PLACE/MILK` and spends it through the day; it closes `feed 10/10 care 10/10`
-#: against our 2 and 2. The whole d8 deficit is delivery LATENCY -- not production, not routing
-#: (`crew.cover` covers 39/39), not the size of the wheat row.
-#:
-#: **Why this is not `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED` again.** That one gated on `rush`, the
-#: short-of-cash signal -- which was False on the d10 it was written for and True on d6, where the
-#: extra drops shifted the cash timing and cost `buy_product 5/5 -> 4/5`. The gate here is not
-#: poverty, it is **"the hand is carrying what today's row sells"**: `wanted` is the sell row, so the
-#: stop only opens where the day's own plan is waiting on those goods. d6's hands are not carrying
-#: d6's produce at the blocked stops, which is the difference the measurement has to confirm.
-#:
-#: **It has to be folded into `reaping` itself, not into one branch.** Traced on d8, all 1,678
-#: blocked stops look like `free=True spare=7 owed=False held={FERTILIZER 1, MILK 6} after={}` --
-#: nothing owed ahead, so they fall to the FREE DROP and never reach the selective `_bank` branch,
-#: which requires `owed_ahead`. An exemption written for the selective branch alone measured as a
-#: byte-identical d8. And the free drop is safe here by construction: it already refuses whenever
-#: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
-BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
+#: What both got wrong is paying for the delivery with an extra walk. Pens sit on shed-access tiles
+#: by design, so a herd tour already stands on a depot at most of its stops -- the fix routes the
+#: drop into a stop the tour was ALREADY making, and must be folded into `reaping` itself rather
+#: than into one branch of it.
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -652,10 +594,8 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         #
         # No price list here, deliberately: `cover` ranks nothing and prices nothing, so "surplus"
         # is a count of items, not of dollars. `DELIVER_MIN` remains the only threshold.
-        load = (sum(max(0, q - after[i][p]) for p, q in held.items() if q > 0)
-                if DELIVER_SURPLUS_NOT_THE_ROW else
-                sum(min(max(0, held[p] - after[i][p]), q)
-                    for p, q in (wanted or {}).items() if q > 0))
+        load = sum(min(max(0, held[p] - after[i][p]), q)
+                   for p, q in (wanted or {}).items() if q > 0)
         # **`DELIVER_MIN` holds on a short day too, and dropping it to 1 there was a real mistake.**
         # The intuition was that on a day whose purchases are queued behind the money, a single unit
         # in hand is worth banking. It is not, because a shed trip costs a turn even when it costs no
@@ -707,16 +647,7 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # `rush` exempts it: see `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`. A day that cannot pay its
         # own bill needs the produce in the shed while the market is open, not swept there overnight
         # by `_drop_inventories_to_shed` after it has closed.
-        # **A short day, and the hand is holding what that day's row SELLS.** See
-        # `BANK_THE_ROWS_PRODUCE_WHILE_REAPING`. Both halves are load-bearing and neither works
-        # alone: `rush` by itself is the reverted `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`, which
-        # fired on fertilizer rounds too; the row test by itself is true on Seb's day 4, where
-        # fourteen wheat harvests meet a `WHEAT 49` row and the dusk rule is exactly right.
-        funding = (BANK_THE_ROWS_PRODUCE_WHILE_REAPING and rush
-                   and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
-        reaping = (any(w.harvests() for w in work[i:])
-                   
-                   and not funding)
+        reaping = any(w.harvests() for w in work[i:])
         if free and spare > 0 and not owed_ahead \
                 and not reaping:
             route.append(Depot(d, drop=True))
@@ -964,7 +895,16 @@ from .solved_days import SOLVED_DAYS                                          # 
 #: weeds on straw q3. Only the recorded miss count moves (55 -> 51 -> 43 -> 39). Re-seating a
 #: drifted stop changes which hand walks it, not whether it happens, because `_insert_leftovers`
 #: was already placing it. The 55 misses are a poor proxy for lost work.
-UNSOLVE_DAYS = tuple(range(24, 30))
+#: **EVERY day on this branch -- the greedy lawnmower plays the whole season.**
+#:
+#: All four solved tables were solved against カワシギ's crop mix, and `_apply_precomputed` keys a
+#: stop on `(tile, op_names)`. A tetsuya season puts different crops on different tiles, so every
+#: fixture would miss and fall to `_insert_leftovers`. Handing them a foreign mix measures the
+#: desync, not the plan.
+#:
+#: The cost of running unsolved is measured and small: on カワシギ's own arms the greedy from d12
+#: gave up 3.7% and 5.2%, and on q4_straw it BEAT the solved table by $1,222.
+UNSOLVE_DAYS = tuple(range(0, 30))
 
 PRECOMPUTED_ROUTES = {d: {u: [(tuple(t), tuple(ops)) for t, ops in seq]
                           for u, seq in units.items()}
@@ -1346,9 +1286,6 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
         # shed refused the animal itself. Day 4 measured `place 0/1` and `cow 4/5` against `1/1` and
         # `5/5` before -- one cow placed a day late, for want of wheat the PLACE does not spend.
         want = j.places()
-        if SUPPLY_LIMITS_EVERY_DRAW:
-            want = want | collections.Counter(
-                i for o, i in j.ops if i and o in SUPPLY_CHECKED_OPS)
         return collections.Counter({i: q - held[i] for i, q in want.items() if q > held[i]})
 
     def affordable(new_places):
@@ -1419,23 +1356,12 @@ def cover(units, jobs, budget, depots=SHED, carry=None, supply=None, deliver=Tru
     # `required` cannot express that and drops the same animal twice.
     greedy([j for j in left if j.at_risk and j.required])        # an animal that dies tonight
     greedy([j for j in left if j.funds])                          # the day's shopping list, unpaid
-    if AT_RISK_TILE_OUTRANKS_A_FEED_THAT_CAN_SLIP:
-        # **A tile that weeds tonight is an asset lost outright; a pen fed yesterday can slip a day
-        # for free.** That is this file's own argument for `at_risk`, applied to the other half of
-        # the board. Ordered the other way, a routine feed took the turn and the tile died: measured
-        # on live ladder games 2026-08-16, (8,4) STRAWBERRY died d9 last watered d6, (9,1) WHEAT and
-        # (9,2) STRAWBERRY died d11 last watered d8, and the same coordinates die across independent
-        # games and seeds. At d8 dusk eight tiles sat one night from death while sixteen others were
-        # watered.
-        #
-        # NOT the d28 null recorded at `schedule_agent.BANK_THE_FIELD_ON_D28`: that measured RIPE
-        # tiles on a SOLVED day with two hands idle and slack in the route. These are DRY tiles on
-        # d7-d11, which are unsolved and turn-constrained.
-        greedy([j for j in left if j.at_risk and not j.required])  # a tile that weeds tonight
-        greedy([j for j in left if j.required and not j.at_risk])  # the rest of the herd
-    else:
-        greedy([j for j in left if j.required and not j.at_risk])  # the rest of the herd
-        greedy([j for j in left if j.at_risk and not j.required])  # a tile that weeds tonight
+    # **The routine herd goes before a tile one dry night from weeding, and that ordering is
+    # measured, not assumed.** The opposite order -- tiles first, on the argument that a lost tile
+    # is an asset gone outright while a pen fed yesterday may slip a day for free -- shipped OFF and
+    # was deleted 2026-08-19 with the flag that gated it.
+    greedy([j for j in left if j.required and not j.at_risk])      # the rest of the herd
+    greedy([j for j in left if j.at_risk and not j.required])      # a tile that weeds tonight
     greedy([j for j in left if not j.required and not j.at_risk])
 
     # ----------------------------------------------------------------------------------- compact
