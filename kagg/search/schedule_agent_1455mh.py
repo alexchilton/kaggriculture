@@ -1512,7 +1512,8 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
 
 
 def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0,
-                 arriving=(), unlocked_shops=(), fertilizer_price=None):
+                 arriving=(), unlocked_shops=(), fertilizer_price=None, hold_farmer=False,
+                 farmer_start=None):
     """One turn of the routed plan. The plan is built ONCE, at dawn, and then only walked.
 
     `arriving` is where today's hires will land (`_arrivals`). They are planned as vehicles even
@@ -1544,6 +1545,12 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # phase already ran. It works from `hour + 1`, so it is one turn poorer than everyone else.
     for k in range(len(units), len(plan_units)):
         budget[k] = max(0, budget[k] - 1)
+    # EXPERIMENT delta 2 (fable, 2026-08-11): the spawn-ring step is a planned move, not a
+    # discovery. Cut the farmer's tour from the tile the step lands on, one turn poorer, so the
+    # cost model charges the step instead of finding out at dusk.
+    if farmer_start is not None:
+        plan_units[0] = tuple(farmer_start)
+        budget[0] = max(0, budget[0] - 1)
     routes = state["routes"]
     # Only shed cells inside a quadrant we own. A hand wakes on a LOCKED one and a LOCKED tile no-ops
     # before PICKUP is ever reached, so treating all four as depots strands the hand for the whole day.
@@ -1706,6 +1713,14 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
         and u2 < len(units) and tuple(units[u2]) == tuple(st["route"][0].tile)
     }
     for u, pos in enumerate(units):
+        # EXPERIMENT (fable, 2026-08-11): the call site is about to overwrite the farmer's action
+        # with a spawn-ring step. Walking its route here anyway CONSUMES the first stop -- a depot
+        # draw empties `node.pick` and decrements `shed` for a PICKUP that is then never emitted --
+        # so the route believes wheat is in hand that is not. Defer: emit a placeholder and leave
+        # the route untouched; the tour starts one turn late instead of one stop short.
+        if hold_farmer and u == 0:
+            acts.append(["PASS"])
+            continue
         inv = collections.Counter(invs[u] if u < len(invs) else {})
         st = routes.get(u)
         if st is None:
@@ -2755,7 +2770,10 @@ def make_agent(schedule, me=0, router=True):
                                 seeds, plan_unlocked, money, arriving=arriving,
                                 unlocked_shops=list((obs.get("town") or {}).get("unlocked_shops")
                                                     or []),
-                                fertilizer_price=_fert)
+                                fertilizer_price=_fert, hold_farmer=step_off is not None,
+                                farmer_start=((units[0][0] + STEP[step_off][0],
+                                               units[0][1] + STEP[step_off][1])
+                                              if step_off is not None else None))
             if step_off is not None and acts:
                 # The plan was cut from where the farmer STANDS, so its first stop is simply reached
                 # a turn later. That is the whole price: one farmer turn against a hand's twenty-three.
