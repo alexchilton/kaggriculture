@@ -76,3 +76,32 @@ construction rather than learned.
 - tetsuya is **no longer #1** as of the 2026-08-20 leaderboard (Ryo Hasegawa 3153.4 against his
   3101.4), and we hold **zero** games of the current leader. Choosing the imitation target is a
   decision that should be made before a dataset is built around anyone.
+
+## Addendum 2026-08-20: the two halves need different features
+
+Held-out (leave-one-game-out, 25 games, 17,975 turns):
+
+    key                    market NON-EMPTY   farmer op
+    raw shop multiset            39.0%          65.3%
+    per-product drains           67.6%          34.7%
+    clock-only baseline          58.6%          72.9%
+
+**Market: demonstrated.** Drain counts generalise to unseen shop draws where an opaque shop symbol
+does not -- wool sells when a yarn store exists, and that composes.
+
+**Unit ops: not demonstrated, and neither figure above is evidence about them.** The farmer op
+distribution is flat:
+
+    PASS 19.7%  FEED 14.8%  CARE 14.8%  COLLECT_FERTILIZER 14.5%  MOVES 22.4%
+    PICKUP 4.5%  HARVEST 4.2%
+
+FEED, CARE and COLLECT_FERTILIZER only occur while standing on a pen; the moves depend on where the
+tour is going. That is board state, and neither shop key encodes any of it. The 65.3% from raw
+shops is near-duplicate RETRIEVAL, not knowledge: an exact key hit (42.5% of turns) fetches the same
+game at the same turn, and his board is near-identical across games at a given (day, hour), so the
+op comes back right by accident. Drains smooth across dissimilar games and lose the retrieval
+without replacing it.
+
+So the unit head must read `kagg/rl/jax_obs.encode` -- the board encoder PPO already trains on and
+`kagg/il/bc.py` is already wired to. Until that is run, nothing has been measured about whether his
+unit play is clonable.
