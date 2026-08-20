@@ -5447,7 +5447,25 @@ def make_agent(schedule, me=0, router=True):
         # **The ORDER_SLOTS gate is NOT the constraint. Measured twice, inert both times.**
         # Alone: d0 feed 1/5 byte-for-byte. On top of the arrival-ration fix: d0 feed 3/5
         # byte-for-byte, identical to the ration fix by itself. Left at 9.
-        if (alive or owed > 0) and short > 0 and len(orders) < 9:
+        #
+        # **The PRE-TRIM was the constraint, and it is not the same thing. Removed 2026-08-20.**
+        # Both measurements above raised the pre-trim from 9 to 10 -- one more slot, with the ration
+        # still queued BEHIND the spending, where `_fit_slots` cuts from the tail. That is why they
+        # were inert. This drops the pre-trim from the ration entirely and lets the two functions
+        # that already exist for this do their job: `_wheat_row_first` slides a BUY_PRODUCT WHEAT
+        # ahead of the first HIRE/BUY_ANIMAL/BUY_SEED, and `_fit_slots` drops a surplus HIRE from the
+        # last one backwards rather than the ration. Neither could ever run, because the order was
+        # never appended.
+        #
+        # What it cost, on tetsuya's board `94345389` seed 959074148: d3's hour-0 queue is already
+        # full of hires and animals, so the row's 5 WHEAT is dropped on the floor and falls through
+        # to the 1/turn drip. The shed reads 0 at h1 -- the hour the dawn tour reaches it -- so the
+        # PICKUP loads nothing, the unit walks to the pen empty, and FEED is not live because it
+        # takes a WHEAT from the ACTING unit's carried inventory (`reference/kaggriculture.py:505`).
+        # The stop spends its turn on COLLECT_FERTILIZER instead. Pen (4,3) misses d3 and d4, hits
+        # `consecutive_unfed >= 2` and escapes at d4 night. See
+        # `docs/the_ration_is_not_in_the_shed_when_the_plan_says_it_is_2026-08-20.md`.
+        if (alive or owed > 0) and short > 0:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             # The dawn block is SENT the moment any order sized by its boost is queued -- even one
             # the money guard shrank -- and never by the slot gate refusing it. See the note at the

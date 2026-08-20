@@ -798,7 +798,27 @@ def _one_shot_is_finished(info, age, room, day=None):
     # **Read the WINS column, not money.** The money mean improved to +519 while the median fell to
     # -10,044, because kawa collapsed on two seeds (101,807 -> 36,884 and 93,571 -> 42,219). A mean
     # that moves the opposite way to the median is an outlier, not a result.
-    return age >= info["max_day"] or room <= 0
+    #
+    # **REINSTATED 2026-08-20, on Alex's call, and the 2026-08-19 revert above measured the WRONG
+    # THING.** It changed the harvest gate alone. Harvesting early is deliberately a WORSE trade per
+    # tile -- a wheat taken at age 2 forfeits the age-3 and age-4 waters -- and tetsuya takes it
+    # anyway because he is buying SPACE, not units. The gate alone hands over the cost and none of
+    # the benefit: the ground is cleared and nothing is sown on it, so the run loses the forfeited
+    # units and gains an empty square. That is precisely the shape the numbers above show -- idle UP,
+    # wins down. It is evidence that a bare gate change loses, not that early harvest loses.
+    #
+    # Measured at the decision on tetsuya's board `94345389`, seat 0, seed 959074148
+    # (`data/logs/d3only_2026-08-20.log`): at d3 dawn our board and his BOTH carry ten WHEAT tiles at
+    # `yield_units=2`, every one of them stood on by a unit that day. He harvests all ten; the router
+    # offered `WATER` and nothing else, so we harvest zero and the ten squares stay occupied.
+    # **The last day the window is still OPEN, not the first day the crop is legal.** `first` is a
+    # day too early and measured it: WHEAT `first_yield_day` is 2, so `>= first` takes the row on d2
+    # at a lower yield and d3 still reads `HARVEST 0/10` because the tiles are already gone
+    # (`data/logs/grid_harvest_2026-08-20.log`). tetsuya takes his at age 3, with `max_day` 4 -- the
+    # visit waters first and harvests second (`out` appends WATER before HARVEST, and `_live_ops`
+    # re-derives in that order), so the day's own unit is collected and only the FINAL water of the
+    # window is forfeited. That forfeit is the price of the square, paid knowingly.
+    return age + 1 >= info["max_day"] or room <= 0
 
 
 def produces_tonight(cell, day):
