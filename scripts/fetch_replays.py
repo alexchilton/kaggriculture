@@ -35,8 +35,9 @@ INDEX = "kaggle/kaggriculture-episodes-index"
 # 1.32.7 hinge change. Episodes from before 2026-08-08 describe a different economy and are not
 # teachers, they are noise. `kaggle datasets list -s kaggriculture-episodes-2026-08` lists what
 # actually exists; update this before every pull rather than trusting it.
-DATASETS = ("kaggle/kaggriculture-episodes-2026-08-16",
-            "kaggle/kaggriculture-episodes-2026-08-15")
+DATASETS = ("kaggle/kaggriculture-episodes-2026-08-19",
+            "kaggle/kaggriculture-episodes-2026-08-18",
+            "kaggle/kaggriculture-episodes-2026-08-17")
 
 # A replay is only worth keeping if the winner played well. `contrarian` banks ~$51k and the pair in
 # 89197802 banked $106k and $113k, so this keeps the ones with something to teach and discards the
