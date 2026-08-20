@@ -47,9 +47,11 @@ def _cell(animal, day=0):
 @pytest.fixture(autouse=True)
 def _restore():
     """These are module globals the agent sets once per turn; put them back."""
-    before = (RT.ARRIVAL_FEED_REMAINING, RT.ARRIVAL_FEED_EARLIEST_YIELD)
+    before = (RT.ARRIVAL_FEED_REMAINING, RT.ARRIVAL_FEED_EARLIEST_YIELD, RT.ARRIVAL_FEED_OWED)
+    RT.ARRIVAL_FEED_OWED = 0          # "unknown"; the scarcity cases below rely on this default
     yield
-    RT.ARRIVAL_FEED_REMAINING, RT.ARRIVAL_FEED_EARLIEST_YIELD = before
+    (RT.ARRIVAL_FEED_REMAINING, RT.ARRIVAL_FEED_EARLIEST_YIELD,
+     RT.ARRIVAL_FEED_OWED) = before
 
 
 def _earliest(row):
@@ -84,6 +86,8 @@ def test_every_arrival_is_fed_when_the_row_pays_for_every_arrival():
     """
     RT.ARRIVAL_FEED_REMAINING = len(ROW)
     RT.ARRIVAL_FEED_EARLIEST_YIELD = _earliest(ROW)
+    # Five arrivals still want a ration -- the state the agent publishes on d0 at dawn.
+    RT.ARRIVAL_FEED_OWED = len(ROW)
     served = [a for a in ROW if RT.will_be_fed(_cell(a), 0)]
     assert len(served) == len(ROW), (
         "the row places %d and pays for %d feeds, but only %s are offered a ration -- the "

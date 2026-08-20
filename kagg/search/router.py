@@ -824,6 +824,15 @@ ARRIVAL_FEED_REMAINING = 0
 #: preference", which is what a board with no unfed arrivals should say. See `will_be_fed`.
 ARRIVAL_FEED_EARLIEST_YIELD = None
 
+#: How many arrivals still WANT a ration today: pens placed today and not yet fed, plus the row's
+#: placements that have not reached the ground. Set beside the two above, off the same board read.
+#:
+#: It exists so `ARRIVAL_FEED_EARLIEST_YIELD` can go back to being a PRIORITY instead of an
+#: EXCLUSION. Those coincide only while the ration is scarce; when the budget covers every arrival,
+#: refusing the later-yielding species costs an animal-day and the CARE that hangs off it for
+#: nothing. `0` means "unknown", which falls through to the priority filter unchanged.
+ARRIVAL_FEED_OWED = 0
+
 #: First day the cadence applies. **The tape feeds everything, every day, until d5.** Its feed row
 #: over d0-d4 is 4, 5, 5, 6, 7 against 8 pens -- all of them, allowing for the ones placed that day
 #: -- and the cycling starts at d5 (4 of 7) and is unmistakable by d7 (3 of 17).
@@ -893,6 +902,23 @@ def will_be_fed(cell, day):
         # `schedule_agent` and off the same board read, so it needs no state of its own. An arrival
         # with a later first production waits its turn; if it is the only species arriving it is
         # the earliest and nothing changes.
+        # **The earliest-yield test is a PRIORITY, not an EXCLUSION, and the budget decides which.**
+        # When the ration covers every arrival still owed, nobody is competing and the later species
+        # takes nothing from the earlier one -- so refusing it buys nothing and costs the animal-day
+        # plus the CARE chain, since CARE is only offered on a pen that is already fed.
+        #
+        # Measured on tetsuya's d0: `places ['SHEEP','SHEEP','SHEEP','COW','COW']`, `feeds 5`. The
+        # sheep set the earliest at 6, both cows failed `8 <= 6`, and the day reserved three rations
+        # for five animals while he fed all five. With this, d0 goes `feed 1/5 -> 3/5`,
+        # `care 1/5 -> 4/5`.
+        #
+        # **Kept even though the d0-d10 totals got WORSE.** This fix is correct and a SECOND defect
+        # downstream swamps it: the extra d0 rations eat wheat the later days needed, and d9/d10
+        # collapse (hands 11/11 -> 7/11, d10 plant 18/19 -> 0/19). Reverting a correct fix because a
+        # different bug follows it just hides the first one again. The later-day wheat supply is the
+        # next thing to fix, and this makes it visible.
+        if ARRIVAL_FEED_OWED and ARRIVAL_FEED_REMAINING >= ARRIVAL_FEED_OWED:
+            return ARRIVAL_FEED_REMAINING > 0
         return (ARRIVAL_FEED_REMAINING > 0
                 and (ARRIVAL_FEED_EARLIEST_YIELD is None
                      or ANIMALS[cell["animal"]]["first_yield_day"]

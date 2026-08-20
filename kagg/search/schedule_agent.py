@@ -3876,9 +3876,15 @@ def make_agent(schedule, me=0, router=True):
                         _standing += 1
             RT.ARRIVAL_FEED_REMAINING = max(0, _row_feeds - _standing - _arrived_fed)
             RT.ARRIVAL_FEED_EARLIEST_YIELD = _soonest
+            # Arrivals still wanting a ration: placed today and unfed, plus the row's placements not
+            # yet on the ground. Same two populations `_soonest` is taken over, so the count and the
+            # priority can never describe different boards.
+            RT.ARRIVAL_FEED_OWED = ((_arrived - _arrived_fed)
+                                    + len(_outstanding_places(sched, day, tiles)))
         else:
             RT.ARRIVAL_FEED_REMAINING = 0
             RT.ARRIVAL_FEED_EARLIEST_YIELD = None
+            RT.ARRIVAL_FEED_OWED = 0
         money = float(farm["money"])
         unlocked = set(farm.get("unlocked_quadrants") or ["NW"])
         row = sched.get(day, {})
@@ -5428,6 +5434,9 @@ def make_agent(schedule, me=0, router=True):
         #
         # Whatever fixes this has to make the DAWN order know what the row will place, not find it
         # a slot.
+        # **The ORDER_SLOTS gate is NOT the constraint. Measured twice, inert both times.**
+        # Alone: d0 feed 1/5 byte-for-byte. On top of the arrival-ration fix: d0 feed 3/5
+        # byte-for-byte, identical to the ration fix by itself. Left at 9.
         if (alive or owed > 0) and short > 0 and len(orders) < 9:
             orders.append(["BUY_PRODUCT", "WHEAT", short])
             # The dawn block is SENT the moment any order sized by its boost is queued -- even one
