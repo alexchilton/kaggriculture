@@ -140,10 +140,13 @@ def main():
     def step(params, opt_state, tiles, units, gfeat, batch):
         def loss_fn(p):
             heads, _v = model.apply(p, tiles, units, gfeat)
+            # `bc.loss` returns (total, per_head). The per-head dict is what tells us WHICH head is
+            # not learning -- a falling total with a flat bundle term is the failure this whole
+            # pipeline exists to catch -- so it is carried through as aux rather than discarded.
             return bc.loss(heads, batch, smooth=args.smooth)
-        loss, grads = jax.value_and_grad(loss_fn)(params)
+        (loss, per_head), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
         updates, opt_state = optimiser.update(grads, opt_state, params)
-        return optax.apply_updates(params, updates), opt_state, loss
+        return optax.apply_updates(params, updates), opt_state, loss, per_head
 
     @jax.jit
     def argmax_mix(params, tiles, units, gfeat):
@@ -156,6 +159,7 @@ def main():
 
     for epoch in range(args.epochs):
         t0, seen, tot = time.time(), 0, 0.0
+        head_tot = collections.defaultdict(float)
         for sp in shards:
             shard = load_shard(sp)
             for b in batches(shard, args.batch, rng):
@@ -163,8 +167,11 @@ def main():
                 units = jnp.asarray(b["units"], dtype=jnp.float32)
                 gfeat = jnp.asarray(b["glob"], dtype=jnp.float32)
                 lb = {k: jnp.asarray(v) for k, v in to_loss_batch(b).items()}
-                params, opt_state, loss = step(params, opt_state, tiles, units, gfeat, lb)
+                params, opt_state, loss, per_head = step(
+                    params, opt_state, tiles, units, gfeat, lb)
                 tot += float(loss)
+                for h, v in per_head.items():
+                    head_tot[h] += float(v)
                 seen += 1
             del shard
 
@@ -183,6 +190,9 @@ def main():
 
         print("\nepoch %d  loss %.4f  %d batches  %.0fs"
               % (epoch, tot / max(1, seen), seen, time.time() - t0))
+        print("  per head                 : %s"
+              % "  ".join("%s %.4f" % (h, head_tot[h] / max(1, seen))
+                          for h in sorted(head_tot)))
         print("  bundle argmax empty rate : %.3f   teacher %.3f   (reference %.3f)"
               % (empty_rate, teacher_empty, TEACHER_EMPTY_RATE))
         print("  bundle argmax top 5      : %s"
