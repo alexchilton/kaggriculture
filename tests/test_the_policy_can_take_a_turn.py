@@ -47,15 +47,14 @@ def world():
 def test_masks_for_runs_on_a_real_state(world):
     """The bug that 18 green tests missed: `masks_for` never executed once."""
     batch, state, model, params, vocab = world
-    sells = MB.sell_table(vocab, pad_to=P.N_BUNDLES)
-    masks = A.masks_for(state, sells)
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
     assert set(masks) >= set(A.ALL_HEADS), "every head the sampler reads needs a mask"
 
 
 def test_the_bundle_mask_matches_the_head_width(world):
-    """`sell_table` returns `vocab.size` rows; the head is `N_BUNDLES` wide. They must meet."""
+    """`valid_table` returns `vocab.size` entries; the head is `N_BUNDLES` wide. They must meet."""
     batch, state, model, params, vocab = world
-    masks = A.masks_for(state, MB.sell_table(vocab, pad_to=P.N_BUNDLES))
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
     assert masks["bundle"].shape[-1] == P.N_BUNDLES, (
         "bundle mask is %d wide against a %d-wide head -- these cannot broadcast, and a gather on "
         "an unmasked dead index clamps silently under jit rather than raising"
@@ -70,19 +69,32 @@ def test_a_bundle_outside_the_vocabulary_is_masked_illegal(world):
     raised anywhere.
     """
     batch, state, model, params, vocab = world
-    masks = A.masks_for(state, MB.sell_table(vocab, pad_to=P.N_BUNDLES))
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
     pad = np.asarray(masks["bundle"])[:, vocab.size:]
     assert pad.size > 0, "vocabulary already fills the head; widen the test vocabulary"
     assert not pad.any(), "padding bundles are selectable"
 
 
-def test_a_sell_is_illegal_when_the_shed_is_empty(world):
-    """The one constraint the mask is for. At reset the shed holds nothing, so no sell is legal."""
+def test_a_sell_is_LEGAL_even_when_the_shed_is_empty(world):
+    """The mask deliberately does NOT consult the shed. This asserts the reversal, with its reason.
+
+    It used to refuse any bundle selling a product the shed lacked. Three measurements removed that:
+
+      - the reference simply declines an unbacked sell, `_commit_unit` at
+        `reference/kaggriculture.py:653` returning False -- no penalty, no error;
+      - 48.75% of the TEACHER's own SELL orders have a pre-turn shed of zero for that product, and
+        none of them coincide with a same-turn DROP: they are the hourly re-offer;
+      - the BC loss is permissive, so a strict play mask vetoed bundles the student was trained to
+        emit, on 52% of sell-turns, and handed their probability to a different trade.
+
+    A student that cannot emit what its teacher emitted cannot imitate it.
+    """
     batch, state, model, params, vocab = world
-    masks = A.masks_for(state, MB.sell_table(vocab, pad_to=P.N_BUNDLES))
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
     sell_wheat = vocab.index(MB.bundle_of([["SELL", "WHEAT", 4]]))
-    legal = np.asarray(masks["bundle"])[:, sell_wheat]
-    assert not legal.any(), "selling wheat is legal with an empty shed"
+    assert np.asarray(masks["bundle"])[:, sell_wheat].all(), (
+        "selling wheat on an empty shed is masked out; the environment refuses it harmlessly and "
+        "the teacher does it constantly")
     # ...and the empty bundle is always available, or the policy has no legal move at all.
     assert np.asarray(masks["bundle"])[:, 0].all()
 
@@ -93,7 +105,7 @@ def test_sample_then_step_completes_a_turn(world):
     tables = {k: jnp.asarray(v) for k, v in MB.tables(vocab, pad_to=P.N_BUNDLES).items()}
     tiles, units, glob = jax_obs.encode(state)
     heads, _value = model.apply(params, A._flat(tiles), A._flat(units), A._flat(glob))
-    masks = A.masks_for(state, MB.sell_table(vocab, pad_to=P.N_BUNDLES))
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
 
     actions, log_prob, entropy = A.sample(jax.random.PRNGKey(1), heads, masks)
     assert np.all(np.isfinite(np.asarray(log_prob))), "log_prob must be finite for the PPO ratio"
@@ -108,7 +120,7 @@ def test_the_sampled_bundle_is_always_a_legal_one(world):
     batch, state, model, params, vocab = world
     tiles, units, glob = jax_obs.encode(state)
     heads, _v = model.apply(params, A._flat(tiles), A._flat(units), A._flat(glob))
-    masks = A.masks_for(state, MB.sell_table(vocab, pad_to=P.N_BUNDLES))
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
     for seed in range(8):
         actions, _lp, _e = A.sample(jax.random.PRNGKey(seed), heads, masks)
         drawn = np.asarray(actions["bundle"])
@@ -125,7 +137,7 @@ def test_evaluate_agrees_with_sample(world):
     batch, state, model, params, vocab = world
     tiles, units, glob = jax_obs.encode(state)
     heads, _v = model.apply(params, A._flat(tiles), A._flat(units), A._flat(glob))
-    masks = A.masks_for(state, MB.sell_table(vocab, pad_to=P.N_BUNDLES))
+    masks = A.masks_for(state, MB.valid_table(vocab, pad_to=P.N_BUNDLES))
     actions, log_prob, _e = A.sample(jax.random.PRNGKey(3), heads, masks)
     again, _ent = A.evaluate(heads, masks, actions)
     assert np.allclose(np.asarray(log_prob), np.asarray(again), atol=1e-4)

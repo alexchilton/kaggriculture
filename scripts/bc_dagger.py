@@ -111,7 +111,7 @@ def teacher_labels(sim_actions, tables):
 SCORED_HEADS = A.ALL_HEADS
 
 
-def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle_sells):
+def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle_ok):
     """One DAgger round: roll the *student* out, label every state with the teacher, fit.
 
     `beta` is the probability that a turn is actually *executed* by the teacher rather than the
@@ -129,7 +129,7 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle
 
             tiles, units, glob = jax_obs.encode(state)
             obs = (A._flat(tiles), A._flat(units), A._flat(glob))
-            masks = A.masks_for(state, bundle_sells)
+            masks = A.masks_for(state, bundle_ok)
             student_actions, _lp, _e = A.sample(ka, model.apply(params, *obs)[0], masks)
 
             teacher_sim = teacher_fn(state)
@@ -261,7 +261,7 @@ def main():
         [tuple(tuple(pair) for pair in b) for b in json.loads(pathlib.Path(args.vocab).read_text())],
         max_size=P.N_BUNDLES)
     tables = {k: jnp.asarray(v) for k, v in MB.tables(vocab).items()}
-    bundle_sells = jnp.asarray(MB.sell_table(vocab))
+    bundle_ok = jnp.asarray(MB.valid_table(vocab))
     print(f"bundle vocabulary: {vocab.size} of {P.N_BUNDLES} slots, from {args.vocab}", flush=True)
 
     run = RUN_DIR / f"{args.tag}-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -275,7 +275,7 @@ def main():
     for rnd in range(args.rounds):
         beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, args.rounds - 1))
         rollout, fit = make_step(model, teacher_fn, args.batch, args.horizon, optimiser, beta,
-                                 tables, bundle_sells)
+                                 tables, bundle_ok)
         key, kr = jax.random.split(key)
         state, key, traj = rollout(params, state, kr)
 

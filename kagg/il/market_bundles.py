@@ -255,6 +255,26 @@ def tables(vocab, pad_to=None):
     return out
 
 
+def valid_table(vocab, pad_to=None):
+    """`[N_BUNDLES]` bool: is this index a real vocabulary entry, or padding?
+
+    This is the ONLY market legality `jax_act.masks_for` enforces. It used to refuse any bundle
+    selling a product the shed lacked; that rule was removed on measurement -- the reference simply
+    declines an unbacked sell (`reference/kaggriculture.py:653`), 48.75% of the teacher's own SELL
+    orders have a pre-turn shed of zero for that product, and the BC loss is permissive, so the
+    strict mask vetoed bundles the student had been trained to emit and handed their probability to
+    a different trade.
+
+    Padding must still be refused. JAX clamps an out-of-range gather under jit instead of raising,
+    so a selectable padding index decodes as the highest real bundle: a wrong order, emitted
+    confidently, with nothing to read anywhere.
+    """
+    n = int(pad_to or vocab.size)
+    if n < vocab.size:
+        raise ValueError("pad_to=%d is narrower than the vocabulary (%d)" % (n, vocab.size))
+    return [i < vocab.size for i in range(n)]
+
+
 def sell_table(vocab, pad_to=None):
     """`[N_BUNDLES, N_PRODUCTS]` bool: does this bundle sell this product?
 

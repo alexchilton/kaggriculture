@@ -58,7 +58,7 @@ def _bundle_sells():
     if _BUNDLE_SELLS is None:
         from kagg.il import market_bundles as _MB
         from kagg.rl import jax_policy as _PP
-        _BUNDLE_SELLS = _MB.sell_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+        _BUNDLE_SELLS = _MB.valid_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
     return _BUNDLE_SELLS
 
 

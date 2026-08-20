@@ -53,22 +53,22 @@ def _unflat(x, b):
     return x.reshape(b, 2, *x.shape[1:])
 
 
-def masks_for(state, bundle_sells):
+def masks_for(state, bundle_ok):
     """Every head's legality mask, in network-flat layout.
 
-    `bundle_sells` is `[N_BUNDLES, N_PRODUCTS]` bool -- does bundle `b` sell product `p` -- built
-    once from the vocabulary by `market_bundles.sell_table`. It is a REQUIRED argument on purpose.
-    A default of "everything is legal" is the failure mode this whole change exists to avoid: the
-    policy emits orders that never fill, which looks identical from the outside to a decode that
-    emits nothing, and the two have opposite fixes.
+    `bundle_ok` is `[N_BUNDLES]` bool -- is index `b` a real vocabulary entry rather than padding -- built
+    once from the vocabulary by `market_bundles.valid_table`. It is a REQUIRED argument on purpose:
+    a padding index left selectable decodes, under jit, as a real bundle nobody chose.
 
-    **What this masks, and what it deliberately does not.** A bundle is illegal iff it sells a
-    product the shed does not hold -- that is exact, cheap, and the one constraint the agent cannot
-    discover by trying. Purchases and hires are NOT masked: their legality depends on price and on
-    the Fibonacci hire ladder against a bank that the same turn's sells are still settling into
-    (sells occupy earlier order slots), so a mask computed before the turn would be wrong in both
-    directions. The simulator already rejects those cleanly, and `_do_hire` failing on a thin bank
-    is a real decision the policy should learn to avoid, not one to hide from it.
+    **What this masks, and what it deliberately does not.** Only padding. No market legality is
+    enforced here at all -- not sells, not purchases, not hires. Their legality depends on the shed,
+    on price, and on the Fibonacci hire ladder against a bank the same turn's sells are still
+    settling into, so a mask computed before the turn is wrong in both directions. The environment
+    rejects each of them cleanly and without penalty, and `_do_hire` failing on a thin bank is a
+    real decision the policy should learn to avoid rather than one to hide from it.
+
+    The unit-op masks below are a different matter and stay: an illegal unit op wastes the turn
+    outright, and those constraints are exact before the turn runs.
     """
     b = state.farm.money.shape[0]
     op = jax_masks.unit_op_mask(state)
@@ -76,25 +76,37 @@ def masks_for(state, bundle_sells):
     item = jax_masks.unit_item_mask(state)
     qty = jnp.ones((b, 2, J.MAX_UNITS, len(P.UNIT_QTY_BUCKETS)), dtype=bool)
 
-    # A bundle is legal unless it names a SELL for a product the shed is empty of.
+    # **Only the padding rows are illegal. The shed is NOT consulted.**
     #
-    # **The shed lives on `farm`, and it is N_ITEMS wide, not N_PRODUCTS.** `jax_sim.Farm.shed` is
-    # `[B, P, N_ITEMS]` -- 12 entries, products AND animals -- while `bundle_sells` is
-    # `[N_BUNDLES, N_PRODUCTS]` at 9. The first version of this read `state.private.shed`, which
-    # does not exist on `State` at all, so the mask crashed on every call and no test noticed
-    # because none of them called it.
-    have = state.farm.shed[..., :J.N_PRODUCTS] > 0                   # [B, P, N_PRODUCTS]
-    wants = jnp.asarray(bundle_sells, dtype=bool)                    # [N_BUNDLES, N_PRODUCTS]
-    impossible = jnp.any(wants[None, None, :, :] & ~have[:, :, None, :], axis=-1)
-    bundle = ~impossible                                             # [B, P, N_BUNDLES]
+    # This used to refuse any bundle naming a SELL for a product the shed was empty of. Three
+    # measurements killed that rule:
+    #
+    #   - The reference simply declines an unbacked sell -- `_commit_unit` at
+    #     `reference/kaggriculture.py:653` returns False if `shed[item] <= 0`. No penalty, no
+    #     error, no wasted slot beyond the order itself.
+    #   - 48.75% of the teacher's own SELL orders have a pre-turn shed of zero for that product,
+    #     and ZERO of those coincide with a same-turn DROP. They are the hourly re-offer -- the
+    #     agent re-posts a quota every turn and the environment discards what it cannot fill.
+    #   - The BC loss is permissive, because the teacher's action is legal by construction. So a
+    #     strict play-time mask disagreed with the objective the student was fitted to: it vetoed
+    #     bundles the loss had taught, on 52% of sell-turns, and the masked argmax handed that
+    #     probability to the NEXT-ranked bundle -- which can be a live trade the teacher never made.
+    #
+    # Refusing them here therefore cannot help and does two kinds of harm: it stops the student
+    # reproducing a teacher that emits those orders, and it silently substitutes a different trade.
+    # `bundle_ok` is `[N_BUNDLES]`: True for a real vocabulary entry, False for padding.
+    #
+    # Padding must stay illegal. JAX clamps an out-of-range gather under jit rather than raising,
+    # so an unmasked padding index would decode as the highest real bundle -- a wrong order, emitted
+    # confidently, with nothing to read anywhere.
+    ok = jnp.asarray(bundle_ok, dtype=bool)                          # [N_BUNDLES]
+    bundle = jnp.broadcast_to(ok[None, None, :], (b, 2, ok.shape[0]))
 
     # Every quantity is drawable; the bundle decides which entries are ever read, and class 0 is
     # "do nothing", which is legal by construction.
     #
-    # Deliberately NOT masked by what the shed holds. The bundle mask above already refuses a sell
-    # of a product the shed lacks, and a second constraint here would have to agree with it on every
-    # turn forever. The simulator clips an over-sell itself, so an over-large quantity is a wasted
-    # order rather than an illegal one.
+    # Deliberately NOT masked by what the shed holds, for the same reason the bundle is not: the
+    # environment declines what it cannot fill, at no cost beyond the order slot.
     qty_sell = jnp.ones((b, 2, J.N_PRODUCTS, P.MAX_QTY), dtype=bool)
     qty_buy_product = jnp.ones((b, 2, J.N_PRODUCTS, P.MAX_QTY), dtype=bool)
     qty_buy_seed = jnp.ones((b, 2, J.N_CROPS, P.MAX_QTY), dtype=bool)
@@ -105,15 +117,15 @@ def masks_for(state, bundle_sells):
     return {k: _flat(v) for k, v in out.items()}
 
 
-def forward(params, model, state, bundle_sells):
+def forward(params, model, state, bundle_ok):
     """Run the network on a sim state. Returns `(heads, value, masks)`, all network-flat.
 
-    `bundle_sells` is threaded through rather than defaulted for the reason `masks_for` gives: a
+    `bundle_ok` is threaded through rather than defaulted for the reason `masks_for` gives: a
     permissive market mask is indistinguishable, from the outside, from a decode that emits nothing.
     """
     tiles, units, glob = jax_obs.encode(state)
     heads, value = model.apply(params, _flat(tiles), _flat(units), _flat(glob))
-    return heads, value, masks_for(state, bundle_sells)
+    return heads, value, masks_for(state, bundle_ok)
 
 
 def active_unit_heads(op):
