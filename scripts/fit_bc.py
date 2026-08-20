@@ -108,6 +108,9 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--smooth", type=float, default=0.02)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--init", default=None,
+                    help="checkpoint to continue from. A DAgger round needs this; without it "
+                         "every round relearns the teacher's prior from scratch.")
     args = ap.parse_args()
 
     vocab = MB.Vocabulary.from_bundles(
@@ -140,10 +143,34 @@ def main():
     n_tiles = probe["tiles"].shape[1]
     model = P.Policy()
     key = jax.random.PRNGKey(args.seed)
-    params = model.init(key,
+    fresh = model.init(key,
                         jnp.zeros((1, n_tiles, jax_obs.TILE_FEATURES)),
                         jnp.zeros((1, probe["units"].shape[1], jax_obs.UNIT_FEATURES)),
                         jnp.zeros((1, jax_obs.GLOBAL_FEATURES)))
+    # **A DAgger round CONTINUES a checkpoint; it does not refit from scratch.** Round N's whole
+    # point is to correct the student on states its own mistakes produced, and a fresh init throws
+    # away everything round N-1 learned, so each round would relearn the same 78.9% empty prior
+    # before touching the correction. `--init` is that continuation.
+    #
+    # The optimiser state is deliberately NOT carried. Adam's moments were accumulated against a
+    # different data distribution -- the previous round's states -- and stale moments on a shifted
+    # distribution take large early steps in the old direction. The weights are the knowledge; the
+    # moments are not.
+    if args.init:
+        with pathlib.Path(args.init).open("rb") as fh:
+            prior = pickle.load(fh)
+        params = P.load_or_migrate(prior["params"], fresh)
+        stored = prior.get("vocab")
+        if stored and len(stored) != vocab.size:
+            raise SystemExit(
+                "--init was fitted against a %d-bundle vocabulary and this run has %d. Every "
+                "bundle index above the first difference means something else, so continuing "
+                "would train the head against labels it cannot match. Rebuild the rows with the "
+                "checkpoint's vocabulary, or start fresh." % (len(stored), vocab.size))
+        print("warm start from %s (epoch %s)" % (args.init, prior.get("epoch")), flush=True)
+    else:
+        params = fresh
+
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(params))
     print("params: %s   tile/unit/glob %d/%d/%d"
           % (format(n_params, ","), jax_obs.TILE_FEATURES, jax_obs.UNIT_FEATURES,
@@ -174,7 +201,7 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     metrics_path = out.with_name(out.stem + ".log.jsonl")
     metrics_path.write_text("")
-    best_traded = -1.0
+    best_traded, best_op = -1.0, -1.0
 
     for epoch in range(args.epochs):
         t0, seen, tot = time.time(), 0, 0.0
@@ -277,11 +304,16 @@ def main():
         # Selected on agreement over the turns the teacher TRADED, not on loss and not on overall
         # agreement. Overall agreement is 78.9% for a model that never trades at all, so selecting
         # on it selects the degenerate policy.
-        if agree_traded > best_traded:
-            best_traded = agree_traded
+        # Tie-broken on op agreement. Early on, traded agreement is 0.000 for several epochs while
+        # the unit heads are learning steadily -- with a strict `>` on the first term alone, `best`
+        # froze at epoch 0 and the later, genuinely better weights were never kept. Measured on the
+        # smoke run: traded 0.000 throughout while op agreement went 0.140 -> 0.236 -> 0.273.
+        if (agree_traded, agree_op) > (best_traded, best_op):
+            best_traded, best_op = agree_traded, agree_op
             with out.with_name(out.stem + ".best.pkl").open("wb") as fh:
                 pickle.dump(payload, fh)
-            print("  new best: %.3f agreement on trading turns" % agree_traded, flush=True)
+            print("  new best: %.3f on trading turns, %.3f op agreement"
+                  % (agree_traded, agree_op), flush=True)
 
         # One JSON row per epoch, for `scripts/plot_run.py`. Same shape as `train_jax_rl`'s
         # `log.jsonl` so one plotter reads both.
