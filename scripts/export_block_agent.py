@@ -38,7 +38,13 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-MIN_GAIN = 0.05          # a day must beat the majority baseline by this much to be worth shipping
+#: A day ships if the tree adds something OVER a constant...
+MIN_GAIN = 0.05
+#: ...or if the constant is already the answer. d1 and d2 have a 100% baseline and d0 has 85%, so
+#: no tree can beat them -- and an earlier version of this rule silently dropped the three most
+#: certain days in the season and fell back to the planner on them. A day whose library is
+#: essentially one block should be emitted, not re-derived.
+CERTAIN_BASELINE = 0.80
 
 
 def main():
@@ -95,7 +101,7 @@ def main():
         probe.fit(mat(tr), ytr)
         acc = float((probe.predict(mat(te)) == np.array(yte)).mean())
 
-        ship = (acc - base) >= MIN_GAIN
+        ship = (acc - base) >= MIN_GAIN or base >= CERTAIN_BASELINE
         lib = {b: seq for b, seq in library.get(str(day), {}).items() if len(seq) == 24}
         if ship and lib:
             # Refit on everything for the shipped model; the number above stays the honest one.
