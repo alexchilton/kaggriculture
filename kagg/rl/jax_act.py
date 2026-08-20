@@ -23,24 +23,25 @@ from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
 
 UNIT_HEADS = ("op", "crop", "item", "qty")
-MARKET_HEADS = ("sell", "buy_product", "buy_seed", "buy_animal", "hire", "buy_land")
+# **The market is one categorical plus magnitudes.** `bundle` names WHICH orders go out together --
+# including how many HIRE slots, which the sim has always read as a count and the old `Dense(2)`
+# head could never express. The `qty_*` heads name HOW MANY, and are read only for the products the
+# drawn bundle activates. See `kagg/il/market_bundles.py` for the measurement that sized this.
+MARKET_HEADS = ("bundle", "qty_sell", "qty_buy_product", "qty_buy_seed")
 ALL_HEADS = UNIT_HEADS + MARKET_HEADS
-
-# Heads that carry a per-trade-mode axis and are read through `condition_on_trade`. Only the
-# per-product quantity heads: those are the ones a teacher decides *together*, and the ones where
-# treating nine marginals as a joint produced an agent that emitted no orders at all under argmax
-# and spent its bank on noise under independent sampling.
-CONDITIONED_HEADS = ("sell", "buy_product")
 
 # Heads that carry a per-op axis and are read through `condition_on_op`: the arguments an op takes.
 # A unit picks an op and *then* what to do it with, so `p(crop)` averaged over all 18 ops is not a
 # distribution any unit acts from.
 OP_CONDITIONED_HEADS = ("crop", "item", "qty")
 
-# The conditioning variables themselves, drawn before the heads that read them. `op` is per unit
-# and `trade` is per seat, but they play the same role and are stored in `actions` for exactly the
-# same reason: `evaluate` cannot reconstruct the slice the behaviour policy used without them.
-CONDITION_HEADS = ("trade", "op")
+# The conditioning variable, drawn before the heads that read it, and stored in `actions` because
+# `evaluate` cannot reconstruct the slice the behaviour policy used without it.
+#
+# `trade` used to sit here too. It is gone: the bundle IS the coordinating decision now, and it
+# coordinates exactly, not through a three-valued latent. The `qty_*` heads need no conditioning
+# variable because the bundle already says which of their entries are read at all.
+CONDITION_HEADS = ("op",)
 
 
 def _flat(x):
@@ -52,18 +53,44 @@ def _unflat(x, b):
     return x.reshape(b, 2, *x.shape[1:])
 
 
-def masks_for(state):
-    """Every head's legality mask, in network-flat layout."""
+def masks_for(state, bundle_sells):
+    """Every head's legality mask, in network-flat layout.
+
+    `bundle_sells` is `[N_BUNDLES, N_PRODUCTS]` bool -- does bundle `b` sell product `p` -- built
+    once from the vocabulary by `market_bundles.sell_table`. It is a REQUIRED argument on purpose.
+    A default of "everything is legal" is the failure mode this whole change exists to avoid: the
+    policy emits orders that never fill, which looks identical from the outside to a decode that
+    emits nothing, and the two have opposite fixes.
+
+    **What this masks, and what it deliberately does not.** A bundle is illegal iff it sells a
+    product the shed does not hold -- that is exact, cheap, and the one constraint the agent cannot
+    discover by trying. Purchases and hires are NOT masked: their legality depends on price and on
+    the Fibonacci hire ladder against a bank that the same turn's sells are still settling into
+    (sells occupy earlier order slots), so a mask computed before the turn would be wrong in both
+    directions. The simulator already rejects those cleanly, and `_do_hire` failing on a thin bank
+    is a real decision the policy should learn to avoid, not one to hide from it.
+    """
     b = state.farm.money.shape[0]
     op = jax_masks.unit_op_mask(state)
     crop = jax_masks.unit_crop_mask(state)
     item = jax_masks.unit_item_mask(state)
     qty = jnp.ones((b, 2, J.MAX_UNITS, len(P.UNIT_QTY_BUCKETS)), dtype=bool)
-    market = jax_masks.market_masks(state, P.SELL_BUCKETS, P.BUY_BUCKETS)
-    # Every trade mode is always legal: it is a coordinating latent, not a claim about the board,
-    # and the per-product masks still enforce what the shed and the bank can actually support.
-    trade = jnp.ones((b, 2, P.N_TRADE_MODES), dtype=bool)
-    out = {"op": op, "crop": crop, "item": item, "qty": qty, "trade": trade, **market}
+
+    # A bundle is legal unless it names a SELL for a product the shed is empty of.
+    have = state.private.shed > 0                                    # [B, P, N_PRODUCTS]
+    wants = jnp.asarray(bundle_sells, dtype=bool)                    # [N_BUNDLES, N_PRODUCTS]
+    impossible = jnp.any(wants[None, None, :, :] & ~have[:, :, None, :], axis=-1)
+    bundle = ~impossible                                             # [B, P, N_BUNDLES]
+
+    # Quantity ladders are always drawable; the bundle decides which entries are ever read, and
+    # bucket 0 is "do nothing", which is legal by construction.
+    qty_sell = jnp.ones((b, 2, J.N_PRODUCTS, len(P.SELL_BUCKETS)), dtype=bool)
+    qty_buy_product = jnp.ones((b, 2, J.N_PRODUCTS, len(P.BUY_BUCKETS)), dtype=bool)
+    qty_buy_seed = jnp.ones((b, 2, J.N_CROPS, len(P.BUY_BUCKETS)), dtype=bool)
+
+    out = {"op": op, "crop": crop, "item": item, "qty": qty, "bundle": bundle,
+           "qty_sell": qty_sell, "qty_buy_product": qty_buy_product,
+           "qty_buy_seed": qty_buy_seed}
     return {k: _flat(v) for k, v in out.items()}
 
 
@@ -122,20 +149,6 @@ def _select_slice(heads, keys, index):
     return out
 
 
-def condition_on_trade(heads, trade):
-    """Select each product head's slice for the sampled trade mode.
-
-    `sell` and `buy_product` carry a `[.., N_PRODUCTS, N_TRADE_MODES, K]` axis; once the mode is
-    drawn, the conditional distribution over products is the corresponding slice. This is what makes
-    the factorisation `p(trade) * prod_i p(product_i | trade)` exact rather than mean-field -- the
-    per-product decisions share one coordinating variable, which is how a teacher actually trades.
-    """
-    # `trade` is one value per seat, `[N]`, against heads whose leading axes are `[N, N_PRODUCTS]`:
-    # every product in a seat reads the same mode, which is the entire point of a coordinating
-    # latent, so it broadcasts across the product axis.
-    return _select_slice(heads, CONDITIONED_HEADS, trade[..., None])
-
-
 def condition_on_op(heads, op):
     """Select each argument head's slice for the sampled op, per unit.
 
@@ -166,12 +179,13 @@ def condition_on_op(heads, op):
 
 
 def condition_all(heads, actions):
-    """Apply both conditioning steps, in the order the variables are drawn.
+    """Apply the conditioning step, on the variable the heads read.
 
-    One function so that no caller can remember one step and forget the other -- and there are now
-    five call sites outside this module, including the KL prior and two offline decoders.
+    Kept as its own function even now that there is only one step: five call sites outside this
+    module depend on it, including the KL prior and two offline decoders, and the market half used
+    to have a step here too. A caller that conditions by hand is a caller that will forget.
     """
-    return condition_on_op(condition_on_trade(heads, actions["trade"]), actions["op"])
+    return condition_on_op(heads, actions["op"])
 
 
 def _score(conditioned, masks, actions, decided=None):
@@ -195,7 +209,7 @@ def _score(conditioned, masks, actions, decided=None):
     if decided is not None:
         active = {k: v & decided for k, v in active.items()}
     logps, entropies = [], []
-    for k in ALL_HEADS + ("trade",):
+    for k in ALL_HEADS:
         lp, ent = P.eval_head(conditioned[k], masks[k], actions[k])
         a = active.get(k)
         logps.append(_reduce(lp, a))
@@ -209,20 +223,20 @@ def sample(key, heads, masks):
     Every head is sampled, because the simulator reads a value from every slot. Only the heads the
     chosen op actually consults are *scored* -- see `active_unit_heads`.
 
-    **The two conditioning variables are drawn first, and the heads that read them are conditioned
-    before they are sampled.** `trade` before the per-product quantities, `op` before the `crop` /
-    `item` / `qty` arguments. Sampling the products independently is what produced an agent that
-    banked $1 -- nine calibrated marginals drawn separately give combinations the joint never
-    contains -- and the same argument applies to `item`/`qty`, which PICKUP and PLACE both read and
-    which a single head therefore has to average across two nearly disjoint distributions.
+    **`op` is drawn first and the argument heads are conditioned on it before they are sampled.**
+    PICKUP and PLACE both read `item`/`qty` and their teacher distributions are nearly disjoint
+    (total variation 0.900), so a single unconditioned head has to average them.
+
+    **The market needs no such ordering any more.** `bundle` is drawn as one categorical, and the
+    `qty_*` heads name magnitudes for entries the bundle has already selected -- so a quantity for a
+    product the bundle never mentions is simply never read. Sampling products independently is what
+    produced an agent that banked $1: calibrated marginals drawn separately give combinations the
+    joint never contains. There are no independent product decisions left to get wrong.
     """
     keys = jax.random.split(key, len(ALL_HEADS) + 1)
     # `op` is ALL_HEADS[0], so it consumes keys[0] here and is skipped in the loop below: the key
     # assignment is unchanged from when it was drawn inline, and no key is used twice.
-    actions = {
-        "trade": P.sample_head(keys[-1], heads["trade"], masks["trade"])[0],
-        "op": P.sample_head(keys[0], heads["op"], masks["op"])[0],
-    }
+    actions = {"op": P.sample_head(keys[0], heads["op"], masks["op"])[0]}
     conditioned = condition_all(heads, actions)
 
     for k, sub in zip(ALL_HEADS, keys):
@@ -256,23 +270,42 @@ def evaluate(heads, masks, actions, decided=None):
     return _score(condition_all(heads, actions), masks, actions, decided)
 
 
-def to_sim_actions(actions, batch):
+def to_sim_actions(actions, batch, tables):
     """Assemble a `jax_sim.Actions` from sampled heads.
 
-    The market heads emit *quantities per product*; `Game._order_book` compacts them into the ten
-    order slots in the canonical order agents write them, so the policy never learns slot ordering.
+    `tables` is `market_bundles.tables(vocab)` wrapped in `jnp` arrays: the sampled bundle index
+    selects a row, which says WHICH orders go out, and the `qty_*` heads supply HOW MANY for the
+    entries that row selected. `Game._order_book` then compacts the result into the ten order slots
+    in the canonical order agents write them, so the policy never learns slot ordering.
+
+    **`hire` is a count, taken straight from the bundle row.** It used to be `u("hire").astype(bool)`
+    against a simulator that documents the field as "COUNT of hands to hire this turn, not a flag"
+    and warns at `jax_sim.py:315` that casting to bool "would collapse 'hire twice' to 'hire once'".
+    That cast capped every learned policy at one hand per turn while the teacher's second most
+    common market decision is ten hires in a single turn.
+
+    **A selected product always moves at least one unit.** The bundle says "sell wheat" and the
+    quantity head could still draw bucket 0, which means "do nothing" -- the two would contradict,
+    and the bundle is the decision that carries the coordination. So a selected entry floors at 1,
+    matching `market_bundles.to_sim_fields`, where a teacher naming no quantity means one unit.
     """
     u = lambda k: _unflat(actions[k], batch)   # noqa: E731
+    idx = u("bundle")
+
+    def gated(selected, buckets, head):
+        want = selected[idx]                            # [B, P, K] counts from the bundle row
+        drawn = buckets[u(head)].astype(J._I)           # [B, P, K] magnitudes from the qty head
+        return jnp.where(want > 0, jnp.maximum(drawn, 1), 0).astype(J._I)
 
     return J.Actions(
         unit_op=u("op").astype(J._I),
         unit_crop=u("crop").astype(J._I),
         unit_item=u("item").astype(J._I),
         unit_qty=P.UNIT_QTY_BUCKETS[u("qty")].astype(J._I),
-        sell=P.SELL_BUCKETS[u("sell")].astype(J._I),
-        buy_seed=P.BUY_BUCKETS[u("buy_seed")].astype(J._I),
-        buy_product=P.BUY_BUCKETS[u("buy_product")].astype(J._I),
-        buy_animal=u("buy_animal").astype(J._I),
-        hire=u("hire").astype(bool),
-        buy_land=u("buy_land").astype(bool),
+        sell=gated(tables["sell"], P.SELL_BUCKETS, "qty_sell"),
+        buy_seed=gated(tables["buy_seed"], P.BUY_BUCKETS, "qty_buy_seed"),
+        buy_product=gated(tables["buy_product"], P.BUY_BUCKETS, "qty_buy_product"),
+        buy_animal=tables["buy_animal"][idx].astype(J._I),
+        hire=tables["hire"][idx].astype(J._I),
+        buy_land=tables["buy_land"][idx].astype(bool),
     )

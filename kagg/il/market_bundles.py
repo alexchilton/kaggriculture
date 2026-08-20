@@ -204,3 +204,43 @@ def from_sim_fields(fields):
     if fields.get("buy_land"):
         pairs.append((BUY_LAND, ""))
     return tuple(sorted(pairs))
+
+
+def tables(vocab):
+    """Static `[N_BUNDLES, ...]` lookups so a sampled bundle index decodes inside a jit.
+
+    `to_sim_fields` is Python and cannot run on a traced array, so the same information is laid out
+    once as arrays. `hire` is a COUNT column for the reason the module docstring gives, and
+    `sell`/`buy_*` are counts too rather than flags -- a bundle naming the same product twice is a
+    bundle that wants twice as much.
+
+    Returns plain lists so the caller chooses the array library; `jax_act` wraps them in `jnp`.
+    """
+    n = vocab.size
+    out = {
+        "sell": [[0] * M.N_PRODUCTS for _ in range(n)],
+        "buy_product": [[0] * M.N_PRODUCTS for _ in range(n)],
+        "buy_seed": [[0] * F.N_CROPS for _ in range(n)],
+        "buy_animal": [[0] * M.N_ANIMALS for _ in range(n)],
+        "hire": [0] * n,
+        "buy_land": [False] * n,
+    }
+    for i in range(n):
+        fields = to_sim_fields(vocab.bundle(i), None)
+        out["sell"][i] = list(fields["sell"])
+        out["buy_product"][i] = list(fields["buy_product"])
+        out["buy_seed"][i] = list(fields["buy_seed"])
+        out["buy_animal"][i] = list(fields["buy_animal"])
+        out["hire"][i] = fields["hire"]
+        out["buy_land"][i] = fields["buy_land"]
+    return out
+
+
+def sell_table(vocab):
+    """`[N_BUNDLES, N_PRODUCTS]` bool: does this bundle sell this product?
+
+    The legality mask `jax_act.masks_for` needs exactly this and nothing else -- you cannot sell
+    what the shed does not hold, and that is the one market constraint the agent cannot discover by
+    trying.
+    """
+    return [[n > 0 for n in row] for row in tables(vocab)["sell"]]
