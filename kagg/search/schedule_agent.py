@@ -1686,12 +1686,10 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # A flat ceiling near 37 fits every row above -- it would reproduce straw and melon exactly and
     # never bind on q4 -- and is the next thing to test, with the q4 tables re-solved for it.
     #
-    # **`q4_armed`, not `len(unlocked)`.** `Q4Branch` decides at d6, so the key is settled by d12,
-    # whereas d12 is the very turn the fourth quadrant is bought and the live count still reads 3 at
-    # dawn. The live test happens to be harmless here -- one day of binding against `max(cap, standing)`
-    # changes nothing -- but the same test in the tomato block fired on the q4 board and cost $1,031,
-    # so both now ask the question the same way.
-    if (not state.get("q4_armed") and day >= STRAWBERRY_FLOAT_FROM_DAY and want["STRAWBERRY"]):
+    # The `not q4_armed` guard is GONE: nothing sets that key since the branches were disarmed, so
+    # it read True on every board and was a condition in name only. The cap now applies whenever the
+    # row asks for strawberry, which is what it always did in practice.
+    if day >= STRAWBERRY_FLOAT_FROM_DAY and want["STRAWBERRY"]:
         _drains = sum(1 for s in (unlocked_shops or ()) if s in STRAWBERRY_SHOPS)
         _cap = STRAWBERRY_TILES_BY_DRAIN[min(_drains, len(STRAWBERRY_TILES_BY_DRAIN) - 1)]
         _standing = state["planted"]["STRAWBERRY"] + live["STRAWBERRY"]
@@ -4025,9 +4023,12 @@ def make_agent(schedule, me=0, router=True):
                     # while looking like a working gate.
                     _tom_drain = sum(1 for s in ((obs.get("town") or {}).get("unlocked_shops") or ())
                                      if s in TOMATO_DRAINING_SHOPS)
+                    # `melon_armed` / `q4_armed` are GONE from this condition. Nothing sets them
+                    # since the branches were disarmed, so leaving them here pinned `_tom` at 0 and
+                    # made `TOMATO_DRAIN_SHOPS_NEEDED` -- added two commits earlier -- unreachable.
+                    # The draw is the whole condition now, which is what the corpus supports anyway.
                     _tom = (int(WHEAT_TILES_TO_TOMATO)
-                            if (state.get("melon_armed") and not state.get("q4_armed")
-                                and _tom_drain >= TOMATO_DRAIN_SHOPS_NEEDED) else 0)
+                            if _tom_drain >= TOMATO_DRAIN_SHOPS_NEEDED else 0)
                     state["late_crop_left"] = {"CARROT": int(WHEAT_TILES_TO_CARROT),
                                                "TOMATO": _tom}
                 # **Only touch a day that HAS a row, for the reason spelled out on `CROP_TILE_SHIFTS`
