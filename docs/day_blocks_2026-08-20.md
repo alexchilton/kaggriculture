@@ -263,3 +263,64 @@ Counterweight: the absolute numbers are small against a day of ~190 unit-slots �
 differs on ~35 and a random block on ~49, so even random agrees on three-quarters. Whether the
 residual matters is a money question and this measures ops. The real test is a replay through the
 fast sim, which is parity-exact at 300/300 full-length episodes.
+
+## RETRACTION: the "frozen five-day opening" was a nine-game artifact
+
+At 9 games Ryo Hasegawa's d0-d4 unit ops were byte-identical. At 83 games only **d0** is.
+
+    day        9 games                48 games              83 games
+      0   unit ops IDENTICAL     unit ops IDENTICAL    unit ops IDENTICAL
+      1   unit ops IDENTICAL     6.4 slots/pair        6.7 slots/pair  (PLANT 95%)
+      2   unit ops IDENTICAL    14.6 /pair            15.0 /pair
+      3   unit ops IDENTICAL    37.5 /pair            38.5 /pair
+      4   unit ops IDENTICAL     6.6 /pair             7.6 /pair
+      5   0.8 /pair             12.5 /pair
+      6  34.8 /pair             95.7 /pair
+
+Self-consistency at 84 seasons: d0 100%, d2 89%, d4 86%, d6 38%, d8 18%, d10 5%, d18 2%.
+He is highly repetitive early and NOT stable later -- the opposite of what a flat blocks-per-group
+row suggests, and that row is the in-sample statistic that flatters a fine key.
+
+**Probable cause of the artifact, stated as a hypothesis:** six of the original nine games were
+against tetsuya. With varied opponents his play moves from d1 onwards, so he may react to the
+opponent from the first day. Confounded with sample size; not established.
+
+Second time in one session that a clean early result dissolved under more data.
+
+## Ryo Hasegawa's repertoire, 84 seasons
+
+    PLANT      WHEAT 12293  STRAWBERRY 2639  CARROT 1718  MELON 996  TOMATO 257
+    BUY_SEED   WHEAT  6832  CARROT     1151  STRAWBERRY 916  TOMATO 143  MELON 90
+    BUY_ANIMAL COW      766  SHEEP       411
+
+    presence      WHEAT / MELON / STRAWBERRY   84/84 (100%)
+                  CARROT                       45/84  (54%)
+                  TOMATO                       21/84  (25%)
+                  GOOSE, EGG                    0/84   (0%)
+
+**No geese and no eggs in 84 games.** Independent of our own void goose verdict; it does not prove
+geese lose, but the current #1 does not use them.
+
+Melon is planted in every game and only ~1 seed is bought per game (90 across 84 seasons) at $80
+each. A deliberate, tiny, early commitment -- which fits melon being the feature the tree split on.
+
+### Q3, not Q4
+
+    starting quadrant (NW)   day 0
+    2nd quadrant bought      day 5  (72 games)   day 6  (12 games)
+    3rd quadrant bought      day 9  (24 games)   day 10 (60 games)
+    4th quadrant             never
+    final count              3 in all 84 games
+
+Timing never varies by more than a day.
+
+## The shipped artifact
+
+`data/block_agent_kawa.pkl`, 3.0 MB, 734 blocks, days 3-16, カワシギ.
+A day ships only if its tree beats the majority baseline by >= 5%, so d17-d29 are absent rather
+than shipped as a coin flip over 164 blocks.
+
+**Known bug in the ship rule, not yet fixed:** d0 (85% baseline), d1 and d2 (100% baseline) are
+EXCLUDED, because a tree cannot beat a constant that is already right. But a 100% baseline is the
+answer -- those days are a single block and should be emitted as constants. The rule was written
+for the top of the range and silently drops the most certain days in the season.
