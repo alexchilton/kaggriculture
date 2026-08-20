@@ -5295,9 +5295,19 @@ def make_agent(schedule, me=0, router=True):
         # bank $124 HIGHER, i.e. the bigger order filled less. The reason is one line further out --
         # every order this agent places lands at hour 0 or 1 and then the market half is silent for
         # 22 hours, so a single 8-unit block walks `market_price` up the curve inside one order. The
-        # tape places sixteen separate WHEAT buys of 1-6 across h1-h22, interleaved with ten sells,
-        # and the shops restock every 4 steps so the book recovers between them. Fix the cadence
-        # before touching the size.
+        # KAWASHIGI tape places sixteen separate WHEAT buys of 1-6 across h1-h22, interleaved with ten
+        # sells, and the shops restock every 4 steps so the book recovers between them.
+        #
+        # **That is kawashigi's cadence and it is NOT the leader's. Corrected 2026-08-20.** Measured
+        # on tetsuya's board `94345389`, seat 0, seed 959074148 (`data/logs/cadence_2026-08-20.log`):
+        # he places ONE WHEAT block per day, at hour 1, sized to that day's `feeds`, and it fills
+        # WHOLE every time -- d0-d6 are +5 +5 +5 +5 +6 +8 +8 and the shed reads 5 5 5 5 6 8 8 at h1.
+        # An 8-unit single order does not walk the price far enough to matter at these sizes on this
+        # book. His shed then drains to 0 by h2-h3, so nothing is carried.
+        #
+        # Ours on the same board: 3 at h6 on d0 where he buys 5 at h1; `+3 +1 +1 +1` dribbled across
+        # h5-h9 on d4; and 10-36 units of dead stock sitting in the shed on d4-d6 while we keep
+        # ordering. The drip is spreading an order the leader places in one piece.
         #
         # **The schedule's own `buys` row was never read.** Wheat came only from the herd formula above,
         # so day 0 bought `FEED_DAYS * alive` as the herd grew -- 2, then 2, then 1, then 1 = 6 -- while
