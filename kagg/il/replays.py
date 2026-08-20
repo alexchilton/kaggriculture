@@ -87,8 +87,6 @@ def encode_action(action, n_units):
     buy_product = np.zeros(len(PRODUCTS), dtype=np.int32)
     buy_seed = np.zeros(len(CROP_INDEX), dtype=np.int32)
     buy_animal = np.zeros(len(ANIMAL_INDEX), dtype=np.int32)
-    hire = np.zeros((), dtype=np.int32)
-    buy_land = np.zeros((), dtype=np.int32)
 
     for order in action.get("market") or []:
         kind = order[0]
@@ -109,14 +107,52 @@ def encode_action(action, n_units):
             # JAX does *not* clip an out-of-range index in `take_along_axis` -- it returns NaN,
             # which propagated through the total loss and printed as `train nan`.
             buy_animal[ANIMAL_INDEX[order[1]]] = 1
-        elif kind == "HIRE":
-            hire = np.int32(1)
-        elif kind == "BUY_LAND":
-            buy_land = np.int32(1)
+        # HIRE and BUY_LAND carry no quantity head. They are part of the BUNDLE identity now --
+        # `HIRE x10` is a different symbol from `HIRE x1` -- so reading them here would only
+        # reintroduce the flag that lost the count.
 
-    return {"op": op, "crop": crop, "item": item, "qty": qty, "sell": sell,
-            "buy_product": buy_product, "buy_seed": buy_seed, "buy_animal": buy_animal,
-            "hire": hire, "buy_land": buy_land}
+    # **The market is one bundle, not six marginals -- and `hire` is a COUNT.**
+    #
+    # The loop above accumulated per-product quantity buckets, which are still the right labels for
+    # the `qty_*` heads. What it CANNOT express is the bundle: which orders went out together. And
+    # The `hire` flag this used to write was the exact defect this change removes -- `jax_sim` reads
+    # `hire` as "COUNT of hands to hire this turn, not a flag" (:258) and warns that casting to bool
+    # "would collapse 'hire twice' to 'hire once'" (:315), while the teacher's second most common
+    # market decision is ten hires in a single turn.
+    #
+    # So the bundle is read straight off the order list, where the multiplicity survives, and the
+    # per-product buckets are kept as the conditioned quantity labels.
+    from kagg.il import market_bundles as _MB
+
+    vocab = _MB.load_vocab()
+    bundle = np.int32(vocab.index(_MB.bundle_of(orders)))
+
+    # A quantity is only a decision where the bundle asked for one. Without these weights the
+    # 78.9% of turns that send nothing train every quantity head toward bucket 0 -- the padding
+    # mistake `bc.py` already warns about three times for the unit heads.
+    w_sell = np.zeros(len(PRODUCTS), dtype=np.float32)
+    w_buy_product = np.zeros(len(PRODUCTS), dtype=np.float32)
+    w_buy_seed = np.zeros(len(CROP_INDEX), dtype=np.float32)
+    for order in orders:
+        if not order:
+            continue
+        kind = order[0]
+        if kind == "SELL" and len(order) > 1 and order[1] in ITEM_INDEX:
+            i = ITEM_INDEX[order[1]]
+            if i < len(PRODUCTS):
+                w_sell[i] = 1.0
+        elif kind == "BUY_PRODUCT" and len(order) > 1 and order[1] in ITEM_INDEX:
+            i = ITEM_INDEX[order[1]]
+            if i < len(PRODUCTS):
+                w_buy_product[i] = 1.0
+        elif kind == "BUY_SEED" and len(order) > 1 and order[1] in CROP_INDEX:
+            w_buy_seed[CROP_INDEX[order[1]]] = 1.0
+
+    return {"op": op, "crop": crop, "item": item, "qty": qty,
+            "bundle": bundle,
+            "qty_sell": sell, "qty_buy_product": buy_product, "qty_buy_seed": buy_seed,
+            "w_qty_sell": w_sell, "w_qty_buy_product": w_buy_product,
+            "w_qty_buy_seed": w_buy_seed}
 
 
 def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True, seats=None,

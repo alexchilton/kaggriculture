@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from kagg.il import market_bundles as MB
 from kagg.il.replays import ANIMAL_INDEX, OP_CODE, PRODUCTS
 from kagg.rl import adapter, jax_act as A, jax_obs, jax_policy as P
 from kagg.sim.tiles import CROP_INDEX
@@ -48,6 +49,9 @@ CODE_OP = {v: k for k, v in OP_CODE.items()}
 CROP_NAME = {v: k for k, v in CROP_INDEX.items()}
 ITEM_NAME = {}
 ANIMAL_NAME = {v: k for k, v in ANIMAL_INDEX.items()}
+# Name lists in index order, for `market_bundles.orders_from_heads`.
+CROPS_ORDERED = [k for k, _ in sorted(CROP_INDEX.items(), key=lambda kv: kv[1])]
+ANIMALS_ORDERED = [k for k, _ in sorted(ANIMAL_INDEX.items(), key=lambda kv: kv[1])]
 
 DEFAULT_CKPT = Path("data/bc/bc.pkl")
 
@@ -80,7 +84,7 @@ def _fire(probs, threshold):
     return np.where(p_act > threshold, bucket, 0)
 
 
-def decode_action(heads, n_units, seat=0):
+def decode_action(heads, n_units, vocab, seat=0):
     """Sampled head indices -> the environment's action dict.
 
     Only the first `n_units` slots are emitted: the environment counts *submitted* actions in its
@@ -103,31 +107,21 @@ def decode_action(heads, n_units, seat=0):
         else:
             units.append([name])
 
-    market = []
-    sell = np.asarray(heads["sell"])[seat]
-    buy_p = np.asarray(heads["buy_product"])[seat]
-    buy_s = np.asarray(heads["buy_seed"])[seat]
-    buy_a = np.asarray(heads["buy_animal"])[seat]
-
-    for p, name in enumerate(PRODUCTS):
-        n = int(np.asarray(P.SELL_BUCKETS)[int(sell[p])])
-        if n:
-            market.append(["SELL", name, n])
-    for p, name in enumerate(PRODUCTS):
-        n = int(np.asarray(P.BUY_BUCKETS)[int(buy_p[p])])
-        if n:
-            market.append(["BUY_PRODUCT", name, n])
-    for c, name in CROP_NAME.items():
-        n = int(np.asarray(P.BUY_BUCKETS)[int(buy_s[c])])
-        if n:
-            market.append(["BUY_SEED", name, n])
-    for a, name in ANIMAL_NAME.items():
-        if int(buy_a[a]):
-            market.append(["BUY_ANIMAL", name, 1])
-    if int(np.asarray(heads["hire"])[seat]):
-        market.append(["HIRE"])
-    if int(np.asarray(heads["buy_land"])[seat]):
-        market.append(["BUY_LAND"])
+    # **One bundle, not six marginals.** The bundle names WHICH orders go out together -- including
+    # how many HIRE slots, which the old `int(heads["hire"])` could only ever express as one, while
+    # the teacher's second most common market decision is ten hires in a single turn.
+    #
+    # `orders_from_heads` is the single place the bundle (a sorted multiset) is joined to the
+    # per-product quantity heads (one entry per product). Three decoders exist -- this one,
+    # `to_sim_fields`, and `to_sim_actions` -- and they must agree or the agent plays differently
+    # depending on which one ran.
+    market = MB.orders_from_heads(
+        vocab, int(np.asarray(heads["bundle"])[seat]),
+        np.asarray(heads["qty_sell"])[seat],
+        np.asarray(heads["qty_buy_product"])[seat],
+        np.asarray(heads["qty_buy_seed"])[seat],
+        np.asarray(P.SELL_BUCKETS), np.asarray(P.BUY_BUCKETS),
+        PRODUCTS, CROPS_ORDERED, ANIMALS_ORDERED)
 
     # The environment accepts ten orders a turn and silently drops the rest, so the cut is made
     # here rather than left to chance about which ones survive.
@@ -178,10 +172,10 @@ def calibrate(params, model, shard=None, sample=4096):
 def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
     """Build a dict-observation agent from a saved checkpoint.
 
-    Unit ops are decoded greedily: their classes are genuinely mutually exclusive -- a unit does
-    exactly one thing -- and the mode is the right answer there. The market heads are decoded by
-    `_fire`, because bucket 0 is "do nothing" against a heavily imbalanced base rate and the mode
-    is *always* "do nothing" even when the model is confident it should act. See `_fire`.
+    Everything is decoded greedily now, market included. Unit op classes are genuinely mutually
+    exclusive -- a unit does exactly one thing -- and so is the bundle: a turn sends one set of
+    orders. The `_fire` thresholds that used to guard the market heads answered a different action
+    space and are no longer called; see the note in the body.
     """
     import jax
     import jax.numpy as jnp
@@ -196,9 +190,16 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
     _t, _u, _g = jax_obs.encode(_J.reset(1))
     params = P.load_or_migrate(raw, model.init(
         jax.random.PRNGKey(0), A._flat(_t), A._flat(_u), A._flat(_g)))
-    thresholds = calibrate(params, model)
-    if threshold is not None:
-        thresholds = {k: threshold for k in MARKET_HEADS}
+    # **No threshold calibration any more.** `calibrate`/`_fire` existed because argmax over six
+    # binary market marginals never fired: each had a base rate of "no", and six independent "no"s
+    # composed into "never trade". A single categorical does not have that failure -- fitted to a
+    # deterministic teacher its per-state argmax IS the teacher's action, regardless of the 78.9%
+    # empty marginal, because the marginal only wins where the model cannot separate states.
+    #
+    # If a replay later shows under-firing, the right shape is ONE scalar -- fire the best non-empty
+    # bundle when `1 - P(empty)` clears a threshold calibrated against the measured 21.1% -- not six.
+    # Build it when measured necessary, not before.
+    vocab = MB.load_vocab()
 
     def agent(obs, config=None):
         me = obs["player"]
@@ -226,15 +227,11 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
         picked = {}
         for k in A.ALL_HEADS:
             logits = jnp.where(masks[k], conditioned[k], -jnp.inf)
-            if k in MARKET_HEADS:
-                picked[k] = _fire(np.asarray(jax.nn.softmax(logits, axis=-1)),
-                                  thresholds.get(k, 0.5))
-            else:
-                picked[k] = np.asarray(jnp.argmax(logits, axis=-1))
+            picked[k] = np.asarray(jnp.argmax(logits, axis=-1))
 
         # `_flat` folded [batch, seat] into one axis, so our seat is row `me`.
         n_units = 1 + len(obs["farms"][me].get("hands", []))
-        return decode_action(picked, n_units, seat=me)
+        return decode_action(picked, n_units, vocab, seat=me)
 
     return agent
 

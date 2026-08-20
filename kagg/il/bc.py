@@ -205,6 +205,13 @@ def build_rows(refs, max_turns=None, log_every=0):
             labels = replays.encode_action(action, J.MAX_UNITS)
             for h in SCORED_HEADS:
                 cols.setdefault(f"y_{h}", []).append(np.asarray(labels[h], dtype=np.int32))
+            # **The quantity weights, or 78.9% of turns train the qty heads on nothing.** A quantity
+            # is a decision only where the teacher's bundle asked for one; without these the loss
+            # pulls every unselected product toward bucket 0 and the head collapses, after which the
+            # floor-at-1 decode turns every sell and buy into quantity 1.
+            for h in ("qty_sell", "qty_buy_product", "qty_buy_seed"):
+                cols.setdefault(f"w_{h}", []).append(np.asarray(labels[f"w_{h}"],
+                                                                dtype=np.float32))
 
             turns += 1
             n += 1
