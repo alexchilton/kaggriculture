@@ -262,11 +262,14 @@ def loss_terms(heads, batch, smooth=0.0):
     `MAX_UNITS` is 24 against a crew of about twelve, and a `crop` label on a FEED slot is a zero
     from the encoder rather than a decision -- scoring either makes the loss mostly constant.
 
-    **`crop`/`item`/`qty` are cloned on the slice the teacher's own op selects, and that is the
-    difference between them and `sell`/`buy_product` below.** The trade mode is a latent the replay
-    does not record, so `conditioned_term` has to train every one of its slices. The op *is*
-    recorded, so the right target is the conditional the policy will actually act from, fitted on
-    the turns the teacher used that op.
+    **`crop`/`item`/`qty` are cloned on the slice the teacher's own op selects.** The op is recorded
+    in the replay, so the right target is the conditional the policy will actually act from, fitted
+    on the turns the teacher used that op.
+
+    The market side no longer needs an equivalent. It used to condition on a `trade` latent the
+    replay does not record, which forced every slice of every product head to be trained. The bundle
+    is recorded -- it is just the teacher's order list -- so the coordination is a label now rather
+    than a hidden variable, and the quantity heads are weighted by which products that label named.
 
     **What this does and does not buy, stated precisely.** It matters only where two ops share a
     head. `crop` is read by PLANT alone and the `active` weighting below already restricted it to
@@ -287,13 +290,26 @@ def loss_terms(heads, batch, smooth=0.0):
     parts = {}
     for h in SCORED_HEADS:
         label, mask = batch[f"y_{h}"], batch[f"m_{h}"]
-        if h in A.CONDITIONED_HEADS:
-            parts[h] = conditioned_term(heads[h], mask, label, smooth=smooth)
-        elif h in A.UNIT_HEADS:
+        if h in A.UNIT_HEADS:
             w = live * active[h].astype(jnp.float32) if h != "op" else live
             parts[h] = head_term(heads[h], mask, label, live=w, smooth=smooth)
         else:
-            parts[h] = head_term(heads[h], mask, label, smooth=smooth)
+            # **A quantity is only a decision for a product the teacher's bundle selected.**
+            #
+            # `qty_sell` carries one entry per product against a bundle that names one or two, so
+            # scoring every entry trains the rest toward "bucket 0" on turns where the teacher
+            # expressed no opinion at all -- and 78.7% of turns select nothing whatsoever. That is
+            # the padding mistake this file already warns about for the unit heads, arriving on the
+            # market side: most of the objective becomes a constant, and the part that carries the
+            # signal is swamped.
+            #
+            # The dataset builder supplies `w_qty_*`, one weight per product, set from the teacher's
+            # own bundle. `bundle` itself has no weight -- every turn is a real decision about which
+            # orders to send, including the decision to send none.
+            w = batch.get(f"w_{h}")
+            parts[h] = head_term(heads[h], mask, label,
+                                 live=None if w is None else jnp.asarray(w, dtype=jnp.float32),
+                                 smooth=smooth)
     return parts
 
 

@@ -94,11 +94,15 @@ def masks_for(state, bundle_sells):
     return {k: _flat(v) for k, v in out.items()}
 
 
-def forward(params, model, state):
-    """Run the network on a sim state. Returns `(heads, value, masks)`, all network-flat."""
+def forward(params, model, state, bundle_sells):
+    """Run the network on a sim state. Returns `(heads, value, masks)`, all network-flat.
+
+    `bundle_sells` is threaded through rather than defaulted for the reason `masks_for` gives: a
+    permissive market mask is indistinguishable, from the outside, from a decode that emits nothing.
+    """
     tiles, units, glob = jax_obs.encode(state)
     heads, value = model.apply(params, _flat(tiles), _flat(units), _flat(glob))
-    return heads, value, masks_for(state)
+    return heads, value, masks_for(state, bundle_sells)
 
 
 def active_unit_heads(op):
@@ -309,3 +313,47 @@ def to_sim_actions(actions, batch, tables):
         hire=tables["hire"][idx].astype(J._I),
         buy_land=tables["buy_land"][idx].astype(bool),
     )
+
+
+def bundle_index_of(sim_actions, tables):
+    """Which bundle did a teacher just play? The inverse of `to_sim_actions`, inside a jit.
+
+    DAgger labels states with a teacher that runs as array code in the same scan as the student, so
+    the Python `market_bundles.Vocabulary.index` is unreachable: the orders are traced arrays. This
+    compares the teacher's realised order pattern against every row of the static table and takes
+    the match.
+
+    **Identity is the PATTERN, not the magnitudes** -- the same rule `bundle_of` follows, and for
+    the same measured reason: 52 of 116 non-empty bundles carry more than one quantity vector, so
+    folding quantity into identity would shatter one decision into dozens of classes. `hire` is
+    compared as a count, because ten hires and one hire are different decisions.
+
+    A teacher pattern absent from the vocabulary falls back to index 0, the empty bundle -- a
+    labellable decision rather than an exception mid-run. `market_bundles.Vocabulary.coverage` is
+    what tells you how often that happens; if it is not ~0 the vocabulary is too small.
+    """
+    def pattern(sell, buy_product, buy_seed, buy_animal, hire, buy_land):
+        return jnp.concatenate([
+            (sell > 0).astype(jnp.int32),
+            (buy_product > 0).astype(jnp.int32),
+            (buy_seed > 0).astype(jnp.int32),
+            (buy_animal > 0).astype(jnp.int32),
+            jnp.asarray(hire, dtype=jnp.int32).reshape(*hire.shape, 1),
+            jnp.asarray(buy_land, dtype=jnp.int32).reshape(*buy_land.shape, 1),
+        ], axis=-1)
+
+    want = pattern(sim_actions.sell, sim_actions.buy_product, sim_actions.buy_seed,
+                   sim_actions.buy_animal, sim_actions.hire, sim_actions.buy_land)
+
+    rows = jnp.concatenate([
+        (tables["sell"] > 0).astype(jnp.int32),
+        (tables["buy_product"] > 0).astype(jnp.int32),
+        (tables["buy_seed"] > 0).astype(jnp.int32),
+        (tables["buy_animal"] > 0).astype(jnp.int32),
+        jnp.asarray(tables["hire"], dtype=jnp.int32)[:, None],
+        jnp.asarray(tables["buy_land"], dtype=jnp.int32)[:, None],
+    ], axis=-1)                                                  # [N_BUNDLES, F]
+
+    same = jnp.all(want[..., None, :] == rows, axis=-1)          # [..., N_BUNDLES]
+    # `argmax` returns 0 when nothing matches, which is exactly the empty-bundle fallback.
+    return jnp.argmax(same, axis=-1).astype(jnp.int32)
