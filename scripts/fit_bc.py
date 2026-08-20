@@ -115,10 +115,26 @@ def main():
         max_size=P.N_BUNDLES)
     print("vocabulary %d of %d slots" % (vocab.size, P.N_BUNDLES), flush=True)
 
-    shards = sorted(glob.glob(args.rows.rstrip("/") + "/*.npz"))
-    if not shards:
+    all_shards = sorted(glob.glob(args.rows.rstrip("/") + "/*.npz"))
+    if not all_shards:
         raise SystemExit("no npz under %s" % args.rows)
-    print("shards: %d" % len(shards), flush=True)
+
+    # **The last shard is HELD OUT.** The instrument used to probe `shards[0]` -- a shard it had
+    # just trained on -- so a model that memorised the training set scored perfectly and the number
+    # said nothing about a state the student had not seen. That is the same class of mistake as
+    # measuring imitation accuracy on teacher states and calling it play strength: it was 86.2%
+    # here, and 79.3% error on the policy's own trajectory.
+    #
+    # A whole shard rather than a random slice, because a shard is 40 whole games. Holding out
+    # random ROWS would leave the other 719 turns of each game in training, and consecutive turns of
+    # one game are nearly identical -- the holdout would be memorised through its own neighbours.
+    shards, holdout_path = all_shards[:-1], all_shards[-1]
+    if len(all_shards) == 1:
+        shards, holdout_path = all_shards, all_shards[0]
+        print("*** ONE shard: the holdout IS the training data and every number below is "
+              "meaningless as generalisation. Smoke runs only. ***", flush=True)
+    print("shards: %d train + 1 holdout (%s)"
+          % (len(shards), pathlib.Path(holdout_path).name), flush=True)
 
     probe = load_shard(shards[0])
     n_tiles = probe["tiles"].shape[1]
@@ -175,17 +191,32 @@ def main():
                 seen += 1
             del shard
 
-        # ---- THE INSTRUMENT. Read this, not the loss. ----
-        probe_shard = load_shard(shards[0])
-        sl = slice(0, min(4096, len(probe_shard["y_bundle"])))
+        # ---- THE INSTRUMENT, on HELD-OUT rows. Read this, not the loss. ----
+        #
+        # **A matching empty rate is not agreement.** The old version compared only the marginal
+        # rate of empty bundles, which a model that is empty on exactly the wrong 78.9% of turns
+        # passes perfectly. What matters is per-ROW agreement, and specifically on the turns where
+        # the teacher DID trade -- 21.1% of them, and all of the money.
+        probe_shard = load_shard(holdout_path)
+        sl = slice(0, min(8192, len(probe_shard["y_bundle"])))
         bmax, omax = argmax_mix(
             params,
             jnp.asarray(probe_shard["tiles"][sl], dtype=jnp.float32),
             jnp.asarray(probe_shard["units"][sl], dtype=jnp.float32),
             jnp.asarray(probe_shard["glob"][sl], dtype=jnp.float32))
         bmax = np.asarray(bmax)
+        y_bundle = probe_shard["y_bundle"][sl]
+        traded = y_bundle != 0
+
         empty_rate = float((bmax == 0).mean())
-        teacher_empty = float((probe_shard["y_bundle"][sl] == 0).mean())
+        teacher_empty = float((y_bundle == 0).mean())
+        agree_all = float((bmax == y_bundle).mean())
+        agree_traded = float((bmax[traded] == y_bundle[traded]).mean()) if traded.any() else 0.0
+        # Op agreement on LIVE unit slots only. Padding slots are all NOOP and would carry the
+        # figure to ~0.95 on their own -- the padding mistake `bc.py` warns about, in a metric.
+        live = probe_shard["live"][sl]
+        omax = np.asarray(omax)
+        agree_op = float((omax[live] == probe_shard["y_op"][sl][live]).mean()) if live.any() else 0.0
         top = collections.Counter(bmax.tolist()).most_common(5)
 
         print("\nepoch %d  loss %.4f  %d batches  %.0fs"
@@ -193,17 +224,35 @@ def main():
         print("  per head                 : %s"
               % "  ".join("%s %.4f" % (h, head_tot[h] / max(1, seen))
                           for h in sorted(head_tot)))
-        print("  bundle argmax empty rate : %.3f   teacher %.3f   (reference %.3f)"
+        print("  HELD OUT (%s, %d rows)" % (pathlib.Path(holdout_path).name, sl.stop))
+        print("    bundle agreement       : %.3f all   %.3f on the %d turns the teacher TRADED"
+              % (agree_all, agree_traded, int(traded.sum())))
+        print("    unit op agreement      : %.3f  (live slots only)" % agree_op)
+        print("    argmax empty rate      : %.3f   teacher %.3f   (reference %.3f)"
               % (empty_rate, teacher_empty, TEACHER_EMPTY_RATE))
-        print("  bundle argmax top 5      : %s"
+        print("    argmax top 5           : %s"
               % ", ".join("idx %d x%d" % (i, n) for i, n in top))
         if empty_rate > 0.98:
             print("  *** COLLAPSED to the majority class. A falling loss does not contradict this;")
             print("      it is the six-marginals failure in a new form. Stop and diagnose. ***")
+        elif agree_traded < 0.05:
+            print("  *** The empty rate looks healthy but the model agrees with the teacher on "
+                  "almost NO trading turn. ***")
+            print("      That is the failure the empty rate alone cannot see: right marginal, "
+                  "wrong turns.")
         del probe_shard
 
+        # **The vocabulary travels WITH the weights.** It used to store only `vocab_size`, and
+        # `neural.make_agent` then loaded whatever `data/il/bundle_vocab.json` happened to hold. A
+        # rebuilt vocabulary with one bundle more or one fewer shifts every index above it, so the
+        # agent would emit a different order for every class -- confidently, with the right shapes,
+        # and with nothing anywhere to indicate it. The file is 18 KB; the failure is silent and
+        # total. Embedding it makes the mismatch checkable at load.
         with out.open("wb") as fh:
-            pickle.dump({"params": params, "vocab_size": vocab.size,
+            pickle.dump({"params": params,
+                         "vocab_size": vocab.size,
+                         "vocab": [[list(pair) for pair in vocab.bundle(i)]
+                                   for i in range(vocab.size)],
                          "tile_features": jax_obs.TILE_FEATURES,
                          "unit_features": jax_obs.UNIT_FEATURES,
                          "global_features": jax_obs.GLOBAL_FEATURES,

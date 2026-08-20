@@ -180,7 +180,8 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
     import jax.numpy as jnp
 
     with Path(checkpoint).open("rb") as fh:
-        raw = pickle.load(fh)["params"]
+        raw_ckpt = pickle.load(fh)
+    raw = raw_ckpt["params"]
     model = P.Policy()
     # Pre-op-axis checkpoints are tiled onto the current argument heads. See
     # `jax_policy.migrate_params` -- the tiling is behaviour-preserving, so this does not change
@@ -198,7 +199,31 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
     # If a replay later shows under-firing, the right shape is ONE scalar -- fire the best non-empty
     # bundle when `1 - P(empty)` clears a threshold calibrated against the measured 21.1% -- not six.
     # Build it when measured necessary, not before.
-    vocab = MB.load_vocab()
+    # **The checkpoint's own vocabulary wins, and a mismatch is fatal rather than a warning.**
+    #
+    # This used to be an unconditional `MB.load_vocab()`, reading whatever `data/il/bundle_vocab.json`
+    # held at play time. The vocabulary is a sorted list, so adding or removing ONE bundle shifts
+    # every index above it: the agent would decode class 47 as a different order than it was trained
+    # to mean, emit it with the right shape, and be wrong all season with nothing to read anywhere.
+    # `fit_bc` now embeds the list, so it can simply be used -- and an old checkpoint without one
+    # falls back, loudly.
+    stored = raw_ckpt.get("vocab")
+    if stored:
+        vocab = MB.Vocabulary.from_bundles([tuple(tuple(p) for p in b) for b in stored],
+                                           max_size=P.N_BUNDLES)
+        try:
+            on_disk = MB.load_vocab()
+        except Exception:                                     # noqa: BLE001
+            on_disk = None
+        if on_disk is not None and on_disk.size != vocab.size:
+            print("neural: checkpoint vocabulary is %d bundles, %s holds %d -- using the "
+                  "CHECKPOINT's, which is the one these weights were fitted against."
+                  % (vocab.size, MB.DEFAULT_VOCAB, on_disk.size))
+    else:
+        vocab = MB.load_vocab()
+        print("neural: %s has no embedded vocabulary; falling back to %s. If that file has been "
+              "rebuilt since this checkpoint was fitted, every bundle index means something else."
+              % (checkpoint, MB.DEFAULT_VOCAB))
 
     def agent(obs, config=None):
         me = obs["player"]
