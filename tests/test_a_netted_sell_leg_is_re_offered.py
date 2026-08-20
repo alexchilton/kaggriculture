@@ -23,6 +23,7 @@ at dawn, so 17 must actually trade. It says nothing about which hour they trade 
 tour shape, and the netting itself is free to keep cancelling.
 """
 import collections
+import kagg.plan as _PLAN
 import json
 import pathlib
 import sys
@@ -42,7 +43,7 @@ def _sold_on_day(day):
     from kaggle_environments import make
 
     from kagg.analysis.fills import record_fills
-    import kagg.search.schedule_agent_1455mh as sa
+    import kagg.search.schedule_agent as sa
 
     replay, schedule, team = B.TAPES["victor"]
     sched = {int(k): v for k, v in json.loads((REPO / schedule).read_text()).items()}
@@ -75,7 +76,7 @@ def _sold_on_day(day):
 
 def test_the_premise_day_5_sells_and_buys_the_same_product():
     """Guard. Without an overlap on the day the netting never fires and this proves nothing."""
-    raw = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    raw = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     row = raw[str(DAY)]
     overlap = set(row.get("sells") or {}) & set(row.get("buys") or {})
     assert overlap, f"d{DAY} row sells {row.get('sells')} and buys {row.get('buys')}; no overlap"
@@ -83,7 +84,7 @@ def test_the_premise_day_5_sells_and_buys_the_same_product():
 
 def test_the_days_wheat_row_is_sold_in_full():
     sold, at_dawn = _sold_on_day(DAY)
-    raw = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    raw = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     want = int((raw[str(DAY)].get("sells") or {}).get("WHEAT", 0))
     held = int(at_dawn.get("WHEAT", 0))
     assert held >= want, (

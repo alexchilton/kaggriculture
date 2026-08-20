@@ -132,10 +132,18 @@ def test_the_feed_a_tour_still_needs_is_not_deliverable_however_much_the_row_wan
     assert not [d for d in _depot_stops(route) if d.drop], (
         f"the herd's feed was banked as sellable goods: {route}")
     # And the surplus IS deliverable: one wheat more than the tour needs is a real delivery.
+    #
+    # Asked as "does the milk REACH THE SHED", not "is there a DROP". Since `BANK_THE_SURPLUS_NOT_THE
+    # _HAND` the planner has a second way to bank it -- `PLACE MILK 8`, one turn, hand keeps its three
+    # wheat -- and `_bank` takes it here because it is cheaper than DROP-plus-redraw. That is this
+    # test's own point carried further, not a way round it: the whole complaint above is that DROP
+    # cannot separate the herd's dinner from the market's goods, and PLACE can.
     spare = DP.materialise(start, pens, {"WHEAT": 3, "MILK": 8}, SHED,
                            wanted={"WHEAT": 28, "MILK": 8}, rush=True)
-    assert [d for d in _depot_stops(spare) if d.drop], (
-        f"eight milk the row wants was carried past the shed: {spare}")
+    banked = [d for d in _depot_stops(spare) if d.drop or d.place]
+    assert banked, f"eight milk the row wants was carried past the shed: {spare}"
+    assert not [d for d in banked if d.place and d.place.get("WHEAT")], (
+        f"the herd's feed was banked as sellable goods, one item at a time: {spare}")
 
 
 @pytest.mark.slow

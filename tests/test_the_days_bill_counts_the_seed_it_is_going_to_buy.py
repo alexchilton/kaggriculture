@@ -1,6 +1,6 @@
 """`_days_bill` counts the seed the row buys, so a day that cannot afford it knows it is short.
 
-`short_of_cash` (`schedule_agent_1455mh.py:1695`) is the single signal that tells the planner a day
+`short_of_cash` (`schedule_agent.py:1695`) is the single signal that tells the planner a day
 must get its produce to the shed while the market is open rather than batching it to dusk. It is
 `_days_bill_now(row) > money`, and `_days_bill` prices seed with
 
@@ -34,6 +34,7 @@ Two assertions:
   2. The bill for a row covers the seed that row buys.
 """
 import json
+import kagg.plan as _PLAN
 import pathlib
 import sys
 
@@ -42,9 +43,9 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-import kagg.search.schedule_agent_1455mh as SA  # noqa: E402
+import kagg.search.schedule_agent as SA  # noqa: E402
 
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 SCHED = {int(k): v for k, v in json.loads(SCHEDULE.read_text()).items()}
 #: The day the grid first diverges, and the day whose seed is larger than its parcel.
 FOCUS_DAY = 10

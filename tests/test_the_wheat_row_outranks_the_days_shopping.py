@@ -24,6 +24,7 @@ Hour 0 only. `HIRE_FIRST` is about the hour a hand is bought, not its slot withi
 `_hire_cost` is a per-DAY fibonacci counter so the crew costs the same wherever in the turn it sits.
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -33,10 +34,10 @@ from kaggle_environments import make
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 REPLAY = REPO / "data/seed_scripts/top2/91854176.json"
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 TEAM = "Victor @ Tufa Labs"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 SEED = 11
 DAYS = 12
 TPD = 24

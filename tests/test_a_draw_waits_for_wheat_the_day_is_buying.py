@@ -32,6 +32,7 @@ about how many the plan should contain, which is `test_the_herd_is_fed_on_the_ta
 question, and nothing about days whose plan is already short.
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -41,7 +42,7 @@ from kaggle_environments import make
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 REPLAY = REPO / "data/seed_scripts/top2/91854176.json"
-SCHEDULE = REPO / "data/seed_scripts/victor/schedule.json"
+SCHEDULE = _PLAN.SHIPPED_PLAN
 TEAM = "Victor @ Tufa Labs"
 TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 SEED = 11
@@ -52,7 +53,7 @@ TPD = 24
 @pytest.fixture(scope="module")
 def played():
     """`{day: (feeds_planned_at_dawn, feeds_emitted)}` for our seat."""
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     DP = importlib.import_module("kagg.search.cover")
     CREW = importlib.import_module("kagg.search.crew")
 

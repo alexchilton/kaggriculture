@@ -26,6 +26,7 @@ Asserted on the offer rather than on `plant` emitted, because d11 has a second, 
 in the executor: one of the four committed WHEAT stops is not emitted either.
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -46,7 +47,7 @@ def _offered_and_unpinned(day):
     import breakdown as B
     from kagg.search import routines as R
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     RT = importlib.import_module("kagg.search.router")
     replay, schedule, team = B.TAPES["victor"]
     raw = json.loads(pathlib.Path(schedule).read_text())
@@ -91,7 +92,7 @@ def _offered_and_unpinned(day):
 
 def test_the_premise_the_next_pen_is_a_long_way_off():
     """If the schedule grows a pen near d11 this test is measuring nothing. Fail loudly."""
-    sched = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    sched = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     later = sorted(int(d) for d in sched
                    if int(d) > FOCUS_DAY and int(sched[d].get("builds", 0) or 0))
     assert later and later[0] >= FOCUS_DAY + 5, (
@@ -101,7 +102,7 @@ def test_the_premise_the_next_pen_is_a_long_way_off():
 
 def test_the_day_is_offered_every_planting_it_owes():
     offered, free = _offered_and_unpinned(FOCUS_DAY)
-    sched = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    sched = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     want = collections.Counter(sched[str(FOCUS_DAY)].get("plants") or [])
     assert offered == want, (
         f"d{FOCUS_DAY} owes {dict(want)} and its dawn job list offers {dict(offered)}, with "

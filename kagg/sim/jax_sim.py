@@ -135,6 +135,9 @@ BELOW_FUNC = jnp.asarray(M.BELOW_FUNC, dtype=_I)
 ABOVE_FUNC = jnp.asarray(M.ABOVE_FUNC, dtype=_I)
 BELOW_AMP = jnp.asarray(M._BELOW_AMP, dtype=_F)
 ABOVE_AMP = jnp.asarray(M._ABOVE_AMP, dtype=_F)
+#: The per-product knee. Read by the `hinge` branch alone, and by nothing before 1.32.7.
+KNEE = jnp.asarray(M.T, dtype=_F)
+HINGE_GAIN = _F(M.HINGE_GAIN)
 
 SPAWN_X, SPAWN_Y = F.default_spawn()
 
@@ -545,14 +548,26 @@ def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_
 # ---- market pricing -------------------------------------------------------------------------
 
 
-def _shape_fn(func_id, x):
+def _shape_fn(func_id, x, knee=None):
     """Vectorized `kaggriculture._shape`, selecting per element by function id.
 
-    The five branches are all evaluated and then selected. That is wasteful on paper and free in
+    The six branches are all evaluated and then selected. That is wasteful on paper and free in
     practice: `func_id` is a compile-time constant array, so XLA constant-folds the selection.
+
+    **`out` starts at zeros and an unmatched id therefore prices at `base` in silence.** That is
+    exactly what happened when 1.32.7 added `hinge` as id 5: `kagg.sim.market` died loudly on
+    `KeyError`, and this one would have kept running and quietly sold carrot, tomato and egg at flat
+    base on the scarce side. Any shape added to `market._SHAPES` must be added here in the same
+    commit, or it is wrong by construction and silent about it.
     """
     x = jnp.maximum(x, 0.0)
-    branches = (x, x * x, jnp.sqrt(x), jnp.log1p(x), jnp.log10(1.0 + x))
+    if knee is None:
+        hinge = x
+    else:
+        safe = jnp.where(knee > 0.0, knee, 1.0)
+        u = x / safe
+        hinge = jnp.where(knee > 0.0, u + HINGE_GAIN * jnp.maximum(0.0, u - 1.0) ** 2, x)
+    branches = (x, x * x, jnp.sqrt(x), jnp.log1p(x), jnp.log10(1.0 + x), hinge)
     out = jnp.zeros_like(x)
     for fid, values in enumerate(branches):
         out = jnp.where(func_id == fid, values, out)
@@ -567,8 +582,8 @@ def price(inventory):
     every sale in the game and would look exactly like a strategy difference.
     """
     inv = inventory.astype(_F)
-    scarce = BASE + BELOW_AMP * _shape_fn(BELOW_FUNC, INV0 - inv)
-    glut = BASE - ABOVE_AMP * _shape_fn(ABOVE_FUNC, inv - INV0)
+    scarce = BASE + BELOW_AMP * _shape_fn(BELOW_FUNC, INV0 - inv, KNEE)
+    glut = BASE - ABOVE_AMP * _shape_fn(ABOVE_FUNC, inv - INV0, KNEE)
     raw = jnp.where(inv < INV0, scarce, glut)
     return jnp.maximum(PRICE_FLOOR, jnp.rint(raw)).astype(_I)
 

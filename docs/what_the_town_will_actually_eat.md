@@ -76,7 +76,7 @@ Wheat's closing surplus is negative in all 87 tapes, by 386 to 1,356 units — t
 than both farms together produce, so the price *rises*, closing at $40–$59 against a base of $25.
 It is carried by five of the eight shop types, more than anything else.
 
-That is worth holding next to the shipped comment in `schedule_agent_1455mh.py` that calls growing
+That is worth holding next to the shipped comment in `schedule_agent.py` that calls growing
 wheat "a bad trade" on the grounds that a tile yields six units.
 The measured figure in `kagg/economics/production.py` is 28, or 42 fertilized.
 

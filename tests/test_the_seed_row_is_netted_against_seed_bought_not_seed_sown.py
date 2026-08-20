@@ -34,6 +34,7 @@ The right quantity to net against is seed BOUGHT today, which is exact and needs
     bought_today = seeds_now + planted_today - seeds_at_dawn
 """
 import collections
+import kagg.plan as _PLAN
 import importlib
 import json
 import pathlib
@@ -54,7 +55,7 @@ def _store_at_dusk(day):
 
     import breakdown as B
 
-    SA = importlib.import_module("kagg.search.schedule_agent_1455mh")
+    SA = importlib.import_module("kagg.search.schedule_agent")
     replay, schedule, team = B.TAPES["victor"]
     raw = json.loads(pathlib.Path(schedule).read_text())
     thin = {int(k): {kk: vv for kk, vv in r.items() if kk not in B.TAPE_ONLY}
@@ -87,7 +88,7 @@ def _store_at_dusk(day):
 
 def test_the_premise_the_row_is_smaller_than_the_plantings_it_funds():
     """If d7's row ever covers its own plantings this test is measuring nothing. Fail loudly."""
-    sched = json.loads((REPO / "data/seed_scripts/victor/schedule.json").read_text())
+    sched = json.loads((_PLAN.SHIPPED_PLAN).read_text())
     row = sched[str(FOCUS_DAY)]
     bought = sum(int(q) for q in (row.get("seeds") or {}).values())
     sown = len(row.get("plants") or [])

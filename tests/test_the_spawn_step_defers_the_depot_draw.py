@@ -36,7 +36,7 @@ def test_day_4_keeps_the_tail_of_the_farmers_tour():
     sched = {int(k): v for k, v in
              json.loads((REPO / schedule).read_text()).items()}
     thin = {d: {k: v for k, v in r.items() if k not in B.TAPE_ONLY} for d, r in sched.items()}
-    import kagg.search.schedule_agent_1455mh as sa
+    import kagg.search.schedule_agent as sa
 
     def mine():
         a = sa.make_agent(thin, 0, router=True)

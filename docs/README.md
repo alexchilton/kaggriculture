@@ -35,7 +35,7 @@ findings — of everything below built around matching Seb's tape.
 - **`the_top_five_clusters_2026-08-09.md`'s field description (15 replays, 3 per team) is superseded
   in scale** by the 2,744-seat sample. Its `counter_meta` (Seb, rank #1 at 3,201.1 in that sample) is
   the same player whose bank has since halved. Banded.
-- **`SHOP_ADAPT_CROPS` (`kagg/search/schedule_agent_1455mh.py`) is OFF.** Three pairs were tried —
+- **`SHOP_ADAPT_CROPS` (`kagg/search/schedule_agent.py`) is OFF.** Three pairs were tried —
   `WHEAT<->CARROT`, `TOMATO<->STRAWBERRY`, `STRAWBERRY<->MELON` — and all three failed for reasons
   recorded in the flag's own docstring; read it before proposing a fourth. `REGISTER.md` C-23.
 - **Fertilizer is now priced off the live market quote, not its $100 base, when deciding whether to
@@ -107,6 +107,19 @@ whether today's finding bands them.
 
 `CLAUDE.md` at the repo root holds the rules, the kill criteria, and the "lessons learned the hard
 way" list. It is not superseded by anything here.
+
+## Moved out of CLAUDE.md (2026-08-15)
+
+- `kill_criteria_and_settled_positions.md` — the full kill criteria and the settled RL positions,
+  with the measurements behind each. Every one is MET or CLOSED, so `CLAUDE.md` now carries only the
+  three sentences that still bind. **Do not delete this file:** the reward-shape bullets exist to
+  stop a future session restoring per-step rewards from `rl_feasibility.md`, which still argues for
+  them at length.
+- `fable_watering_post_d8_2026-08-15.md` — watering post-d8 closed as a measured negative. The
+  preventive-watering fix cost $1,051 and killed one more tile by displacing a rescue.
+- `fable_production_decay_d19_2026-08-15.md` — why standing crop decays from d19. Digs, fertilize
+  and cap-discards all ruled out; the mechanism is thirst-killed strawberries (13 of ours complete
+  their lifecycle against his 31) and one-shots rotting past their window.
 
 ## The rules that survived the cull, in one place
 

@@ -87,7 +87,7 @@ def main():
     ap.add_argument("--first-seed", type=int, default=11)
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--weeds", type=float, default=0.0)
-    ap.add_argument("--module", default="kagg.search.schedule_agent_1455mh")
+    ap.add_argument("--module", default="kagg.search.schedule_agent")
     ap.add_argument("--schedule", default=OURS)
     ap.add_argument("--replay", default=RIVAL)
     args = ap.parse_args()

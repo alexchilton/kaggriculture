@@ -7,7 +7,7 @@ match IN ORDER, and a regression on d0 must not be payable out of d6. Separate t
 visible in the report instead of in a total.
 
 Driven by `scripts/breakdown.run`, the same function behind
-`scripts/breakdown.py --module schedule_agent_1455mh --days 7`, so this file and that table cannot
+`scripts/breakdown.py --module schedule_agent --days 7`, so this file and that table cannot
 disagree about what was measured. Market rows there are EXACT FILLS read per unit from
 `_commit_unit` via `kagg/analysis/fills.py` -- never offers, which the agent re-posts every turn.
 
@@ -35,7 +35,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 SEED = 11
 WEEDS = 0.0
 DAYS = 7
-MODULE = "kagg.search.schedule_agent_1455mh"
+MODULE = "kagg.search.schedule_agent"
 PLAN = "90494364"
 
 #: Tour shape, not work. See the module docstring.
