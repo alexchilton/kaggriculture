@@ -968,6 +968,29 @@ def _wheat_row_first(orders, hour):
                         if o and o[0] in ("HIRE", "BUY_ANIMAL", "BUY_SEED")), None)
     if first_spend is None:
         return orders
+    # **BUY_SEED outranks BUY_PRODUCT. The wheat goes ahead of the shopping, never ahead of the
+    # seed the ground is waiting for.**
+    #
+    # The measurement above is Victor's h0, where he himself puts the product order first. Kawashigi
+    # -- the plan we ship -- puts it LAST, behind both seed orders, and the two open on the same
+    # $3,000. Measured on game 92498144's own d0 row, seed 11, the ten slots that turn:
+    #
+    #   ours  PRODUCT WHEAT 9  HIRE x5  COW 2  SHEEP 2  SEED MELON 12  SEED WHEAT 7   -> 18 of 19 seed
+    #   tape  HIRE x5  COW 2  SHEEP 2  SEED WHEAT 7  SEED MELON 12  PRODUCT WHEAT 6   -> 19 of 19
+    #
+    # `_do_buy_product` re-checks the bank per unit, so the slot that runs first is paid in full and
+    # the last one takes what is left -- $3,000 does not cover $225 of product, $1,800 of livestock
+    # and $1,030 of seed together. Ours ends d0 one plant short and holding $6, then re-offers
+    # `BUY_SEED WHEAT x1` on twenty-two consecutive turns without ever filling it. By d8 the bank is
+    # too thin to hire (`_do_hire` fails SILENTLY) and the crew comes out 3 against 11; by d11 that
+    # is thirteen weeds against his zero, on `weedSpawnChance` 0.0.
+    #
+    # This is the ordering `SEED_BEFORE_LIVESTOCK` already asserted against BUY_ANIMAL. BUY_PRODUCT
+    # was simply never added to it. Days with no seed order in the turn are untouched, so the Victor
+    # measurement above still holds wherever seed is not competing for the same dollars.
+    last_seed = max((i for i, o in enumerate(orders) if o and o[0] == "BUY_SEED"), default=None)
+    if last_seed is not None:
+        first_spend = max(first_spend, last_seed + 1)
     wheat = [i for i, o in enumerate(orders)
              if o and o[0] == "BUY_PRODUCT" and len(o) > 1 and o[1] == "WHEAT" and i > first_spend]
     if not wheat:

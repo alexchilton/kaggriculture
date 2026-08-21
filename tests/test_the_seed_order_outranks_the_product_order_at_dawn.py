@@ -30,9 +30,9 @@ outranked BUY_SEED and `SEED_BEFORE_LIVESTOCK` was the answer: "A BUY_SEED fills
 covers ... it says the seed is due first on the day the ground is waiting for it." Same argument,
 different competitor for the same dollars -- BUY_PRODUCT this time.
 
-Marked `xfail(strict=True)` rather than fixed. The fix is a change to market order priority at dawn
-and it was not in scope for the run that found this; strict, so it flips the moment somebody fixes
-it and cannot rot into a silently passing test.
+FIXED 2026-08-21 in `schedule_agent._wheat_row_first`: the wheat product order is still moved ahead
+of HIRE and BUY_ANIMAL, but never ahead of a BUY_SEED in the same turn. Days with no seed order that
+turn are untouched, so the Victor measurement in that function's own docstring still holds.
 """
 
 import pathlib
@@ -59,9 +59,6 @@ def test_the_row_we_are_handed_asks_for_nineteen_plants(his_d0):
     assert (his_d0.get("buys") or {}) == {"WHEAT": 9}
 
 
-@pytest.mark.xfail(strict=True,
-                   reason="d0 h0 fires the whole buys row before the seed order; bank $3000 -> $7, "
-                          "then 22 turns of unfilled BUY_SEED at $6. Fix is dawn order priority.")
 def test_the_day_can_afford_the_seed_the_row_asks_for(his_d0):
     """The theory, as an arithmetic claim about one turn.
 

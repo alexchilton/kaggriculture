@@ -84,10 +84,10 @@ def main():
         mark = " " if o_ops == h_ops and o_ord == h_ord else "*"
         print("%s h%-2d  $%-8.0f ours  %-52s %s" % (mark, h, o_money,
               " ".join("%s x%d" % (k, v) for k, v in sorted(o_ops.items()))[:52],
-              "; ".join(o_ord)[:44]))
+              "; ".join(o_ord)))
         print("%s      $%-8.0f tape  %-52s %s" % (" ", h_money,
               " ".join("%s x%d" % (k, v) for k, v in sorted(h_ops.items()))[:52],
-              "; ".join(h_ord)[:44]))
+              "; ".join(h_ord)))
         if mark == "*":
             ours_seeds = {k: v for k, v in o_seed.items() if v}
             his_seeds = {k: v for k, v in h_seed.items() if v}
