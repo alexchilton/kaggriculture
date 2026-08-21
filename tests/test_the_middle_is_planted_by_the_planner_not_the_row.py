@@ -84,7 +84,8 @@ def test_the_middle_plants_wheat_and_only_wheat(schedule, day):
 @pytest.mark.parametrize("day", LIBRARY_DAYS)
 def test_a_library_day_plays_a_row_somebody_actually_played(schedule, library, day):
     """Theory 4. The row must be identical to a recorded row for that day, field for field."""
-    real = [kawa_rows.only_animals_get_placed(r["target"]) for r in library if r["day"] == day]
+    real = [kawa_rows.net_the_round_trip(kawa_rows.only_animals_get_placed(r["target"]))
+            for r in library if r["day"] == day]
     assert real, "no library rows for day %d" % day
     assert schedule[day] in real, "day %d plays a row that is in no recorded season" % day
 
@@ -100,7 +101,8 @@ def test_a_library_day_plays_the_MODAL_row(schedule, library, day):
     `Counter.most_common` breaks them on insertion order, which is a property of the file rather
     than of the data, and it disagreed here at d28 -- where the largest class is 2 of 228.
     """
-    real = [r["target"] for r in library if r["day"] == day]
+    real = [kawa_rows.net_the_round_trip(kawa_rows.only_animals_get_placed(r["target"]))
+            for r in library if r["day"] == day]
     counts = collections.Counter(kawa_rows.label(r, day) for r in real)
     top = max(sorted(counts), key=lambda k: counts[k])
     mine = kawa_rows.label(schedule[day], day)
@@ -119,7 +121,8 @@ def test_the_greedy_wheat_fill_never_reaches_the_strict_days(schedule, library, 
     row = schedule[day]
     assert len(row.get("plants") or []) < kawa_rows.BOARD_TILES, (
         "day %d has been wheat-filled; d0-d12 must be strict rows" % day)
-    real = [kawa_rows.only_animals_get_placed(r["target"]) for r in library if r["day"] == day]
+    real = [kawa_rows.net_the_round_trip(kawa_rows.only_animals_get_placed(r["target"]))
+            for r in library if r["day"] == day]
     assert row in real, "day %d is not a row anybody played" % day
 
 
@@ -157,6 +160,40 @@ def test_a_places_row_names_only_animals(schedule, day):
     places = schedule[day].get("places") or []
     strays = sorted({p for p in places if p not in R.ANIMALS})
     assert not strays, "day %d places %r, which are not animals" % (day, strays)
+
+
+@pytest.mark.parametrize("day", range(30))
+def test_no_row_buys_and_sells_the_same_product_on_the_same_day(schedule, day):
+    """Alex, 2026-08-21: "just remove the buy 9 make it whatever is needed and remove the sell".
+
+    d0's recorded row asks `buys {WHEAT: 9}` and `sells {WHEAT: 3}`. That is a round trip in one
+    day: it pays the market spread twice, burns two of the ten order slots, and ends on the same
+    shed the net purchase alone would have reached.
+
+    Netted on the library, before the executor sees the row -- a transformation on the plan, not a
+    special case inside the executor.
+    """
+    row = schedule[day]
+    both = sorted(set(row.get("buys") or {}) & set(row.get("sells") or {}))
+    assert not both, "day %d both buys and sells %r" % (day, both)
+
+
+def test_netting_keeps_the_net_shed_movement_of_the_recorded_row():
+    """The netted row must move the same units, or it is a different plan and not a simplification."""
+    raw = {"buys": {"WHEAT": 9, "MILK": 2}, "sells": {"WHEAT": 3, "WOOL": 5}}
+    out = kawa_rows.net_the_round_trip(raw)
+    assert out["buys"] == {"WHEAT": 6, "MILK": 2}
+    assert out["sells"] == {"WOOL": 5}
+    for product in ("WHEAT", "MILK", "WOOL"):
+        before = (raw["buys"].get(product, 0)) - (raw["sells"].get(product, 0))
+        after = (out["buys"].get(product, 0)) - (out["sells"].get(product, 0))
+        assert before == after, product
+
+
+def test_netting_keeps_the_larger_side_when_the_sell_is_bigger():
+    out = kawa_rows.net_the_round_trip({"buys": {"WHEAT": 2}, "sells": {"WHEAT": 7}})
+    assert out["buys"] == {}
+    assert out["sells"] == {"WHEAT": 5}
 
 
 def test_the_library_row_keeps_its_herd_because_the_executor_substitutes_it(schedule):

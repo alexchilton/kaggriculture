@@ -56,7 +56,10 @@ def test_the_row_we_are_handed_asks_for_nineteen_plants(his_d0):
     """Not the defect -- the premise. If this changes, the numbers below describe another day."""
     assert len(his_d0.get("plants") or []) == 19
     assert (his_d0.get("seeds") or {}) == {"MELON": 12, "WHEAT": 7}
-    assert (his_d0.get("buys") or {}) == {"WHEAT": 9}
+    # `buys` is 6, not the recorded 9: the row asked to buy 9 WHEAT and sell 3 on the same day, and
+    # `kawa_rows.net_the_round_trip` cancels the overlap. `sells` is empty for the same reason.
+    assert (his_d0.get("buys") or {}) == {"WHEAT": 6}
+    assert (his_d0.get("sells") or {}) == {}
 
 
 def test_the_day_can_afford_the_seed_the_row_asks_for(his_d0):

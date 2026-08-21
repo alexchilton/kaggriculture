@@ -200,6 +200,42 @@ def modal_row(rows, day=0):
     return groups[best][0], len(groups[best]) / len(rows)
 
 
+def net_the_round_trip(row):
+    """A copy of `row` that never buys and sells the same product on the same day.
+
+    Alex, 2026-08-21: "cant you just take out the stupid extra buy of the wheat? so the tape has buy
+    9 wheat and sell back 3 or some such nonsense - just remove the buy 9 make it whatever is needed
+    and remove the sell".
+
+    d0's recorded row asks `buys {WHEAT: 9}` and `sells {WHEAT: 3}`. Buying nine and selling three
+    reaches exactly the shed that buying six reaches, and it pays the market spread twice to get
+    there -- the sell walks the price down and the buy walks it up, against our own book. It also
+    burns two of the ten order slots that d0 fills completely.
+
+    The overlap is cancelled and only the remainder is kept, on whichever side is larger. Net shed
+    movement per product is unchanged by construction, which is what makes this a simplification of
+    the plan rather than a different plan.
+
+    **It is a transformation on the LIBRARY, applied before the executor sees the row.** Not a
+    special case inside the executor, and not switchable: a row that round-trips is a row nobody
+    should be asked to play.
+
+    **What it does change is WHEN the wheat is in hand, and wheat is animal feed.** The recording
+    sells at h1 and buys at h6 and h12, so netting removes an early cash inflow and an early
+    outflow together. `docs/` records the measured effect on `feed`, `care` and the herd count.
+    """
+    buys = dict(row.get("buys") or {})
+    sells = dict(row.get("sells") or {})
+    for product in set(buys) & set(sells):
+        overlap = min(int(buys[product] or 0), int(sells[product] or 0))
+        buys[product] = int(buys[product] or 0) - overlap
+        sells[product] = int(sells[product] or 0) - overlap
+    out = dict(row)
+    out["buys"] = {k: v for k, v in buys.items() if v > 0}
+    out["sells"] = {k: v for k, v in sells.items() if v > 0}
+    return out
+
+
 def wheat_fill(row):
     """`row` with its planting replaced by a whole board of wheat and its seed order dropped.
 
@@ -238,14 +274,16 @@ def build(path=None, mid_from=None, opening_from=None, opening_days=13):
     mid = set(mid_season(mid_from))
     out = {}
     for day in sorted(by_day):
+        # **Transformed BEFORE the mode is taken, not after.** Two seasons that differ only in a
+        # round trip, or only in which products got dropped via PLACE, are the same plan -- and
+        # taking the mode over raw rows and then transforming the winner picks the mode of a
+        # distribution nobody plays. It also made the label of the row we play match no library row
+        # at all, which is how this was caught: d0, d5, d9 and d10 all reported "0 of 228 seasons".
+        cleaned = [net_the_round_trip(only_animals_get_placed(r)) for r in by_day[day]]
         if day < opening_days and day in own:
-            row = own[day]                       # his own plan for this day, not the mode
+            row = net_the_round_trip(only_animals_get_placed(own[day]))   # his plan, not the mode
         else:
-            row, _share = modal_row(by_day[day], day)
-        # **Cleaned on BOTH paths.** A row taken straight from the library carries products in
-        # `places` (see `only_animals_get_placed`), and feeding one in raw would fail this test for
-        # a reason that is the extractor rather than the executor.
-        row = only_animals_get_placed(row)
+            row, _share = modal_row(cleaned, day)
         out[day] = wheat_fill(row) if day in mid else row
     return out
 
@@ -262,6 +300,7 @@ def coverage(path=None):
         by_day[int(r["day"])].append(r["target"])
     out = {}
     for day in sorted(by_day):
-        row, share = modal_row(by_day[day], day)
-        out[day] = (label(row, day), share, len(by_day[day]))
+        cleaned = [net_the_round_trip(only_animals_get_placed(r)) for r in by_day[day]]
+        row, share = modal_row(cleaned, day)
+        out[day] = (label(row, day), share, len(cleaned))
     return out
