@@ -167,9 +167,36 @@ Still open:
 
 - **PASS 911 vs his 679 over d0–d10** — we idle 232 turns more with the same crew. Biggest number
   on the board.
-- **FEED 73/85, CARE 76/85** — we under-do the two ops that correlate with money (+0.452, +0.441)
-  and over-do WATER (189/163), which correlates NEGATIVELY (−0.276). Two failed fixes so far; the
-  cause is not the feed rule, not the slot gate, and not the arrival budget.
+- **FEED 73/76, CARE 76/85.** **Corrected 2026-08-20 — the old figure here was `FEED 73/85`, and
+  the 85 was never achievable.** Nine of his 85 d0–d10 FEED ops never landed: `FEED` takes a WHEAT
+  from the acting unit's CARRIED inventory (`reference/kaggriculture.py:505`, `inv =
+  _farmer_inventory` at `:321`) and returns silently when it has none. On d0 he submits five and
+  lands **zero** — he buys 5 wheat at h1, sells all 5 back at h2, and no unit ever carries any.
+  CARE has no input cost, so its 76/85 is real and is now the LARGER gap of the two.
+  Full measurement: `docs/feed_is_measured_against_ops_he_wasted_2026-08-20.md`.
+
+  Two consequences. The FEED shortfall is three ops, not twelve, so it is no longer the biggest
+  thing on the board. And d0 is not a day to copy: matching him there means wasting five turns.
+
+- **The schedule row is internally inconsistent, and this is the live bug.** Every field
+  `extract_leader_schedule.py` writes is a raw op count from the action stream — `feeds`, `cares`,
+  `places`, `plants`, `builds`, `hires` — except `buys`/`sells`, which are wash-netted afterwards
+  (`:201-243`). tetsuya's d0 row therefore reads `feeds=5` **and** `buys={}`: five rations demanded,
+  no wheat bought. **No executor can satisfy that row.**
+
+  The netting is arithmetically correct (his d0 buy-5-sell-5 is a genuine wash) and every other op
+  lands 100/100 on this board — `PLANT 90/90, HIRE 146/146, BUILD 15/15, PLACE 15/15`. FEED is the
+  only op with a consumable input he does not manage, so it is the only field the mismatch bites.
+
+  **The fix Alex specified:** size the dawn wheat order from the day's ration demand minus wheat on
+  hand — `row["feeds"] - on_hand - ordered` — rather than from `buys` (netted to zero) or from
+  `alive` (which is 0 at hour 0, before any pen exists). The demand is already in the row: his
+  `feeds` equals the standing herd on every day measured. Keep `BUY_DRIP`; the comment at
+  `schedule_agent.py:5291` records that a single large block walks `market_price` up the curve and
+  fills LESS, and the tape places sixteen separate buys of 1–6 across h1–h22.
+
+  Not yet implemented. Write the test red first, and judge it on the d0–d10 grid, not the test —
+  §4 above is exactly this fix's two predecessors.
 - **d13 at 55.2%** is the weakest herd day.
 - **CARROT has no predictor.** Non-monotone in drain count — pinned in a test so nobody fits a line
   to it. See §3.

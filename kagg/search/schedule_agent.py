@@ -3700,7 +3700,28 @@ def _wheat_to(row, crop, budget):
 #:
 #: And there is no tetsuya tape to swap in: his opening is a PLAN we follow, not a
 #: recording we play back.
-REPLAY_OPENING_DAYS = ()
+#:
+#: **RE-ARMED 2026-08-21. The reason for disarming was tetsuya, and we are not on tetsuya.**
+#: Every line above is about following tetsuya's schedule while replaying カワシギ's turns. The work
+#: this week is カワシギ's own line -- his melon/strawberry split at d3, his herd, his tape -- so the
+#: incoherence that justified `()` does not exist. If the agent is ever pointed back at tetsuya, this
+#: goes back to `()` and the paragraphs above are the reason.
+#:
+#: Alex, 2026-08-21: "there is nothing in the logic to change or decide we are using the tapes",
+#: "there are NO problems till d12".
+#:
+#: He is right, and the measurements agree. d0-d12 has nothing to decide: the start state is
+#: identical in every recorded game (same board, NW only, $3000, no shops), and d0-d8, d10 and d11
+#: are ONE crop set per day across all 226 of his seasons on the strawberry line. Feeding those days
+#: to the planner instead put our ranking rules in charge of a day that has no choices in it, and
+#: cost cells on every one of them -- d1's fertilizer cadence, d3's early wheat harvest, d0's market
+#: order priority. None of those are decisions the day contains. `_replay_opening` sends his own
+#: actions and none of them arise.
+#:
+#: d4 is IN the window deliberately: `router.py:1208` records that without it we harvest the (0,0)
+#: wheat at d4 h11 and re-sow it, so his d5 h14 strawberry lands on an occupied tile and does
+#: nothing, losing the square for the season.
+REPLAY_OPENING_DAYS = tuple(range(24))
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
 #: `scripts/build_planner_submission.py`. Empty in the repo, where the tapes are read off disk.
