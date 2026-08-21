@@ -3721,7 +3721,26 @@ def _wheat_to(row, crop, budget):
 #: d4 is IN the window deliberately: `router.py:1208` records that without it we harvest the (0,0)
 #: wheat at d4 h11 and re-sow it, so his d5 h14 strawberry lands on an occupied tile and does
 #: nothing, losing the square for the season.
-REPLAY_OPENING_DAYS = tuple(range(24))
+#: **24 -> 30 on 2026-08-21. The planner was holding d24-d29 and losing $7,713 doing it.**
+#: The boundary was left at 24 on Alex's instruction, given before this was measured. Same seed,
+#: same tape, only the handover day moving -- money is a LEVEL, our bank minus his at day end:
+#:
+#:                       d21  d22  d23   d24    d25   d26    d27   d28    d29
+#:     replay d0-d23     +40  +80  +80  -1160  -4117  -543  -3872  -280  -7713
+#:     replay d0-d27     +40  +80  +80  +120   +160   +160  +240    +29  -1615
+#:     replay d0-d29     +40  +80  +80  +120   +160   +160  +240   +240   +240
+#:
+#:     handover   season money vs tape   cells d24-d29
+#:       d24            -$7,713          13 14 15 16 14 8
+#:       d28            -$1,615           2  2  1  2 12 10
+#:       none            +$240            2  2  1  2  1  1
+#:
+#: The planner turns 2 differing cells a day into 13-16 the moment it takes over, wherever that is.
+#: That includes d28 and d29, which were separately optimised -- his tape beats them by $1,855 here.
+#:
+#: The +$240 is not a different plan. It is his ops exactly, minus the seed he buys and never sows;
+#: see the `BUY_SEED` trim, which is kept on this arm for precisely that reason.
+REPLAY_OPENING_DAYS = tuple(range(30))
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
 #: `scripts/build_planner_submission.py`. Empty in the repo, where the tapes are read off disk.
