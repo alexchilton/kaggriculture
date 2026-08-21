@@ -53,6 +53,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--days", type=int, default=13)
+    ap.add_argument("--detail", type=int, default=4,
+                    help="print every differing field for this many leading days")
     a = ap.parse_args()
 
     BD.schedule_agent = BD.load_agent_module("schedule_agent")
@@ -128,16 +130,16 @@ def main():
     print("    " + "  ".join("d%d=%d" % (d, k) for d, k in enumerate(per_day)))
     print("  %d/%d days exact: %s" % (len(exact), n, exact or "none"))
 
-    first = next((d for d, k in enumerate(per_day) if k), None)
-    if first is None:
-        print("\n  BRANCH A -- the executor reproduces every row it was handed, d0-d%d." % (n - 1))
-        return
-    print("\n  BRANCH B -- first divergent day is d%d." % first)
-    print("  every field that differs on d%d:" % first)
-    for kind, field, cells in base:
-        o, h = cells[first]
-        if o != h:
-            print("    %-6s %-16s ours %8s   tape %8s   %+d" % (kind, field, o, h, o - h))
+    # Every differing field for the first `--detail` days, not just the first divergent one. Days
+    # grade in order, but a day whose miss is one cell is the cheapest diagnostic on the board and
+    # printing only d0's fields hides it.
+    for day in range(min(a.detail, n)):
+        print("\n  d%d -- %s" % (day, "EXACT" if per_day[day] == 0
+                                 else "%d differing cells" % per_day[day]))
+        for kind, field, cells in base:
+            o, h = cells[day]
+            if o != h:
+                print("    %-6s %-18s ours %8s   tape %8s   %+d" % (kind, field, o, h, o - h))
 
 
 if __name__ == "__main__":
