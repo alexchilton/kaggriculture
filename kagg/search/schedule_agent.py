@@ -5797,8 +5797,39 @@ def make_agent(schedule, me=0, router=True):
             #
             # Trading -$8,582 for the $170 of seed those arms leave is not a trade, so they keep the
             # tape's counts until the season total can be known before the opening ends.
+            # **The MELON arm only, and the strawberry exclusion is measured, not cautious.**
+            # Trimming his seed order leaves us richer than he was on the same turn, and on a
+            # replayed day that surplus is not neutral -- `_do_hire` fails SILENTLY on a thin bank
+            # (`reference/kaggriculture.py:691`) and the cost is `mult * fib(hires_today)`. So a
+            # saving of $60 buys a hand HE COULD NOT AFFORD, and one extra hand for the rest of the
+            # season is not a rounding error.
+            #
+            # Measured 2026-08-21, seed 7 against `kawashigi_b3`'s seat 1, d0-d9 field by field:
+            #
+            #     d6   money +60  buy_seed -3        the trim
+            #     d8   hands +1  hire +1  plant +2  water +1  harvest +1  ...  9 cells
+            #          our hands 11, tape 10 -- his 11th hire was refused, ours cleared
+            #
+            # Seed 899's town is richer, its 11th hire clears too, and that season stays exact. That
+            # is the whole 130-vs-60 split the strawberry arm showed: not the herd, not the tape,
+            # just whether his d8 hire happened to be affordable on that town.
+            #
+            # `scripts/seed_tape_grid.py --vs-all --live-shops --opponent kawashigi_b3`, 16 towns,
+            # d0-d29, differing cells against the strawberry tape:
+            #
+            #     with the trim      10 seeds 130-132,  5 seeds 60-62,  1 seed 40
+            #     without it          5 seeds  0,      10 seeds    25,  1 seed 40
+            #
+            # And it is kept on the melon arm because there it is the entire margin: seed 11,
+            # `--replay-days 30`, with the trim ends **+$240** on the leader and without it ends
+            # level at 0 cells on all 30 days. He wastes that seed; we should not copy the waste.
+            #
+            # Per-arm PLAN CONTENT, not a flag -- the same distinction `WHEAT_TILES_TO_CARROT`'s
+            # tomato tile draws, and for the same reason: the arms already run different schedules
+            # and different route tables, and this is part of one arm's plan.
             if (len(o) > 2 and o[0] == "BUY_SEED" and o[1] in R.CROPS
-                    and not state.get(_Q4.BRANCH.armed_key)):
+                    and not state.get(_Q4.BRANCH.armed_key)
+                    and not state.get(_MB.BRANCH.armed_key)):
                 _crop = o[1]
                 _held = int((priv_.get("seeds") or {}).get(_crop, 0) or 0)
                 _season = sum(collections.Counter(_r.get("plants") or [])[_crop]
