@@ -212,22 +212,39 @@ def wheat_fill(row):
     return out
 
 
-def build(path=None, mid_from=None):
+def build(path=None, mid_from=None, opening_from=None, opening_days=13):
     """`{day: row}` for all 30 days, ready for `schedule_agent.make_agent`.
 
     `mid_from` exists so the boundary can be measured both ways from one command
     (`scripts/where_does_the_middle_start.py`). It is a parameter, not a switch: exactly one value
     ships, and it is `MID_SEASON_FROM`.
+
+    `opening_from` names a single game whose OWN rows replace the modal ones for the first
+    `opening_days` days. It answers a question the modal schedule cannot
+    (`scripts/can_the_executor_play_his_own_row.py`): when the executor is handed the row a player
+    actually played, does it reproduce that player's day? Nothing ships with it set -- a schedule
+    built from one recorded season is what `kagg/plan.py` already is.
     """
     rows = json.loads(pathlib.Path(path or LIBRARY).read_text())
     by_day = collections.defaultdict(list)
+    own = {}
     for r in rows:
         by_day[int(r["day"])].append(r["target"])
+        if opening_from is not None and str(r["game"]) == str(opening_from):
+            own[int(r["day"])] = r["target"]
+    if opening_from is not None and not own:
+        raise KeyError("game %r is not in %s" % (opening_from, path or LIBRARY))
 
     mid = set(mid_season(mid_from))
     out = {}
     for day in sorted(by_day):
-        row, _share = modal_row(by_day[day], day)
+        if day < opening_days and day in own:
+            row = own[day]                       # his own plan for this day, not the mode
+        else:
+            row, _share = modal_row(by_day[day], day)
+        # **Cleaned on BOTH paths.** A row taken straight from the library carries products in
+        # `places` (see `only_animals_get_placed`), and feeding one in raw would fail this test for
+        # a reason that is the extractor rather than the executor.
         row = only_animals_get_placed(row)
         out[day] = wheat_fill(row) if day in mid else row
     return out

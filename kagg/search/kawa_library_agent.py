@@ -24,17 +24,17 @@ SELL_CARRY_DAYS = _SA.SELL_CARRY_DAYS
 HIRE_FIRST = _SA.HIRE_FIRST
 
 
-def make_agent(ignored_schedule=None, me=0, router=True, mid_from=None):
+def make_agent(ignored_schedule=None, me=0, router=True, mid_from=None, opening_from=None):
     """`agent(obs, config) -> action`, playing `kawa_rows.build()`.
 
     `ignored_schedule` is discarded. It exists only so this module has the signature
     `breakdown.py`, `arena` and the submission builders already call.
 
-    `mid_from` is passed straight to `kawa_rows.build`; it exists so
-    `scripts/where_does_the_middle_start.py` can measure both boundaries from one command. Leave it
-    None everywhere else -- exactly one boundary ships, and it is `kawa_rows.MID_SEASON_FROM`.
+    `mid_from` and `opening_from` are passed straight to `kawa_rows.build`; both exist so a
+    measurement script can vary one thing from one command. Leave them None everywhere else --
+    exactly one boundary ships, and no single season's opening does.
     """
-    schedule = kawa_rows.build(mid_from=mid_from)
+    schedule = kawa_rows.build(mid_from=mid_from, opening_from=opening_from)
     agent = _SA.make_agent(schedule, me, router)
     agent.schedule = schedule
     agent.source = ("kawa_rows.build() from %s -- the schedule passed to make_agent was IGNORED"
