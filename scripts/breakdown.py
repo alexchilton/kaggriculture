@@ -581,12 +581,21 @@ def main():
                     help="which agent to compare against the tape. Defaults to %(default)s, the "
                          "module the work is going into; anything loaded here is checked against "
                          "REQUIRED_SELLABLE and refused if it predates the fix.")
+    #: **Moves the tape/planner boundary for THIS RUN ONLY.** `REPLAY_OPENING_DAYS` ends at d23
+    #: because d24-d29 is the planner's, which is a decision about what to ship. "How far could the
+    #: tape carry us" is a different question, and answering it must not leave a changed constant
+    #: behind in the module -- that is the stale-runnable-artifact failure this repo keeps paying for.
+    #: The header prints the value in force, so a grid can never be read against the wrong boundary.
+    ap.add_argument("--replay-days", type=int, default=None, metavar="N",
+                    help="override REPLAY_OPENING_DAYS to range(N) for this run only")
     args = ap.parse_args()
     if args.tape in RETIRED_TAPES:                      # unreachable via `choices`, kept for clarity
         ap.error(f"--tape {args.tape} was removed: {RETIRED_TAPES[args.tape]}")
 
     global schedule_agent
     schedule_agent = load_agent_module(args.module)
+    if args.replay_days is not None:
+        schedule_agent.REPLAY_OPENING_DAYS = tuple(range(args.replay_days))
 
     replay, schedule, team = TAPES[args.tape]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
@@ -650,8 +659,13 @@ def main():
             if k in _always
             or any(d[k] for d in ours[:args.days + 1]) or any(d[k] for d in his[:args.days + 1])]
 
-    print(f"tape {args.tape}   seed {args.seed}   weeds {args.weeds}   "
-          + "".join(f"{k} {v}   " for k, v in economy.items())
+    # **The boundary goes in the header.** A grid read against the wrong tape/planner boundary is
+    # the same class of error as one read against the wrong tape, which this file already carries
+    # three separate notes about.
+    _rd = schedule_agent.REPLAY_OPENING_DAYS
+    _window = f"replay d{_rd[0]}-d{_rd[-1]}" if _rd else "replay OFF"
+    print(f"tape {args.tape}   seed {args.seed}   weeds {args.weeds}   {_window}")
+    print("  " + "".join(f"{k} {v}   " for k, v in economy.items())
           + f"CUMULATIVE_SELLS={schedule_agent.CUMULATIVE_SELLS} "
           f"SELL_CARRY_DAYS={schedule_agent.SELL_CARRY_DAYS} "
           f"HIRE_FIRST={schedule_agent.HIRE_FIRST}")

@@ -3849,6 +3849,27 @@ def make_agent(schedule, me=0, router=True):
         # It is also what made two measurements on 2026-08-19 return phantom nulls:
         # q4-vs-q3 read +$0 on twelve seeds because BOTH arms armed it and got identical
         # rows. tetsuya never buys the fourth quadrant at all.
+        #
+        # **RE-ARMED 2026-08-21, with `REPLAY_OPENING_DAYS` and for the same reason: the disarm was
+        # about tetsuya, and we are on カワシギ's own line.** Every paragraph above describes
+        # カワシギ's rows overwriting tetsuya's; there is no tetsuya plan here to overwrite. If the
+        # agent is ever pointed back at tetsuya this call goes, and the paragraphs above are why.
+        #
+        # Leaving it out was not neutral. `_replay_opening` keys the tape on
+        # `(melon_armed, q4_armed)` read off `state` EVERY turn, and nothing writes either key
+        # unless these two `arm` calls run -- so the key was `(False, False)` on every turn of every
+        # seed and all four entries of `REPLAY_OPENING_TAPE` resolved to the melon tape. Three of
+        # the four tapes were unreachable by construction. Measured 2026-08-21,
+        # `scripts/seed_tape_grid.py`, five seeds each, weeds 0.0:
+        #
+        #     --tape kawashigi        d0-d20 exact, 0 cells       the melon tape, the one played
+        #     --tape kawashigi_b3     first bad day d3, 148 cells the day melon and berry part
+        #     --tape kawashigi_q4c    first bad day d5, 216 cells the day q3 and q4 part
+        #
+        # Both bad days land exactly where the tapes first disagree. That is what a wrong-tape
+        # replay looks like: the ops are sent faithfully, into a board the plan does not describe.
+        # Pinned by `tests/test_the_latches_choose_which_tape_gets_replayed.py`.
+        _Q4.arm(sched, state, obs, day)
         farms = obs.get("farms") or []
         if len(farms) <= me:
             return {"farmer": ["PASS"], "hands": [], "market": []}
@@ -3952,14 +3973,17 @@ def make_agent(schedule, me=0, router=True):
             state["seeds_dawn"] = collections.Counter(seeds)
 
             # **The leader's melon branch, as the season he actually recorded for that board.**
-            # **DISARMED 2026-08-20 with `_Q4.arm` above, and for the same reason.** The melon
-            # branch is also read off カワシギ games and also installs through `Branch.install`,
-            # which clears every row from its split day on. It is the likelier culprit for the
-            # MELON 8 -> 0 above, since it is the branch that decides melon.
+            # See `kagg/search/melon_branch.py`. Decided once at d3 off the opponent's melon tiles
+            # and installed from d3, which is the first day the two three-quadrant tapes disagree.
             #
-            # There is also nothing for it to switch TO: it picks between two of カワシギ's
-            # recorded seasons off the opponent's melon tiles, and we follow one tetsuya
-            # plan.
+            # **DISARMED 2026-08-20 with `_Q4.arm` above, and RE-ARMED 2026-08-21 with it.** The
+            # disarm reason was that this branch is read off カワシギ games and installs through
+            # `Branch.install`, which clears every row from its split day on -- カワシギ's rows
+            # overwriting tetsuya's, with nothing to switch TO because we followed one tetsuya plan.
+            # We are on カワシギ's own line now, so that reason does not apply. It comes back out
+            # if the agent is ever pointed at tetsuya again.
+            if _MB.arm(sched, state, obs, day):
+                row = sched.get(day) or row
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a

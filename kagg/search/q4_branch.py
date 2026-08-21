@@ -63,9 +63,35 @@ BRANCH_ON_THE_YARN_STORE = True
 TRIGGER_SHOP = "YARN_STORE"
 
 #: Read the trigger no earlier than this. The leaders' own games unlock it d3-d6.
-DECIDE_BY_DAY = 6
+#:
+#: **6 -> 5 on 2026-08-21. It has to be decided before the day the REPLAY diverges, not before the
+#: day the ROWS diverge.** `SPLIT_DAY = 9` below is right about the rows and was read as if it
+#: covered the whole branch. It does not: `REPLAY_OPENING_DAYS` plays the tape's own ops, and the
+#: q3 and q4 tapes part company at **d5**. With the read at d6, d5 was played from the unarmed tape
+#: -- the ops sent faithfully into a board the plan does not describe -- and the board never
+#: recovered.
+#:
+#: Measured `scripts/seed_tape_grid.py --vs-all --live-shops`, 16 seed-drawn towns, differing cells
+#: over d0-d23 against the tape the latches actually chose:
+#:
+#:     yarn store up by d3   6 seeds    23-29 cells
+#:     yarn store up at d6   3 seeds       63 cells    <- the same tape, decided a day late
+#:     no yarn store         7 seeds       21 cells
+#:
+#: The three 63s are byte-identical to each other and carry `weed x14` and `STRAWBERRY x14` -- one
+#: wrong day at d5 costs fourteen days of wrong crop and fourteen days of weeds, on a grid whose
+#: `weedSpawnChance` is 0.0, so every one of those weeds is a tile we failed to water.
+#:
+#: **This also narrows the branch, deliberately.** A town that unlocks the yarn store at d6 no
+#: longer arms at all and stays on the three-quadrant plan. That is the honest reading: the q4 tape
+#: was recorded on a game with the store open at d3, and the fourth parcel is bought with money the
+#: early store provides. Arming off a store that arrives three days later claims a plan we cannot
+#: fund.
+DECIDE_BY_DAY = 5
 
-#: The first day the two tapes disagree. Rows before it are identical, so nothing is swapped there.
+#: The first day the two SCHEDULE ROWS disagree. Rows before it are identical, so nothing is swapped
+#: there. **This is not the day the TAPES disagree** -- those part at d5, which is what
+#: `DECIDE_BY_DAY` above must clear. Conflating the two cost the measurement above.
 SPLIT_DAY = 9
 
 Q4_SCHEDULE = "data/seed_scripts/kawashigi_q4c/schedule.json"
