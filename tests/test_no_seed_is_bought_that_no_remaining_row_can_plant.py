@@ -118,21 +118,52 @@ def test_no_wheat_seed_is_left_in_the_shed(the_close):
     Bounding `_later` by `RT.plant_prize(crop, day) > 0` was tried and did not move it, so the cause is
     NOT rows past the crop's last useful day. Left open and bounded tightly rather than removed, so
     that any further slip is still caught.
+
+    **RE-MEASURED 2026-08-22 to 8, and this bound is not being loosened to go green.** `b105d05`
+    took the `BUY_SEED` trim OFF the strawberry arm -- the arm this fixture runs -- because the $60
+    it saved at d6 bought us a hire at d8 the tape was refused, and the seasons then diverged: 132
+    differing cells against 40 across 16 towns. The unsown wheat is what that decision costs, and it
+    is deliberately paid.
+
+    The file was contradicting itself about which mix it runs. This docstring names "the mix it was
+    written against (WHEAT 124, STRAWBERRY 42, no tomato)" while
+    `test_the_cap_did_not_change_what_went_into_the_ground` asserted WHEAT 120, STRAWBERRY 37,
+    TOMATO 1. Measured today the arm plants 124/42/no-tomato -- the mix THIS docstring names -- so
+    the other one held the stale tuple.
+
+    Bound stays exact rather than generous: 8 is what it leaves, and 9 is a regression.
     """
-    assert the_close["seeds"].get("WHEAT", 0) <= 3, (
-        f"{the_close['seeds'].get('WHEAT')} WHEAT seed unsown at the final bell, above the 3 this arm "
-        f"currently leaves; the late rows ask for more than the board can seat and `emit_seed`'s row "
-        f"floor buys the difference. Full shed: {the_close['seeds']}")
+    assert the_close["seeds"].get("WHEAT", 0) <= 8, (
+        f"{the_close['seeds'].get('WHEAT')} WHEAT seed unsown at the final bell, above the 8 this arm "
+        f"leaves with the trim off (measured 2026-08-22); the late rows ask for more than the board "
+        f"can seat and `emit_seed`'s row floor buys the difference. Full shed: {the_close['seeds']}")
 
 
 def test_the_seed_left_over_is_worth_almost_nothing(the_close):
-    """The carry a later row still justifies is fine; $240 of never-sowable seed is not."""
+    """The dead seed this arm carries, pinned at what it actually costs.
+
+    **This was `<= 100` and it is now `<= 240`, which is a bound going the WRONG WAY. Said plainly
+    rather than buried: the strawberry arm closes holding $240 of seed it can never sow.**
+
+    That is not a defect that appeared today and it is not being waved through. `b105d05` removed
+    the `BUY_SEED` trim from this arm on measurement -- the $60 the trim saved at d6 bought a hire
+    at d8 the tape could not afford, and the seasons parted for the rest of the run (132 differing
+    cells against 40, 16 towns). The dead seed is the price of staying in step with the tape, and
+    the tape is worth more than $240.
+
+    The old failure message said it outright -- *"HEAD leaves $240 and the cap leaves $60"* -- so
+    $240 was already known to be HEAD's number. The assertion was pinned to the cap's while the cap
+    was off.
+
+    Exact, not generous: $240 is what it leaves, $250 is a regression. If the trim ever comes back
+    to this arm, this goes red and should be re-pinned DOWN.
+    """
     from kagg.search import router as RT
     waste = sum(RT.SEED_COST.get(k, 0) * v for k, v in the_close["seeds"].items())
-    assert waste <= 100, (
-        f"${waste} of seed unsown at the final bell ({the_close['seeds']}); HEAD leaves $240 and the "
-        f"cap leaves $60. Anything near the old figure means the row floor is overriding the pins "
-        f"again")
+    assert waste <= 240, (
+        f"${waste} of seed unsown at the final bell ({the_close['seeds']}); this arm leaves $240 "
+        f"with the trim off (measured 2026-08-22) and $60 with it on. Above $240 the row floor is "
+        f"overriding the pins again.")
 
 
 def test_the_cap_did_not_change_what_went_into_the_ground(the_close):
@@ -145,9 +176,21 @@ def test_the_cap_did_not_change_what_went_into_the_ground(the_close):
     one wheat stop, and the routes were re-solved for that mix -- so the field genuinely changed and the
     old tuple describes an agent nobody ships. The invariant being guarded is unchanged: whatever the
     mix, a SEED rule must not move it.
+
+    **And it went BACK on 2026-08-22, to the tuple that paragraph retired.** `b105d05` took the
+    `BUY_SEED` trim off the strawberry arm, so `STRAWBERRY_TILES_BY_DRAIN` no longer holds the
+    replayed order down to 37 and the arm plants 42 again. Measured today:
+
+        WHEAT 124   MELON 12   STRAWBERRY 42   CARROT 5      (no TOMATO)
+
+    Which is exactly the mix the 2026-08-19 note describes as "the season before the strawberry cap
+    ... existed". The cap is off; the season is back.
+
+    `test_no_wheat_seed_is_left_in_the_shed` in this same file had been naming that mix in its own
+    docstring the whole time -- "the mix it was written against (WHEAT 124, STRAWBERRY 42, no
+    tomato)" -- so the two tests contradicted each other and only one of them was checked.
     """
-    assert the_close["plants"] == {"WHEAT": 120, "MELON": 12, "STRAWBERRY": 37,
-                                   "TOMATO": 1, "CARROT": 5}, (
+    assert the_close["plants"] == {"WHEAT": 124, "MELON": 12, "STRAWBERRY": 42, "CARROT": 5}, (
         f"planting changed: {the_close['plants']}; measured identical with and without every seed rule "
         f"in the tree, so a difference here means one of them starved a planting rather than trimming "
         f"waste -- which is exactly how the q4 melon arm lost $8,582 for $170 of seed")
