@@ -1,3 +1,8 @@
+> SUPERSEDED by docs/carrot_and_the_empty_book_2026-08-19.md - the clean measurement of carrot vs
+> wheat this file's own retraction below calls for. `CARROT_SWAP` no longer exists in the code
+> (`kagg/`, `scripts/`, `tests/` — checked 2026-08-15). Kept for the method lesson (winner's curse,
+> tape-instrument noise floor); the retractions below are already in force, read them first.
+
 # The carrot swap, measured on Victor's tape — CLOSED, and it is not the town
 
 > **RETRACTED 2026-08-12, same day. Every arm in this file is invalid.**

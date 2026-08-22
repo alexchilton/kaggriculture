@@ -16,6 +16,11 @@ This file exists because "the leaders" get described from memory and the descrip
 > and reconfirms the open-loop finding at population scale: most of the field is scripted, two shared
 > scripts dominate, and the one clearly reactive top player (#1) beats the fixed scripts by ~110
 > rating points through an adaptive herd, not a different opening.
+>
+> **2026-08-21 addendum.** `docs/the_field_is_a_monoculture_2026-08-21.md` is the current, larger
+> sample (1,010 games) for "what opponents do": of 58 sampled players only the top 4 ranked ones are
+> genuinely distinct agents, and 38 of 58 share one byte-identical opening. Read that file for the
+> current opponent-diversity picture; this file's "five distinct signatures" framing is thinner.
 
 ## The winners submit fixed 720-turn scripts
 

@@ -1,3 +1,8 @@
+> Read together with docs/fable_bundle_head_review_2026-08-20.md (same day, same branch). That
+> review found `masks_for` has never once executed (`state.private.shed` does not exist) — which
+> undercuts this doc's P1-1 analysis, since it treats the sell-mask mechanism as live and firing.
+> This file's P0 order-sort bug and its other findings are independent of that and still stand.
+
 # BC pipeline review — bundle head, quantity heads, label paths (2026-08-20)
 
 Read-only review of branch `bundle-head` (extracted from git at the repo root's checkout; nothing was modified).

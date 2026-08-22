@@ -1,5 +1,185 @@
 # docs/ — index
 
+**Consolidated 2026-08-22.** 120 files, no index past 2026-08-15. This section is the current one —
+read it first and stop there unless you need history. Everything below the `---` after "The rules
+that survived the cull" is the 2026-08-08 through 2026-08-15 consolidation record, kept for history,
+not rewritten. Full method, classification counts and every contradiction found this pass:
+`docs/consolidation_2026-08-22.md`.
+
+## Read first
+
+| File | What it is |
+|---|---|
+| `SUPER_IMPORTANT_READ_THIS_FIRST.md` | **Not previously indexed — read this before touching agent code.** 2026-08-20. Docstrings that lie about what the code does (five found in one session); measure a rule at the decision, not the season census (11.5% → 55.8% → 77.9% on the SAME rule); the golden-output grid as the only refactor lock; a list of things measured DEAD that must not be resurrected (the kawashigi tape replay, the milk LINE rule, `_Q4.arm`/`_MB.arm`). |
+| `REGISTER.md` | **The live open/closed list.** Owned live — read it, do not edit it outside its own process. Check before opening anything. |
+| `competition_brief.md` | The rules, the scoring rule, and the version-skew history (1.32.2 → 1.32.6 → 1.32.7). Current — already carries the 1.32.7 "hinge" update. |
+| `architecture.md` | What the agent is, and the flags that ship off. Current for design; its bottom parity/dollar table is 1.32.2-era, self-flagged. |
+| `kill_criteria_and_settled_positions.md` | Every kill criterion: MET or CLOSED. The terminal-reward ruling and the RL-parked ruling live here, with the measurements. |
+| `REGISTER.md`, `SUPER_IMPORTANT_READ_THIS_FIRST.md` and `stale_audit_2026-08-15.md` between them replace the need to read the 2026-08-08–15 layers below for day-to-day work. |
+
+## The current field and strategy picture
+
+| File | What it is |
+|---|---|
+| `the_field_is_a_monoculture_2026-08-21.md` | **Current, largest sample (1,010 games).** Of 58 sampled players only the top 4 ranked ones are genuinely distinct agents; 38 of 58 share one byte-identical opening. Kawashigi's one reactive rule: opponent melon tiles ≥9 at d3. |
+| `the_field.md` | 2026-08-09-era "winners are open-loop scripts" finding. Structural claim still holds; dollar figures superseded (self-banered); now also points forward to `the_field_is_a_monoculture_2026-08-21.md`. |
+| `the_ladder_is_two_scripts.md` | 2026-08-11, 2,744 seats. Recommended rebasing on Dmitry Belan or Efe Can Celiksoy. **unsure — needs an owner's eye:** nothing since has used either target, and `REGISTER.md` OPEN-10 (this exact item) is not marked closed. See `consolidation_2026-08-22.md` contradiction 5. |
+| `kawashigi_one_board_2026-08-13.md` | The ladder deals one fixed board; only the shop-unlock draw and weeds vary. Current, with a note added this pass: qualified (not overturned) by `marginal_units_and_the_shared_book_2026-08-16.md` §9's finding that the draw is agent-dependent, not seed-only. |
+| `kawashigi_algorithm_2026-08-21.md` | **Retracted the same day it was written** (its own banner) — see `the_middle_is_not_board_capacity_2026-08-21.md`. |
+| `the_middle_is_not_board_capacity_2026-08-21.md` | Current. Falsifies the board-capacity claim: Kawashigi leaves the board non-full on 85.7% of mid-season days; his day is turn-bound, not menu-bound. |
+| `the_opening_is_a_tape_the_middle_is_two_regimes_2026-08-21.md` | Current. d0-d12 replay matches the tape exactly (0 differing cells); reconciles with the board-capacity file rather than contradicting it. |
+| `ryo_tetsuya_vs_kawashigi_2026-08-21.md` | Current. Both play a scalar wheat-fill mid-season; carrot is what separates a third player (Ryo). Self-corrects an earlier 9-seat sample. |
+| `day_blocks_2026-08-20.md` | Current. A decision tree predicts Kawashigi's daily action block 83.6% at d6, collapsing to ~5% by d17+ — the season is a per-day problem a per-turn model can't see. Retracts an earlier "frozen five-day opening" claim as a 9-game artifact. |
+| `the_arm_is_the_whole_model_2026-08-20.md` | Current. A board-free (day,hour,slot) lookup beats a board-keyed one; roadmap toward an arm classifier. |
+| `the_library_agent_and_where_kawa_parts_2026-08-21.md` | Current, negative result: a modal-row library agent loses to the shipped greedy planner, $68,445 vs $109,270 — over-plants 45% for no extra harvest. |
+| `decision_points_2026-08-16.md` | Current. The d6 YARN_STORE fourth-quadrant switch is real (+9.4pp); the d3 melon-threshold "switch" was never actually tested (the test opponent always holds 12 tiles by construction). |
+| `allocation_bounds_2026-08-16.md` / `allocation_bounds_pass2_2026-08-16.md` | Pass1 SUPERSEDED by pass2 same day (banner added). Pass2 current: near-optimal allocation bands from an MILP, and an independent derivation of the same melon-threshold-9 finding as `decision_points_2026-08-16.md`. |
+| `cem_allocation_search_2026-08-15.md` | unsure — needs an owner's eye. Still reads RESULT PENDING; no completion found. Banner added pointing at `allocation_bounds_pass2_2026-08-16.md`. |
+| `the_top_five_clusters_2026-08-09.md`, `what_the_leaders_actually_grow_2026-08-09.md` | SUPERSEDED (own banners, confirmed still accurate). 15/20-replay-scale field descriptions, superseded by the 2,744-seat and 1,010-game samples above. |
+
+## Matching a reference tape — mechanism work (read the file's own banner for its target)
+
+Every file below diagnoses a real bug against a recorded tape. The **target** (whose tape) has moved
+three times: Seb → Victor/Kawashigi → tetsuya. A file's bug-level finding usually survives a target
+change; its "we now match X" framing usually does not. Files already carry their own banner where
+this applies — trust the banner over the file title.
+
+**Seb target — all carry "TARGET SUPERSEDED, added 2026-08-11" (Seb's tape was optimal under the
+old economy; his bank halved and he withdrew from the ladder):**
+`fable_matching_the_tape_2026-08-10.md`, `how_sebs_planner_works_2026-08-10.md`,
+`how_seb_feeds_the_herd.md`, `the_day_is_a_cash_ledger.md`,
+`the_market_cadence_over_all_products_2026-08-10.md`, `plan_once_and_the_dawn_blind_spots_2026-08-09.md`,
+`handoff_plan_once_2026-08-09.md`, `router_tape_repoint_2026-08-09.md`,
+`the_tape_column_does_not_replay_his_game_2026-08-09.md`. Read as HISTORICAL — the bug findings each
+one names are still real per its own banner; the "matches Seb" framing is not the goal.
+
+**Victor / Kawashigi / tetsuya target — current diagnostic lineage, in date order:**
+
+| File | What it is |
+|---|---|
+| `fable_the_d4_d5_planner_2026-08-11.md`, `fable_the_d7_feed_2026-08-11.md` | Victor tape. Two shipped, tested fixes (`hold_farmer`/`farmer_start`, dawn-block persistence) closing d4-d7 divergence. |
+| `fable_where_next_2026-08-11.md` | Victor tape. Prioritised roadmap; ranks the late-season strawberry/melon dump as the top open item. Superseded in confidence (not direction) by the 2026-08-15 fourth-quadrant pair below on its D6 item. |
+| `ladder_losses_2026-08-11.md` | Real losses (10, explicitly a losses sample). Melon denial-play arithmetic; later extended by `marginal_units_and_the_shared_book_2026-08-16.md`. |
+| `spawn_ring_misprediction_2026-08-12.md`, `fable_spawn_ring_verdict_2026-08-12.md` | Open, unfixed: dawn hand-arrival prediction disagrees with actual hour-0 position, costing a tile to weed. Real fix untried. |
+| `the_route_is_precomputable_2026-08-12.md` | Current reasoning (map is fixed, offline solve is valid); the *specific* route tables it justifies are separately stale (see `SUPER_IMPORTANT_READ_THIS_FIRST.md` §8). |
+| `d16_fertilizer_starvation_2026-08-12.md`, `d18_harvest_and_sells_2026-08-12.md` | Current, open. Same root mechanism (`FERTILIZER_RESERVE_LOOKAHEAD_DAYS`) at two different days. |
+| `the_late_season_is_one_defect_in_two_halves_2026-08-12.md` | Diagnosis; note added pointing to where it was implemented (`the_market_is_the_late_season_2026-08-13.md`). |
+| `d6_stranded_wool_2026-08-13.md` | Shipped fix: `SHIP_WHAT_NO_LATER_STOP_CAN_BANK`. Current. |
+| `d6_water_2026-08-13.md` | HISTORICAL — measured a net loss same day, reverted. |
+| `market_depth_and_the_morning_losses_2026-08-13.md` | Current. Full market-depth table; diagnoses 5 real losses to a `_herd_split` bug. |
+| `the_market_is_the_late_season_2026-08-13.md` | Current. Implements `LATE_SEASON_PAIR`; self-corrects a milk-floor claim mid-file as a harness artifact. |
+| `the_ladder_is_lost_by_a_nose_2026-08-13.md` | Current for loss-magnitude figures; self-corrects a win-rate claim inline (Alex: "I only download the losses"). |
+| `the_last_growing_days_water_2026-08-14.md` | HISTORICAL — own banner: "DIAGNOSED, FIX REVERTED, DO NOT RETRY AS WRITTEN." |
+| `the_milk_must_be_in_the_shed_by_h05_2026-08-14.md` | Current. Ships `BANK_ON_THE_PEN_THAT_FUNDS_THE_DAY`. |
+| `the_wheat_row_and_the_turns_own_spending_2026-08-14.md` | HISTORICAL — own status line: diagnosed, reverted; ends by superseding its own framing. |
+| `three_ladder_games_2026-08-15.md`, `two_losses_2026-08-15b.md` | Current, real downloaded losses. |
+| `handoff_2026-08-15.md` | HISTORICAL — mid-investigation snapshot; the route regen it describes running is superseded by later work. |
+| `fable_production_decay_d19_2026-08-15.md`, `fable_watering_post_d8_2026-08-15.md` | Current at the rule level; per-tile numbers self-flagged as route-sensitive. |
+| `the_stranded_load_is_the_loss_2026-08-15.md` | CLOSED by `the_last_two_days_2026-08-17.md` (banner added). |
+| `fable_close_the_season_2026-08-15.md`, `fable_brief_sell_the_close_2026-08-15.md` | Current / HISTORICAL (brief, answered by the first). |
+| `after_the_close_release_2026-08-15.md` | Current — the release that followed. |
+| `the_last_two_days_2026-08-17.md` | Current — closes the stranded-load gap; full season **+$415 ahead of tape**. See contradiction 6 in the consolidation doc against item below. |
+| `replay_window_cannot_converge_2026-08-17.md` | HISTORICAL — settled dead end, diagnostic only. |
+| `the_third_quadrant_arrives_a_day_late_2026-08-17.md`, `wasted_late_turns_2026-08-17.md` | Current, open, unfixed. |
+| `dead_constant_audit_2026-08-17.md`, `flag_audit_2026-08-20.md` | Current — code-health audits (17 and 14+4 dead constants/lines found respectively). Read before deleting anything, per the NO FLAGS rule. |
+| `strawberry_watering_2026-08-16.md` | Current, shipped fix (`_trim_to_the_day`). Flags `work_to_be_done_2026-08-16.md`'s baseline table as stale — see contradiction 7. |
+| `marginal_units_and_the_shared_book_2026-08-16.md` | Current, but **read the whole file** — it self-voids three of its own earlier sections as it goes (§3, §5-6, §8). |
+| `work_to_be_done_2026-08-16.md` | Current, most actionable punch list of the batch. One baseline table disagrees with `strawberry_watering_2026-08-16.md`'s re-measurement — see contradiction 7. |
+| `our_geometry_is_not_his_2026-08-20.md`, `plant_is_a_money_problem_2026-08-20.md` | Current, complementary (geometry vs cash) diagnoses on the same tetsuya board. |
+| `the_day_idles_while_the_herd_starves_2026-08-20.md` | Current — explains the `SUPER_IMPORTANT_READ_THIS_FIRST.md` headline "PASS 911 vs 679" mechanism directly. |
+| `the_ration_is_not_in_the_shed_when_the_plan_says_it_is_2026-08-20.md`, `the_sells_land_after_the_hire_2026-08-20.md` | Current, companion diagnoses, same board. |
+| `feed_is_measured_against_ops_he_wasted_2026-08-20.md` | Current — the FEED 73/76 correction `SUPER_IMPORTANT_READ_THIS_FIRST.md` cites. |
+| `the_tape_dies_at_d13_2026-08-20.md` | Current — a `(day,hour,unit)` tape clone dies at d13 from a weed cascade; measures the q4 arm at ~+$15k median. |
+| `d0_to_d3_cell_by_cell_2026-08-21.md`, `d1_bank_cadence_handoff_2026-08-21.md` | Current, in-progress; the second is an explicit open decision for Alex (a rule that wins on Seb's tape and loses 3 cells against Kawashigi's). |
+| `seed_outranks_product_the_fix_and_its_cost_2026-08-21.md` | unsure — needs an owner's eye. A real fix (+$5,516 by d12) that regresses the shipped-agent gate (263→301 failing cells). Explicit "do not ship as-is." |
+| `the_executor_cannot_play_his_own_row_2026-08-21.md` | Current — companion diagnosis to the file above, same game, same defect family. |
+| `the_carrot_window_is_three_days_2026-08-21.md` | Current — narrows a broad carrot perturbation (a loss) to a 3-day window (near-break-even). |
+| `the_tape_beats_our_planner_2026-08-21.md` | Current — most recent, most rigorous tape/planner comparison; fixes 3 one-line bugs; flags game `94469635` (tomato-heavy) as a possibly-worth-adopting fifth tape target. See contradiction 6. |
+
+## Market mechanics, economics and the animal-produce books
+
+| File | What it is |
+|---|---|
+| `the_market_2026-08-09.md` | Current for the sell-rule mechanism and §5; §2's absorption table is self-flagged superseded — read `what_the_town_will_actually_eat.md` instead. |
+| `what_the_town_will_actually_eat.md` | Current. 87 tapes: melon and fertilizer always oversupplied, wheat always scarce. |
+| `what_saturates_and_what_does_not_2026-08-09.md` | Current, corrected saturation table. Its CARROT/TOMATO/EGG rows predate the 2026-08-15 hinge change — not re-verified since. |
+| `economics_q5_findings.md` | Current for §1/§3/§5 (yields, supply, storage); §2/§4 self-flagged superseded by `what_the_town_will_actually_eat.md`. |
+| `market_curves_and_the_q4_branch_2026-08-15.md` | Current for the market-curve tables (§1-6); §7's q4 number is superseded — note added pointing to `q4_variant_first_draft_2026-08-15.md`. |
+| `q4_variant_first_draft_2026-08-15.md` | Current — the more rigorous q4 measurement, -$716 mean, not distinguishable from zero, 11/11 win on armed seeds. Own verdict: "worth pursuing, not in this form." |
+| `market_depth_and_the_morning_losses_2026-08-13.md` | Current — full depth/floor table, 5 real losses diagnosed. |
+| `when_and_what_to_sell_2026-08-15.md` | **STALE** (banner added) — its headline total and its own falsifiable prediction are both contradicted elsewhere and never corrected in the file. |
+| `the_book_is_shallow_2026-08-09.md` | Current for the surviving claims (self-corrected banner already present: price-curve math and the melon-no-shop finding survive; the absorption-by-seed method does not). |
+| `carrot_and_the_empty_book_2026-08-19.md` | Current — clean, fills-not-offers measurement: carrot nets 13-25% less than wheat as a season staple; use only as an end-of-season closer. |
+| `carrot_swap_2026-08-12.md` | SUPERSEDED (banner added) by the file above; its own arms were already self-retracted twice in-file. |
+| `fable_allocation_economics_2026-08-15.md` | Current — post-1.32.7. No unconditional edge to wheat→carrot/tomato conversion; conditional on the d12 shop draw. |
+| `fable_market_shape_2026-08-09.md` | Current, with a caveat: `LATE_SELL_BIAS`'s +12.5pp win-rate gain is real on 8 seeds but not yet confirmed on the wider sweep this project otherwise requires. |
+| `balance_change_eggs_tomatoes_carrots_2026-08-15.md` | Current — primary source for the 1.32.7 "hinge" pricing rule and the required version bump. |
+| `the_greedy_is_a_mix_scorer_2026-08-19.md` / `_2026-08-20.md` | Current — read as a pair; the 08-20 file retracts one subclaim of the 08-19 file (an "opponent lead" correlation, re-measured per-game rather than per-placement) and extends the rest to 88.5% herd-placement match. |
+| `the_mix_and_the_routes_are_one_artifact_2026-08-19.md` | Current — a melon arm with zero crop-mix change gained +$5,615 purely from re-solving stale routes; resolves the geese question again (`swap_in_geese` itself is the defect). |
+| `the_tapes_are_both_strawberry_rich_2026-08-19.md` | HISTORICAL — own "MEASURED AND REVERTED" marker; a strawberry cap lost $28,259 across four arms. |
+| `the_market_is_one_token_not_nine_heads_2026-08-20.md` | Current — explains why nine independent per-head market marginals emit zero orders; flags its own target risk (tetsuya no longer #1 as of 2026-08-20). |
+| `arena_state_leak_2026-08-09.md` | Current — `run_arena` state-leak bug found and fixed; resolves an old 94.4%-vs-14.6% discrepancy as measurement contamination. |
+| `geometry_of_the_herd_2026-08-09.md` | Current — pen geometry confirmed not a lever a third time; corrects an older "1.86 vs 2.93" figure in-file. |
+| `parity_restored_on_1326_2026-08-09.md` | Current for the four 1.32.6 rule fixes; its specific price-literal table predates the 1.32.7 hinge change. |
+| `fable_the_discard_problem_2026-08-09.md` | Own banner: headline discard numbers were 15x overstated, corrected in-file. The day-gate bug fix and harness-stability finding survive. |
+| `fable_the_wheat_churn_2026-08-09.md` | Current, shipped fix (`FEED_BUY_CEILING_DAYS = 2`). |
+| `fable_stage1_review_2026-08-09.md` | Bug findings current; the priority call (chase a public agent's opening before reviving stage 1) was point-in-time. |
+
+## Herd, animals, geese
+
+`REGISTER.md` OPEN-17 is the live entry. Read these in date order — the goose question has been
+re-derived at least six times in this corpus:
+
+| File | What it is |
+|---|---|
+| `fable_geese_audit_2026-08-15.md` | Current — closes geese on the Elo (margin) objective: best in only 0.9% of shop draws, because withdrawing from the milk/wool books gifts the opponent price suppression. |
+| `the_goose_is_insurance_2026-08-15.md` | unsure — needs an owner's eye. Self-retracts its own dollar figures mid-file (opponent volumes were offers, not fills); its qualitative conclusion (geese are insurance, not a general win) agrees with the file above. |
+| `the_market_is_the_late_season_2026-08-13.md`, `the_mix_and_the_routes_are_one_artifact_2026-08-19.md` | Both re-derive a geese verdict and both call theirs "the fifth" — the numbering across files disagrees; treat as roughly the fifth and sixth independent re-derivations, not a contradiction to resolve. |
+| `three_ladder_games_2026-08-15.md`, `two_losses_2026-08-15b.md` | Current — real losses showing milk/wool floored, a cow starved by a feed miss. |
+
+## BC / imitation pipeline and the RL ruling
+
+| File | What it is |
+|---|---|
+| `the_bc_pipeline_2026-08-20.md` | Current — essential pre-read before trusting any BC training metric; nine defects found, including a 52%-of-legal-sells mask veto. |
+| `the_imitation_pipeline_2026-08-20.md` | Current — active BC→DAgger→RL plan. |
+| `fable_bundle_head_review_2026-08-20.md` | Current, most fundamental of the pair below: the flagship legality mask (`masks_for`) has never once executed (`state.private.shed` does not exist). |
+| `fable_bc_pipeline_review_2026-08-20.md` | Current, with a cross-reference note added this pass to the file above. |
+| `rl_feasibility.md` | Current — the RL ruling, self-corrected in-file (terminal reward, RL parked). |
+| `kill_criteria_and_settled_positions.md`, `lessons_carried_over.md` | Current — settled positions and the Orbit Wars distillation. |
+| `throughput_measurements.md` | HISTORICAL — its strategic conclusion ("build a vectorized sim for RL") is superseded by the RL-parked ruling; the throughput numbers themselves are presumably still accurate. |
+| `what_kind_of_problem_this_is.md` | Current framing; dollar figures inside self-flagged as pre-1.32.6 / method-only. |
+| `fable_stage1_review_2026-08-09.md` | See market section above. |
+
+## Losses analyzed (read the bias warning in each)
+
+| File | What it is |
+|---|---|
+| `ladder_losses_2026-08-11.md` | Self-flags: "THIS IS A SAMPLE OF LOSSES, NOT A RECORD." |
+| `the_ladder_is_lost_by_a_nose_2026-08-13.md` | Self-corrects a win-rate claim the same day (Alex: downloaded games are losses only). |
+| `three_ladder_games_2026-08-15.md`, `two_losses_2026-08-15b.md`, `wasted_late_turns_2026-08-17.md` | Current, real losses, each states its own sample size. |
+| `why_we_lost_93318573_93323101.log` | Not a doc — raw script-output dump for two loss episodes. Not indexed further; consider moving to `data/logs/`. |
+
+## Known unresolved contradictions
+
+Full detail, with numbers, in `docs/consolidation_2026-08-22.md`. In order of how much they can
+cost a reader:
+
+1. Melon-swap direction: two in-repo docs vs. root `RETRACTIONS.md` item 7's 960-game sweep disagree.
+2. Whether the shop draw is seed-only or agent-dependent (`kawashigi_one_board_2026-08-13.md` vs
+   `marginal_units_and_the_shared_book_2026-08-16.md` §9).
+3. `REGISTER.md`'s own baseline command names a retired tape (`seb`) and cannot run as written.
+4. Whether fast-sim parity is actually green right now is unverified; `CLAUDE.md` states it as fact
+   with no version qualifier.
+5. The 2026-08-11 rebase recommendation (Dmitry Belan / Efe Can Celiksoy) was never adopted and
+   `REGISTER.md` OPEN-10 is not marked closed.
+6. Two "our agent vs the kawashigi tape" season numbers, from different measurement setups, do not
+   reconcile (`the_last_two_days_2026-08-17.md` vs `the_tape_beats_our_planner_2026-08-21.md`).
+7. `work_to_be_done_2026-08-16.md`'s tape-gate baseline disagrees with the same-day re-measurement in
+   `strawberry_watering_2026-08-16.md`.
+
+---
+
 **Updated 2026-08-15.** Read this section before anything below it: several of the framings further
 down were overturned today, and the file dated 2026-08-11 that follows still states them.
 

@@ -1,3 +1,9 @@
+> Note added 2026-08-22: `docs/marginal_units_and_the_shared_book_2026-08-16.md` §9 later found the
+> shop draw is endogenous to which agent plays, not seed-only (weed-spawn RNG is consumed per-tile
+> before the shop draw, so a different agent's moves shift it). That qualifies this file's "seed's
+> only job is the shop draw" framing for a FIXED opponent script; it does not overturn the board-is-
+> fixed finding below. Not reconciled in either file — flagged for an owner.
+
 # The ladder is ONE fixed board, and the leader is not open-loop
 
 2026-08-13.

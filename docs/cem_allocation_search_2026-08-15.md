@@ -1,3 +1,8 @@
+> unsure - needs an owner's eye. As of 2026-08-22 this file still reads RESULT PENDING throughout;
+> no completion was found anywhere in `docs/`. The same allocation question was answered by a
+> different method the next day in `docs/allocation_bounds_pass2_2026-08-16.md`. If this run never
+> finished, treat that file as the current answer and confirm whether this one should be deleted.
+
 # CEM over the crop and herd allocation dials, 2026-08-15
 
 **Status: RESULT PENDING — this file is written as the run completes. See the verdict at the bottom.**

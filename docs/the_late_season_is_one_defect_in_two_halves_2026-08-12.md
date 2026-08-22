@@ -1,3 +1,8 @@
+> Note added 2026-08-22: implemented and measured as `LATE_SEASON_PAIR` in
+> `docs/the_market_is_the_late_season_2026-08-13.md` — read that for the combined, dated result
+> (-$1,863 with stale routes, -$370 re-solved, called undecided within seed variance). This file
+> remains the diagnosis that produced it.
+
 # The late season is one defect in two halves, and neither half pays alone
 
 2026-08-12. Measured, seed 11, tape victor. **Both halves are currently UNFIXED** — the first was

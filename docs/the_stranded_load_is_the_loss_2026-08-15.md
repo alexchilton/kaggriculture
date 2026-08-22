@@ -1,3 +1,7 @@
+> CLOSED by docs/the_last_two_days_2026-08-17.md - "both halves the old note asked for" are shipped
+> there (a CRITICAL-priority d28 harvest plus a re-seated d29 drop); d29 drop is now 9/9 against the
+> tape. The three failed fixes recorded below are still real null results - do not re-try them.
+
 # The season ends with the crew holding the margin
 
 Measured 2026-08-15 off three downloaded ladder replays, at the final step of d29.

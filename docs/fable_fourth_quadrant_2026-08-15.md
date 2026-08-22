@@ -1,3 +1,8 @@
+> SUPERSEDED by docs/fable_fourth_quadrant_reopened_2026-08-15.md - same day. Real ladder seats show
+> a 100-tile quadrant is worked with the SAME hire count as a 75-tile one (277 season hires either
+> way), so this file's closing argument - a ~$21,960 marginal-crew cost - prices a plan nobody plays
+> and is retracted by the reopened file, section 1.
+
 # Is there a narrow path to a fourth quadrant? (Fable, 2026-08-15)
 
 Verdict up front: **no path at quadrant scale — closed by the fibonacci hire curve, not by the

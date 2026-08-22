@@ -1,3 +1,7 @@
+> SUPERSEDED by docs/allocation_bounds_pass2_2026-08-16.md - same day, same script, a tighter solver
+> gap and a corrected cost model narrow every band in this file 24-32% and add a per-shop-draw policy
+> this pass does not have.
+
 # Allocation bounds: the near-optimal region for every crop and species
 
 2026-08-16.

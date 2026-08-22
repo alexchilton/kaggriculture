@@ -1,3 +1,11 @@
+> **STALE, flagged 2026-08-22.** Two claims in this file are contradicted elsewhere and were never
+> corrected in place. §"the deciding number" total `152,792 -> 164,928 (+12,136)` compares against an
+> infeasible baseline; `docs/fable_allocation_economics_2026-08-15.md` gives the real release value
+> as **+$5,653**. The falsifiable prediction at the end (`MELON_YIELD_OPPONENT_MELON = 99` beats the
+> shipped `= 7`) was tested on 960 games and falsified — the shipped rule narrowly won, 68.1% vs
+> 67.9% (root `RETRACTIONS.md`, item 7). Read the mechanics sections (market-impact curves) as
+> reference; do not quote the total or the prediction from this file.
+
 # When and what to sell — an optimisation analysis
 
 Written 2026-08-15. Every number here is computed from `reference/kaggriculture.py` and the shipped

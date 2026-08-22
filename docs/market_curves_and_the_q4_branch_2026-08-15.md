@@ -1,3 +1,9 @@
+> Note added 2026-08-22: section 7's q4-branch number (+$465 mean, "not shippable") is a rougher
+> precursor to `docs/q4_variant_first_draft_2026-08-15.md`, which isolates the routing handicap from
+> the parcel+herd cost on a proper `shipped_live` baseline and gets -$716 mean, not distinguishable
+> from zero. Prefer that file's number for section 7's question. Sections 1-6 (the market-curve
+> tables) are unaffected and still the reference for this topic.
+
 # The market curves, and what they say about allocation
 
 Written 2026-08-15.
