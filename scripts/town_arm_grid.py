@@ -416,26 +416,37 @@ def main():
                 for sd in args.seeds:
                     jobs.append((ti, draw, o, spec, a, all_arms[a], sd, args.weeds))
 
-    got, t0 = {}, time.time()
-    with multiprocessing.Pool(args.jobs) as mp:
-        for k, (ti, o, a, sd, money, theirs, weed, tape) in enumerate(mp.imap_unordered(_job, jobs), 1):
-            got[(ti, o, a, sd)] = (money, theirs, weed, tape)
-            if k % 200 == 0 or k == len(jobs):
-                print("  %5d/%d  %5.0fs" % (k, len(jobs), time.time() - t0), flush=True)
-
-    # **Every season written out raw.** Re-banding, re-conditioning and re-plotting must never
-    # cost another 4,560 games -- which is exactly what the leaderboard-rank correction did cost
-    # the first time round, because the previous version printed aggregates and kept nothing.
-    # every season, not just the last per key -- the tables collapse seeds, the CSV must not
+    # **Every season written out raw, AS IT LANDS.** Re-banding, re-conditioning and re-plotting
+    # must never cost another 4,560 games -- which is exactly what the leaderboard-rank correction
+    # did cost the first time round, because the previous version printed aggregates and kept
+    # nothing. Every season, not just the last per key: the tables collapse seeds, the CSV must not.
+    #
+    # **The header goes down before the pool starts and every row is flushed on arrival.** Until
+    # 2026-08-22 this block opened the file after the last season, so a run that was interrupted
+    # wrote nothing at all. Measured that morning: `big_carrot` (8,448 seasons) and `carrot_seeds`
+    # (21,120) each ran over an hour, were killed when the box was taken for the tape shootout, and
+    # produced logs containing only their own headers -- 29,568 planned seasons, zero rows. The same
+    # end-of-run write also hid a `TypeError` in `rows_line` (11 format specifiers, 12 arguments)
+    # behind the entire run, so any sweep of any length ended in a traceback and no CSV.
+    #
+    # Rows now arrive in completion order rather than sorted -- `imap_unordered` -- which is fine
+    # for every consumer, since all of them key on the columns rather than the line number.
     raw = pathlib.Path(os.environ.get("GRID_ROWS",
                                   REPO / "data/logs/town_arm_grid_rows_2026-08-21.csv"))
-    with open(raw, "w") as fh:
+    print("raw rows -> %s  (written live, one line per season)\n" % raw, flush=True)
+
+    got, t0 = {}, time.time()
+    with open(raw, "w") as fh, multiprocessing.Pool(args.jobs) as mp:
         fh.write(rows_header())
-        for (ti, o, a, sd), (m, t, w, tp) in sorted(got.items()):
-            fh.write(rows_line(ti, towns[ti][2] if len(towns[ti]) > 2 else "uniform", tp, o,
+        fh.flush()
+        for k, (ti, o, a, sd, money, theirs, weed, tape) in enumerate(mp.imap_unordered(_job, jobs), 1):
+            got[(ti, o, a, sd)] = (money, theirs, weed, tape)
+            fh.write(rows_line(ti, towns[ti][2] if len(towns[ti]) > 2 else "uniform", tape, o,
                                band_of(o, bands), "-" if o == MIRROR else bands[o][4],
-                               a, sd, m, t, w, towns[ti][1]))
-    print("\nraw rows -> %s" % raw)
+                               a, sd, money, theirs, weed, towns[ti][1]))
+            fh.flush()
+            if k % 200 == 0 or k == len(jobs):
+                print("  %5d/%d  %5.0fs" % (k, len(jobs), time.time() - t0), flush=True)
 
     def dmargin(ti, o, a):
         """Mean delta-margin over every seed run for this (town, opponent, arm).
