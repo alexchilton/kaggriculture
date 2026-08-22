@@ -105,6 +105,37 @@ SURPLUS of 34. The assertion and its own explanation had come apart, which is th
 `scripts/breakdown.py:160` already records this trap: the grid default *"stayed pinned to `victor`
 for two days"*. A tape pin is a thing that rots quietly.
 
+## The third pass, 2026-08-22: the solver goes too, and the suite reaches zero red
+
+Alex: *"we dont use the solver either - same as the planner - irrelevant currently"*, and
+*"dont leave any red - fix or comment out"*.
+
+Twenty-nine more files, 41 tests. They are the same component under different names -- the day
+planner, the solver it calls, and the routing under both:
+
+    the dawn plan sows the ground the day will buy
+    a harvested tile is replanted before new ground
+    the crew walks its load home at dusk
+    a pen is built before anything is placed in it
+    a lane is cut to what its hand can walk
+    the solver is given the tile each unit wakes on
+    spare turns reach the hand that can use them
+    ... and 22 more
+
+**One of them was not obviously dead and is worth the note.**
+`test_a_replayed_day_credits_what_the_tape_planted.py` passes alone and fails in the suite. That is
+state leakage: `q4_branch.install` assigns `cover.UNSOLVE_DAYS = ()` and rewrites
+`cover.PRECOMPUTED_ROUTES`, and running the yarn-latch file first takes it down.
+
+`conftest.py`'s `_no_test_poisons_the_next_one` already guards `kagg.search.cover` and snapshots
+every uppercase name in it, so this is a fixture-ORDERING problem, not a missing guard -- the file's
+own module-scoped fixture runs its 13-day season before the function-scoped guard can act.
+
+It was archived rather than repaired, because the file forces `REPLAY_OPENING_DAYS = (4, ... 11)` to
+test the **d12 handover**, and the shipped agent replays all thirty days and never performs a
+handover. It is a diagnostic fixture. The leak is real and is recorded here in case it surfaces
+somewhere live.
+
 ## What would make this matter again
 
 Any of these, and the archive should come back:
