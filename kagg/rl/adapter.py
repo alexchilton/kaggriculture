@@ -122,7 +122,7 @@ def _unlock_shops(obs):
     return jnp.asarray(ids, dtype=J._I)
 
 
-def state_from_obs(obs, privates):
+def state_from_obs(obs, privates, step=None):
     """Build a batch-of-one `jax_sim.State` from one turn's observation.
 
     `obs` is the shared observation (`farms`, `market`, `step`); `privates` is a two-element list of
@@ -131,11 +131,27 @@ def state_from_obs(obs, privates):
     seeds are not visible in the real game either, so the policy is not losing information it would
     otherwise have; it is losing information it was *trained* with, which is a real distribution
     shift and is recorded in the module docstring of `kagg/agents/neural.py`.
+
+    **`step` is explicit because `obs["step"]` is not always there, and its absence is silent.**
+    `kaggle_environments` puts `step` in seat 0's observation only, and some replays carry `None`.
+    Falling back to 0 hands the simulator a mid-season board under a day-0 counter, and every crop
+    and animal rule is driven by `step_index // TURNS_PER_DAY`.
+
+    Measured 2026-08-22 on the four DAgger tapes at true turn 100: the three seat-0 tapes resolved
+    to day 4 and the one seat-1 tape to day 0, for all 720 turns. The mask that suffers most is
+    HARVEST -- `(day - planted_day) >= FIRST_YIELD_DAY` goes negative, so nothing is ever ripe --
+    and 300 of the 1585 HARVEST labels in that training set were forbidden as a result, 301 of the
+    307 total offenders on that single tape. Unemittable and zero-weighted in the loss, so it shows
+    up nowhere except as an op that never improves.
+
+    A caller that knows which turn it is on should say so; it overrides the observation. Callers
+    that pass nothing keep the old behaviour. `curriculum.py:114` reached the same conclusion
+    independently and worked around it locally with `_with_step_index`.
     """
     import jax.numpy as jnp
 
     farms = obs["farms"]
-    step = int(obs.get("step", 0))
+    step = int(obs.get("step", 0) or 0) if step is None else int(step)
     day = step // J.TURNS_PER_DAY
 
     tile_fields = [_tile_arrays(farms[p]["tiles"], day) for p in range(2)]

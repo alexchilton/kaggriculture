@@ -262,7 +262,12 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         # exactly this way for the same reason, and this file must match it or the checkpoint plays
         # worse in the game than it scored in training.
         privates = [obs["private"] if p == seat else AD.agent_private_stub() for p in range(2)]
-        sim_state = AD.state_from_obs(obs, privates)
+        # **`step=turn`, not `obs["step"]`.** `kaggle_environments` gives `step` to seat 0 only, and
+        # `91906088.json` is played from seat 1 -- so without this the clock sat at day 0 for all 720
+        # turns of one of the four training tapes, and HARVEST was masked illegal all season because
+        # `(day - planted_day)` went negative. 300 of 1585 HARVEST labels, unemittable and
+        # zero-weighted. `tests/test_the_clock_is_right_when_we_are_seated_second.py`.
+        sim_state = AD.state_from_obs(obs, privates, step=turn)
         tiles, units, glob = _encode(sim_state)
         flat = (A._flat(tiles), A._flat(units), A._flat(glob))
         masks = A.masks_for(sim_state, bundle_ok)
