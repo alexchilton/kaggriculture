@@ -122,8 +122,10 @@ WALK_THE_LOAD_HOME_DAYS = (10, 29)
 
 
 
-#: The last day whose carried load is banked overnight; d29's own drop lands after the final turn.
-LAST_FREE_DROP_DAY = 28
+#: `LAST_FREE_DROP_DAY = 28` was DELETED 2026-08-20 from BOTH this module and `router`: neither copy
+#: had a reader. `tests/test_the_second_to_last_day_banks_the_field.py` computes its own from
+#: `R.SEASON_DAYS - 2` and never imports either. The fact it named -- d29's own drop lands after the
+#: final turn -- is live and is enforced by `WALK_THE_LOAD_HOME_DAYS` above.
 
 
 def _at_risk_tiles(tiles, day=None):
@@ -237,11 +239,15 @@ FUND_THE_DAY_WHEN_SHORT = True
 #: actually covers 23 of the 24 hours.
 PLAN_THE_CREW_THAT_ARRIVES = True
 
-HARVEST_WHAT_YOU_STAND_ON = True
-
 #: Whether a hand crossing a pen it has already fed today also CAREs it.
 #:
-#: **OFF, and measured.** The arithmetic is right -- one turn, no item, one extra unit of product on
+#: **CORRECTED 2026-08-20: this SHIPS ON. The paragraph below says "OFF, and measured" and has been
+#: wrong about what the module does for as long as the value has read `True`.**
+#: `tests/test_the_first_seven_days_match_the_plan.py:910` asserts the rule is ON and would go red
+#: the moment it were turned off, so the measurement below was not acted on -- or was reversed
+#: without the note being updated. The table is kept because it is real; the verdict word is not.
+#:
+#: **The measurement, which argued for OFF.** The arithmetic is right -- one turn, no item, one extra unit of product on
 #: the next production day -- and it still loses, because a care taken on the way past is a turn the
 #: day had already promised to something else. Every hand crosses the pen on the shed tile, so the
 #: rule fires constantly:
@@ -668,6 +674,11 @@ SHED_CAPACITY = 100
 #:
 #: `FEED_DAYS = 1` was tried in the other direction and measured -$6,236 over twelve seeds, which is
 #: presumably why this sat at 2; nothing had ever tried going UP.
+#:
+#: **CORRECTED 2026-08-20: the value is 1, not 4.** The "RAISED 2 -> 4" headline at the top of this
+#: block describes a change that has since been reverted, and the block below `FEED_DAYS_FROM_DAY`
+#: is the note that reverted it -- "the board-read target at `FEED_DAYS = 1` is the measured best".
+#: Read the value, not the headline.
 FEED_DAYS = 1
 
 #: Days of feed held once the season turns TURN-BOUND. See `feed_days()`.
@@ -778,31 +789,10 @@ DUSK_FROM_DAY = 2
 #: one or two units at a time turns every such moment into a 1-turn DROP.
 MIN_OPPORTUNISTIC_DROP = 4
 
-#: How many units of the day's still-owed SELL row a load must contain before the delivery above is
-#: worth the turn. Swept on the day-by-day cells, days 0-11:
-#:
-#:     1   d0=7 d1=6 d2=5 d3=7 d4=7 d5=10 d6=13 d7=19 d8=21 d9=27 d10=20 d11=26   catastrophic
-#:     2   d0=7 d1=6 d2=4 d3=7 d4=7 d5=8  d6=11 d7=15 d8=13 d9=15 d10=19 d11=20
-#:     3   identical to 2
-#:     4   identical to 2
-#:     6   d0=7 d1=6 d2=4 d3=7 d4=7 d5=7  d6=11 d7=15 d8=13 d9=15 d10=19 d11=20   best
-#:
-#: **Treat this as "somewhere in 2 to 6", not as a tuned value.** 6 is separated from 2/3/4 by a
-#: single day-5 cell on ONE seed, which is inside the noise this project has measured repeatedly.
-#:     8   back to the unflagged baseline -- it stops firing
-#:
-#: At 1 it fires for a single fertilizer: DROP is all-or-nothing, so the re-PICKUP costs more turns
-#: than the sale returns and `work` falls 25 ops on day 8 alone.
-MIN_SELL_ROW_DROP = 6
-
-
-#: Turns of slack held back before the ferry will divert. It exists because `Node.service` is
-#: `len(ops)` fixed at plan time and the executor re-derives ops on arrival, so a tour's remaining
-#: cost is under-stated by ~27% on field tiles (`docs/service_undercount_2026-08-07.md`). A flat
-#: reserve rather than a multiplier, because the under-count is a property of the board's live state
-#: and not of the tour's length.
-DELIVER_FERRY_MARGIN = 3
-
+#: `MIN_SELL_ROW_DROP = 6` and `DELIVER_FERRY_MARGIN = 3` were DELETED 2026-08-20: neither had a
+#: reader anywhere in the repo. Both described the mid-day sell FERRY, and `cover.DELIVER_MIN` is
+#: what that rule reads now. Do not re-derive the sweep behind the first one -- it recorded 2, 3 and
+#: 4 as identical and 6 as better by a single day-5 cell on one seed, i.e. inside the noise.
 
 
 def _trace_drop(sink, act, st, inv, shed, carried, tiles):
@@ -828,9 +818,13 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
             gate = "fires"
     sink.append((act[0], gate))
 
-#: Pen tiles to fill BEFORE the shed cells and the field sweep, in order. Empty is the shipping
-#: behaviour and must stay empty on main -- this exists so the *ceiling* of a pen-geometry change can
-#: be measured by pinning the tape's own tiles, before any general rule is written to earn them.
+#: Pen tiles to fill BEFORE the shed cells and the field sweep, in order.
+#:
+#: **CORRECTED 2026-08-20: this is NOT empty and does not "stay empty on main".** The sentence that
+#: used to open this block -- "Empty is the shipping behaviour and must stay empty on main" -- was
+#: written when it was a measuring instrument and was left in place when it became live ground. The
+#: paragraph beginning "That verdict expired" below is what overrode it: the ORDER these tiles are
+#: taken in is what maps the schedule's `places` row onto ground, so the tuple is load-bearing.
 #:
 #: **That ceiling has now been measured, and pen geometry is not a lever.** Our day-0 pens sit on
 #: y=3,4 (the depot row) and his on y=2,3, which reads like a real difference and is not one: the
@@ -991,9 +985,6 @@ def _fit_slots(orders, state):
     return [o for i, o in enumerate(orders) if i not in cut][:ORDER_SLOTS]
 
 
-#: Whether `sells` is read as a CUMULATIVE target (a missed row is retried until it is filled) or as
-#: the old per-day row (a row that landed on an empty shed is forfeited). Switchable for the same
-#: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
 #: Days that send the schedule's whole `hands` row at hour 0 instead of dripping it out against the
 #: landing-square model. Day 4 was pinned first and took `unit-turns` 184/208 -> 208/208.
 #:
@@ -1013,8 +1004,15 @@ def _fit_slots(orders, state):
 #: to spend them. Sending the crew out at hour 0 changes where every unit routes, and the movement
 #: rows diverge by more than the extra turns are worth. Pinning ALL thirty days measures identically
 #: to pinning 0-3, so nothing later is being left on the table either.
+#:
+#: **This is ALL THIRTY DAYS, so `day in HIRE_PINNED_DAYS` is always true and the drip below it is
+#: unreachable.** Kept as a set rather than collapsed because the sweep above is over which days are
+#: in it; narrowing it is a behaviour change, not a cleanup.
 HIRE_PINNED_DAYS = frozenset(range(30))
 
+#: Whether `sells` is read as a CUMULATIVE target (a missed row is retried until it is filled) or as
+#: the old per-day row (a row that landed on an empty shed is forfeited). Switchable for the same
+#: reason as the flag above: it must be attributable on the day-by-day trace, not on a final bank.
 CUMULATIVE_SELLS = True
 
 #: Whether the final day ignores every sell cap and offers the whole shed. Stock has no terminal
@@ -1078,42 +1076,18 @@ HIRE_FIRST = True
 # hour 2 and places at hour 15.
 URGENT_OPS = ()
 
-#: Whether an animal purchase may take the slot of the day's last HIRE when the turn's ten market
-#: order slots are full. See the note at the BUY_ANIMAL block. Off restores the old flat `< 8` cap.
-ANIMAL_OVER_HIRE = True
 
-#: Whether every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
-#: already is. See the note above the seed bill for the day-6 measurement.
-SELLS_FUND_THE_TURN = True
-
-
-#: The day from which `STEAL_FROM_DAY_MARGIN` applies, or `None` to never steal. Same narrowing that
-#: `PEN_NEAREST_DEPOT_FROM_DAY` needed, and for the same reason: the cost and the benefit are on
-#: different days. Re-swept 2026-08-07 against a 127-cell baseline, ungated:
+#: **DEAD IN THE AGENT, LIVE IN A DIAGNOSTIC. Do not delete without deciding about the script.**
+#: `STEAL_FROM_DAY` has no reader at all. `STEAL_FROM_DAY_MARGIN` has exactly one, and it is not on
+#: any play path: `scripts/who_claimed_the_last_work.py:38` passes it to `_claimed_tiles`. Nothing
+#: in `agent()` consults either, so the stealing rule they gate is not running.
 #:
-#:              d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF       7  6  4  7  7  7 11 15 13 12  18  20   127
-#:     margin 4  7  7  4  7  8  8 11  8 11 14  19  19   123
-#:
-#: Lowest total and DISQUALIFIED in order -- d1 6->7, d4 7->8, d5 7->8. But d7 15 -> 8 is the biggest
-#: single-day gain anything has produced, and d8 goes 13 -> 11, so stealing is unlocking something
-#: real once the crew is large. Early on a claim is worth honouring: the crew is small, every unit is
-#: committed, and taking a stop off one just moves the work.
-#:
-#: Gated, swept on the day threshold at margin 4:
-#:
-#:               d0 d1 d2 d3 d4 d5 d6 d7 d8 d9 d10 d11  total
-#:     OFF        7  6  4  7  7  7 11 15 13 12  18  20   127
-#:     from d6    7  6  4  7  7  7 11  8 11 14  19  19   120   <- taken
-#:     from d5    7  6  4  7  7  8 11  8 11 14  19  19   121   d5 regresses
-#:     from d4    7  6  4  7  8  8 11  8 11 14  19  19   122   d4 regresses
-#:     from d7    7  6  4  7  7  7 11 17 14 15  23  17   135
-#:     from d8    7  6  4  7  7  7 11 15 14 16  18  17   129
-#:
-#: d0-d6 byte-identical and d7 15 -> 8, the largest single-day gain measured in this project. It
-#: gives back 2 on d9 and 1 on d10; under an in-order metric the earliest day touched is what counts
-#: and that day improves by seven. Gating LATER than 6 is worse, not better -- d7 and d8 both make
-#: d7 itself worse -- so this is not "steal late", it is "steal once the crew outgrows the work".
+#: The measurement is kept because it is the largest single-day gain this project has recorded and
+#: must not be re-derived from scratch. Gated from d6 at margin 4: d0-d6 byte-identical and d7 went
+#: 15 cells -> 8, giving back 2 on d9 and 1 on d10. Ungated it was 123 cells against a 127 baseline
+#: but DISQUALIFIED in order (d1 6->7, d4 7->8, d5 7->8). Gating LATER than d6 was worse, not
+#: better -- from d7 gave 135 and from d8 gave 129 -- so the rule is "steal once the crew outgrows
+#: the work", not "steal late".
 STEAL_FROM_DAY = 6
 STEAL_FROM_DAY_MARGIN = 4
 
@@ -1167,7 +1141,10 @@ def _route_turns(pos, route, depots):
 
     The same quantity `plan_routes` charged against the budget when it accepted the tour, recomputed
     from where the unit actually stands. It inherits that model's known under-count -- `Node.service`
-    is `len(ops)` fixed at plan time -- which is what `DELIVER_FERRY_MARGIN` holds back for.
+    is `len(ops)` fixed at plan time and the executor re-derives ops on arrival, so a tour's
+    remaining cost is under-stated by ~27% on field tiles
+    (`docs/service_undercount_2026-08-07.md`). Nothing holds slack back for it any more:
+    `DELIVER_FERRY_MARGIN`, which used to, had no reader and was deleted 2026-08-20.
     """
     at, turns = tuple(pos), 0
     for node in route:
@@ -2120,8 +2097,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 # tile for a replant, whereas watering a tile someone else is routed to merely moves
                 # the turn around. `working_tiles` keeps it off a tile another hand is working THIS
                 # turn, so two hands cannot harvest the same crop.
-                if (not HARVEST_WHAT_YOU_STAND_ON
-                        or not isinstance(here, dict) or "crop" not in here
+                if (not isinstance(here, dict) or "crop" not in here
                         or tuple(pos) in working_tiles or tuple(pos) in cared_this_turn):
                     return None
                 ops = RT.crop_ops(here, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
@@ -3533,9 +3509,11 @@ SELLABLE = ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT") + tupl
     p for p in R.PRODUCTS if p not in ("MELON", "WOOL", "MILK", "STRAWBERRY", "FERTILIZER", "WHEAT"))
 
 #: How many days ahead the FERTILIZER sell reserve looks. 0 restores the old one-day rule.
-#: Three, because `FERTILIZE` sets `fertilized_until_day = day + 2` (`kaggriculture.py:468`) and so
-#: covers a three-day window; the stock has to survive from the day it is collected to the day the
-#: field asks for it. See the note at the reserve itself.
+#:
+#: **CORRECTED 2026-08-20: the value is ONE, not three.** The argument below is for three -- and it
+#: is a good argument, `FERTILIZE` does set `fertilized_until_day = day + 2` (`kaggriculture.py:468`)
+#: and so covers a three-day window -- but it is not what ships and has not been for some time.
+#: Whoever raises this has to measure it; do not read the prose as a description of the value.
 FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 
 
@@ -3562,7 +3540,8 @@ FERTILIZER_RESERVE_LOOKAHEAD_DAYS = 1
 #:
 #: Both default to 0, which is a no-op, so this is inert until a sweep sets it.
 WHEAT_TILES_TO_CARROT = 0
-#: **ONE tile, unconditional, and it ships only with routes solved for it.**
+#: **ONE tile, and it ships only with routes solved for it. NOT unconditional -- see the 2026-08-19
+#: correction at the foot of this block, which the two "unconditional" claims below predate.**
 #:
 #: Measured 2026-08-19 on the four tape arms against routes solved for a NO-tomato mix, one tile from
 #: `LATE_CROP_FROM_DAY = 12`: melon_q3 +$5,692, straw_q3 -$1,117, q4_straw -$1,031, q4_melon -$11,655.
@@ -4927,9 +4906,10 @@ def make_agent(schedule, me=0, router=True):
         # $1,280 of orders -- at hour 2 on a bank of **$15**, in the same turn as `SELL WOOL 6` and
         # `SELL FERTILIZER 1`. Ours cannot, so the melon waits for the money to land and the day runs
         # out of seed.
-        if SELLS_FUND_THE_TURN:
-            money += pending
-            pending = 0
+        # Every purchase below the sell block may be funded by that same turn's sales, as BUY_LAND
+        # already is.
+        money += pending
+        pending = 0
 
         # **Seed against the PINS, not today's row.** A planting deferred because the ground or the bank
         # was not ready still needs its seed on the day it finally happens, and the pins are the only
@@ -5215,10 +5195,10 @@ def make_agent(schedule, me=0, router=True):
             for _ in range(max(0, qty - state["bought"][a])):
                 if money < R.ANIMALS[a]["cost"] + seed_bill:
                     continue
-                # The slot is charged once, for the first head of this species.
-                if want == 0 and len(orders) >= (10 if ANIMAL_OVER_HIRE else 8):
-                    if not ANIMAL_OVER_HIRE:
-                        continue
+                # The slot is charged once, for the first head of this species. An animal purchase
+                # may take the slot of the day's last HIRE when the turn's ten market order slots
+                # are full; see the note at the BUY_ANIMAL block.
+                if want == 0 and len(orders) >= 10:
                     last = next((i for i in range(len(orders) - 1, -1, -1)
                                  if orders[i][0] == "HIRE"), None)
                     if last is None:
