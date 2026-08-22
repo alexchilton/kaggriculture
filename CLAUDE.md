@@ -70,7 +70,15 @@ Each of these cost real time or a wasted submission. Full detail in `docs/experi
   another. Always quote the seed range.
 - **Verify built artifacts actually run.** A hand-rolled `submission/main.py` spliced a docstring
   over line 1, failed to import, and banked exactly the $3000 start. Use
-  `scripts/build_submission.py`, which refuses to ship an agent that cannot beat `starter`.
+  `scripts/build_planner_submission.py`, which bundles the agent plus its schedule into one
+  self-contained file and verifies the result imports and runs. Gate it with
+  `scripts/gate_pool.py`, never against `starter` — see the rule two bullets up.
+
+  *Corrected 2026-08-22.* This said `scripts/build_submission.py`, which was **deleted on
+  2026-08-09** — `docs/competition_brief.md` has recorded that the whole time. It also said the
+  gate is "beats `starter`", which contradicts this same file's rule that `starter` sells almost
+  nothing and every number measured against it is roughly 2x reality. An instruction file that
+  names a deleted script is worse than no instruction: it is followed.
 - **A gate only tests what it exercises.** The parity harness drove one unit per player, so
   "60/60 exact" was a statement about single-unit games and was read as a statement about the
   simulator. Before trusting a gate, ask what it *cannot* reach. This has now cost time three
