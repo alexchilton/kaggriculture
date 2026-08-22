@@ -22,6 +22,11 @@ follows it, are that one unasked-for sale leaking forward -- not separate defect
 Fills come from `kagg/analysis/fills.py`, which wraps `_commit_unit`. Never count offers: the agent
 re-posts an order every turn until it lands, and `docs/` records three separate occasions where a
 proxy for this number produced a confident wrong answer.
+
+**This file measures the PLANNER, and from 2026-08-22 it switches the replay off to do it.** See
+`_the_planner_actually_runs` below. Everything above still holds; what changed is that the shipped
+agent no longer plans these days at all, so without that fixture every test here was asserting
+Seb's schedule against a カワシギ recording and none of them could pass or fail for a reason.
 """
 import collections
 import json
@@ -41,6 +46,54 @@ DAYS = 7
 #: plus the market graft plus the shop-adaptive herd. It must be driven by the schedule it was
 #: calibrated for -- 90494364, the one loaded above -- or the comparison measures the wrong pairing.
 MODULE = "kagg.search.schedule_agent"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _the_planner_actually_runs():
+    """Let `crew.cover` run over d0-d6, which is the only way anything in this file means anything.
+
+    **The problem.** `REPLAY_OPENING_DAYS` became `tuple(range(30))` on 2026-08-21 (`3d81f30`,
+    "Play his tape all thirty days"). `make_agent` reads it at line 5719 and, when it is non-empty,
+    wraps the planner in `replayed()` -- which drives the planner on every turn and then **throws
+    its answer away**, emitting カワシギ's recorded ops instead. So on the shipped path the planner
+    produces nothing that reaches the board on any of these seven days.
+
+    Every test below is a statement about how the planner routes a schedule. Measured 2026-08-22,
+    same commit, same seed, the fixture is the only difference:
+
+        replay on  (shipped)   10 failed,  4 passed, 1 xfailed
+        replay off (planner)    7 failed,  7 passed, 1 xfailed
+
+    With the replay on, `test_the_tape_matches_the_plan_it_was_derived_from` -- the stated control,
+    the one that must pass before any other failure here can be read as a defect -- is comparing
+    Seb's schedule against カワシギ's tape. Three more of the ten are our-vs-Seb comparisons where
+    "ours" is カワシギ. Those four are red by construction. They are not defects and they are not
+    stale expectations; they are a question asked of a component that never ran.
+
+    **This does NOT change what ships.** `monkeypatch` sets the module attribute for the duration of
+    one test and restores it, and `make_agent` reads it at call time, so the shipped agent still
+    replays the tapes on all thirty days. That is Alex's standing instruction and it is untouched.
+    What the fixture buys is that a planner regression can go red again -- which, with the replay
+    on, it could not, because the planner's output never left the function.
+
+    The seven that stay red with the planner running are recorded in `docs/the_tape_and_planner.md`
+    and `docs/history/d6_stranded_wool_2026-08-13.md` as real, unfixed routing defects: a hand
+    walking off a tile holding a hungry animal while carrying its feed, animals unfed at dusk with
+    wheat on the farm, a PLACE planned onto a hand that does not build that pen. Do not delete them
+    to make the file green -- they are the file's whole point.
+
+    **Module scope, deliberately.** `tape_fills` and `our_fills` are module-scoped, and pytest
+    instantiates higher-scoped fixtures FIRST -- a function-scoped autouse patch would land after
+    they had already played their seven days under the replay, and the two comparison tests would
+    stay red while every other test went green. That would have read as "the fix half worked".
+    `MonkeyPatch.context()` is used because the `monkeypatch` fixture is function-scoped and cannot
+    be requested from here; it restores the attribute on the way out just the same.
+    """
+    import importlib
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(importlib.import_module(MODULE), "REPLAY_OPENING_DAYS", ())
+        yield
 
 
 def _schedule():

@@ -243,9 +243,14 @@ PLAN_THE_CREW_THAT_ARRIVES = True
 #:
 #: **CORRECTED 2026-08-20: this SHIPS ON. The paragraph below says "OFF, and measured" and has been
 #: wrong about what the module does for as long as the value has read `True`.**
-#: `tests/test_the_first_seven_days_match_the_plan.py:910` asserts the rule is ON and would go red
+#: `test_one_pen_is_cared_by_one_hand_in_a_turn`, in
+#: `tests/test_the_first_seven_days_match_the_plan.py`, asserts the rule is ON and would go red
 #: the moment it were turned off, so the measurement below was not acted on -- or was reversed
 #: without the note being updated. The table is kept because it is real; the verdict word is not.
+#:
+#: *Named rather than numbered on 2026-08-22.* This said `:910`, and a line number in another file
+#: is a reference that rots in silence -- the fixture added to that file moved the test forty lines
+#: and `:910` now points into a docstring. A test name survives edits above it.
 #:
 #: **The measurement, which argued for OFF.** The arithmetic is right -- one turn, no item, one extra unit of product on
 #: the next production day -- and it still loses, because a care taken on the way past is a turn the
