@@ -74,13 +74,40 @@ def test_two_candidate_files_keep_their_own_dials(tmp_path):
 
 
 def test_the_fork_and_geese_dials_survive_a_second_file_too(tmp_path):
+    """**Reads the fork off `_MB.OPPONENT_MELON`, not the deleted agent-module constant.**
+
+    This asserted `a.A.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT`, which no longer exists anywhere in
+    `kagg/` -- the fork moved to `melon_branch.OPPONENT_MELON`, and `vector_body` writes it as
+    `_MB.OPPONENT_MELON = 0 if fork else 99`. So the check is `0` for forked and `99` for not,
+    rather than True/False.
+
+    Finding that also turned up why the file raised `NameError: _MB` twice: `write_candidate` never
+    defined `_MB`, so every candidate it wrote failed to load. Fixed in `scripts/cem_allocation.py`
+    by giving each candidate a PRIVATE `melon_branch` copy -- shared would set the fork for every
+    candidate in the process, which is the leak this whole file is about.
+    """
     from cem_allocation import write_candidate
 
     a = load(write_candidate((0, 0, 0, 0, 0, 3)), "cand_c")
     b = load(write_candidate((1, 0, 0, 0, 0, 0)), "cand_d")
 
-    assert (a.A.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT, a.A.HERD_GEESE) == (False, 3)
-    assert (b.A.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT, b.A.HERD_GEESE) == (True, 0)
+    assert (a._MB.OPPONENT_MELON, a.A.HERD_GEESE) == (99, 3)
+    assert (b._MB.OPPONENT_MELON, b.A.HERD_GEESE) == (0, 0)
+    assert a._MB is not b._MB, (
+        "the two candidates share one melon_branch module, so the fork dial is global and the "
+        "second file to load sets it for both seats")
+
+    # **The agent must READ the copy this candidate dialled.** Added 2026-08-22 because the
+    # red-check found nothing: deleting `A._MB = _MB` from `write_candidate` left all four tests
+    # green. Two separate module objects with the right values on them proves the dials did not
+    # collide; it does not prove the agent consults them. Without this line `A._MB` stays the
+    # shared `kagg.search.melon_branch`, every candidate forks identically, and a CEM sweep
+    # contrasts the fork against itself while reporting a difference.
+    assert a.A._MB is a._MB, (
+        "the candidate dialled its private melon_branch but the agent module still points at the "
+        "shared one, so `OPPONENT_MELON` is read from a module nobody set")
+    assert b.A._MB is b._MB
+    assert a.A._MB.OPPONENT_MELON == 99 and b.A._MB.OPPONENT_MELON == 0
 
 
 def test_a_private_copy_does_not_leak_into_the_shared_module(tmp_path):
@@ -91,9 +118,13 @@ def test_a_private_copy_does_not_leak_into_the_shared_module(tmp_path):
     import kagg.search.schedule_agent as SHARED
     from cem_allocation import write_candidate
 
-    before = (SHARED.CROP_TILE_SHIFTS, SHARED.HERD_GEESE,
-              SHARED.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT)
+    import kagg.search.melon_branch as SHARED_MB
+
+    before = (SHARED.CROP_TILE_SHIFTS, SHARED.HERD_GEESE, SHARED_MB.OPPONENT_MELON)
     load(write_candidate((0, 12, 4, 4, 7, 3)), "cand_e")
-    after = (SHARED.CROP_TILE_SHIFTS, SHARED.HERD_GEESE,
-             SHARED.MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT)
-    assert before == after, (before, after)
+    after = (SHARED.CROP_TILE_SHIFTS, SHARED.HERD_GEESE, SHARED_MB.OPPONENT_MELON)
+    assert before == after, (
+        f"a candidate file leaked into the shared modules: {before} -> {after}. The third element "
+        f"is melon_branch.OPPONENT_MELON, which replaced the deleted "
+        f"MELON_YIELDS_TO_A_MELON_HEAVY_OPPONENT and lives in a different module -- so it needs its "
+        f"own private copy per candidate, not just schedule_agent's.")
