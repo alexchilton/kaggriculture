@@ -38,9 +38,37 @@ INDEX = "kaggle/kaggriculture-episodes-index"
 #: Updated 2026-08-21. `kaggle datasets list -s kaggriculture-episodes-2026-08` shows 08-01 through
 #: 08-20 published. The previous pin (08-16/15/14) was five days stale, exactly as the note above
 #: predicts -- and checking it is one command, so check it before every pull.
-DATASETS = ("kaggle/kaggriculture-episodes-2026-08-20",
-            "kaggle/kaggriculture-episodes-2026-08-19",
-            "kaggle/kaggriculture-episodes-2026-08-18")
+def newest_datasets(n=3, floor="2026-08-15"):
+    """The `n` most recent daily datasets, read from the index manifest rather than hard-coded.
+
+    **This list was hard-coded and went stale twice.** It said 08-18 on the 19th and 08-20 on the
+    22nd, so a "fresh pull" quietly re-downloaded days already on disk while the newest day sat
+    unfetched. `kaggle/kaggriculture-episodes-index` publishes `manifest.csv` every night; reading
+    it costs one small download and cannot go stale.
+
+    `floor` drops days before the 2026-08-15 balance change (PR #1399 put CARROT, TOMATO and EGG on
+    a `hinge` price shape). Episodes from before it describe a different economy -- they are not
+    teachers, they are noise.
+    """
+    import csv                                                               # noqa: PLC0415
+    import subprocess                                                        # noqa: PLC0415
+    subprocess.run(["kaggle", "datasets", "download", "-d", INDEX,
+                    "-p", "data/", "--force", "--unzip"], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rows = list(csv.DictReader(open("data/manifest.csv")))
+    rows = [r for r in rows if r["date"] >= floor]
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    return tuple("kaggle/" + r["daily_dataset_slug"] for r in rows[:n])
+
+
+#: Resolved at import so a run always sees today's manifest. Falls back to the last known good days
+#: if Kaggle is unreachable, because a failed index download must not abort a resumable fetch.
+try:
+    DATASETS = newest_datasets()
+except Exception:                                                # noqa: BLE001
+    DATASETS = ("kaggle/kaggriculture-episodes-2026-08-21",
+                "kaggle/kaggriculture-episodes-2026-08-20",
+                "kaggle/kaggriculture-episodes-2026-08-19")
 
 # A replay is only worth keeping if the winner played well. `contrarian` banks ~$51k and the pair in
 # 89197802 banked $106k and $113k, so this keeps the ones with something to teach and discards the
