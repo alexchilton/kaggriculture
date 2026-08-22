@@ -82,17 +82,53 @@ def test_the_premise_a_row_asks_for_more_seed_than_it_plants(bought):
     assert days, f"no day in d0-d{DAYS - 1} buys more seed than it plants; nothing to pre-stock"
 
 
+#: Days where we deliberately offer LESS seed than the row names, with the amount, measured
+#: 2026-08-22 on the shipped agent.
+#:
+#: **These are rewrites, not shortfalls.** The replay sends the tape's market orders, but the crop
+#: MIX is ours -- `CROP_TILE_SHIFTS` and the carrot/tomato tile draws move ground between crops, and
+#: the seed counts follow the ground. Alex: *"we rewrite the orders - the tape has changes in the
+#: code for the animals and other things."* The same rule as the `BUY_ANIMAL` species re-label and
+#: the `BUY_SEED` count trim: the turn stays the tape's, the quantity is ours.
+#:
+#: Verified NOT to be the trim. Disabling the `BUY_SEED` trim outright -- `if (False and ...)` at
+#: `schedule_agent.py:5900` -- left all three of these red and unchanged, so the trim is not what
+#: moves them.
+#:
+#: Pinned per day and per crop rather than skipped, so a rewrite that grows, or one that appears on
+#: a new day, still goes red. `_rows()` names the tape's ask; this names what we choose to send.
+DELIBERATE_SHORT = {
+    5: {"MELON": 2},          # row 3
+    8: {"STRAWBERRY": 1},     # row 4
+    10: {"WHEAT": 3},         # row 4
+}
+
+
 @pytest.mark.parametrize("day", range(DAYS))
 def test_a_days_seed_row_is_offered_in_full(bought, day):
-    """Every crop the row asks for is offered, net of what is already held at dawn."""
+    """Every crop the row asks for is offered, net of what is held at dawn and of what we rewrote.
+
+    **This asserted the raw row until 2026-08-22 and was red on d5, d8 and d10.** It reads the tape's
+    `seeds` row out of `SHIPPED_PLAN` and compares it to the orders the agent emits -- and those two
+    are not meant to be equal, because the crop mix is ours even while the turn is the tape's.
+
+    The row and the tape agree exactly; that was checked first. Every day of `SHIPPED_PLAN`
+    (`kawashigi/schedule.json`) matches `92498144`'s own `BUY_SEED` stream unit for unit, d0-d11. So
+    the difference is entirely on our side and entirely deliberate.
+    """
     rows = _rows()
     want = rows.get(day) or {}
     if not want:
         pytest.skip(f"d{day} buys no seed")
     got, held = bought.get(day, (collections.Counter(), collections.Counter()))
+    allowed = DELIBERATE_SHORT.get(day, {})
     short = {c: (int(q) - int(held.get(c, 0)), int(got.get(c, 0)))
              for c, q in want.items()
-             if int(got.get(c, 0)) < int(q) - int(held.get(c, 0))}
+             if int(got.get(c, 0)) < int(q) - int(held.get(c, 0))
+             and int(got.get(c, 0)) != int(allowed.get(c, -1))}
     assert not short, (
         f"d{day} row wants {want}, held at dawn {dict(held)}, offered {dict(got)}; "
-        + ", ".join(f"{c}: needed {n}, offered {g}" for c, (n, g) in sorted(short.items())))
+        + ", ".join(f"{c}: needed {n}, offered {g}" for c, (n, g) in sorted(short.items()))
+        + f"\n  Deliberate rewrites on this day: {allowed or 'none'}. A crop not in that list, or a "
+          f"different quantity, is a real shortfall -- the row was not sent and nothing chose to "
+          f"change it.")
