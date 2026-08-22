@@ -110,6 +110,18 @@ def teacher_labels(sim_actions, tables):
 # bundle does, so there is nothing left to leave out.
 SCORED_HEADS = A.ALL_HEADS
 
+# **Not every head is an equally important decision, and a flat mean says they are.**
+#
+# `op` and `bundle` are read on every turn. The other six are conditional, and their modal answer is
+# 0 -- roughly 79% of turns place no market order at all, so the three `qty_*` heads are mostly
+# "predict zero", learn it quickly, and then dominate any fall in a 1/8-weighted average. That made
+# the reported loss drop 7x while agreement against the teacher got worse, which is a metric telling
+# a story the policy was not living.
+#
+# One block, so the weights cannot scatter. They are parameters, not switches: every head is still
+# scored, none is gated off.
+HEAD_WEIGHTS = {"op": 3.0, "bundle": 3.0}
+
 
 def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle_ok):
     """One DAgger round: roll the *student* out, label every state with the teacher, fit.
@@ -168,6 +180,29 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle
         (final, key), traj = jax.lax.scan(one_turn, (state, key), None, length=horizon)
         return final, key, traj
 
+    def head_active(labels):
+        """Per-head element mask: does the teacher's own choice make this field readable?
+
+        Three families:
+          * `op` and `bundle` are always read.
+          * `crop`/`item`/`qty` are read only for the op that consumes them -- `active_unit_heads`
+            (`jax_act.py:131`) is the same rule `sample` and `evaluate` apply, so scoring anything
+            else trains a slice the decode never looks at, e.g. `crop | WATER`.
+          * `qty_*` are read only for the products the chosen BUNDLE actually names. The bundle is
+            the coordinating decision; a quantity for a product not in it is not a decision.
+        """
+        act = A.active_unit_heads(labels["op"])
+        out = {h: act[h] for h in A.UNIT_HEADS}
+        out["bundle"] = None
+        b = labels["bundle"].reshape(-1)
+        for head, col in (("qty_sell", "sell"), ("qty_buy_product", "buy_product"),
+                          ("qty_buy_seed", "buy_seed")):
+            if col in tables:
+                out[head] = jnp.take(tables[col], b, axis=0) > 0
+            else:
+                out[head] = None
+        return out
+
     def loss_fn(params, batch_data):
         heads, _v = model.apply(params, *batch_data["obs"])
         # Conditioned on the *teacher's* own op -- the same slice `jax_act.evaluate` will score at
@@ -175,7 +210,8 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle
         # per-head branch to keep in step here. The market half needs no conditioning now: the
         # bundle is the coordinating decision and it is a label, not a latent.
         cond = A.condition_all(heads, batch_data["labels"])
-        total, n = 0.0, 0.0
+        active = head_active(batch_data["labels"])
+        total, n, per_head = 0.0, 0.0, {}
         for h in SCORED_HEADS:
             src = cond[h]
             lab = batch_data["labels"][h]
@@ -189,26 +225,39 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle
             # student has no way to take.
             legal = jnp.take_along_axis(mask, lab[..., None], axis=-1)[..., 0]
             logp = jnp.where(legal, logp, 0.0)
+            w = legal.astype(jnp.float32)
             if h in A.UNIT_HEADS:
                 # **Dead unit slots carry no information and must not be averaged in.** `MAX_UNITS`
                 # is 24 against a crew of a few, so scoring every slot makes ~85% of the loss a
                 # constant -- the padding mistake this project has now made three times, once in
                 # this very loss.
-                w = batch_data["unit_live"].astype(jnp.float32) * legal.astype(jnp.float32)
-                total = total - (logp * w).sum() / jnp.maximum(w.sum(), 1.0)
-            else:
-                w = legal.astype(jnp.float32)
-                total = total - (logp * w).sum() / jnp.maximum(w.sum(), 1.0)
-            n += 1.0
-        return total / n
+                w = w * batch_data["unit_live"].astype(jnp.float32)
+            if active.get(h) is not None:
+                w = w * active[h].astype(jnp.float32)
+            head_loss = -(logp * w).sum() / jnp.maximum(w.sum(), 1.0)
+            per_head[h] = head_loss
+            weight = HEAD_WEIGHTS.get(h, 1.0)
+            total = total + weight * head_loss
+            n += weight
+        return total / n, per_head
 
     @jax.jit
     def fit(params, opt_state, batch_data):
-        loss, grads = jax.value_and_grad(loss_fn)(params, batch_data)
+        (loss, per_head), grads = jax.value_and_grad(loss_fn, has_aux=True)(params, batch_data)
         updates, opt_state = optimiser.update(grads, opt_state, params)
-        return optax.apply_updates(params, updates), opt_state, loss
+        return optax.apply_updates(params, updates), opt_state, loss, per_head
 
-    return rollout, fit
+    @jax.jit
+    def evaluate(params, batch_data):
+        """The same objective without a gradient step, for scoring FRESH states before fitting them.
+
+        Needed because the training loss is computed over the aggregate, which is dominated by old
+        rounds. A loss that falls on data the policy has already been fitted to says nothing about
+        whether the policy has improved on the states it is producing NOW.
+        """
+        return loss_fn(params, batch_data)
+
+    return rollout, fit, evaluate
 
 
 def main():
@@ -274,8 +323,8 @@ def main():
     state = state0
     for rnd in range(args.rounds):
         beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, args.rounds - 1))
-        rollout, fit = make_step(model, teacher_fn, args.batch, args.horizon, optimiser, beta,
-                                 tables, bundle_ok)
+        rollout, fit, _evaluate = make_step(model, teacher_fn, args.batch, args.horizon, optimiser,
+                                            beta, tables, bundle_ok)
         key, kr = jax.random.split(key)
         state, key, traj = rollout(params, state, kr)
 
@@ -294,8 +343,11 @@ def main():
         )
         losses = []
         for _ in range(args.epochs):
-            params, opt_state, loss = fit(params, opt_state, data)
+            params, opt_state, loss, per_head = fit(params, opt_state, data)
             losses.append(float(loss))
+        print("           per-head loss  "
+              + "  ".join("%s %.4f" % (h, float(v)) for h, v in sorted(per_head.items())),
+              flush=True)
 
         # What the teacher actually demonstrated, on live slots only. If FEED is zero here the
         # teacher cannot teach it, and no amount of student training will conjure it.

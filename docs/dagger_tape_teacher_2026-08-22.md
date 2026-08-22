@@ -143,6 +143,71 @@ Two things to get right in it, both visible in `bc_dagger.py`'s own rollout:
   ~85% of the loss a constant. That padding mistake has been made three times here, once in this
   very loss.
 
+## Second pass, after Fable's review
+
+Full review: `docs/fable_dagger_review_2026-08-22.md`. What changed, and why.
+
+**The observation now carries the clock and the open shops.** `glob` went 60 -> 122: one-hot hour
+[24], one-hot day [30], one bit per unlocked shop [8].
+The teacher is a ~719-entry lookup keyed on the turn, and the clock used to arrive as two smooth
+scalars; a net fits low frequencies first, so that spent capacity manufacturing a positional code.
+On-tape the board proxies for the turn, which is why plain BC fit at all; off-tape -- where DAgger
+collects -- it does not.
+The shop bits close a hole nobody had noticed: `q4_branch` picks the tape on "is the yarn store
+unlocked", `adapter.state_from_obs` stubbed the unlock schedule to NEVER, and so that input was
+**invisible to the student on the only path this loop uses**.
+Old checkpoints load through `jax_policy.load_or_migrate`, which zero-pads the new columns, so
+day-one behaviour is bit-identical. Pinned by
+`tests/test_the_observation_carries_the_clock_and_the_open_shops.py`.
+
+**Agreement is measured on both decodes.** Sampled and greedy, for `op`, `bundle`, and `bundle`
+restricted to turns the teacher trades. First measurement, 80 turns from the warm start:
+greedy 0.5932 / 0.7000 against sampled 0.5559 / 0.5875 -- greedy is ahead on every column, which is
+the evidence needed to revisit the anti-argmax rule at deployment.
+
+**Fresh-state loss is reported separately from the aggregate loss.** The aggregate is dominated by
+earlier rounds, so a loss falling on data already fitted says nothing. Measured together for the
+first time: fresh 1.9711 against aggregate 1.5974.
+
+**Per-head loss is reported.** It immediately showed `qty_sell` at 7.85 against every other head
+under 2.4, which a 1/8-weighted average had been hiding.
+
+**The loss now gates conditional heads and weights the decisions.** `crop`/`item`/`qty` are scored
+only for the op that reads them (`jax_act.active_unit_heads`), `qty_*` only for the products the
+chosen bundle names, and `op`/`bundle` carry weight 3.0 in one `HEAD_WEIGHTS` block.
+~79% of turns place no order, so the three `qty_*` heads were mostly "predict zero" and dominated
+any fall in the reported number.
+
+**Beta anneals when it is earned, not on a schedule.** The teacher keeps driving until greedy `op`
+agreement on fresh states clears `--anneal-after-agree` (0.80). The previous run spent rounds 10+
+at agreement 0.17, labelling wrecked boards with a time-indexed teacher whose answer there is
+frequently illegal and never a route back.
+
+**The reservoir is two pools.** The old comment claimed a uniform reservoir protected round 0's
+tape states. **It did not**: a uniform reservoir keeps every round at its proportional share, so
+after 400 rounds round 0 survives as ~150 rows of 60,000. Teacher-driven turns now have their own
+protected pool (`--expert-cap`).
+
+**`make_step` is built once**, not per round; it was recompiling `fit` every round for nothing.
+
+### Not done, and why
+
+Fable suggested opponent-feature dropout so the student learns to ignore the opponent block.
+**Declined: it would break the melon latch.** `melon_armed` reads the opponent's MELON tile count,
+and the opponent block is `N_KINDS + N_CROPS + N_ANIMAL_KINDS` -- the opponent's crop counts are
+exactly the signal being dropped. The concern behind the suggestion is real, but the fix is
+opponent *variation* (rollouts against pool opponents, teacher still labelling), which is a change
+to the training setup rather than a feature toggle.
+
+### Observed, not yet addressed
+
+**The latches drift off-tape.** In the killed run, at beta=0, `92466371` (the `(True, False)`
+recording) armed `(True, True)` and `91906088` (the `(True, True)` recording) armed `(True, False)`.
+The student damages the shared market before day 3, the opponent's melon buys fail, and the day-3
+melon read flips. So a far-off-tape rollout is not merely hard, it is replaying a different tape
+than the board was recorded under. This is another argument for keeping beta high until agreement
+is earned.
+
 ## Still open
 
 No KL anchor exists — both `kagg/il/bc.py:151` and `scripts/bc_dagger.py:30` say so. That is what

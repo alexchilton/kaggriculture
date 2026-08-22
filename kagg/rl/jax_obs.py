@@ -46,8 +46,32 @@ UNIT_FEATURES = 4 + J.N_ITEMS + 4 * 3                        # 28
 # The `+ 3` before the opponent block is `land_afford`, `hire_afford` and `rehire_afford` -- the
 # third arrived with P3 and moved this from 59 to 60. Written as `_OPPONENT_WIDTH` rather than a
 # literal 14 so the next feature cannot make this constant lie again.
-GLOBAL_FEATURES = (3 + 2 + J.N_PRODUCTS * 2 + N_CROPS + J.N_ITEMS + 3 + 3
-                   + _OPPONENT_WIDTH)                        # 60
+#: Days in a season, for the day one-hot. 30, and the clip below depends on it.
+N_DAYS = 30
+
+# **The clock as one-hots, not only as two smooth scalars.**
+#
+# `day / 30` and `hour / 24` are kept -- they carry ordering, which a one-hot does not -- but they
+# cannot carry identity. A tape-replaying teacher is a ~719-entry lookup keyed on the turn, and that
+# target is maximally high-frequency in a scalar that moves 1/24 per step. Nets fit low frequencies
+# first, so asking a 3-layer trunk to carve two smooth scalars into 719 bins spends capacity
+# manufacturing a positional code that costs 54 floats to hand over.
+#
+# On-tape the board is itself a strong proxy for the turn -- turn 300 looks nothing like turn 100 --
+# which is why plain BC fits at all. **Off-tape, which is precisely where DAgger collects, that
+# correlation breaks and the clock is the only reliable key.**
+_TIME_WIDTH = J.TURNS_PER_DAY + N_DAYS                       # 24 + 30 = 54
+
+# **Which shops are trading RIGHT NOW.** This was absent, and its absence was load-bearing: the
+# `q4_branch` latch that picks which of four tapes the agent replays is literally "the yarn store is
+# unlocked", read on day 5 (`q4_branch.py:242`). The student had to reproduce that branch with half
+# its input missing, visible only as a lagged town-drain effect on the inventory vector. On the four
+# fixed training games that is confounded with game identity, so training looks fine and deployment
+# against a fresh draw fails invisibly.
+_SHOP_WIDTH = J.N_SHOPS                                      # 8
+
+GLOBAL_FEATURES = (3 + 2 + _TIME_WIDTH + _SHOP_WIDTH + J.N_PRODUCTS * 2 + N_CROPS + J.N_ITEMS
+                   + 3 + 3 + _OPPONENT_WIDTH)                # 122
 
 # Fixed scales. Chosen from measured ranges, and frozen so checkpoints stay comparable.
 MONEY_SCALE = 50_000.0
@@ -87,6 +111,19 @@ def encode(state):
     # `[B]`, not a scalar: `jax_sim` keeps `step_index` per game so episodes can run out of phase.
     day = (state.step_index // J.TURNS_PER_DAY).astype(jnp.float32)        # [B]
     hour = (state.step_index % J.TURNS_PER_DAY).astype(jnp.float32)        # [B]
+    # Integer copies for the one-hots. The day is clipped rather than wrapped: a step index past the
+    # bell must saturate at the last day, not read as day 0 -- `_one_hot` of an out-of-range value
+    # is an all-zero row, which is a third meaning nobody wants.
+    day_i = jnp.clip(state.step_index // J.TURNS_PER_DAY, 0, N_DAYS - 1)    # [B]
+    hour_i = state.step_index % J.TURNS_PER_DAY                            # [B]
+    hour_1h = _one_hot(hour_i, J.TURNS_PER_DAY)                            # [B, 24]
+    day_1h = _one_hot(day_i, N_DAYS)                                       # [B, 30]
+    # Slot-indexed since 1.32.6 draws shops with replacement, so two slots can name the same shop:
+    # reduce with a max over slots to get one bit per SHOP, not per slot.
+    shop_open = jnp.max(
+        _one_hot(state.unlock_shop, J.N_SHOPS)
+        * (state.unlock_day <= day_i[:, None])[..., None].astype(jnp.float32),
+        axis=1)                                                            # [B, N_SHOPS]
     day_t = day[:, None, None]                                             # against [B, P, TILES]
     day_g = day[:, None]                                                   # against [B, P]
 
@@ -308,6 +345,13 @@ def encode(state):
             ((farm.money - opp_money) / MONEY_SCALE).astype(jnp.float32)[..., None],
             jnp.broadcast_to((day / 30.0)[:, None], (b, 2))[..., None],
             jnp.broadcast_to((hour / 24.0)[:, None], (b, 2))[..., None],
+            # **Inserted HERE, above the afford block, and not appended.** `REHIRE_AFFORD_INDEX` and
+            # its two neighbours are offsets from the END of `glob` precisely so a new feature
+            # cannot silently repoint them; appending would have moved them into this block and
+            # `tests/test_rehire_cost_feature.py` reads them.
+            jnp.broadcast_to(hour_1h[:, None, :], (b, 2, J.TURNS_PER_DAY)),
+            jnp.broadcast_to(day_1h[:, None, :], (b, 2, N_DAYS)),
+            jnp.broadcast_to(shop_open[:, None, :], (b, 2, J.N_SHOPS)),
             jnp.broadcast_to(prices[:, None, :], (b, 2, J.N_PRODUCTS)),
             jnp.broadcast_to(inventory[:, None, :], (b, 2, J.N_PRODUCTS)),
             jnp.minimum(farm.seeds / 10.0, 5.0).astype(jnp.float32),

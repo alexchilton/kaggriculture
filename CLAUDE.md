@@ -171,8 +171,18 @@ All of it is either MET or CLOSED. Three things still bind:
 - **The reward is TERMINAL: win 1, loss 0, gamma 1.0. Never per step.** Alex's call, and what four
   of the top finishers used. `docs/rl_feasibility.md` still argues for a per-step bank delta at
   length; it was overruled, and reading that doc alone must not be allowed to reintroduce it.
-- **The RL track is PARKED.** The winners submit fixed 720-turn schedules, not policies. We ship a
-  covering day planner. Do not reopen RL without evidence that changes.
+- **The RL track is PARKED. An IMITATION track was opened 2026-08-22 and is not the same thing.**
+  The winners submit fixed 720-turn schedules, not policies, and the shipped artifact is still the
+  tape-replaying agent. Do not reopen RL without evidence that changes.
+
+  What was opened, on Alex's direction, is DAgger from the shipped agent as teacher
+  (`scripts/dagger_tape.py`, `docs/dagger_tape_teacher_2026-08-22.md`): a net trained to REPRODUCE
+  the tape agent, measured by action agreement, not by reward. No reward function is involved and
+  nothing about the terminal-reward ruling above is reopened.
+
+  The RL step -- KL-anchored policy improvement on top of the cloned net -- is **still parked**, and
+  is explicitly gated on the imitation step first reaching high agreement. It has not been started.
+  If agreement plateaus low, the gate has not been met and RL does not open.
 - **Fast-sim parity PASSES** -- 300/300 full-length episodes exact, all 18 unit ops and 6 market
   orders. When adding an op, add it to `SCRIPT_OPS` and to `_dense_actions` in
   `tests/test_jax_sim.py` in the same commit, or it is untested by construction.

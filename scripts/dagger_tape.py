@@ -70,6 +70,23 @@ TPD = 24
 _encode = jax.jit(jax_obs.encode)
 
 
+def greedy_action(heads, masks):
+    """Argmax over legal options, conditioning on `op` before the heads it selects.
+
+    `crop`/`item`/`qty` carry a `[.., MAX_UNITS, N_OPS, K]` axis, so they cannot be masked or
+    argmaxed until `op` has been chosen; `A.condition_all` is what collapses that axis.
+
+    **Written here rather than imported from `scripts/play_checkpoint.py`, which is broken.** Its
+    `_greedy` still assigns `out["trade"] = cond["trade"]` (`play_checkpoint.py:108`), a head that
+    stopped existing when the market became a single `bundle` categorical, so it raises `KeyError`
+    on the first call. Its own docstring already records `eval_policy.py:41` rotting the same way.
+    Not fixed here because that script is not what this change is about.
+    """
+    cond = {k: jnp.argmax(P._masked_logits(heads[k], masks[k]), axis=-1) for k in A.CONDITION_HEADS}
+    conditioned = A.condition_all(heads, cond)
+    return {k: jnp.argmax(P._masked_logits(conditioned[k], masks[k]), axis=-1) for k in A.ALL_HEADS}
+
+
 def tape_games():
     """The four recordings, each with the economy and seed it was actually played on.
 
@@ -150,6 +167,14 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         heads, _v = model.apply(params, *flat)
         key, ka = jax.random.split(key)
         sampled = A.sample(ka, heads, masks)[0]
+        # **Both decodes are measured, because which one to SHIP is an open question.**
+        # `neural.py` refuses argmax on the grounds that independent marginals compose into "never
+        # sell". That reasoning is from the mean-field era; the market is now one joint `bundle`
+        # categorical with op-conditioned argument heads, so per-head greedy along the conditioning
+        # order is coherent. Over 719 compounding turns the difference between 0.99 and 1.0 per-turn
+        # is 0.99^719 ~ 0.0007 against near-certainty of staying on tape. CLAUDE.md: "a decision to
+        # skip a fix can expire when the problem changes."
+        greedy = greedy_action(heads, masks)
 
         # **"Can it repeat the teacher yet" is the stopping criterion, and it is free here.** Both
         # sides are already in hand: the student's own action and the teacher's label, on a state
@@ -157,19 +182,20 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         # sampling is what the agent actually plays -- `neural.py` refuses argmax on the grounds
         # that it destroys the joint. Directly comparable to the BC checkpoint's holdout numbers,
         # which are bundle 0.9728 / op 0.8530 against tetsuya.
-        s_op = np.asarray(sampled["op"])[seat]
         t_op = np.asarray(labels["op"])
-        if live.any():
-            stats["op_hit"] += int((s_op[: len(t_op)][live[: len(t_op)]]
-                                    == t_op[live[: len(t_op)]]).sum())
-            stats["op_n"] += int(live[: len(t_op)].sum())
-        s_bundle = int(np.asarray(sampled["bundle"]).reshape(-1)[seat])
         t_bundle = int(np.asarray(labels["bundle"]).reshape(-1)[0])
-        stats["bundle_hit"] += int(s_bundle == t_bundle)
+        m = live[: len(t_op)]
+        for name, act in (("", sampled), ("g_", greedy)):
+            a_op = np.asarray(act["op"])[seat]
+            if m.any():
+                stats[name + "op_hit"] += int((a_op[: len(t_op)][m] == t_op[m]).sum())
+            a_bundle = int(np.asarray(act["bundle"]).reshape(-1)[seat])
+            stats[name + "bundle_hit"] += int(a_bundle == t_bundle)
+            if t_bundle != 0:                  # the teacher actually traded this turn
+                stats[name + "traded_hit"] += int(a_bundle == t_bundle)
+        stats["op_n"] += int(m.sum())
         stats["bundle_n"] += 1
-        if t_bundle != 0:                      # the teacher actually traded this turn
-            stats["traded_hit"] += int(s_bundle == t_bundle)
-            stats["traded_n"] += 1
+        stats["traded_n"] += int(t_bundle != 0)
 
         # Who moves the world. beta=1 is plain BC on teacher states; beta=0 is pure DAgger, the
         # student driving and the teacher only labelling.
@@ -184,7 +210,11 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         rows.append(dict(obs=[np.asarray(x)[seat] for x in flat],
                          masks={k: np.asarray(v)[seat] for k, v in masks.items()},
                          labels={k: np.asarray(v) for k, v in labels.items()},
-                         unit_live=live))
+                         unit_live=live,
+                         # Which pool this row belongs to. A turn the TEACHER drove is on-tape and
+                         # is the trajectory worth protecting from dilution; a turn the student
+                         # drove is a correction label.
+                         by_teacher=drive_teacher))
 
         hands = [len((env.state[0].observation["farms"][i] or {}).get("hands") or []) for i in (0, 1)]
         pair = [None, None]
@@ -199,7 +229,7 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
     return rows, stats, key
 
 
-def save_resume(run, params, opt_state, rnd, seen_total, rng, args, aggregate=None):
+def save_resume(run, params, opt_state, rnd, seen_total, rng, args, pools=None, extra=None):
     """Everything needed to continue this run on a different day.
 
     **Params alone are not a resumable run.** Restarting from them restarts Adam cold and, worse,
@@ -216,16 +246,17 @@ def save_resume(run, params, opt_state, rnd, seen_total, rng, args, aggregate=No
                          round=rnd, seen_total=seen_total, rng=rng.bit_generator.state,
                          args=vars(args), tile_features=jax_obs.TILE_FEATURES,
                          unit_features=jax_obs.UNIT_FEATURES,
-                         global_features=jax_obs.GLOBAL_FEATURES, n_bundles=P.N_BUNDLES),
+                         global_features=jax_obs.GLOBAL_FEATURES, n_bundles=P.N_BUNDLES,
+                         **(extra or {})),
                     fh, protocol=5)
     # Renamed into place, never written in place: a power cut during the write would otherwise
     # leave a truncated checkpoint that loads as far as the corruption and then fails.
     tmp.replace(run / "latest.pkl")
 
-    if aggregate is not None:
+    if pools is not None:
         tmp = run / "aggregate.pkl.tmp"
         with open(tmp, "wb") as fh:
-            pickle.dump(aggregate, fh, protocol=5)
+            pickle.dump(pools, fh, protocol=5)
         tmp.replace(run / "aggregate.pkl")
 
 
@@ -237,11 +268,15 @@ def load_resume(run):
     with open(latest, "rb") as fh:
         state = pickle.load(fh)
     agg_path = pathlib.Path(run) / "aggregate.pkl"
-    aggregate = []
+    pools = {"expert": [], "student": [], "seen_expert": 0, "seen_student": 0}
     if agg_path.exists():
         with open(agg_path, "rb") as fh:
-            aggregate = pickle.load(fh)
-    return state, aggregate
+            loaded = pickle.load(fh)
+        # A flat list is a pre-2026-08-22 aggregate, from before the pools were split. Everything in
+        # it was collected under one uniform reservoir, so its provenance is unrecoverable; treat it
+        # as student data rather than claim it is expert.
+        pools = loaded if isinstance(loaded, dict) else dict(pools, student=list(loaded))
+    return state, pools
 
 
 def stack(rows):
@@ -262,15 +297,21 @@ def main():
     ap.add_argument("--horizon", type=int, default=719)
     ap.add_argument("--beta0", type=float, default=1.0,
                     help="teacher-execution probability in round 0, annealed to 0 by the last round")
-    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--lr", type=float, default=1e-4,
+                    help="3e-4 on a warm start disturbs the checkpoint before it refits it")
     ap.add_argument("--epochs", type=int, default=1,
                     help="optimiser passes over the AGGREGATE each round")
     ap.add_argument("--batch-turns", type=int, default=512,
                     help="turns per gradient step over the aggregate")
     ap.add_argument("--aggregate-cap", type=int, default=60000,
-                    help="reservoir size in turns; ~13.7 KB each, so 60k is roughly 0.9 GB")
-    ap.add_argument("--anneal-rounds", type=int, default=0,
-                    help="rounds over which beta reaches 0; 0 means use --rounds")
+                    help="total turns kept; ~19 KB each, so 60k is roughly 1.15 GB")
+    ap.add_argument("--expert-cap", type=int, default=20000,
+                    help="of --aggregate-cap, turns reserved for TEACHER-driven states, which a "
+                         "single uniform reservoir would dilute to their proportional share")
+    ap.add_argument("--anneal-rounds", type=int, default=10,
+                    help="rounds over which beta reaches 0, once the anneal has been earned")
+    ap.add_argument("--anneal-after-agree", type=float, default=0.80,
+                    help="greedy op agreement on fresh states before beta starts annealing")
     ap.add_argument("--vocab", default=str(REPO / "data/il/bundle_vocab.json"))
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--heads", type=int, default=4)
@@ -339,17 +380,25 @@ def main():
         init_path = pathlib.Path(args.init)
         with open(init_path, "rb") as fh:
             ckpt = pickle.load(fh)
-        want = {"tile_features": jax_obs.TILE_FEATURES, "unit_features": jax_obs.UNIT_FEATURES,
-                "global_features": jax_obs.GLOBAL_FEATURES, "n_bundles": P.N_BUNDLES,
-                "vocab_size": vocab.size}
-        bad = {k: (ckpt.get(k), v) for k, v in want.items() if ckpt.get(k) != v}
-        if bad:
-            raise SystemExit("checkpoint %s does not match this build: %s (checkpoint, live)"
-                             % (init_path, bad))
-        shapes_old = jax.tree_util.tree_structure(ckpt["params"])
-        if shapes_old != jax.tree_util.tree_structure(params):
-            raise SystemExit("checkpoint %s has a different parameter tree" % init_path)
-        params = jax.tree_util.tree_map(jnp.asarray, ckpt["params"])
+        # **A narrower checkpoint is MIGRATED, not refused.** `jax_policy.load_or_migrate` zero-pads
+        # the grown rows of an input projection (`jax_policy.py:320-337`), so a checkpoint trained
+        # before `glob` carried the clock one-hots and the open-shop bits loads with day-one
+        # behaviour bit-identical to what it had -- the new columns contribute exactly nothing until
+        # they are trained. Refusing instead would mean throwing away every checkpoint on every
+        # feature addition, which is how a project ends up never adding features.
+        #
+        # The vocabulary is still a hard refusal: it is an artifact, not an architecture, and a
+        # bundle index that means a different order in the loss than at play time is a mismatch
+        # nothing offline would show, because every index is still a valid index.
+        if ckpt.get("vocab_size") not in (None, vocab.size):
+            raise SystemExit("checkpoint %s was built on a %s-entry vocabulary, this run has %d"
+                             % (init_path, ckpt.get("vocab_size"), vocab.size))
+        was = (ckpt.get("tile_features"), ckpt.get("unit_features"), ckpt.get("global_features"))
+        now = (jax_obs.TILE_FEATURES, jax_obs.UNIT_FEATURES, jax_obs.GLOBAL_FEATURES)
+        params = jax.tree_util.tree_map(jnp.asarray, P.load_or_migrate(ckpt["params"], params))
+        if was != now:
+            print("warm start MIGRATED: tile/unit/glob %s -> %s; the new columns start at zero"
+                  % (was, now), flush=True)
         hold = ckpt.get("holdout") or {}
         print("warm start: %s  epoch %s  holdout bundle %.4f / op %.4f"
               % (init_path, ckpt.get("epoch"), hold.get("bundle_agreement", float("nan")),
@@ -367,9 +416,18 @@ def main():
 
     from bc_dagger import make_step
 
+    # **Built ONCE, outside the round loop.** It was rebuilt every round, which re-traced and
+    # recompiled `fit` and `evaluate` for no functional reason: `beta` is consumed only by the
+    # jitted `rollout`, which this script does not use -- the rollout here is the Python loop over
+    # the reference environment.
+    _rollout, fit, evaluate = make_step(model, None, 1, args.horizon, optimiser, 0.0,
+                                        tables, bundle_ok)
+
     aggregate, seen_total, first_round = [], 0, 0
+    expert, student, seen_expert, seen_student = [], [], 0, 0
+    anneal_start, last_agree = None, 0.0
     if args.resume:
-        state, aggregate = load_resume(run)
+        state, pools = load_resume(run)
         if state is None:
             print("resume: nothing to continue in %s, starting fresh" % run, flush=True)
         else:
@@ -378,23 +436,53 @@ def main():
                       "global_features": jax_obs.GLOBAL_FEATURES, "n_bundles": P.N_BUNDLES}
             bad = {k: (state.get(k), v) for k, v in widths.items() if state.get(k) != v}
             if bad:
-                raise SystemExit("resume %s does not match this build: %s" % (run, bad))
+                # **Resume refuses where `--init` migrates, and the difference is the reservoir.**
+                # Migrating the params would be easy; the stored `aggregate.pkl` holds observations
+                # encoded at the OLD width, and there is no honest way to widen a cached observation
+                # -- the new columns were never observed. A run whose features changed is a new run.
+                raise SystemExit(
+                    "resume %s does not match this build: %s (checkpoint, live).\n"
+                    "The reservoir was encoded at the old width. Start a fresh run directory and "
+                    "use --init to carry the weights over." % (run, bad))
             params = jax.tree_util.tree_map(jnp.asarray, state["params"])
             opt_state = jax.tree_util.tree_map(
                 lambda x: jnp.asarray(x) if hasattr(x, "shape") else x, state["opt_state"])
             seen_total = int(state["seen_total"])
             first_round = int(state["round"]) + 1
             rng.bit_generator.state = state["rng"]
-            print("resume: %s at round %d, reservoir %d turns, %d turns seen"
-                  % (run, first_round, len(aggregate), seen_total), flush=True)
+            expert, student = pools["expert"], pools["student"]
+            seen_expert, seen_student = pools["seen_expert"], pools["seen_student"]
+            anneal_start = state.get("anneal_start")
+            last_agree = float(state.get("last_agree", 0.0))
+            print("resume: %s at round %d, expert %d + student %d turns, %d seen, "
+                  "anneal_start %s, last greedy op agreement %.4f"
+                  % (run, first_round, len(expert), len(student), seen_total,
+                     anneal_start, last_agree), flush=True)
 
     for rnd in range(first_round, args.rounds):
         # **Beta must not be tied to `--rounds`.** It was, which coupled the exploration schedule to
         # an arbitrary stopping point: asking for more rounds silently made the teacher drive for
         # longer. The anneal is its own schedule now, and the run length is decided by agreement.
-        anneal = args.anneal_rounds or args.rounds
-        beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, anneal - 1))
-        _rollout, fit = make_step(model, None, 1, args.horizon, optimiser, beta, tables, bundle_ok)
+        # **Beta anneals when the student has earned it, not when the round counter says so.**
+        #
+        # A fixed schedule spends its later rounds labelling boards the student has wrecked, with a
+        # TIME-INDEXED teacher whose answer there is "the tape's action anyway" -- frequently
+        # illegal on that board, and never a route back to the tape. Those labels are close to
+        # worthless, and the previous run spent rounds 10+ collecting them at op agreement 0.17.
+        #
+        # So the teacher keeps driving until greedy op agreement on fresh states clears the bar,
+        # and only then does the student take the wheel. Measured on the GREEDY decode because that
+        # is the ceiling: sampled agreement can sit low purely from entropy while the argmax is
+        # already right.
+        if anneal_start is None and last_agree >= args.anneal_after_agree:
+            anneal_start = rnd
+            print("beta anneal starts at round %d (greedy op agreement %.4f >= %.4f)"
+                  % (rnd, last_agree, args.anneal_after_agree), flush=True)
+        if anneal_start is None:
+            beta = args.beta0
+        else:
+            progress = (rnd - anneal_start) / max(1, args.anneal_rounds - 1)
+            beta = args.beta0 * max(0.0, 1.0 - progress)
 
         t_start = time.time()
         fresh, banks = [], []
@@ -405,7 +493,8 @@ def main():
                                               args.horizon, rng)
             fresh.extend(ep_rows)
             agree.update({k: stats[k] for k in
-                          ("op_hit", "op_n", "bundle_hit", "bundle_n", "traded_hit", "traded_n")})
+                          ("op_hit", "op_n", "bundle_hit", "bundle_n", "traded_hit", "traded_n",
+                           "g_op_hit", "g_bundle_hit", "g_traded_hit")})
             banks.append((game["name"], stats["bank"], stats["opponent_bank"], stats["latches"]))
 
         # **Aggregate. The first D in DAgger is Dataset Aggregation and it is not decoration.**
@@ -413,22 +502,43 @@ def main():
         # student, and it lets the net forget states it already learned to recover from -- the
         # oscillation the algorithm exists to prevent. `bc_dagger.py` fits the round's rollout
         # alone; that is the shortcut, not the algorithm.
-        # **Capped, by reservoir sampling rather than by dropping the oldest.** An unbounded
-        # aggregate is ~13.7 KB a turn, so 100 rounds of 2876 turns is 4-5 GB and the run dies on
-        # memory before it converges. Dropping the oldest instead would throw away round 0, which is
-        # the only round whose states are the TAPE's own -- exactly the trajectory the student must
-        # not forget how to rejoin. A reservoir keeps a uniform sample of everything ever seen.
+        # **Two pools, because one uniform reservoir does NOT protect the expert states.**
+        #
+        # The previous comment here claimed it did. It was wrong, and the arithmetic is simple: a
+        # uniform reservoir keeps every round at its PROPORTIONAL share, so after 400 rounds
+        # (1.15M turns seen against a 60k cap) round 0 survives as about 150 rows. The trajectory
+        # the student most needs -- the tape's own -- would have been diluted to noise exactly as
+        # the run got long.
+        #
+        # So teacher-driven turns get their own protected pool, and only the student-driven pool is
+        # reservoir-sampled. `expert_cap` is a floor on how much of the aggregate is always the real
+        # thing.
         for row in fresh:
-            seen_total += 1
-            if len(aggregate) < args.aggregate_cap:
-                aggregate.append(row)
+            pool = expert if row.pop("by_teacher") else student
+            cap = args.expert_cap if pool is expert else args.aggregate_cap - args.expert_cap
+            seen = seen_expert if pool is expert else seen_student
+            seen += 1
+            if pool is expert:
+                seen_expert = seen
             else:
-                j = int(rng.integers(0, seen_total))
-                if j < args.aggregate_cap:
-                    aggregate[j] = row
+                seen_student = seen
+            seen_total += 1
+            if len(pool) < cap:
+                pool.append(row)
+            else:
+                j = int(rng.integers(0, seen))
+                if j < cap:
+                    pool[j] = row
+        aggregate = expert + student
 
         # Minibatched, because the aggregate grows every round and one step over all of it is a
         # single enormous gradient rather than an epoch.
+        # **Score the FRESH states before fitting them.** The training loss is over the aggregate,
+        # which is dominated by earlier rounds; a loss falling on data already fitted says nothing
+        # about the states the policy is producing now. This is `-mean log p(teacher action)` on
+        # exactly the states just visited, and it is the honest progress number.
+        fresh_loss, fresh_heads = evaluate(params, stack(fresh[: args.batch_turns]))
+
         losses = []
         order = np.arange(len(aggregate))
         for _ in range(args.epochs):
@@ -437,22 +547,30 @@ def main():
                 chunk = [aggregate[i] for i in order[start:start + args.batch_turns]]
                 if not chunk:
                     continue
-                params, opt_state, loss = fit(params, opt_state, stack(chunk))
+                params, opt_state, loss, per_head = fit(params, opt_state, stack(chunk))
                 losses.append(float(loss))
 
         wins = sum(1 for _n, b, o, _l in banks if b > o)
         op_ag = agree["op_hit"] / max(1, agree["op_n"])
         bd_ag = agree["bundle_hit"] / max(1, agree["bundle_n"])
         tr_ag = agree["traded_hit"] / max(1, agree["traded_n"])
+        g_op = agree["g_op_hit"] / max(1, agree["op_n"])
+        g_bd = agree["g_bundle_hit"] / max(1, agree["bundle_n"])
+        g_tr = agree["g_traded_hit"] / max(1, agree["traded_n"])
         # **`W` is the TEACHER's win rate while beta is high, not the student's.** At beta=1 the
         # teacher drives every turn, so that column only becomes a statement about the student as
         # beta anneals to 0. Agreement is the number that answers "can it repeat the teacher yet",
         # and it is measured on states the student is standing in at every beta.
-        print("round %2d  beta %.2f  agree op %.4f  bundle %.4f  traded %.4f  "
-              "loss %7.4f  agg %6d  W%d/%d  %4.0fs"
-              % (rnd, beta, op_ag, bd_ag, tr_ag, float(np.mean(losses[-8:])),
+        print("round %3d  beta %.2f  sample op %.4f bundle %.4f traded %.4f | "
+              "greedy op %.4f bundle %.4f traded %.4f | fresh %6.4f agg %6.4f | n %6d  W%d/%d %4.0fs"
+              % (rnd, beta, op_ag, bd_ag, tr_ag, g_op, g_bd, g_tr,
+                 float(fresh_loss), float(np.mean(losses[-8:])),
                  len(aggregate), wins, len(banks), time.time() - t_start),
               flush=True)
+        print("           per-head (fresh)  "
+              + "  ".join("%s %.4f" % (h, float(v)) for h, v in sorted(fresh_heads.items())),
+              flush=True)
+        last_agree = g_op
         for name, bank, opp, latch in banks:
             print("           %-16s bank %8d  opp %8d  latches %s" % (name, bank, opp, latch),
                   flush=True)
@@ -462,7 +580,9 @@ def main():
         # reservoir are lost on a hard power-off, and never the params or the optimiser.
         due = ((rnd + 1) % max(1, args.save_data_every) == 0) or (rnd + 1 == args.rounds)
         save_resume(run, params, opt_state, rnd, seen_total, rng, args,
-                    aggregate=aggregate if due else None)
+                    pools=(dict(expert=expert, student=student, seen_expert=seen_expert,
+                                seen_student=seen_student) if due else None),
+                    extra=dict(anneal_start=anneal_start, last_agree=last_agree))
 
     print("done. checkpoints in %s" % run, flush=True)
 

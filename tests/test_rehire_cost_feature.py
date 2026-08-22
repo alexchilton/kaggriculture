@@ -69,9 +69,21 @@ def test_cumulative_table_is_the_prefix_sum():
 # ---- the feature -----------------------------------------------------------------------------
 
 
-def test_glob_grew_by_exactly_one_column():
+def test_glob_is_as_wide_as_the_constant_says():
+    """The encoder's width and `GLOBAL_FEATURES` must agree.
+
+    This asserted `GLOB_WIDTH_BEFORE + 1 == 60` -- it recorded the one-off event of `rehire_afford`
+    arriving. That made it a test which fails on every *deliberate* feature addition, and a test
+    whose only fix is to hand-edit a literal teaches people to hand-edit the literal.
+
+    Rewritten 2026-08-22, when `glob` went 60 -> 122 to carry the turn as one-hots and a bit per
+    open shop (`docs/fable_dagger_review_2026-08-22.md`). The property worth pinning is that the
+    constant does not lie about the width, because a constant that lies is how a checkpoint silently
+    fails to load. `GLOB_WIDTH_BEFORE` is left alone: the migration tests below use it to build
+    SYNTHETIC 59- and 60-wide params, and they are testing the widening mechanism, not the encoder.
+    """
     _t, _u, g = jax_obs.encode(J.reset(2))
-    assert g.shape[-1] == GLOB_WIDTH_BEFORE + 1
+    assert g.shape[-1] == jax_obs.GLOBAL_FEATURES
 
 
 def test_a_lone_farmer_costs_nothing_to_keep():

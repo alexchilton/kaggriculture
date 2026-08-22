@@ -90,6 +90,38 @@ def _tile_arrays(tiles, day):
     return out
 
 
+def _shop_slots(obs):
+    """`unlocked_shops` as slot-indexed shop ids, truncated to `MAX_INSTANCES`.
+
+    `observation["town"]["unlocked_shops"]` is the list -- NOT `observation["shops"]`, which does not
+    exist and which silently produced all-zero drain tables over 5,376 games.
+    """
+    from kagg.sim.town import SHOPS
+
+    index = {name: i for i, name in enumerate(SHOPS)}
+    town = (obs or {}).get("town") or {}
+    names = [n for n in (town.get("unlocked_shops") or []) if n in index]
+    return [index[n] for n in names[: J.MAX_INSTANCES]]
+
+
+def _unlock_days(obs):
+    import jax.numpy as jnp
+
+    slots = _shop_slots(obs)
+    days = np.full((1, J.MAX_INSTANCES), J.NEVER, dtype=np.int32)
+    days[0, : len(slots)] = 0
+    return jnp.asarray(days, dtype=J._I)
+
+
+def _unlock_shops(obs):
+    import jax.numpy as jnp
+
+    slots = _shop_slots(obs)
+    ids = np.zeros((1, J.MAX_INSTANCES), dtype=np.int32)
+    ids[0, : len(slots)] = np.asarray(slots, dtype=np.int32)
+    return jnp.asarray(ids, dtype=J._I)
+
+
 def state_from_obs(obs, privates):
     """Build a batch-of-one `jax_sim.State` from one turn's observation.
 
@@ -158,13 +190,23 @@ def state_from_obs(obs, privates):
         tiles=tiles,
         farm=farm,
         inventory=inventory,
-        # Not recoverable from the observation and not needed to act from the current position:
-        # the unlock schedule only governs future town drain, and the key only seeds weed spawning.
-        # Instance-indexed since 1.32.6 (shops are drawn with replacement), so it is
-        # `MAX_INSTANCES` wide and needs the companion shop-id array; all-NEVER means a frozen town
-        # either way, which is what makes the shop ids irrelevant here.
-        unlock_day=jnp.full((1, J.MAX_INSTANCES), J.NEVER, dtype=J._I),
-        unlock_shop=jnp.zeros((1, J.MAX_INSTANCES), dtype=J._I),
+        # **Which shops are ALREADY trading, read off the observation.**
+        #
+        # This used to be all-NEVER, on the reasoning that "the unlock schedule only governs future
+        # town drain". That was wrong in a way that mattered: `jax_obs.encode` now emits a bit per
+        # unlocked shop, and the `q4_branch` latch choosing which of four tapes the agent replays is
+        # exactly "the yarn store is unlocked" (`q4_branch.py:242`). Left stubbed, that feature reads
+        # all-zero on every reference-environment rollout -- silently, and only on this path, so the
+        # jax_sim path would look fine.
+        #
+        # What is reconstructed is "unlocked by now", not the true unlock DAY, which the observation
+        # does not carry: an open shop is given day 0 and a closed one NEVER. That is exact for the
+        # feature and wrong for forward drain simulation, which is safe here because `state_from_obs`
+        # builds features for the current turn and is never stepped. `unlocked_shops` may name the
+        # same shop twice and each instance drains independently, so slots are filled in order
+        # rather than deduplicated.
+        unlock_day=_unlock_days(obs),
+        unlock_shop=_unlock_shops(obs),
         key=__import__("jax").random.PRNGKey(0),
     )
 
