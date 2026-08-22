@@ -914,11 +914,28 @@ def test_a_one_shot_crop_is_not_harvested_while_the_window_is_still_open():
 
     An early harvest is not worth `held * price`, it is worth `held * price` MINUS everything the
     window could still add. Until the window shuts or the tile is full, that number is negative.
+
+    **Updated 2026-08-22 to the rule `d44cbff` reinstated on 2026-08-20, on Alex's call.**
+    `_one_shot_is_finished` went from `age >= max_day` to `age + 1 >= max_day`: the LAST day the
+    window is still open, not the first day it is shut. That is a deliberate trade and its
+    reasoning is in the function's own docstring -- tetsuya harvests at age 3 to buy the SQUARE,
+    forfeiting only the final water of the window, because the ground is worth more than the unit.
+    Measured at the decision on his board `94345389`: at d3 dawn both boards carry ten WHEAT tiles
+    at `yield_units=2`, he harvests all ten, we offered WATER and nothing else.
+
+    So the boundary this pins moved by one day. It is still a boundary: age 2 is a full day too
+    early and must stay WATER-only, which is the case the original defect produced (crop count
+    16 -> 11 on d3 of seed 11). This asserts the new edge, not the old one -- the code is right and
+    the test was left behind.
     """
     cell = dict(kind="PLANT", crop="WHEAT", planted_day=0, watered_today=False,
                 consecutive_unwatered=0, yield_units=1, fertilized_until_day=-1)
-    ops = RT.crop_ops(cell, 3, have_fertilizer=False)             # age 3, window is 2-4
-    assert [o for o, _i, _p in ops] == ["WATER"], ops
+    # Age 2, window 2-4: two waters still to come. Harvesting here forfeits both -- still refused.
+    early = RT.crop_ops(cell, 2, have_fertilizer=False)
+    assert [o for o, _i, _p in early] == ["WATER"], early
+    # Age 3 is the LAST open day. `age + 1 >= max_day`, so the square is taken deliberately.
+    ops = RT.crop_ops(cell, 3, have_fertilizer=False)
+    assert [o for o, _i, _p in ops] == ["WATER", "HARVEST"], ops
     # Age 4 shuts the window: nothing more can be added, so the harvest is finally free money.
     shut = RT.crop_ops(dict(cell, yield_units=2), 4, have_fertilizer=False)
     assert [o for o, _i, _p in shut] == ["WATER", "HARVEST"], shut
@@ -943,15 +960,66 @@ def test_forcing_a_late_one_shot_harvest_on_the_last_day_was_measured_a_92_dolla
     anything; it does not reliably get there, so the fix mostly converts "still growing, banks $0" into
     "harvested but unsold, banks $0" at the cost of a turn that would have gone to something that
     clears. Reverted. The bug is real; this fix for it is not a net win here.
+
+    **That revert no longer describes the code, and this test was asserting a state that has not
+    existed since 2026-08-20.** `d44cbff` reinstated the early harvest on Alex's call, by a
+    different route -- not a `day >= SEASON_DAYS - 1` clause bolted onto the gate, but
+    `_one_shot_is_finished` moving from `age >= max_day` to `age + 1 >= max_day` for every day of
+    the season. A wheat sown on `SEASON_DAYS - 3` reaches age 2 by the last day, and `2 + 1 >= 4`
+    is false, so it is still left standing -- the -$92 finding survives for THIS cell. What changed
+    is a tile one day older: age 3 now harvests where it used to be refused.
+
+    **Rewritten 2026-08-22. The -$92 revert this test was named for did not hold, and the test had
+    been asserting a state the code left behind on 2026-08-12.**
+
+    The reinstatement is not the mechanism the paragraph above rejected. That one was
+    `day >= SEASON_DAYS - 1` bolted onto the gate. The live one is "the window cannot close before
+    the season does":
+
+        if day is not None and day + (info["max_day"] - age) > R.SEASON_DAYS - 1:
+            return True
+
+    and its own comment records the pairing: "Measured ALONE on the 12-seed ladder it cost -$92,
+    because there was nothing extra standing to collect; it is paired here with the `plant_prize`
+    change that puts the crop in the ground." So the -$92 is a fact about the harvest gate ALONE.
+    The pair is what ships. Victor takes 26 wheat on d29 at age 2-3, held 4 of max 6.
+
+    This cost real time on 2026-08-22: the stale "Reverted" sentence was read as current, a
+    `plant_prize` gate was written against the superseded rule, and the planting half of the pair
+    was deleted -- recreating the -$92 configuration. `aac7e06`, reverted by `9ba14d5`.
+
+    So the invariant is the one the season actually needs, and it does not name a day or a
+    mechanism: **on the last day, nothing collectable is left standing.** After d29's rollover
+    there is no tomorrow to grow into, so any tile holding units that the gate would collect must
+    be offered HARVEST. That is what "banks $0 while still growing" meant, and it is what the
+    ladder corpus's 519 standing WHEAT over 30 games was.
     """
-    cell = dict(kind="PLANT", crop="WHEAT", planted_day=RT.R.SEASON_DAYS - 3, watered_today=True,
-                consecutive_unwatered=0, yield_units=2, fertilized_until_day=-1)
     last_day = RT.R.SEASON_DAYS - 1
-    age = last_day - cell["planted_day"]
-    assert age < RT.CROP["WHEAT"]["max_day"], "the window must still read as OPEN, not naturally shut"
-    ops = RT.crop_ops(cell, last_day, have_fertilizer=False)
-    assert "HARVEST" not in [o for o, _i, _p in ops], (
-        f"reverted state should still leave a still-growing late planting standing: {ops}")
+    left_standing = []
+    for crop in RT.R.CROPS:
+        info = RT.CROP[crop]
+        if info["ongoing"]:
+            continue
+        for sown in range(last_day + 1):
+            age = last_day - sown
+            if age < info["first"]:
+                continue                          # nothing has grown yet; there is nothing to leave
+            cell = dict(kind="PLANT", crop=crop, planted_day=sown, watered_today=True,
+                        consecutive_unwatered=0, yield_units=2, fertilized_until_day=-1)
+            ops = [o for o, _i, _p in RT.crop_ops(cell, last_day, have_fertilizer=False)]
+            if "HARVEST" not in ops:
+                left_standing.append((crop, f"sown d{sown}", f"age {age}", ops))
+    assert not left_standing, (
+        "tiles holding units are left standing on the last day, and after d29's rollover they are "
+        f"discarded whole rather than decayed -- they bank $0: {left_standing}")
+
+    # And the harvest is CRITICAL on that day, not merely offered: it must outrank ordinary work,
+    # because there is no second chance at it. `upkeep_buys_nothing(last_day)` is what promotes it.
+    cell = dict(kind="PLANT", crop="WHEAT", planted_day=last_day - 3, watered_today=True,
+                consecutive_unwatered=0, yield_units=2, fertilized_until_day=-1)
+    prizes = {o: p for o, _i, p in RT.crop_ops(cell, last_day, have_fertilizer=False)}
+    assert prizes.get("HARVEST", 0) >= RT.CRITICAL, (
+        f"the last day's harvest must be CRITICAL, not ordinary: {prizes}")
 
 
 def test_a_wheat_reaches_its_plain_yield_and_is_harvested_once(kg):
@@ -985,22 +1053,57 @@ def test_a_wheat_reaches_its_plain_yield_and_is_harvested_once(kg):
     assert priv["shed"].get("WHEAT", 0) == 4, priv["shed"]
 
 
-def test_a_one_shot_crop_is_not_planted_if_its_window_cannot_finish():
-    """`plant_prize` gates on `first_yield_day`, which is the wrong end of the crop's life.
+def test_a_one_shot_crop_is_planted_only_where_something_will_collect_it():
+    """`plant_prize` and `_one_shot_is_finished` are ONE rule in two places. Read them together.
 
-    A one-shot crop only banks anything through a HARVEST, and HARVEST is only offered once the yield
-    window has shut (`_one_shot_is_finished`). So a wheat needs to reach age `max_yield_day` = 4 with
-    a turn left to harvest it, not merely age 2. Gating on `first` planted wheat that could never be
-    collected: 32 of 66 wheat plantings sat unharvested at season end against the tape's 1 of 66.
+    **This test used to assert `plant_prize("WHEAT", 26) == 0` and that was wrong from 2026-08-12
+    onward.** Its reasoning -- "HARVEST is only offered once the yield window has SHUT, so a wheat
+    must reach age `max_day` with a turn left" -- describes a gate that no longer exists.
+    `_one_shot_is_finished` gained a second branch:
 
-    Each one costs a $10 seed, a PLANT turn and a WATER turn for nothing, and occupies ground.
+        if day is not None and day + (info["max_day"] - age) > R.SEASON_DAYS - 1:
+            return True
+
+    "the window cannot close before the season does", so the partial yield is taken rather than
+    forfeited. A d26 wheat is age 3 on d29 and `29 + (4 - 3) = 30 > 29`, so it IS collected.
+    Measured against the live gate rather than the superseded one:
+
+        crop       sown  age@d29  old gate  LIVE gate
+        WHEAT        26        3     False       True
+        WHEAT        27        2     False       True
+        CARROT       27        2     False       True
+
+    **The two halves are a deliberate pair and must not be separated.** The branch's own comment:
+    "Measured ALONE on the 12-seed ladder it cost -$92, because there was nothing extra standing to
+    collect; it is paired here with the `plant_prize` change that puts the crop in the ground."
+    Victor takes 26 wheat on d29 at age 2-3, held 4 of max 6 (`91854176.json`). Deleting the
+    planting half recreates the -$92 configuration exactly -- which is what `aac7e06` did on
+    2026-08-22, on the strength of this test plus a `_one_shot_is_finished` docstring that still
+    claimed the harvest branch had been reverted. Reverted as `9ba14d5`.
+
+    So what this pins is the PAIR: every day `plant_prize` prices above zero must be a day the live
+    harvest gate would collect. That invariant is what was actually meant, it survives either gate
+    being retuned, and it is the thing whose violation costs a seed, a PLANT turn and a WATER turn.
     """
     last = RT.R.SEASON_DAYS - 1
-    assert RT.plant_prize("WHEAT", last - 5) > 0          # sown day 24, age 4 on day 28, a day spare
-    # Sown day 26: age 4 lands on day 30 and the season ends on 29, so it can NEVER be harvested --
-    # yet `days_left` 2 clears `first_yield_day` 2 and the old rule priced it at $25.
-    assert RT.plant_prize("WHEAT", last - 3) == 0
-    assert RT.plant_prize("MELON", last - 5) == 0         # melon needs age 12; hopeless this late
+    priced_but_uncollectable = []
+    for crop in RT.R.CROPS:
+        info = RT.CROP[crop]
+        if info["ongoing"]:
+            continue
+        for sow in range(last + 1):
+            if RT.plant_prize(crop, sow) <= 0:
+                continue
+            age = last - sow
+            room = info["max_yield"] - 1                    # at least one unit standing
+            if not RT._one_shot_is_finished(info, age, room, last):
+                priced_but_uncollectable.append((crop, sow, age))
+    assert not priced_but_uncollectable, (
+        "plant_prize pays for one-shot sowings the live harvest gate will never collect -- a seed, "
+        f"a PLANT turn and a WATER turn each, for nothing: {priced_but_uncollectable}")
+
+    # The pair must also not run the other way: a melon this late is hopeless on BOTH gates.
+    assert RT.plant_prize("MELON", last - 5) == 0, "melon needs age 12; nothing collects it"
     # An ongoing crop is unaffected: it pays from `first_yield_day` onwards and needs no window.
     assert RT.plant_prize("STRAWBERRY", last - 11) > 0
 

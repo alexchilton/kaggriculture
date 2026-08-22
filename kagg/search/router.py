@@ -741,7 +741,23 @@ def _one_shot_is_finished(info, age, room, day=None):
     reach the shed (DROP) and clear a SELL order before the game ends, and a late-season forced harvest
     does not reliably get there -- so the fix converts "still growing, banks $0" into "harvested but
     unsold, banks $0" at the cost of a turn that would otherwise have gone to something that clears.
-    Reverted. The bug is real; this fix for it is not a net win on this benchmark.
+    Reverted.
+
+    **THAT REVERT DID NOT HOLD, AND THIS PARAGRAPH DESCRIBED A STATE THE FUNCTION HAS NOT BEEN IN
+    SINCE THE 2026-08-12 LATE-SEASON WORK.** The branch immediately below implements the same
+    outcome by a different route -- not `day >= SEASON_DAYS - 1` bolted on, but
+    `day + (max_day - age) > SEASON_DAYS - 1`, i.e. "the window cannot close before the season
+    does". The -$92 stands only for the change measured ALONE; it is paired here with the
+    `plant_prize` behaviour that puts the crop in the ground, and the pair is what ships.
+
+    Corrected 2026-08-22, after this docstring caused a real error: it was read as current, a
+    `plant_prize` gate was written against the SUPERSEDED harvest rule (`age >= max_day` rather than
+    the live one), and the planting half of the pair was deleted -- recreating the exact -$92
+    configuration the paragraph above warns about. Committed as `aac7e06` and reverted as `9ba14d5`
+    within the hour. A docstring that says "reverted" directly above the code doing the thing is
+    worse than no docstring.
+
+    Read the branch below before trusting any sentence in this one.
     """
     # A one-shot whose growing window cannot close before the season ends is offered for HARVEST
     # anyway, taking a partial yield. Only reachable from d26.
