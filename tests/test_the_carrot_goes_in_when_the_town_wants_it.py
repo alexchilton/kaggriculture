@@ -251,6 +251,12 @@ def test_the_inlined_rule_plays_exactly_what_the_measured_wrapper_plays():
     not distinguish "equivalent" from "subtly different" anyway.
 
     Turn-for-turn, whole window, one season. Anything less is a shorter test, not a weaker one.
+
+    **The town has to be forced to qualify, or this proves nothing.** The first version of this test
+    used the real decision on seed 11, whose town draws `FARMERS_MARKET` twice for a carrot drain of
+    2 against a threshold of 5. The rule never fired in either arm, both emitted unchanged actions,
+    and the test passed by comparing two no-ops. Carrot shops are therefore injected into the
+    observation both implementations read, so both see the same qualifying town and both fire.
     """
     B = pytest.importorskip("breakdown")
     E = pytest.importorskip("kagg.search.tape_edit")
@@ -260,6 +266,19 @@ def test_the_inlined_rule_plays_exactly_what_the_measured_wrapper_plays():
     sched = {int(k): {kk: vv for kk, vv in r.items() if kk not in B.TAPE_ONLY}
              for k, r in raw.items()}
     B.schedule_agent = SA
+
+    #: Enough carrot-only shops to clear the threshold. Seed 11's own town drains 2.
+    EXTRA = ["PET_CAFE"] * 3
+
+    def qualifying(o):
+        """The same observation, with a town that wants carrot. Both arms read it from `obs`."""
+        town = dict(o.get("town") or {})
+        town["unlocked_shops"] = list(town.get("unlocked_shops") or []) + EXTRA
+        o2 = dict(o)
+        o2["town"] = town
+        return o2
+
+    fired = {}
 
     def season(inlined):
         seen = []
@@ -275,8 +294,10 @@ def test_the_inlined_rule_plays_exactly_what_the_measured_wrapper_plays():
                                               days=days)
 
                 def wrapped(o, _t=None):
+                    o = qualifying(o)
                     act = a(o)
                     if int(o.get("day", 0) or 0) in days:
+                        fired[inlined] = SA._carrot_pays(o)
                         seen.append((int(o.get("step", 0) or 0),
                                      [list(u) for u in [act.get("farmer")] + list(act.get("hands") or [])],
                                      [list(m) for m in (act.get("market") or [])]))
@@ -291,6 +312,11 @@ def test_the_inlined_rule_plays_exactly_what_the_measured_wrapper_plays():
 
     mine, theirs = season(True), season(False)
     assert mine and theirs, "neither arm reached the window"
+    assert fired.get(True) and fired.get(False), (
+        "the rule did not fire, so both arms emitted unchanged actions and 'identical' would be a "
+        "comparison of two no-ops -- which is exactly how the first version of this test passed")
+    assert any("CARROT" in u for _s, acts, _m in mine for u in acts), (
+        "the rule fired and no CARROT reached the emitted actions")
     assert len(mine) == len(theirs), "the two arms played a different number of turns"
     bad = [(s, a, b) for (s, a, _), (_, b, _) in zip(mine, theirs) if a != b]
     assert not bad, "%d of %d turns differ in unit actions, first at step %d:\n  inlined %r\n  wrapper %r" % (
