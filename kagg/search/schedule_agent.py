@@ -3791,7 +3791,30 @@ REPLAY_OPENING_TAPE = {
     # against `0 0 4 6 8 19 19 19`, because it sows melon on the squares this arm wants strawberry
     # on. Land, pens and animals are identical in every tape through d12, so crop is the only axis
     # this choice has.
-    (True, True): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
+    #
+    # ---------------------------------------------------------------------------------------------
+    # **CHANGED 2026-08-22, and everything above it is the reason it had to be.** The whole argument
+    # rests on "over `REPLAY_OPENING_DAYS` -- d4 to d11". That range became `tuple(range(30))` on
+    # 2026-08-21. The tapes "part company at d12" and we now replay EIGHTEEN DAYS past that, so the
+    # premise is gone and the key was never revisited -- the `CLAUDE.md` lesson that a decision to
+    # skip a fix expires when the problem changes.
+    #
+    # Measured on the fourteen `(town, opponent)` pairs that arm `(True, True)`: same town, same
+    # opponent, same seed, only this line moved.
+    #
+    #     control  0/14 wins        this mapping  13/14 wins
+    #     town 0, Ryo Hasegawa       99,309 / 122,771  ->  129,383 / 119,298
+    #     town 1, MIRROR             60,560 /  61,147  ->   86,999 /  60,120
+    #     town 1, peikopon           61,982 /  68,926  ->   86,819 /  67,040
+    #
+    # About +$20k a game and every game flips from a loss to a win. Held by
+    # `tests/test_the_yarn_latch_is_not_thrown_away_when_the_melon_latch_fires.py`.
+    #
+    # **NOT settled: whether this is the BEST tape for the key, only that the old one was wrong.**
+    # The paragraph above argues a q4 STRAWBERRY tape is the principled choice and names three --
+    # `93459936`, `92508348`, `91906088` -- none of which is registered. They are untested and may
+    # beat this. The evidence here is 14 configurations on one seed across three towns.
+    (True, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
 }
 
 #: The two species the herd split may exchange, derived rather than written down so it cannot go stale
