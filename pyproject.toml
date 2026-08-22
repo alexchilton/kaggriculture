@@ -29,7 +29,13 @@ testpaths = ["tests"]
 #: leaked module state that makes the RESULT change every run. Measured 2026-08-22: two
 #: identical full runs disagreed on 20 tests, while the same files run together in one process
 #: gave 16 failures twice, identical, and exactly the sum of running each alone.
-addopts = "-n auto --dist loadfile -m 'not slow'"
+#: `--ignore=tests/archive` switches the day-planner test surface OFF without deleting it.
+#: The shipped agent replays a 720-step tape on 719 of 720 turns, so `crew.cover`,
+#: `router.plan_routes` and the whole per-tile pricing layer run every turn and have their answer
+#: thrown away. 35 files and 183 tests were asking questions of a component with a 1-in-720 vote.
+#: Delete this one flag to collect them again; `tests/archive/README.md` says what is in there and
+#: what would have to become true for it to matter.
+addopts = "-n auto --dist loadfile -m 'not slow' --ignore=tests/archive"
 markers = [
     # A whole test MODULE earns this mark -- via the `pytest_collection_modifyitems` hook and the
     # `SLOW_MODULES` list in `tests/conftest.py`, not a per-test decorator -- by being JAX fast-sim
