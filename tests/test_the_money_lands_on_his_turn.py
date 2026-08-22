@@ -3,6 +3,22 @@
 `test_each_day_matches_the_tape.py` counts what a day did. This counts WHEN. They are different
 measurements and only the second one can see the defect that actually costs us the opening.
 
+## What this gate can and cannot see, as of 2026-08-22
+
+**It is narrower than the rest of this docstring implies, and the reason is `REPLAY_OPENING_DAYS`.**
+That is `tuple(range(30))`: the agent replays a recording on every day of the season, so on those
+days it has no purchase cadence of its own to gate. Comparing our fills to the recording we are
+replaying leaves only one live question -- **is the replay faithful** -- and that is what the 120
+cells below now assert. A replay bug shows here. A cadence decision does not, because none is made.
+
+The tell is `test_the_contested_fill_turn_is_reported`: 30 cells marked xfail because a SELL's fill
+turn is "partly the opponent's doing" now all xPASS. Same actions, same opponent, same book, so the
+same fills. When the agent stops replaying a day, that day regains a cadence and these cells regain
+their teeth -- and the xfails will start failing again for the reason they were written for.
+
+Do not read a green run here as evidence that our purchase timing is good. It is evidence that we
+replay what we said we would replay.
+
 ## Why the hour is its own gate
 
 d8, ours against the tape, from the per-day grid:
@@ -77,13 +93,46 @@ def _cadence(events, seat):
     return out
 
 
+class _WhichTape(dict):
+    """An opening that records the day it was consulted on.
+
+    `replayed` picks its opening per turn off the two latches and then asks `step not in opening`,
+    so `__contains__` fires exactly once per turn on exactly the tape that governs that turn. Same
+    instrument as `test_each_day_matches_the_tape.py`, for the same reason.
+    """
+
+    def __init__(self, opening, tape, log):
+        super().__init__(opening)
+        self._tape, self._log = tape, log
+
+    def __contains__(self, step):
+        self._log[int(step) // 24] = self._tape
+        return super().__contains__(step)
+
+
 @pytest.fixture(scope="session")
 def cadence():
-    """`(ours, tape)` cadence tables, each `day -> op -> [hours]`.
+    """`(ours, tape-cadence-per-recording, recording-per-day)`, each cadence `day -> op -> [hours]`.
 
-    Two separate seasons, as in the day gate: ours against the tape's recorded actions, then the
-    tape against the same, so both columns are measured in the same contested market rather than
-    one being read out of the original replay where the opponent was somebody else.
+    **The tape column is per DAY, because the agent changes recording mid-season.** It opens on
+    `REPLAY_OPENING_TAPE[(False, False)]`; `melon_branch` at d3 and `q4_branch` at `DECIDE_BY_DAY`
+    each swap it for a different カワシギ game. Held to the opening recording for all 30 days this
+    gate was 30 cells red from `BUY_SEED-5` on, and the arming day and the first red day were the
+    same day. Measured 2026-08-22, seed 11, `q4_branch` arming on d5:
+
+        d0-d4   kawashigi/92498144              the recording the gate names   every op passes
+        d5-d29  downloads_2026-08-13/91907974   the recording we actually play  BUY_SEED red
+
+    It was comparing two different games and calling the difference a cadence defect.
+
+    So the tape side is played once per recording the agent actually armed, against the SAME
+    opponent, and each day is compared to the one that governed it.
+
+    **What this costs.** Pointed at the recording we replay, the part of the gate that asked "are we
+    playing this tape at all" is true by construction. What still gates is everything the replay
+    cannot force: a fill needs the bank to cover it at that hour, `_do_hire` fails silently on a
+    thin bank, and the book is shared with the opponent. Identical actions do not give identical
+    fills. It is a narrower gate than the header implies, and worth saying so plainly.
     """
     import breakdown as B
 
@@ -95,27 +144,46 @@ def cadence():
     horizon = DAYS + 1
     opp = lambda: B.tape_policy(str(REPO / replay), team, 1)      # noqa: E731
 
-    def ours():
-        a = SA.make_agent(sched, 0)
-        return lambda o, t: a(o)
+    armed = {}
+    plain = SA._replay_opening
+    SA._replay_opening = lambda days, tape=None, team=None: _WhichTape(
+        plain(days, tape, team), tape, armed)
+    try:
+        def ours():
+            a = SA.make_agent(sched, 0)
+            return lambda o, t: a(o)
 
-    B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
+        B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
+    finally:
+        SA._replay_opening = plain
     mine = _cadence(B.LAST_FILLS.events, 0)
 
-    B.run(lambda: B.tape_policy(str(REPO / replay), team, 0), opp, SEED, WEEDS, stop_day=horizon)
-    theirs = _cadence(B.LAST_FILLS.events, 0)
-    return mine, theirs
+    assert armed, ("no opening was consulted: the agent never replayed, so this gate is comparing "
+                   "a planner against a tape and would be red by construction")
+
+    columns = {}
+    for tape in dict.fromkeys(armed.values()):
+        B.run(lambda t=tape: B.tape_policy(str(REPO / t), team, 0), opp, SEED, WEEDS,
+              stop_day=horizon)
+        columns[tape] = _cadence(B.LAST_FILLS.events, 0)
+
+    # A day with no recorded arming is one the replay did not cover; fall back to the opening tape
+    # so the cell still gates rather than disappearing.
+    opening_tape = SA.REPLAY_OPENING_TAPE[(False, False)][0]
+    per_day = {d: armed.get(d, opening_tape) for d in range(DAYS)}
+    return mine, columns, per_day
 
 
 @pytest.mark.parametrize("day", range(DAYS))
 @pytest.mark.parametrize("op", OURS_TO_TIME)
 def test_the_purchase_lands_on_his_turn(cadence, day, op):
     """Same count AND same hours. A day that buys the same things later is a different day."""
-    mine, theirs = cadence
+    mine, columns, per_day = cadence
+    recording = per_day[day]
     ours = mine[day][op]
-    tape = theirs[day][op]
+    tape = columns[recording][day][op]
     assert ours == tape, (
-        f"d{day} {op}: ours h{ours} / tape h{tape}"
+        f"d{day} {op} vs {recording}: ours h{ours} / tape h{tape}"
         + (f"  -- {len(ours)} vs {len(tape)} units" if len(ours) != len(tape) else "")
         + "\n    HIRE is mult*fib(hires_today) on a per-DAY counter and fails silently on a thin "
           "bank; the SELL that funds it settles in the same turn, in order-slot sequence.")
@@ -128,7 +196,8 @@ def test_the_purchase_lands_on_his_turn(cadence, day, op):
 @pytest.mark.parametrize("day", range(DAYS))
 @pytest.mark.parametrize("op", CONTESTED)
 def test_the_contested_fill_turn_is_reported(cadence, day, op):
-    mine, theirs = cadence
+    mine, columns, per_day = cadence
+    theirs = columns[per_day[day]]
     assert mine[day][op] == theirs[day][op], (
         f"d{day} {op}: ours h{mine[day][op]} / tape h{theirs[day][op]}")
 
@@ -141,7 +210,7 @@ def test_the_events_are_fills_and_not_offers(cadence):
     assertion above would fail for a reason that has nothing to do with the agent. A day cannot buy
     more land than there are quadrants, and that is cheap to assert.
     """
-    mine, _theirs = cadence
+    mine, _columns, _per_day = cadence
     for day in range(DAYS):
         assert len(mine[day]["BUY_LAND"]) <= 3, (
             f"d{day} recorded {len(mine[day]['BUY_LAND'])} BUY_LAND fills; there are only three "
