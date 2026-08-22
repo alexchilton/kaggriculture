@@ -177,8 +177,11 @@ def _candidates(state):
     # `jax_masks.PICKUP = on_shed & shed_any`.
     n_tiles = t.kind.shape[-1]
     is_shed = jnp.zeros((n_tiles,), dtype=bool).at[J.SHED_TILES].set(True)
-    shed_ok = (is_shed[None, None, :] & (t.kind != J.LOCKED)
-               & ((state.farm.shed.sum(axis=-1) > 0)[..., None]))
+    # No LOCKED term: a shed tile is a standing position and the shed is always owned. This mirror
+    # was faithful to `jax_masks` including its bug, and the bug reduced COMMIT_PICKUP to the single
+    # tile (4,4) -- the other three shed-access tiles are LOCKED on day 0. See
+    # `tests/test_a_hand_can_use_the_shed_from_a_locked_tile.py`.
+    shed_ok = is_shed[None, None, :] & ((state.farm.shed.sum(axis=-1) > 0)[..., None])
     return jnp.stack([
         is_plant & ~t.watered_today,                       # WATER
         ripe | (has_animal & (t.yield_units > 0)),         # HARVEST

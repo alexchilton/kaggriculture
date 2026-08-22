@@ -58,7 +58,22 @@ def unit_op_mask(state):
     has_animal = animal != J.NO_ANIMAL
     is_plant = kind == J.PLANT
     empty_structure = ((kind == J.COOP) | (kind == J.PASTURE)) & ~has_animal
-    on_shed = (idx[..., None] == J.SHED_TILES).any(axis=-1) & (kind != J.LOCKED)
+    # **Standing position only. A LOCKED shed-access tile still reaches the shed.**
+    #
+    # This used to also require `kind != J.LOCKED`. The reference does not, and says why
+    # (`reference/kaggriculture.py:337-340`):
+    #
+    #     # Shed operations resolve before the LOCKED guard. They use the tile only as
+    #     # a standing position -- the shed itself is always owned -- and three of the
+    #     # four shed-access tiles start LOCKED, so guarding them first would make the
+    #     # shed unreachable from those tiles.
+    #
+    # `_apply_unit_action` handles DROP, PICKUP and PLACE above `if tile == "LOCKED": return`, and
+    # each tests `_is_shed_adjacent` and nothing else about the tile. `jax_sim.py:683` already
+    # agreed; only this mask did not, and the parity gate compares the simulators, never the mask.
+    # Same defect and same three tiles as the movement one above.
+    # `tests/test_a_hand_can_use_the_shed_from_a_locked_tile.py`.
+    on_shed = (idx[..., None] == J.SHED_TILES).any(axis=-1)
 
     carried = farm.carried                                  # [B, P, U, N_ITEMS]
     carrying_any = carried.sum(axis=-1) > 0
