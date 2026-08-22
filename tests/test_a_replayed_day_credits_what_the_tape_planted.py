@@ -86,12 +86,22 @@ def at_dawn_of_twelve():
     env.reset(2)
     agent = SA.make_agent(thin, s, router=True)
     state = _find_state(agent)
-    snapshot, plants = None, 0
+    snapshot, plants, board = None, 0, collections.Counter()
     for t in range(13 * 24):
         ob = env.state[s].observation
         day = int(ob.get("day", 0) or 0)
         if day == 12 and int(ob.get("hour", 0) or 0) == 0 and snapshot is None:
             snapshot = collections.Counter(state["planted"])
+            # **The board is read HERE, at the same instant as the counter.** It used to be read
+            # after the loop broke at d13, so the comparison was a d12-dawn counter against a d13
+            # board and the gap was d12's own five plantings. That is the `farm:0.445` failure in
+            # CLAUDE.md -- both numbers right, taken over different units -- and it read as a
+            # 2-crop crediting bug that does not exist. Corrected 2026-08-22.
+            board = collections.Counter()
+            for _row in (((ob.get("farms") or [{}])[s] or {}).get("tiles") or []):
+                for _c in _row:
+                    if isinstance(_c, dict) and _c.get("crop"):
+                        board[_c["crop"]] += 1
         n = [len((env.state[0].observation["farms"][i] or {}).get("hands") or []) for i in (0, 1)]
         m = agent(ob)
         if day == 12:
@@ -105,11 +115,6 @@ def at_dawn_of_twelve():
         a[o] = {"farmer": st.get("farmer") or ["PASS"],
                 "hands": list(st.get("hands") or [])[:n[o]], "market": st.get("market") or []}
         env.step(a)
-    board = collections.Counter()
-    for row in (((env.state[s].observation.get("farms") or [{}])[s] or {}).get("tiles") or []):
-        for c in row:
-            if isinstance(c, dict) and c.get("crop"):
-                board[c["crop"]] += 1
     try:
         yield snapshot, board, plants
     finally:
@@ -119,11 +124,28 @@ def at_dawn_of_twelve():
 
 
 def test_the_counter_knows_the_tape_planted_the_strawberry(at_dawn_of_twelve):
-    """37 strawberry are standing at d12. The counter must not read 0."""
-    planted, _board, _plants = at_dawn_of_twelve
-    assert planted["STRAWBERRY"] >= 37, (
-        f"state['planted'] says STRAWBERRY {planted['STRAWBERRY']} while 37 are in the ground; "
-        "the planner will try to plant them all again")
+    """Whatever is standing at d12 dawn, the counter must know about it. It used to read 0.
+
+    **Asserted against the board taken at the SAME instant, from 2026-08-22.** The literal `37` was
+    a d13 board number checked against a d12-dawn counter, so it failed at 35 and read as a
+    two-crop crediting bug. The two missing plants were d12's own row, which
+    `test_the_handover_day_plants_its_row_and_not_the_whole_opening` measures separately and which
+    passes at 5. Comparing the counter to the board it is a counter OF removes the gap entirely and
+    is a stronger assertion than a hard-coded number, which cannot tell a real regression from a
+    changed tape.
+
+    **The margin is ZERO, measured.** Tightened to `==` as a probe on 2026-08-22 and it passed:
+    counter and board are exactly equal at d12 dawn. So `>=` is not slack hiding a defect -- one
+    crop of under-crediting fails it. `>=` is kept rather than `==` because over-crediting is
+    legitimate later in a season: a harvested tile clears from the board while the counter, which
+    counts plantings rather than standing crops, correctly does not go down.
+    """
+    planted, board, _plants = at_dawn_of_twelve
+    assert board["STRAWBERRY"] > 0, "no strawberry on the board at d12; the fixture is not replaying"
+    assert planted["STRAWBERRY"] >= board["STRAWBERRY"], (
+        f"state['planted'] says STRAWBERRY {planted['STRAWBERRY']} while {board['STRAWBERRY']} are "
+        f"standing at d12 dawn; `_refresh_pins` seats pins for `want - planted - live`, so the "
+        f"planner will chase the difference and plant them again")
 
 
 def test_the_handover_day_plants_its_row_and_not_the_whole_opening(at_dawn_of_twelve):

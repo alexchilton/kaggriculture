@@ -20,8 +20,34 @@ his and the COUNT becomes ours -- trimmed to the most strawberry the season can 
 **Ceiling is `max(STRAWBERRY_TILES_BY_DRAIN)`, not the day's own drain count.** Shops unlock on
 3,6,9,12, so d11 sees three draws and d12 sees four; pricing the purchase off d11's count would buy for
 a cap of 36 when d12's cap is 37, and under-buying costs a whole tile rather than a spare seed.
+
+---
+
+**REVERSED FOR THIS ARM BY `b105d05`, and this file did not follow. Corrected 2026-08-22.**
+
+Everything above is still true about the seed. What it does not price is that the bank is SHARED
+state on a replayed day: `_do_hire` fails silently on a thin bank
+(`reference/kaggriculture.py:691`) at `mult * fib(hires_today)`, so the $60 the trim saves at d6
+buys us a hand at d8 that the tape could not afford, and the seasons diverge from there.
+
+    scripts/seed_tape_grid.py --vs-all --live-shops --opponent kawashigi_b3, 16 towns, d0-d29
+
+    trim on all arms      10 seeds 130-132,   5 seeds 60-62,  1 seed 40
+    trim off strawberry    5 seeds   0,      10 seeds    25,  1 seed 40
+
+So the trim ships on the MELON arm only -- `not q4_armed and not melon_armed`
+(`schedule_agent.py:5900`) -- where seed 11 measures +$240 with it and level without.
+
+This fixture forces `MB.OPPONENT_MELON = 0`, which ARMS the melon latch, so the trim does not run
+in any test in this file. Two assertions here were describing its effects anyway and had been red
+since that commit: `STRAWBERRY == 37` against an untrimmed 42, and `money >= 159,623` against a
+measured 147,036. Both are the pre-`b105d05` numbers, kept alive by nobody re-reading them.
+
+`test_the_trim_is_off_on_the_strawberry_arm_and_that_is_measured` now guards the decision itself,
+which nothing did before.
 """
 import collections
+import inspect
 import json
 import pathlib
 
@@ -110,17 +136,69 @@ def test_no_strawberry_seed_is_left_unsown(the_season):
 
 
 def test_the_strawberry_still_all_goes_in(the_season):
-    """Trimming must not cost a TILE. If this drops below 37 the ceiling is too tight and the change
-    is buying back $500 with a crop worth more than that."""
-    assert the_season["plants"].get("STRAWBERRY", 0) == 37, (
-        f"strawberry plantings fell to {the_season['plants'].get('STRAWBERRY')}; 37 is what the cap "
-        f"allows and what the untrimmed season plants, so anything less means the purchase ceiling "
-        f"is under-buying")
+    """Trimming must not cost a TILE.
+
+    **Rewritten 2026-08-22. This read `== 37` and was measuring the trim on the arm the trim was
+    taken OFF.** `b105d05` -- "Keep the tape's seed order on the strawberry arm, because our saving
+    buys his refused hire" -- restricted the trim to the melon arm, and the shipped guard is
+    `not q4_armed and not melon_armed` (`schedule_agent.py:5900`). This fixture forces
+    `MB.OPPONENT_MELON = 0`, so the melon latch arms and the trim never runs here.
+
+    The equality was also the wrong shape for its own docstring, which says "if this drops BELOW 37
+    the ceiling is too tight". 37 is a floor, not a target: the untrimmed season plants 42, and
+    `== 37` calls that a failure. A cap that lets MORE strawberry into the ground is not the defect
+    this test was written to catch.
+    """
+    got = the_season["plants"].get("STRAWBERRY", 0)
+    assert got >= 37, (
+        f"strawberry plantings fell to {got}; 37 is what the cap allows, so anything less means "
+        f"the purchase ceiling is under-buying and the trim is costing a tile rather than a seed")
+
+
+def test_the_trim_is_off_on_the_strawberry_arm_and_that_is_measured(the_season):
+    """The decision `b105d05` made, which nothing was guarding.
+
+    The trim is sound on its own terms and is NOT free on a replayed day, because the bank is shared
+    state and the reference hires off it. `_do_hire` fails SILENTLY on a thin bank
+    (`reference/kaggriculture.py:691`) at `mult * fib(hires_today)`, so $60 saved at d6 buys us a
+    hand at d8 that HE COULD NOT AFFORD, and the seasons part company from there.
+
+    `scripts/seed_tape_grid.py --vs-all --live-shops --opponent kawashigi_b3`, 16 towns, d0-d29,
+    cells differing from the tape the latches chose:
+
+        trim on all arms      10 seeds 130-132,   5 seeds 60-62,  1 seed 40
+        trim off strawberry    5 seeds   0,      10 seeds    25,  1 seed 40
+
+    Worst case 132 -> 40, and five seeds exact for all thirty days. The melon arm keeps it and that
+    is measured too: seed 11 at `--replay-days 30` ends +$240 with it and level at 0 cells without.
+
+    Asserted through the shipped module rather than by re-running the grid, so it is a fast test
+    that still goes red if someone widens the condition back over both arms.
+    """
+    from kagg.search import schedule_agent as SA
+    src = inspect.getsource(SA.make_agent)
+    i = src.find('o[0] == "BUY_SEED"')
+    assert i > 0, "the BUY_SEED trim is gone from make_agent entirely"
+    guard = src[i:i + 220]
+    assert "_MB.BRANCH.armed_key" in guard and "_Q4.BRANCH.armed_key" in guard, (
+        "the BUY_SEED trim no longer checks BOTH latches. It ships on the melon arm only "
+        f"(`not q4_armed and not melon_armed`). Guard now reads:\n    {guard.strip()[:200]}\n"
+        "  On the strawberry arm the trim measured 132 differing cells against 40 without it, "
+        "because the $60 it saves buys a hire the tape was refused.")
 
 
 def test_the_season_is_not_worse_off(the_season):
-    """$159,623 is the measured season before this change. The seed is worth $500, so the floor is
-    the old number -- a trim that pays for itself cannot bank less."""
-    assert the_season["money"] >= 159_623, (
-        f"season banked {the_season['money']} against 159,623 before the trim; buying less seed "
-        f"cannot cost money unless it has changed something else in the opening")
+    """The strawberry arm's measured season, with the trim OFF where it belongs.
+
+    **Was `>= 159_623`, which is the number from BEFORE `b105d05` took the trim off this arm.** A
+    floor carried across the change that invalidated it: the run banks 147,036 and has done since
+    that commit, so this was red for four days while describing a configuration that no longer
+    ships.
+
+    Kept as a floor rather than deleted, because a real regression on this arm should still show.
+    It is set to the measured value, and the number is dated so the next person can tell whether it
+    has aged the same way.
+    """
+    assert the_season["money"] >= 147_036, (
+        f"season banked {the_season['money']} against 147,036 measured 2026-08-22 on the strawberry "
+        f"arm with the trim off. Below this and something in the opening has changed.")
