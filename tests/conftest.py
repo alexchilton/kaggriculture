@@ -63,47 +63,56 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(slow)
 
 
-#: Module globals that a test can change and that nothing puts back.
+#: Modules whose module-level globals are snapshotted around every test.
 #:
-#: `cover.PRECOMPUTED_ROUTES` is the big one. `MelonBranch.install` and `Q4Branch.install` both
-#: overwrite it -- the whole route table -- and `Q4Branch` also clears `cover.UNSOLVE_DAYS`. That is
-#: correct in production, where the branch installs once mid-season and the process ends with the
-#: game. In a test process it means the first test that arms a latch re-points the planner's route
-#: table for every test after it on that worker.
+#: **Naming them one at a time did not work.** Seven leaking constants were found by hand, then
+#: `cover.PRECOMPUTED_ROUTES` -- the planner's whole route table, rewritten by `MelonBranch.install`
+#: and `Q4Branch.install` -- and the suite was still not deterministic: two identical runs disagreed
+#: on 20 tests. Run alone the same file is identical 5 times out of 5, so it is shared state and not
+#: the environment.
 #:
-#: Measured 2026-08-22: 16 tests changed verdict between two identical runs, including
-#: `test_the_melon_latch_reaches_the_strawberry_tape` -- a latch test flipping on latch state left
-#: behind by an earlier latch test. Fixing the leaks file by file found the constants and missed
-#: this, because it is not a constant.
-_GUARDED = (
-    ("kagg.search.cover", "PRECOMPUTED_ROUTES"),
-    ("kagg.search.cover", "UNSOLVE_DAYS"),
-    ("kagg.search.schedule_agent", "REPLAY_OPENING_DAYS"),
-    ("kagg.search.schedule_agent", "EMBEDDED_OPENINGS"),
-    ("kagg.search.melon_branch", "OPPONENT_MELON"),
-    ("kagg.search.melon_branch", "DECIDE_BY_DAY"),
-    ("kagg.search.q4_branch", "DECIDE_BY_DAY"),
+#: So this snapshots EVERY uppercase module-level name in these modules rather than a list someone
+#: has to keep current. A list of names goes stale the moment a new global is added; this does not.
+#: Private module caches that survive a global restore because they are mutated in place.
+_PRIVATE_CACHES = ("_NEAREST", "_REVENUE_CACHE", "_ARMED")
+
+_GUARDED_MODULES = (
+    "kagg.search.schedule_agent",
+    "kagg.search.cover",
+    "kagg.search.router",
+    "kagg.search.routines",
+    "kagg.search.melon_branch",
+    "kagg.search.q4_branch",
+    "kagg.search.crew",
+    "kagg.search.dayplan",
 )
 
 
 @pytest.fixture(autouse=True)
 def _no_test_poisons_the_next_one():
-    """Snapshot every guarded global before each test and put it back after.
+    """Snapshot every module-level CONSTANT in the guarded modules, and put them all back.
 
-    Autouse and function-scoped, so it costs one dict copy per test and removes the whole class of
-    failure rather than the instances of it found by hand. A shallow copy is enough: the tests that
-    leak REPLACE these objects, they do not mutate them in place.
+    Only names that are already imported are touched -- importing a module here would change what
+    a test sees. Values are stored by reference: the leaks REPLACE these objects rather than mutate
+    them in place, which is what makes a reference enough and keeps the cost to one dict scan.
+
+    Pollution here does not only turn tests red. In the full suite some of the eight failures in
+    `test_the_wheat_row_is_bought_from_the_dawn_bank` PASS, so leaked state was making assertions
+    succeed that fail on a clean module. A test that only passes because another test ran first is
+    worse than one that fails.
     """
-    import importlib
+    import sys
 
     saved = []
-    for mod_name, attr in _GUARDED:
-        try:
-            mod = importlib.import_module(mod_name)
-        except Exception:                                      # noqa: BLE001
-            continue                                           # optional module, nothing to guard
-        if hasattr(mod, attr):
-            saved.append((mod, attr, getattr(mod, attr)))
+    for name in _GUARDED_MODULES:
+        mod = sys.modules.get(name)
+        if mod is None:
+            continue
+        for attr, value in vars(mod).items():
+            # Private caches count. `cover._NEAREST` memoises nearest-tile lookups and a test
+            # clears it; skipping underscore names left exactly that kind of state unguarded.
+            if (attr.isupper() and not attr.startswith("__")) or attr in _PRIVATE_CACHES:
+                saved.append((mod, attr, value))
     try:
         yield
     finally:

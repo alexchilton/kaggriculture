@@ -24,7 +24,12 @@ testpaths = ["tests"]
 # per-process, so the suite is embarrassingly parallel and barely touched by anything else. Measured
 # on a 14-core box: 387s serial, 131s with `-n auto`. Add `-n0` to any command to get back a single
 # process (needed for `--pdb`, and quicker when you are iterating on one test).
-addopts = "-n auto -m 'not slow'"
+#: `--dist loadfile` keeps every test of a file on ONE worker. The default `--dist load` hands
+#: tests out individually, so which tests share a process changes every run -- and with any
+#: leaked module state that makes the RESULT change every run. Measured 2026-08-22: two
+#: identical full runs disagreed on 20 tests, while the same files run together in one process
+#: gave 16 failures twice, identical, and exactly the sum of running each alone.
+addopts = "-n auto --dist loadfile -m 'not slow'"
 markers = [
     # A whole test MODULE earns this mark -- via the `pytest_collection_modifyitems` hook and the
     # `SLOW_MODULES` list in `tests/conftest.py`, not a per-test decorator -- by being JAX fast-sim
