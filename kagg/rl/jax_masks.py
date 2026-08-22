@@ -67,14 +67,33 @@ def unit_op_mask(state):
     shed_any = (farm.shed.sum(axis=-1) > 0)[:, :, None]
     seeds_any = (farm.seeds.sum(axis=-1) > 0)[:, :, None]
 
-    # Movement: in bounds and the destination is not LOCKED.
+    # **Movement is bounds-only. A LOCKED destination is legal.**
+    #
+    # This used to also require `t.kind[target] != J.LOCKED`, which the reference does not
+    # (`reference/kaggriculture.py:326-331`), and the reference says why in a comment written for
+    # exactly this case:
+    #
+    #     # Movement onto LOCKED tiles is allowed: a hand can spawn on a locked
+    #     # shed-access tile, and blocking movement would strand it there forever.
+    #     # Tile operations (PLANT, WATER, etc.) still no-op on LOCKED tiles.
+    #
+    # The NW quadrant is `x < 5, y < 5`, so three of the four shed-access tiles -- (5,4), (4,5),
+    # (5,5) -- are LOCKED on day 0, and hands spawn on them. For the hand at (5,5) every neighbour
+    # is LOCKED, so the old rule stranded it for the entire season.
+    #
+    # Measured cost, tape 92498144 turn 1: the teacher's label for that hand is WEST, and the mask
+    # made it unemittable. `greedy_action` argmaxes over `_masked_logits`, so WEST carried -1e9;
+    # `bc_dagger.py:226` zeroes the loss on labels the mask calls illegal, so it never reached the
+    # gradient either. The checkpoint read 162 of 163 ops exact with `WEST 24/25 = 0.960`, frozen
+    # for ten rounds in a four-game run and sixteen in a single-game run -- and that one stranded
+    # hand dragged whole-season op agreement to ~0.78 once the net drove.
+    #
+    # This is the class of defect the 300-episode parity gate cannot catch: it tests `game.py` and
+    # `jax_sim.py` against the reference, and the masks are RL-side only.
+    # `tests/test_a_hand_can_walk_off_the_tile_it_spawned_on.py`.
     def can_move(dx, dy):
         nx, ny = x + dx, y + dy
-        inside = (nx >= 0) & (nx < J.BOARD) & (ny >= 0) & (ny < J.BOARD)
-        target = jnp.clip(ny, 0, J.BOARD - 1) * J.BOARD + jnp.clip(nx, 0, J.BOARD - 1)
-        unlocked = jnp.take_along_axis(
-            t.kind[:, :, None, :], target[..., None], axis=-1)[..., 0] != J.LOCKED
-        return inside & unlocked
+        return (nx >= 0) & (nx < J.BOARD) & (ny >= 0) & (ny < J.BOARD)
 
     crop_safe = jnp.clip(crop, 0, J.N_CROPS - 1)
     ripe_plant = is_plant & (units_held > 0) & ((day - planted) >= J.FIRST_YIELD_DAY[crop_safe])
