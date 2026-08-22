@@ -243,14 +243,15 @@ PLAN_THE_CREW_THAT_ARRIVES = True
 #:
 #: **CORRECTED 2026-08-20: this SHIPS ON. The paragraph below says "OFF, and measured" and has been
 #: wrong about what the module does for as long as the value has read `True`.**
-#: `test_one_pen_is_cared_by_one_hand_in_a_turn`, in
-#: `tests/test_the_first_seven_days_match_the_plan.py`, asserts the rule is ON and would go red
-#: the moment it were turned off, so the measurement below was not acted on -- or was reversed
-#: without the note being updated. The table is kept because it is real; the verdict word is not.
+#: The measurement below was not acted on -- or was reversed without the note being updated. The
+#: table is kept because it is real; the verdict word is not.
 #:
-#: *Named rather than numbered on 2026-08-22.* This said `:910`, and a line number in another file
-#: is a reference that rots in silence -- the fixture added to that file moved the test forty lines
-#: and `:910` now points into a docstring. A test name survives edits above it.
+#: **NOTHING PINS THIS VALUE AS OF 2026-08-22.** It was held ON by
+#: `test_one_pen_is_cared_by_one_hand_in_a_turn` in `tests/test_the_first_seven_days_match_the_plan.py`,
+#: and that file is deleted -- it measured the planner over d0-d6, which the shipped agent does not
+#: run, so all fifteen of its tests were asking a question of a component that is replayed over.
+#: Said here rather than left as a dangling path, because "a test asserts this" reads as a guarantee
+#: and there is no longer a test. Flipping this value now changes the artifact silently.
 #:
 #: **The measurement, which argued for OFF.** The arithmetic is right -- one turn, no item, one extra unit of product on
 #: the next production day -- and it still loses, because a care taken on the way past is a turn the
