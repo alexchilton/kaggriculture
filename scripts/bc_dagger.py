@@ -234,6 +234,18 @@ def make_step(model, teacher_fn, batch, horizon, optimiser, beta, tables, bundle
                 w = w * batch_data["unit_live"].astype(jnp.float32)
             if active.get(h) is not None:
                 w = w * active[h].astype(jnp.float32)
+            if h == "bundle" and batch_data.get("class_w") is not None:
+                # **Frequency is not importance, and a per-turn mean says it is.** The empty bundle
+                # is 49.5% of turns and the opening bundle -- five HIREs, the animals, the seed --
+                # is 4 of 2876 (0.139%). "Predict empty" is therefore a very strong local optimum
+                # that costs almost nothing on exactly the turn that buys the game, and the student
+                # sat in it at bundle agreement 0.9983 while banking $0.
+                #
+                # This is inverse-frequency class weighting on a SUPERVISED cross-entropy. It is not
+                # reward shaping -- no reward exists in this objective -- so the standing rule
+                # against shaping does not reach it. The caller normalises the vector so the
+                # row-mean weight is 1, which keeps the effective step size on this head unchanged.
+                w = w * jnp.take(batch_data["class_w"], lab)
             head_loss = -(logp * w).sum() / jnp.maximum(w.sum(), 1.0)
             per_head[h] = head_loss
             weight = HEAD_WEIGHTS.get(h, 1.0)

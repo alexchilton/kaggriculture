@@ -60,11 +60,17 @@ def _bucket(value, buckets):
     return int(np.argmin(np.abs(buckets - value)))
 
 
-def encode_action(action, n_units):
+def encode_action(action, n_units, vocab=None):
     """One turn's action dict -> the head labels the policy would have had to emit.
 
     Returns a dict of arrays shaped like the policy's heads for a single seat. Unit slots beyond
     the crew's size are NOOP, which is what `to_sim_actions` feeds the simulator for them too.
+
+    `vocab` is the bundle vocabulary to label against. **Pass it.** This function used to read
+    `MB.load_vocab()` with no argument while `dagger_tape` passed `--vocab` to build the head
+    tables; they were the same file by luck and nothing made them so. `load_vocab`'s own docstring
+    warns that two disagreeing vocabularies show up nowhere offline, because every index is still a
+    valid index.
     """
     op = np.zeros(MAX_UNITS, dtype=np.int32)
     crop = np.zeros(MAX_UNITS, dtype=np.int32)
@@ -126,8 +132,27 @@ def encode_action(action, n_units):
     #
     # So the bundle is read straight off the order list, where the multiplicity survives, and the
     # per-product buckets are kept as the conditioned quantity labels.
-    vocab = MB.load_vocab()
-    bundle = np.int32(vocab.index(MB.bundle_of(orders)))
+    vocab = MB.load_vocab() if vocab is None else vocab
+    shape = MB.bundle_of(orders)
+    bundle = np.int32(vocab.index(shape))
+    # **A silent fallback to EMPTY is fine at play time and is a defect at LABEL time.**
+    #
+    # `Vocabulary.index` returns 0 for an unknown bundle, and 0 means "place no orders". So a
+    # teacher turn the vocabulary cannot express is taught to the student as "do nothing", and
+    # bundle agreement then SCORES IT AS A HIT because the student obediently emits nothing too.
+    # Measured 2026-08-22 over the four tape teachers: 179 of 1451 traded turns, 12.3%, containing
+    # 512 HIRE and 444 SELL orders -- the whole opening, every crew hire, the land-buy day.
+    # `docs/the_vocabulary_labels_the_opening_as_nothing_2026-08-22.md`.
+    #
+    # The fallback stays -- it is pinned by `test_a_market_bundle_survives_the_round_trip.py` and it
+    # is the right behaviour where an unknown bundle is expected. What was missing is any way for
+    # the caller to know it happened. Non-empty orders that land on index 0 are reported here so a
+    # training loop can count them, print them, and refuse.
+    # Named `w_` so the existing convention keeps it out of the head labels: `dagger_tape.stack`
+    # already drops every `w_` key when it builds `batch_data`. This is metadata about the label,
+    # not a label.
+    w_bundle_miss = np.int32(1 if (orders and shape != MB.bundle_of([])
+                                   and int(bundle) == 0) else 0)
 
     # A quantity is only a decision where the bundle asked for one. Without these weights the
     # 78.9% of turns that send nothing train every quantity head toward class 0 -- the padding
@@ -154,7 +179,8 @@ def encode_action(action, n_units):
             "bundle": bundle,
             "qty_sell": sell, "qty_buy_product": buy_product, "qty_buy_seed": buy_seed,
             "w_qty_sell": w_sell, "w_qty_buy_product": w_buy_product,
-            "w_qty_buy_seed": w_buy_seed}
+            "w_qty_buy_seed": w_buy_seed,
+            "w_bundle_miss": w_bundle_miss}
 
 
 def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True, seats=None,

@@ -64,8 +64,29 @@ def bundle_of(orders):
             continue
         op = str(o[0])
         item = str(o[1]) if len(o) > 1 and o[1] is not None else ""
-        pairs.append((op, item))
+        pairs.extend([(op, item)] * _multiplicity(op, o))
     return tuple(sorted(pairs))
+
+
+def _multiplicity(op, order):
+    """How many pairs one order contributes. One, except for animals.
+
+    **Animals carry their count in the bundle, like HIRE, because nothing else can carry it.**
+    `SELL`, `BUY_PRODUCT` and `BUY_SEED` each have a `qty_*` head that predicts the amount given
+    the bundle. `BUY_ANIMAL` has none, so a single pair meant the count defaulted to 1 and
+    `BUY_ANIMAL COW 2` was unplayable at any width -- 20 of the four teachers' 1451 trading turns,
+    one of them turn 0, costing $900 of a $2,984 opening.
+    `docs/the_second_cow_cannot_be_bought_2026-08-22.md`.
+
+    `HIRE` needs nothing here: the teacher emits it as five separate orders, so its multiplicity
+    already survives.
+    """
+    if op != BUY_ANIMAL or len(order) < 3:
+        return 1
+    try:
+        return max(1, int(order[2]))
+    except (TypeError, ValueError):
+        return 1
 
 
 def quantities_of(orders):
@@ -86,7 +107,11 @@ def quantities_of(orders):
                 qty = int(o[2])
             except (TypeError, ValueError):
                 qty = -1
-        rows.append((op, item, qty))
+        # Aligned to `bundle_of`, which now repeats an animal pair per unit. Each repeat carries a
+        # quantity of one, so `to_sim_fields`'s `+= qty` sums back to the count the teacher asked
+        # for. Emitting the full quantity on every repeat would square it.
+        n = _multiplicity(op, o)
+        rows.extend([(op, item, 1 if n > 1 else qty)] * n)
     rows.sort(key=lambda r: (r[0], r[1]))
     return tuple(q for _, _, q in rows)
 
@@ -208,8 +233,10 @@ def from_sim_fields(fields):
         pairs += [(BUY_PRODUCT, M.PRODUCTS[i])] * (1 if n > 0 else 0)
     for i, n in enumerate(fields.get("buy_seed") or ()):
         pairs += [(BUY_SEED, F.CROPS[i])] * (1 if n > 0 else 0)
+    # One pair PER ANIMAL, matching `bundle_of`. A flag here against a count there would break the
+    # documented inverse and silently re-index every bundle that buys more than one.
     for i, n in enumerate(fields.get("buy_animal") or ()):
-        pairs += [(BUY_ANIMAL, M.ANIMALS[i])] * (1 if n > 0 else 0)
+        pairs += [(BUY_ANIMAL, M.ANIMALS[i])] * max(0, int(n))
     pairs += [(HIRE, "")] * int(fields.get("hire") or 0)
     if fields.get("buy_land"):
         pairs.append((BUY_LAND, ""))
@@ -350,7 +377,18 @@ def orders_from_heads(vocab, index, qty_sell, qty_buy_product, qty_buy_seed,
         elif op == BUY_SEED and item in crops:
             out.append([BUY_SEED, item, max(1, int(qty_buy_seed[crops.index(item)]))])
         elif op == BUY_ANIMAL and item in animals:
-            out.append([BUY_ANIMAL, item, 1])
+            # **Repeats COALESCE into one order carrying the count.** The bundle repeats the pair
+            # per animal, because no `qty_buy_animal` head exists to carry it -- but a turn holds
+            # only TEN orders and the teacher's opening uses exactly ten. Emitting `COW 1` twice
+            # instead of `COW 2` spends a second slot, pushes the turn to twelve, and the tail --
+            # two HIREs -- is truncated away. That trades the second cow for two hands.
+            # Caught by the round-trip audit; pinned by
+            # `tests/test_the_second_cow_survives_the_bundle.py`.
+            same = next((o for o in out if o[0] == BUY_ANIMAL and o[1] == item), None)
+            if same is None:
+                out.append([BUY_ANIMAL, item, 1])
+            else:
+                same[2] += 1
     # Stable, so orders of the same kind keep the vocabulary's own ordering and two decodes of one
     # bundle are always byte-identical.
     out.sort(key=lambda o: SLOT_ORDER.index(o[0]))

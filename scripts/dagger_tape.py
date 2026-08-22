@@ -113,8 +113,51 @@ def tape_games():
         cfg["weedSpawnChance"] = 0.0
         opp = [((s[1 - seat] or {}).get("action") or {}) for s in doc["steps"][1:]]
         games.append(dict(key=key, name=pathlib.Path(tape_path).name, seat=seat, cfg=cfg,
-                          opponent=opp, opponent_name="recorded", melon_at_d3=None))
+                          opponent=opp, opponent_name="recorded", melon_at_d3=None,
+                          tape_path=tape_path))
     return games
+
+
+def daily_marks(farms_at, seat, days=7):
+    """`{day: (bank, owned_tiles, units)}` at the START of each day, for one seat.
+
+    **Why per day and not a season total.** The failure this is built to find is not gradual: every
+    land buy, hire and pen build is an irreversible commitment gated on having a specific sum at a
+    specific hour, and being slightly short converts a small error into a permanent capability loss
+    that every later tape action then assumes away. Measured on Seb's tape, seed 11, day 4 hour 22:
+    his real bank is $718 and he buys the quadrant; replayed against us it is $683 and the purchase
+    is REFUSED, so the parcel slips to d8 and he plays the season on 25 tiles against 50.
+    **$35 of market difference flipped it.**
+
+    A season total says the student banked $60. This says which day it stopped tracking, which is a
+    different question with a different fix. The project's own rule: judge at the target day.
+    """
+    out = {}
+    for day in range(days):
+        farm = farms_at(day * TPD)
+        if farm is None:
+            continue
+        tiles = farm.get("tiles") or []
+        owned = sum(1 for row in tiles for cell in row
+                    if cell is None or (isinstance(cell, dict) and cell.get("kind") != "LOCKED"))
+        out[day] = (int(farm.get("money") or 0), owned, len(farm.get("hands") or []))
+    return out
+
+
+def tape_marks(spec, days=7):
+    """The recording's own per-day marks, read straight out of the replay."""
+    doc = json.loads((REPO / spec["tape_path"]).read_text())
+    steps = doc["steps"]
+    seat = spec["seat"]
+
+    def farms_at(index):
+        if index >= len(steps):
+            return None
+        obs = (steps[index][0] or {}).get("observation") or {}
+        farms = obs.get("farms") or []
+        return farms[seat] if seat < len(farms) else None
+
+    return daily_marks(farms_at, seat, days)
 
 
 def opponent_pool(limit):
@@ -194,12 +237,20 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
     env.reset(2)
     seat = game["seat"]
     teacher = TapeTeacher(seat)
-    rows, stats = [], collections.Counter()
+    rows, stats, marks = [], collections.Counter(), {}
 
     for turn in range(horizon):
         if env.done:
             break
         obs = env.state[seat].observation
+        if turn % TPD == 0 and turn // TPD < 7:
+            farm = (obs.get("farms") or [None] * 2)[seat] or {}
+            tiles = farm.get("tiles") or []
+            marks[turn // TPD] = (
+                int(farm.get("money") or 0),
+                sum(1 for row in tiles for cell in row
+                    if cell is None or (isinstance(cell, dict) and cell.get("kind") != "LOCKED")),
+                len(farm.get("hands") or []))
         # **The teacher is asked EVERY turn, even when the student drives.** Its latches, purchase
         # counter and sell ledger are carried across turns; skipping a query does not skip that
         # state, it corrupts it, and silently.
@@ -217,7 +268,13 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         masks = A.masks_for(sim_state, bundle_ok)
 
         n_units = 1 + len(obs["farms"][seat].get("hands") or [])
-        labels = RP.encode_action(teacher_action, n_units)
+        # **The SAME vocabulary the head tables were built from.** This used to omit `vocab`, so
+        # `encode_action` fell back to `MB.load_vocab()`'s default file while `--vocab` built the
+        # tables. They were the same file by luck. Worse, the default file was built from 640
+        # leaderboard games and could not express 90 of this teacher's own bundles, which were
+        # therefore labelled EMPTY -- 12.3% of its trades, including the entire opening.
+        labels = RP.encode_action(teacher_action, n_units, vocab=vocab)
+        stats["bundle_miss"] += int(labels["w_bundle_miss"])
 
         # `unit_live` gates the unit heads. MAX_UNITS is 24 against a crew of a few, so scoring dead
         # slots makes ~85% of the loss a constant -- a padding mistake this project has made three
@@ -257,6 +314,15 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         stats["bundle_n"] += 1
         stats["traded_n"] += int(t_bundle != 0)
 
+        # **Turn 0 gets its own counter, because an average cannot see it.** The opening bundle is
+        # ten orders including five HIREs, and it is 1 of 719 turns -- 0.139% of the bundle metric.
+        # The student emitted `[]` there for 25 rounds while bundle agreement read 0.9983 and the
+        # season banked $0. A number that important needs a number of its own.
+        if turn == 0:
+            stats["turn0_n"] += 1
+            stats["turn0_hit"] += int(int(np.asarray(greedy["bundle"]).reshape(-1)[seat])
+                                      == t_bundle)
+
         # **Which ops it has learned, not just how many.** A single `op` number cannot say whether
         # the net has the whole vocabulary slightly wrong or three ops badly wrong -- and those need
         # different fixes. Counted per TEACHER op, on the greedy decode, live slots only.
@@ -281,6 +347,9 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
                          masks={k: np.asarray(v)[seat] for k, v in masks.items()},
                          labels={k: np.asarray(v) for k, v in labels.items()},
                          unit_live=live,
+                         # Kept so the fit can oversample the opening. Not a feature -- it never
+                         # reaches the net, which reads the clock out of the one-hot in `glob`.
+                         turn=turn,
                          # Which pool this row belongs to. A turn the TEACHER drove is on-tape and
                          # is the trajectory worth protecting from dilution; a turn the student
                          # drove is a correction label.
@@ -292,6 +361,7 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         pair[1 - seat] = opponent_action(game, turn, hands[1 - seat])
         env.step(pair)
 
+    stats["marks"] = marks
     stats["bank"] = int((env.state[0].observation["farms"][seat] or {}).get("money") or 0)
     stats["opponent_bank"] = int(
         (env.state[0].observation["farms"][1 - seat] or {}).get("money") or 0)
@@ -299,7 +369,8 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
     return rows, stats, key
 
 
-def save_resume(run, params, opt_state, rnd, seen_total, rng, args, pools=None, extra=None):
+def save_resume(run, params, opt_state, rnd, seen_total, rng, args, vocab_size,
+                pools=None, extra=None):
     """Everything needed to continue this run on a different day.
 
     **Params alone are not a resumable run.** Restarting from them restarts Adam cold and, worse,
@@ -317,6 +388,11 @@ def save_resume(run, params, opt_state, rnd, seen_total, rng, args, pools=None, 
                          args=vars(args), tile_features=jax_obs.TILE_FEATURES,
                          unit_features=jax_obs.UNIT_FEATURES,
                          global_features=jax_obs.GLOBAL_FEATURES, n_bundles=P.N_BUNDLES,
+                         # **The vocabulary SIZE, not just the head width.** `n_bundles` is the
+                         # head and stays 256 whatever the artifact holds; what makes an index mean
+                         # a particular order is the vocabulary. Omitting this is why a warm start
+                         # could not tell that every bundle index had been redefined.
+                         vocab_size=vocab_size, vocab_path=args.vocab,
                          **(extra or {})),
                     fh, protocol=5)
     # Renamed into place, never written in place: a power cut during the write would otherwise
@@ -349,14 +425,93 @@ def load_resume(run):
     return state, pools
 
 
-def stack(rows):
+def anneal_agreement(agree):
+    """How well the student repeats the teacher, measured on the decode that will DRIVE.
+
+    Beta is the probability that the teacher moves the world; annealing it hands the wheel to the
+    student's own action, and that action comes from `A.sample`. So the gate must read the SAMPLED
+    columns, and it must cover every head the student decides with -- the weakest one decides,
+    because the game receives all of them.
+
+    It used to read `greedy op` alone. Measured 2026-08-22, round 1 of the d0-d1 run:
+
+        sample op 0.9939  bundle 0.0104  |  greedy op 0.9939  bundle 1.0000
+
+    The bundle head had been reset one round earlier. The gate saw 0.9939, released beta, and the
+    game received a near-random market decode; `op` agreement fell to 0.5539 on the next round.
+
+    A head with no measured turns scores 0, not 1: an empty denominator is absence of evidence.
+    """
+    rates = []
+    for hit, n in (("op_hit", "op_n"), ("bundle_hit", "bundle_n")):
+        total = agree.get(n, 0)
+        rates.append(agree.get(hit, 0) / total if total else 0.0)
+    return min(rates)
+
+
+def bundle_head_path(params):
+    """Locate the `Dense` whose output width is the bundle head's, by SHAPE not by name.
+
+    `jax_policy.Policy` builds the heads inside a dict comprehension, so flax names them
+    positionally (`Dense_11`, ...) and any edit to the head block renames them. A name written down
+    here would go stale silently and reset the wrong layer -- which is worse than not resetting,
+    because the run would look fine. The width is the identity: it is `P.N_BUNDLES` and nothing else
+    in the network is that wide.
+    """
+    hits = [tuple(str(k.key) for k in path[:-1])
+            for path, v in jax.tree_util.tree_leaves_with_path(params)
+            if v.ndim == 2 and v.shape[-1] == P.N_BUNDLES]
+    if len(hits) != 1:
+        raise SystemExit(
+            "expected exactly one %d-wide Dense kernel for the bundle head, found %d: %s. "
+            "Refusing rather than resetting the wrong layer." % (P.N_BUNDLES, len(hits), hits))
+    return hits[0]
+
+
+def at(tree, path):
+    for k in path:
+        tree = tree[k]
+    return tree
+
+
+def replace_at(tree, path, value):
+    if not path:
+        return value
+    head, rest = path[0], path[1:]
+    return dict(tree, **{head: replace_at(tree[head], rest, value)})
+
+
+def stack(rows, class_w=None):
     """Per-turn dicts -> the `batch_data` the jitted `fit` already consumes."""
     obs = tuple(jnp.asarray(np.stack([r["obs"][i] for r in rows])) for i in range(3))
     masks = {k: jnp.asarray(np.stack([r["masks"][k] for r in rows])) for k in rows[0]["masks"]}
     labels = {k: jnp.asarray(np.stack([r["labels"][k] for r in rows]))
               for k in rows[0]["labels"] if not k.startswith("w_")}
     live = jnp.asarray(np.stack([r["unit_live"] for r in rows]))
-    return dict(obs=obs, masks=masks, labels=labels, unit_live=live)
+    out = dict(obs=obs, masks=masks, labels=labels, unit_live=live)
+    if class_w is not None:
+        out["class_w"] = class_w
+    return out
+
+
+def bundle_class_weights(rows, alpha):
+    """Inverse-frequency weight per bundle class, normalised to a row-mean of 1.
+
+    `alpha` is the exponent: 0 is the old flat mean, 1 is full inverse frequency. It is a tuning
+    number, not a switch -- the weighting always applies, and alpha sets how hard.
+
+    Normalising by the row-mean matters. Without it, raising alpha silently raises the effective
+    learning rate on this head, and a step-size change would be confounded with the reweighting.
+    """
+    idx = np.array([int(np.asarray(r["labels"]["bundle"]).reshape(-1)[0]) for r in rows])
+    counts = np.bincount(idx, minlength=P.N_BUNDLES).astype(np.float64)
+    w = np.zeros(P.N_BUNDLES, dtype=np.float64)
+    seen = counts > 0
+    w[seen] = (counts[seen].mean() / counts[seen]) ** alpha
+    mass = float((w * counts).sum())
+    if mass > 0:
+        w *= counts.sum() / mass
+    return jnp.asarray(w, dtype=jnp.float32)
 
 
 def main():
@@ -369,6 +524,8 @@ def main():
                          "only each tape's own recorded opponent")
     ap.add_argument("--seeds", type=int, default=1,
                     help="town draws per tape/opponent pair; 1 uses only the tape's recorded seed")
+    ap.add_argument("--playout-debug", action="store_true",
+                    help="report why a playout's per-day tape comparison was unavailable")
     ap.add_argument("--playout", type=int, default=1,
                     help="student-driven seasons per round, reported and never trained on. The "
                          "bank is the measure agreement only proxies.")
@@ -394,6 +551,14 @@ def main():
     ap.add_argument("--expert-cap", type=int, default=20000,
                     help="of --aggregate-cap, turns reserved for TEACHER-driven states, which a "
                          "single uniform reservoir would dilute to their proportional share")
+    ap.add_argument("--bundle-alpha", type=float, default=1.0,
+                    help="inverse-frequency exponent on the bundle head: 0 is a flat per-turn mean, "
+                         "1 is full inverse frequency. The empty bundle is 49.5%% of turns and the "
+                         "opening bundle is 0.139%%, so a flat mean makes 'emit nothing' a strong "
+                         "local optimum on exactly the turn that buys the game")
+    ap.add_argument("--day0-repeat", type=int, default=8,
+                    help="times each day-0 turn is repeated in the fit order. Class weighting only "
+                         "reaches the bundle head; the opening also has to get its unit ops right")
     ap.add_argument("--anneal-rounds", type=int, default=10,
                     help="rounds over which beta reaches 0, once the anneal has been earned")
     ap.add_argument("--anneal-after-agree", type=float, default=0.80,
@@ -485,15 +650,30 @@ def main():
         # they are trained. Refusing instead would mean throwing away every checkpoint on every
         # feature addition, which is how a project ends up never adding features.
         #
-        # The vocabulary is still a hard refusal: it is an artifact, not an architecture, and a
-        # bundle index that means a different order in the loss than at play time is a mismatch
-        # nothing offline would show, because every index is still a valid index.
-        if ckpt.get("vocab_size") not in (None, vocab.size):
-            raise SystemExit("checkpoint %s was built on a %s-entry vocabulary, this run has %d"
-                             % (init_path, ckpt.get("vocab_size"), vocab.size))
+        # **A changed vocabulary RESETS the bundle head rather than refusing the checkpoint.**
+        #
+        # This was a hard refusal, and the reason given was sound: a bundle index that means a
+        # different order in the loss than at play time is a mismatch nothing offline shows. But
+        # refusing throws away the unit heads with it, and those never touch the vocabulary --
+        # `op`, `crop`, `item` and `qty` come straight off `action["farmer"]` and `action["hands"]`
+        # and stood at 0.978 agreement when the vocabulary was found to be wrong.
+        #
+        # Re-initialising the one layer whose OUTPUT indices changed meaning is both safe and
+        # sufficient: the stale logits ARE the mismatch. Everything else transfers unchanged.
+        # **Unknown counts as different.** `dagger_tape` did not record `vocab_size` in its own
+        # checkpoints, so `.get` returns None for every run written before this change -- and
+        # treating None as "compatible" is how a stale default survives a real artifact change in
+        # silence. An unrecorded vocabulary cannot be shown to match, so it is reset.
+        reset_bundle = ckpt.get("vocab_size") != vocab.size
+        pristine = params                       # freshly initialised, before the checkpoint lands
         was = (ckpt.get("tile_features"), ckpt.get("unit_features"), ckpt.get("global_features"))
         now = (jax_obs.TILE_FEATURES, jax_obs.UNIT_FEATURES, jax_obs.GLOBAL_FEATURES)
         params = jax.tree_util.tree_map(jnp.asarray, P.load_or_migrate(ckpt["params"], params))
+        if reset_bundle:
+            path = bundle_head_path(params)
+            params = replace_at(params, path, at(pristine, path))
+            print("vocabulary %s -> %d entries: bundle head %s RESET to init, every other head "
+                  "warm-started" % (ckpt.get("vocab_size"), vocab.size, "/".join(path)), flush=True)
         if was != now:
             print("warm start MIGRATED: tile/unit/glob %s -> %s; the new columns start at zero"
                   % (was, now), flush=True)
@@ -531,7 +711,13 @@ def main():
         else:
             widths = {"tile_features": jax_obs.TILE_FEATURES,
                       "unit_features": jax_obs.UNIT_FEATURES,
-                      "global_features": jax_obs.GLOBAL_FEATURES, "n_bundles": P.N_BUNDLES}
+                      "global_features": jax_obs.GLOBAL_FEATURES, "n_bundles": P.N_BUNDLES,
+                      # **A resume cannot survive a vocabulary change, where `--init` can.** The
+                      # stored reservoir holds bundle LABELS indexed under the old vocabulary, and
+                      # re-indexing them is not possible from the label alone -- the order list they
+                      # came from is gone. Resetting the head would leave 60,000 rows still teaching
+                      # the old meanings. Refuse, and warm-start into a new run directory instead.
+                      "vocab_size": vocab.size}
             bad = {k: (state.get(k), v) for k, v in widths.items() if state.get(k) != v}
             if bad:
                 # **Resume refuses where `--init` migrates, and the difference is the reservoir.**
@@ -577,13 +763,18 @@ def main():
         # illegal on that board, and never a route back to the tape. Those labels are close to
         # worthless, and the previous run spent rounds 10+ collecting them at op agreement 0.17.
         #
-        # So the teacher keeps driving until greedy op agreement on fresh states clears the bar,
-        # and only then does the student take the wheel. Measured on the GREEDY decode because that
-        # is the ceiling: sampled agreement can sit low purely from entropy while the argmax is
-        # already right.
+        # So the teacher keeps driving until the student can repeat it, and only then does the
+        # student take the wheel.
+        #
+        # **Measured on the SAMPLED decode, and on the weakest head.** This read `greedy op`, on the
+        # argument that greedy is the ceiling and sampled agreement can sit low purely from entropy.
+        # That argument is about a head that is already trained. It fails exactly where it matters:
+        # low sampled agreement is indistinguishable from "the head is untrained", and the rollout
+        # plays the sample, not the argmax. Round 1 of the d0-d1 run cleared the 0.99 bar on
+        # `greedy op` 0.9939 while `sample bundle` was 0.0104, and `op` fell to 0.5539 immediately.
         if anneal_start is None and last_agree >= args.anneal_after_agree:
             anneal_start = rnd
-            print("beta anneal starts at round %d (greedy op agreement %.4f >= %.4f)"
+            print("beta anneal starts at round %d (sampled agreement, weakest head, %.4f >= %.4f)"
                   % (rnd, last_agree, args.anneal_after_agree), flush=True)
         if anneal_start is None:
             beta = args.beta0
@@ -600,7 +791,8 @@ def main():
                                               args.horizon, rng)
             fresh.extend(ep_rows)
             agree.update({k: v for k, v in stats.items()
-                          if k.startswith(("op_", "bundle_", "traded_", "g_", "opseen_", "ophit_"))})
+                          if k.startswith(("op_", "bundle_", "traded_", "g_", "opseen_", "ophit_",
+                                           "turn0_"))})
             banks.append(("%s v %s" % (game["name"][:8], game["opponent_name"][:12]),
                           stats["bank"], stats["opponent_bank"], stats["latches"]))
 
@@ -649,17 +841,27 @@ def main():
         # which is dominated by earlier rounds; a loss falling on data already fitted says nothing
         # about the states the policy is producing now. This is `-mean log p(teacher action)` on
         # exactly the states just visited, and it is the honest progress number.
-        fresh_loss, fresh_heads = evaluate(params, stack(fresh[: args.batch_turns]))
+        class_w = bundle_class_weights(aggregate, args.bundle_alpha)
+        fresh_loss, fresh_heads = evaluate(params, stack(fresh[: args.batch_turns], class_w))
 
         losses = []
-        order = np.arange(len(aggregate))
+        # **Day 0 is repeated in the fit order.** Class weighting reaches the bundle head only, and
+        # the opening turn also has to get its unit ops right -- and every unit op the tape gives a
+        # hand is unreachable if the five HIREs in that same bundle never happen. One turn of 719 is
+        # 0.139% of an epoch; repeated it is still small, and it is the turn everything downstream
+        # is conditioned on.
+        base = np.arange(len(aggregate))
+        # `.get`, because a reservoir pickled before `turn` was recorded has rows without it. Those
+        # are treated as not-day-0 rather than crashing a resume; they age out within a few rounds.
+        day0 = np.flatnonzero(np.array([r.get("turn", TPD) < TPD for r in aggregate]))
+        order = np.concatenate([base] + [day0] * max(0, args.day0_repeat - 1)) if len(day0) else base
         for _ in range(args.epochs):
             rng.shuffle(order)
             for start in range(0, len(order), args.batch_turns):
                 chunk = [aggregate[i] for i in order[start:start + args.batch_turns]]
                 if not chunk:
                     continue
-                params, opt_state, loss, per_head = fit(params, opt_state, stack(chunk))
+                params, opt_state, loss, per_head = fit(params, opt_state, stack(chunk, class_w))
                 losses.append(float(loss))
 
         wins = sum(1 for _n, b, o, _l in banks if b > o)
@@ -679,6 +881,20 @@ def main():
                  float(fresh_loss), float(np.mean(losses[-8:])),
                  len(aggregate), wins, len(banks), time.time() - t_start),
               flush=True)
+        print("           turn0 bundle %d/%d  (the opening: five HIREs, the animals, the seed)"
+              % (agree["turn0_hit"], agree["turn0_n"]), flush=True)
+        # **A label the vocabulary cannot say is a corrupt label, and the run must not continue on
+        # it.** `Vocabulary.index` returns 0 for an unknown bundle and 0 means "place no orders", so
+        # every miss teaches the student to do nothing on a turn where the teacher traded -- and
+        # bundle agreement then scores that as a HIT, because the student complies. The shipped
+        # 197-entry vocabulary missed 179 of 1451 traded turns and the run read 0.9983 while banking
+        # $0. Refuse at the first round rather than train for hours on it.
+        if agree["bundle_miss"]:
+            raise SystemExit(
+                "%d teacher turns could not be expressed by %s and were labelled EMPTY. Rebuild it "
+                "with scripts/build_teacher_bundle_vocab.py and point --vocab at the result.\n"
+                "See docs/the_vocabulary_labels_the_opening_as_nothing_2026-08-22.md"
+                % (agree["bundle_miss"], args.vocab))
         print("           per-head (fresh)  "
               + "  ".join("%s %.4f" % (h, float(v)) for h, v in sorted(fresh_heads.items())),
               flush=True)
@@ -704,8 +920,28 @@ def main():
                      pstats["opponent_bank"],
                      "WIN " if pstats["bank"] > pstats["opponent_bank"] else "loss",
                      pstats["latches"]), flush=True)
+            # Where it stopped tracking, not just that it did. d0-d6 only: the commitments that
+            # decide the season (the d6 land buy above all) all land in that window, and a 17-day
+            # table is unreadable.
+            try:
+                theirs = tape_marks(spec)
+            except Exception as exc:                       # a spec on a fresh seed has no recording
+                theirs = {}
+                if args.playout_debug:
+                    print("           (no tape marks: %r)" % (exc,), flush=True)
+            ours = pstats.get("marks") or {}
+            if theirs and ours:
+                days = sorted(set(ours) & set(theirs))
+                print("             day       " + "".join("%9d" % d for d in days), flush=True)
+                for row, label in ((0, "bank  o/t"), (1, "tiles o/t"), (2, "units o/t")):
+                    print("             %-9s " % label
+                          + "".join("%9s" % ("%d/%d" % (ours[d][row], theirs[d][row]))
+                                    for d in days), flush=True)
 
-        last_agree = g_op
+        # **The decode that drives, and the weakest head of it.** Not `g_op`: greedy is reported
+        # because which decode to SHIP is open, but the rollout plays `A.sample`, and gating on a
+        # column the game never receives released beta onto a market head at 0.0104.
+        last_agree = anneal_agreement(agree)
 
         # **The held-out probe. Reported, never trained on, and it gates nothing.**
         # Run with the TEACHER driving so the states stay on-tape: the tape is identical, the target
@@ -730,7 +966,7 @@ def main():
         # aggregate is large, so it goes less often; at worst `--save-data-every` rounds of
         # reservoir are lost on a hard power-off, and never the params or the optimiser.
         due = ((rnd + 1) % max(1, args.save_data_every) == 0) or (rnd + 1 == args.rounds)
-        save_resume(run, params, opt_state, rnd, seen_total, rng, args,
+        save_resume(run, params, opt_state, rnd, seen_total, rng, args, vocab.size,
                     pools=(dict(expert=expert, student=student, seen_expert=seen_expert,
                                 seen_student=seen_student) if due else None),
                     extra=dict(anneal_start=anneal_start, last_agree=last_agree))

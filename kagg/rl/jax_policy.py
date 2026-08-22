@@ -114,9 +114,20 @@ N_BUNDLES = 256
 # `HIRE x10` is ten orders and its multiplicity lives in the bundle symbol.
 MAX_QTY = 64
 
-# Unit-op quantities are still a ladder. PICKUP/DROP/PLACE carry inventory in small counts and have
-# not been measured the way the market ones now have; treat this as unexamined, not as agreed.
-UNIT_QTY_BUCKETS = jnp.asarray([1, 2, 5, 10], dtype=jnp.int32)
+# Unit-op quantities are EXACT, for the same reason the market ones are: the index is the amount.
+#
+# This was the ladder `[1, 2, 5, 10]`, with a comment saying it was unexamined rather than agreed.
+# Measured 2026-08-22 across the four tape teachers, 2876 turns: the ladder cost **587 unit ops**,
+# every one of them a quantity rather than a wrong op or a wrong item --
+#
+#     PICKUP 6 -> 5  (348)   PLACE 6 -> 5  (55)   PICKUP 4 -> 5  (35)
+#     PICKUP 8 -> 10 (26)    PLACE 12 -> 10 (25)  PICKUP 3 -> 2  (12)
+#
+# -- so the teacher could not be reproduced on any of them, and picking up five seeds where it asked
+# for six leaves a row unplanted. 12 is the largest the four teachers ever ask for; 16 leaves
+# headroom and `_bucket` still clamps rather than wraps above it.
+# `docs/the_second_cow_cannot_be_bought_2026-08-22.md`.
+UNIT_QTY_BUCKETS = jnp.arange(1, 17, dtype=jnp.int32)
 
 
 def rescale_value(v, margin):
