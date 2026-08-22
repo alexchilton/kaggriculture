@@ -167,7 +167,7 @@ def test_reset_with_shops_is_the_fixed_entry_point():
 
 @pytest.mark.parametrize("product,frozen,real",
                          [("WHEAT", 30, 49), ("STRAWBERRY", 166, 274), ("EGG", 52, 69),
-                          ("MILK", 208, 315), ("TOMATO", 64, 85)])
+                          ("MILK", 208, 315), ("TOMATO", 64, 86), ("CARROT", 37, 51)])
 def test_end_of_season_prices_the_frozen_town_understated(product, frozen, real):
     """The understatement, pinned per product. **1.32.6 made it WORSE, not smaller.**
 
@@ -180,12 +180,27 @@ def test_end_of_season_prices_the_frozen_town_understated(product, frozen, real)
         STRAWBERRY      166   274            65%
         EGG              52    69            33%
         MILK            208   315            51%
-        TOMATO           64    85            33%
+        TOMATO           64    86            34%
+        CARROT           37    51            38%
 
     That is the point worth carrying out of this file. Modelling the town as frozen was already
     wrong, and the upgrade did not make it a smaller error -- assuming shops never unlock now
     understates end-of-season prices by up to 65%, against 38% before. Anything that prices stock
     against a frozen town is more wrong today than it was yesterday.
+
+    **Re-measured on 1.32.7, 2026-08-22.** TOMATO's real price is 86, not 85 -- that row was taken
+    on 1.32.6, and 1.32.7 moved CARROT, TOMATO and EGG onto the `hinge` price shape
+    (`docs/balance_change_eggs_tomatoes_carrots_2026-08-15.md`). One unit, one product, red since
+    the upgrade.
+
+    Our curve is not what was in question, and that was checked FIRST:
+    `tests/test_the_market_curve_matches_the_reference.py` pins it to `reference/` and passes 11/11.
+    So 86 is the reference's answer and 85 was this file going stale. The order matters -- a
+    disagreement between the code and a hard-coded number is only evidence about the number once
+    the code has been verified against the source it is meant to copy.
+
+    CARROT added while the figures were being taken: it is the third `hinge` crop, it had no row
+    here at all, and it is the crop the late-window sweeps are about.
     """
     reference = np.array([J.SHOP_UNLOCK_INTERVAL * (k + 1) for k in range(J.N_SHOPS)])
     assert _price_at_season_end(np.full(J.N_SHOPS, J.NEVER), product) == frozen

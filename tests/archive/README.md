@@ -86,6 +86,25 @@ The lesson is the one already in `CLAUDE.md` about `farm:0.445` -- ask what unit
 over before trusting how it fails.
 A test can fail differently in two modes and still be measuring nothing in the one that ships.
 
+## The one that measures us against a tape we do not play
+
+`test_day_ten_sells_everything_the_tape_sells.py`, archived 2026-08-22. It asserts
+`ours[10] == his[10]` on SELL fills against `B.TAPES["victor"]` -- `91854176`, Victor @ Tufa Labs.
+
+All four shipped recordings are カワシギ:
+
+    (False, False)  92498144.json  カワシギ
+    (False, True)   91907974.json  カワシギ
+    (True,  False)  92466371.json  カワシギ
+    (True,  True)   91906088.json  カワシギ
+
+So "ours" is カワシギ's sell cadence, replayed, and "his" is Victor's. It measured 89 against 55 and
+the failure message reads *"a shortfall here is produce sitting in a hand"* -- while the number is a
+SURPLUS of 34. The assertion and its own explanation had come apart, which is the tell.
+
+`scripts/breakdown.py:160` already records this trap: the grid default *"stayed pinned to `victor`
+for two days"*. A tape pin is a thing that rots quietly.
+
 ## What would make this matter again
 
 Any of these, and the archive should come back:
