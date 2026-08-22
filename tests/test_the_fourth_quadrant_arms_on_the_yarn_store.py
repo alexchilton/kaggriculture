@@ -121,10 +121,47 @@ def test_the_split_day_is_the_first_day_the_two_tapes_disagree():
     assert q3[Q.SPLIT_DAY].get("animals_bought") != q4[Q.SPLIT_DAY].get("animals_bought")
 
 
-def test_the_q4_routes_cover_every_day_from_the_split():
-    """Routes solved for 75 tiles DROP on a 100-tile board; the branch needs its own table."""
+def test_the_q4_table_runs_unbroken_to_the_last_day():
+    """The q4 branch keeps its own solved table out to d29, and it must have no HOLE in it.
+
+    **Was `set(q4.SOLVED_DAYS) >= set(range(Q.SPLIT_DAY, 30))`, and that premise is wrong.**
+    Measured 2026-08-22:
+
+        Q.SPLIT_DAY        9
+        q4.SOLVED_DAYS     12 .. 29
+        cover.SOLVED_DAYS  12 .. 29
+
+    d9, d10 and d11 have no solved route, so the old assertion was red -- but a day with no solved
+    route is not a dropped stop. `cover.py:1691` reads
+    `assign = CREW.cover if day not in PRECOMPUTED_ROUTES else <the solved planner>`, so an
+    uncovered day simply falls to the greedy. `q4_branch.py:302` says exactly that and treats it as
+    the normal case: *"an unsolved day is a day the greedy plays."* The split day is where the
+    SCHEDULES diverge, not where the route table has to begin.
+
+    So the real invariant is that the table the branch installs is contiguous to the final day. A
+    hole in the middle would be a day silently handed to the greedy on a 100-tile board the greedy
+    was never solved for, which is the defect the original docstring was reaching for.
+
+    **A note on the routes being "off", because it is half true and the half matters.**
+    `cover.UNSOLVE_DAYS` covers all 30 days at import, so `PRECOMPUTED_ROUTES` is `{}` and no solved
+    route is consulted -- but `q4_branch.install` sets `cover.UNSOLVE_DAYS = ()` and installs the
+    whole q4 table when the latch arms (`q4_branch.py:320`). Honouring the range there was tried and
+    reverted on 2026-08-18: melon q4 93,699 -> 93,404 and straw q4 78,065 -> 76,209.
+
+    That mutation is also why this test cannot read `PRECOMPUTED_ROUTES` to decide anything: the
+    arming tests above it in this same file populate `cover`'s globals as a side effect, so its
+    value here is whatever the previous test left behind.
+    """
     q4 = __import__("kagg.search.solved_days_q4", fromlist=["SOLVED_DAYS"])
-    assert set(q4.SOLVED_DAYS) >= set(range(Q.SPLIT_DAY, 30))
+    days = sorted(q4.SOLVED_DAYS)
+    assert days, "the q4 solved table is empty; the branch would play the greedy all season"
+    assert days[-1] == 29, (
+        f"the q4 table stops at d{days[-1]}; it is solved for the 100-tile board out to d29 and "
+        f"giving away the closing days measured -$295 on melon q4 and -$1,856 on straw q4")
+    holes = sorted(set(range(days[0], 30)) - set(days))
+    assert not holes, (
+        f"the q4 table runs d{days[0]}-d29 with {holes} missing. A hole hands those days to the "
+        f"greedy on a 100-tile board, while the days either side use routes solved for it.")
 
 
 def test_switching_the_branch_off_changes_nothing():
