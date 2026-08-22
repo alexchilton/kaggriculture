@@ -38,6 +38,25 @@ sys.path.insert(0, ".")
 
 from kagg.search import schedule_agent as SA
 
+@pytest.fixture(autouse=True, scope="module")
+def _put_the_globals_back():
+    """Restore every module global this file changes.
+
+    Autouse and module-scoped, so it is torn down after the fixture that does the changing -- which
+    means this needs no knowledge of where in that fixture the assignment happens. The direct
+    edit did need that knowledge, got it wrong on a multi-line `return {`, and left three files
+    unparseable.
+
+    Without this the leak is invisible under `-n 0` (the file runs last) and decides which tests
+    fail under xdist (the worker poisons whatever it is handed next).
+    """
+    from kagg.search import schedule_agent
+    saved = [(schedule_agent, 'FEED_RESERVE_YIELDS_TO_OVERFLOW', schedule_agent.FEED_RESERVE_YIELDS_TO_OVERFLOW), (schedule_agent, 'FEED_DAYS_FLOOR', schedule_agent.FEED_DAYS_FLOOR)]
+    yield
+    for mod, name, value in saved:
+        setattr(mod, name, value)
+
+
 SEED, DAYS = 11, 16  # only the pre-FEED_DAYS_FROM_DAY window matters here
 
 
@@ -45,10 +64,6 @@ def _play(feed_reserve_yields):
     from kaggle_environments import make
 
     from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
-
-    _saved_FEED_RESERVE_YIELDS_TO_OVERFLOW = SA.FEED_RESERVE_YIELDS_TO_OVERFLOW
-
-    _saved_FEED_DAYS_FLOOR = SA.FEED_DAYS_FLOOR
 
     SA.FEED_RESERVE_YIELDS_TO_OVERFLOW = feed_reserve_yields
     SA.FEED_DAYS_FLOOR = 1
@@ -77,14 +92,7 @@ def _play(feed_reserve_yields):
         n1 = len(o0["farms"][1].get("hands") or [])
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
-    try:
-        yield rows
-    finally:
-    
-    SA.FEED_RESERVE_YIELDS_TO_OVERFLOW = _saved_FEED_RESERVE_YIELDS_TO_OVERFLOW
-    
-    SA.FEED_DAYS_FLOOR = _saved_FEED_DAYS_FLOOR
-
+    return rows
 
 
 @pytest.fixture(scope="module")

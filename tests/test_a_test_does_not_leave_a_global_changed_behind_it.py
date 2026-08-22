@@ -59,21 +59,33 @@ def test_the_latch_thresholds_are_still_the_shipped_ones():
 def test_no_test_file_assigns_a_module_global_outside_a_restore():
     """The general rule, checked by reading the tests rather than by running them.
 
-    An assignment to `SA.SOMETHING` is only safe if the same file puts the old value back. This
-    counts both and reports the files where they do not balance -- a heuristic, deliberately, since
-    the alternative is an import-time sandbox nobody will maintain.
+    An assignment to `SA.SOMETHING` is only safe if the same file puts the old value back.
+    Three idioms count as putting it back, and all three are in use here:
+
+        monkeypatch.setattr(...)          pytest restores it
+        SA.THING = _saved                 a matching assignment, so the count is even
+        setattr(mod, name, value)         an autouse fixture restoring a saved list
+
+    The third exists because rewriting a leaking fixture's `return` into `try/yield/finally` needs
+    to know where that return is, and one of them was a multi-line dict literal -- the `finally`
+    landed inside it and three files stopped parsing. An autouse module-scoped fixture is torn down
+    after everything else in the module and needs no such knowledge.
+
+    A heuristic, deliberately: the alternative is an import-time sandbox nobody will maintain. The
+    two tests above check the values that actually matter at runtime.
     """
     import collections                                                # noqa: PLC0415
     import re                                                         # noqa: PLC0415
 
     pat = re.compile(r"^\s*(SA|RT|MB|Q4|R|C)\.([A-Z_]{3,})\s*=", re.M)
+    restores = re.compile(r"setattr\(\s*mod\s*,\s*name\s*,|_put_the_globals_back")
     unbalanced = collections.OrderedDict()
     for p in sorted((REPO / "tests").glob("test_*.py")):
         if p.name == pathlib.Path(__file__).name:
             continue
         text = p.read_text(errors="ignore")
-        if "monkeypatch" in text:
-            continue                       # pytest restores those for us
+        if "monkeypatch" in text or restores.search(text):
+            continue
         counts = collections.Counter(m.group(0).strip() for m in pat.finditer(text))
         # a global that is assigned an ODD number of times cannot have been set and restored
         odd = sorted(k for k, n in counts.items() if n % 2)

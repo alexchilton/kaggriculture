@@ -27,6 +27,25 @@ import pathlib
 
 import pytest
 
+@pytest.fixture(autouse=True, scope="module")
+def _put_the_globals_back():
+    """Restore every module global this file changes.
+
+    Autouse and module-scoped, so it is torn down after the fixture that does the changing -- which
+    means this needs no knowledge of where in that fixture the assignment happens. The direct
+    edit did need that knowledge, got it wrong on a multi-line `return {`, and left three files
+    unparseable.
+
+    Without this the leak is invisible under `-n 0` (the file runs last) and decides which tests
+    fail under xdist (the worker poisons whatever it is handed next).
+    """
+    from kagg.search import melon_branch
+    saved = [(melon_branch, 'OPPONENT_MELON', melon_branch.OPPONENT_MELON)]
+    yield
+    for mod, name, value in saved:
+        setattr(mod, name, value)
+
+
 DATA = pathlib.Path("/Users/alexchilton/DataspellProjects/kaggriculture")
 TAPE = DATA / "data/seed_scripts/kawashigi/92466371.json"
 PLAN = DATA / "data/seed_scripts/kawashigi_b3/schedule.json"
@@ -42,7 +61,6 @@ def the_season():
     from kaggle_environments import make
 
     from kagg.search import melon_branch as MB, schedule_agent as SA
-    _saved_OPPONENT_MELON = MB.OPPONENT_MELON
     MB.OPPONENT_MELON = 0
 
     d = json.loads(TAPE.read_text())
@@ -76,11 +94,7 @@ def the_season():
         env.step(a)
 
     ob = env.state[s].observation
-    try:
-        yield {
-    finally:
-        MB.OPPONENT_MELON = _saved_OPPONENT_MELON
-
+    return {
         "seeds": {k: int(v) for k, v in ((ob.get("private") or {}).get("seeds") or {}).items() if v},
         "money": int(((ob.get("farms") or [{}, {}])[s] or {}).get("money", 0) or 0),
         "plants": dict(plants),
