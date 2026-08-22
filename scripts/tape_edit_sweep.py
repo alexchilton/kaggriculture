@@ -226,6 +226,12 @@ def build_arms():
     # **92% on `(False, True)` -> 91907974** and **11% on `(True, True)` -> 92466371**. Those two
     # rows face different opponents by construction, so this arm is the clean A/B: same town, same
     # opponent, only the tape moves.
+    # **Buy the fourth parcel on the three-quadrant seasons.** See `tape_edit.add_land` for the
+    # cash evidence: q4 buys its third parcel at d12 holding $12,717 and the q3 tapes reach d12
+    # holding $16,403 and $16,162.
+    for d in (12, 13, 14, 16, 18):
+        arms["land_d%d" % d] = arm("land_d%d" % d, opening=(("addland", d, 0),))
+
     # **The shootout for `(True, True)`.** The key describes "opponent shows 9+ melon AND a yarn
     # store unlocked by d5". Candidates, with what each recording actually IS:
     #
@@ -326,6 +332,9 @@ def edited_openings(edits):
                 opening, _ = E.swap(opening, set(days), frm, to, per_day)
             elif e[0] in ("topup", "herd", "herdshift", "retape", "condcarrot"):
                 continue
+            elif e[0] == "addland":
+                _, day, hour = e
+                opening = E.add_land(opening, day, hour)
             elif e[0] == "sellhour":
                 _, days, hour = e
                 opening = E.move_sells(opening, days, hour)

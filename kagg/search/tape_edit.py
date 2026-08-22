@@ -143,6 +143,39 @@ def swap(opening, days, frm, to, per_day):
     return repoint_seed(edited, done, frm, to), done
 
 
+def add_land(opening, day, hour=0):
+    """Insert a `BUY_LAND` at `day`/`hour`, so a three-quadrant season buys the fourth parcel.
+
+    Alex, 2026-08-22: *"land maybe on the q3 - sometimes helps"*.
+
+    The q3 tapes farm 75 tiles to the final bell while both q4 tapes reach 100 by d18, and that gap
+    alone was worth about +$20k a game when the `(True, True)` key was pointed at a q4 recording --
+    the crop mix did not matter, the parcel did.
+
+    The cash is there. `BUY_LAND` turns and the bank at that moment:
+
+        92466371 q3   d6 h4 ($406)   d11 h0 ($16,403)
+        92498144 q3   d6 h4 ($116)   d11 h0 ($16,162)
+        91907974 q4   d6 h4 ($101)   d11 h0 ($16,149)   d12 h0 ($12,717)
+
+    q4 buys its third parcel holding $12,717. Both q3 tapes reach d12 holding MORE than that, and
+    their dawn cash never falls below $12,385 for the rest of the season. They simply do not buy.
+
+    The order goes FIRST in the turn, because a purchase only settles against cash already banked
+    and anything queued ahead of it can spend the money first. If the bank is short on the day the
+    environment refuses it like any other order, which is the honest outcome rather than a crash.
+    """
+    out = copy_opening(opening)
+    step = day * 24 + hour
+    if step not in out:
+        return out
+    farmer, hands, market = out[step]
+    if any(o and o[0] == "BUY_LAND" for o in market):
+        return out
+    out[step] = (farmer, hands, ([["BUY_LAND"]] + list(market))[:MAX_ORDERS])
+    return out
+
+
 def move_sells(opening, days, hour):
     """Re-time every SELL of each day in `days` to `hour`, keeping the day's totals.
 
