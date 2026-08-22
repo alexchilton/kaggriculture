@@ -3371,6 +3371,92 @@ def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
     return int(total)
 
 
+# ---- the late carrot ------------------------------------------------------------------------
+#
+# d25-d27 sow CARROT where WHEAT was planned, but only where the town can absorb it.
+#
+# **These are thresholds, measured, not switches.** 12,096 paired seasons over 48 towns, 7 opponents
+# and 3 seeds, 2026-08-22; full record in `docs/carrot_refine_2026-08-22.md`. Unconditionally the
+# same edit is -$237, because the towns that cannot take the carrot cancel the ones that can. Cut by
+# the town's carrot drain it is monotone:
+#
+#     drain   n     control   with    delta
+#         4    84     42.9    44.0    +1.2     fires, and is a WASH
+#         5   231     42.0    51.1    +9.1
+#         6   147     57.8    71.4   +13.6
+#         7    63     46.0    66.7   +20.6
+#
+# **The mechanism is our OWN book.** We already grow and sell carrot, so this is incremental supply,
+# and adding it where the town cannot drain it floods our own market -- the failure already recorded
+# for milk, where 159 units cleared at $1-$5 because cow COUNT was causal. `drain` is the town's
+# absorption rate, which is why it is the condition that carries the result.
+#
+# 44% of the sampled towns are drain >= 5. `drain_min = 6` was NOT tested and the trend is still
+# rising at 7, so 5 is the best measured value, not the established optimum.
+CARROT_SWAP_DAYS = (25, 26, 27)
+CARROT_DRAIN_MIN = 5
+#: Cheap insurance on a thin tail. Over 85 downloaded games and 170 seats, 94% hold no carrot at d25
+#: and 85% never plant one -- so this almost never binds, which is why a sweep over 3/7/99 came back
+#: byte-identical. It stays because the `opp CA 15+` bucket measured -$510 / 28% improved and 1-2%
+#: of seats reach it.
+CARROT_OPP_MAX = 7
+
+
+def _carrot_town_drain(obs):
+    """Units of CARROT this town's unlocked shops pull per tick.
+
+    Mirrors `_town_consume` the same way `town_drain_remaining` does: 1 per product, doubled for a
+    shop that sells only carrot.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0
+    shops = _KG.SHOPS
+    drain = 0
+    for name in ((obs.get("town") or {}).get("unlocked_shops") or []):
+        products = shops.get(name) or []
+        if "CARROT" in products:
+            drain += 2 if len(products) == 1 else 1
+    return drain
+
+
+def _carrot_pays(obs, me=0):
+    """Will the late carrot pay on this board? Read once, on the first turn of `CARROT_SWAP_DAYS`.
+
+    By d25 the town has drawn all eight shops and the opponent's carrot is long since standing, so
+    neither half of this is a forecast.
+    """
+    if _carrot_town_drain(obs) < CARROT_DRAIN_MIN:
+        return False
+    farms = obs.get("farms") or []
+    seat = int(obs.get("player", me) or 0)
+    if len(farms) < 2:
+        return True
+    theirs = sum(1 for row in ((farms[1 - seat] or {}).get("tiles") or []) for t in row
+                 if isinstance(t, dict) and t.get("crop") == "CARROT")
+    return theirs <= CARROT_OPP_MAX
+
+
+def _sow_carrot_instead(acts, orders):
+    """Rewrite this turn's `PLANT WHEAT` to CARROT and re-point its wheat seed row.
+
+    **Both halves, always.** He buys seed on turns that plant nothing, so gating the seed rewrite on
+    having planted leaves the day buying wheat it will never sow: measured `d25-27 plants
+    {CARROT 30} seeds {WHEAT 11, CARROT 19}` against the clean `{CARROT 30} / {CARROT 30}`.
+
+    Applied at the boundary, on the way out, so the planner's own `state["planted"]` bookkeeping
+    stays wheat-consistent -- which is exactly how the arm behaved when it was measured.
+    """
+    acts = [list(a) for a in acts]
+    for a in acts:
+        if len(a) >= 2 and a[0] == "PLANT" and a[1] == "WHEAT":
+            a[1] = "CARROT"
+    orders = [list(o) for o in orders]
+    for o in orders:
+        if len(o) >= 3 and o[0] == "BUY_SEED" and o[1] == "WHEAT":
+            o[1] = "CARROT"
+    return acts, orders
+
+
 def _note_config(config):
     """Adopt whatever the host tells us, instead of trusting constants copied into this file.
 
@@ -3890,6 +3976,7 @@ def make_agent(schedule, me=0, router=True):
                  pins={}, routes={}, crew=-1, seen_urgent=set(),
                  planted=collections.Counter(), pen_for={},
                  ordered=collections.Counter(), shed_max=collections.Counter(),
+                 carrot=None,
                  uncovered=collections.deque(maxlen=SELL_CARRY_DAYS))
 
     def agent(obs, config=None):
@@ -5722,8 +5809,38 @@ def make_agent(schedule, me=0, router=True):
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
 
+    def _with_late_carrot(fn):
+        """Apply the late carrot at the OUTERMOST boundary, after any tape replay.
+
+        **It has to be here and not inside `agent`.** `replayed` calls `agent`, then for any step
+        the opening covers it THROWS THAT ANSWER AWAY and sends the tape's own actions --  and
+        `REPLAY_OPENING_DAYS` was re-armed to the whole season on 2026-08-21. A swap applied inside
+        `agent` therefore lands only on the turns the tape does not cover: measured on seed 11,
+        d25-d27 came out as 29 WHEAT plus a handful of CARROT instead of a clean field.
+
+        Wrapping the returned callable is also what the sweep did (`tape_edit.carrot_when_it_pays`
+        wraps from outside), so the shipped behaviour is the behaviour that was measured rather than
+        a reimplementation of it.
+
+        The decision is read once, on the first turn of the window, and held: `state["carrot"]`
+        starts None, and a decision that could flip mid-window would sow half a field of each.
+        """
+        def wrapped(obs, config=None):
+            act = fn(obs, config)
+            if int(obs.get("day", 0) or 0) not in CARROT_SWAP_DAYS:
+                return act
+            if state["carrot"] is None:
+                state["carrot"] = _carrot_pays(obs, me)
+            if not state["carrot"]:
+                return act
+            acts, orders = _sow_carrot_instead(
+                [act.get("farmer") or ["PASS"]] + list(act.get("hands") or []),
+                act.get("market") or [])
+            return {"farmer": acts[0], "hands": acts[1:], "market": orders}
+        return wrapped
+
     if not REPLAY_OPENING_DAYS:
-        return agent
+        return _with_late_carrot(agent)
 
     # **The tape supplies the unit actions and the SELL cadence. The buying stays ours.** The planner
     # is still driven on every replayed turn and its unit answer thrown away, so its pins, pen
@@ -5942,4 +6059,4 @@ def make_agent(schedule, me=0, router=True):
 
         return {"farmer": acts[0], "hands": acts[1:], "market": orders}
 
-    return replayed
+    return _with_late_carrot(replayed)
