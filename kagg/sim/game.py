@@ -323,31 +323,37 @@ class Game:
 
         # **An explicit order list overrides the canonical layout, per seat.**
         #
-        # Compacted the same way rather than copied straight through: `_parse_order` rejects a
-        # quantity <= 0 while the reference has already spent that slot positionally
-        # (`reference/kaggriculture.py:534` truncates before parsing), so a zero entry must vanish
-        # instead of padding. That is the same `present`/`cumsum` rule applied above, which is why a
-        # caller cannot use this to smuggle in more than `MAX_ORDERS` orders.
+        # **Kept POSITIONAL, not compacted.** The reference truncates each player's list by position
+        # and only then parses it -- `queues.append(q[:max_orders])` at
+        # `reference/kaggriculture.py:555`, `_parse_order(q[i])` at :568, `if n <= 0: return None` at
+        # :643 -- so an invalid order becomes a `None` AT ITS OWN POSITION and the slot is spent.
+        # The order behind it does not move up.
+        #
+        # This used to compact with the same `present`/`cumsum` rule as the vector path above, on a
+        # comment that cited :534 truncating before parsing: the right fact with the consequence
+        # backwards. It matters because `_process_market` pairs the two players' i-th ORDERS, so
+        # shifting one seat's list up by one prices a contested unit against a different opponent
+        # order -- while every order remains individually present and correct, which is why nothing
+        # comparing order SETS could see it. `tests/test_a_dropped_order_still_spends_its_slot.py`.
+        #
+        # The array is already `MAX_ORDERS` wide, so the positional truncation is structural: a
+        # caller still cannot smuggle in an eleventh order.
+        #
+        # The vector path above keeps compacting, and must: there a zero means "no order for this
+        # product", an empty entry rather than something the agent wrote.
         explicit = np.asarray(getattr(actions, "order_op", None))
         if explicit.ndim == 3 and explicit.any():
             e_qty = np.asarray(actions.order_qty, dtype=np.int64)
             e_item = np.asarray(actions.order_item, dtype=np.int64)
             e_present = (explicit != ORDER_NONE) & (
                 (e_qty > 0) | np.isin(explicit, (ORDER_HIRE, ORDER_BUY_LAND)))
-            e_slot = np.cumsum(e_present, axis=2) - 1
-            e_keep = e_present & (e_slot < MAX_ORDERS)
             # Only seats that actually supplied a list; the others keep their canonical book.
-            uses = explicit.any(axis=2)
-            op = np.where(uses[:, :, None], 0, op)
-            item = np.where(uses[:, :, None], 0, item)
-            qty = np.where(uses[:, :, None], 0, qty)
-            gi, pi, ki = np.nonzero(e_keep)
-            si = e_slot[gi, pi, ki]
-            op[gi, pi, si] = explicit[gi, pi, ki]
-            item[gi, pi, si] = e_item[gi, pi, ki]
+            uses = explicit.any(axis=2)[:, :, None]
             # HIRE and BUY_LAND carry no quantity; the atomic branch keys off the op alone, and a
             # zero here would read as "not present" on the next pass.
-            qty[gi, pi, si] = np.maximum(e_qty[gi, pi, ki], 1)
+            op = np.where(uses, np.where(e_present, explicit, ORDER_NONE), op)
+            item = np.where(uses, np.where(e_present, e_item, 0), item)
+            qty = np.where(uses, np.where(e_present, np.maximum(e_qty, 1), 0), qty)
         return op, item, qty
 
     def _quote(self, op, item):

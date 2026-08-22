@@ -36,8 +36,18 @@ from kagg.sim.tiles import CROP_INDEX
 CROPS = [c for c, _ in sorted(CROP_INDEX.items(), key=lambda kv: kv[1])]
 
 #: The order an agent writes orders in, which is the order the environment gives them slots in.
-#: `kagg/sim/game.py:70-77` defines it and `jax_sim._order_book` mirrors it.
-CANONICAL = ["SELL", "BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL", "HIRE", "BUY_LAND"]
+#:
+#: **Read from `SLOT_ORDER` rather than copied.** It used to be a hand-written second copy reading
+#: `[SELL, BUY_SEED, BUY_PRODUCT, BUY_ANIMAL, HIRE, BUY_LAND]`, on the belief that `game.py:70-77`
+#: was the authority. It is not: `_order_book`'s layout only applies when no explicit order list is
+#: supplied, and the sequence that decides what a turn BUYS was never checked against the
+#: environment. When it finally was, that sequence lost a sheep and stranded $471 on the teacher's
+#: turn 0 -- see `tests/test_the_opening_orders_leave_the_shed_the_tape_has.py`, which pins the
+#: choice by outcome on the real environment and is where a change to `SLOT_ORDER` must now argue.
+#:
+#: So the division is: that test says the sequence is RIGHT, this one says every decoder OBEYS it.
+#: A second copy here could only ever go stale, and did.
+CANONICAL = list(MB.SLOT_ORDER)
 
 
 def decode(orders):

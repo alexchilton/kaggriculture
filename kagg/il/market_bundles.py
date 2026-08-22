@@ -31,6 +31,16 @@ import collections
 from kagg.rl import jax_policy as P
 from kagg.sim import farm as F
 from kagg.sim import market as M
+from kagg.sim.game import (
+    MAX_ORDERS,
+    ORDER_BUY_ANIMAL,
+    ORDER_BUY_LAND,
+    ORDER_BUY_PRODUCT,
+    ORDER_BUY_SEED,
+    ORDER_HIRE,
+    ORDER_NONE,
+    ORDER_SELL,
+)
 
 # `jax_sim.Actions` does not carry order lists. It carries per-product quantity vectors, a hire
 # COUNT and a buy_land flag; `Game._order_book` compacts those into the ten order slots. A bundle is
@@ -45,7 +55,22 @@ SELL, BUY_PRODUCT, BUY_SEED, BUY_ANIMAL, HIRE, BUY_LAND = (
 #: This is NOT the order a bundle stores. A bundle is a sorted multiset and that sort is
 #: alphabetical, so SELL sorts last -- see `orders_from_heads`, which is where the two are
 #: reconciled, and the test named there for what it cost.
-SLOT_ORDER = (SELL, BUY_SEED, BUY_PRODUCT, BUY_ANIMAL, HIRE, BUY_LAND)
+# **Chosen by OUTCOME on the real environment, not by reading the teacher's list.**
+#
+# The same ten orders in a different sequence buy a different farm, because the shed capacity binds
+# and slot i takes its money before slot i+1 is quoted. Measured 2026-08-22 on turn 0:
+#
+#     the tape's own sequence   bank 3000 -> 13    hands 5   shed {WHEAT 5, COW 2, SHEEP 2}
+#     SELL SEED PROD ANIM HIRE  bank 3000 -> 484   hands 5   shed {WHEAT 6, COW 2, SHEEP 1}
+#
+# Both sheds hold nine items. Buying the wheat PRODUCT before the animals fills the last slot with
+# wheat and costs a whole sheep, stranding $471. A sweep of every distinct ordering found eight that
+# reproduce the tape exactly and two that lose two of the five hires outright.
+#
+# This one is in the winning set AND matches the teacher's own turn-0 sequence. SELL stays first for
+# the reason below: a sell in the same turn funds the purchases after it.
+# `tests/test_the_opening_orders_leave_the_shed_the_tape_has.py`.
+SLOT_ORDER = (SELL, HIRE, BUY_ANIMAL, BUY_SEED, BUY_PRODUCT, BUY_LAND)
 
 # Index 0 is always the empty bundle. It is the majority class, so it must be a real symbol the head
 # can choose, never an absence expressed by falling off the vocabulary.
@@ -279,7 +304,67 @@ def tables(vocab, pad_to=None):
         out["buy_animal"][i] = list(fields["buy_animal"])
         out["hire"][i] = fields["hire"]
         out["buy_land"][i] = fields["buy_land"]
+    out.update(slot_tables(vocab, n))
     return out
+
+
+#: `slot_src` values. Which quantity head, if any, supplies a slot's magnitude.
+SRC_FIXED, SRC_SELL, SRC_BUY_PRODUCT, SRC_BUY_SEED = 0, 1, 2, 3
+
+
+def slot_tables(vocab, pad_to=None):
+    """Static `[N_BUNDLES, MAX_ORDERS]` order LISTS, in the sequence the environment receives them.
+
+    **The sequence is a decision, and it was previously made twice.** `tables` above returns
+    per-product quantity VECTORS, and `_order_book` lays those out in its own fixed sequence: sells,
+    seeds, products, animals, HIRE, BUY_LAND. `orders_from_heads` -- the path to the REAL environment
+    -- sorts by `SLOT_ORDER` instead. The two disagreed, and no test comparing bundle CONTENTS could
+    see it, because a bundle is a sorted multiset either way.
+
+    The environment settles slots in sequence: slot i takes its money and its shed space before slot
+    i+1 is quoted. So the same bundle bought a different farm depending on which decoder ran, and the
+    simulator's was the wrong one -- measured on the teacher's turn 0, bank $484 against the tape's
+    $13, one sheep short. `tests/test_the_opening_orders_leave_the_shed_the_tape_has.py`.
+
+    **Built by calling `orders_from_heads`, not by re-deriving it.** That is the point: there is one
+    implementation of the sequence, and this is a static rendering of it. A future change to
+    `SLOT_ORDER` moves both paths together or neither.
+
+    Quantities cannot be baked in -- they come from heads sampled per turn -- so each slot records
+    WHERE its magnitude comes from: `slot_src` names the head and `slot_item` the entry to gather.
+    `SRC_FIXED` slots (HIRE, BUY_LAND, BUY_ANIMAL) carry their count in `slot_qty` directly, because
+    no head supplies it: HIRE and BUY_LAND are atomic, and the animal count lives in the bundle.
+    """
+    n = int(pad_to or vocab.size)
+    width = P.MAX_QTY - 1
+    ones_p = [width] * M.N_PRODUCTS
+    ones_c = [width] * F.N_CROPS
+    op_code = {SELL: ORDER_SELL, BUY_SEED: ORDER_BUY_SEED, BUY_PRODUCT: ORDER_BUY_PRODUCT,
+               BUY_ANIMAL: ORDER_BUY_ANIMAL, HIRE: ORDER_HIRE, BUY_LAND: ORDER_BUY_LAND}
+    item_space = {SELL: M.PRODUCTS, BUY_PRODUCT: M.PRODUCTS, BUY_SEED: F.CROPS,
+                  BUY_ANIMAL: M.ANIMALS}
+    src_of = {SELL: SRC_SELL, BUY_PRODUCT: SRC_BUY_PRODUCT, BUY_SEED: SRC_BUY_SEED}
+
+    slot_op = [[ORDER_NONE] * MAX_ORDERS for _ in range(n)]
+    slot_item = [[0] * MAX_ORDERS for _ in range(n)]
+    slot_src = [[SRC_FIXED] * MAX_ORDERS for _ in range(n)]
+    slot_qty = [[0] * MAX_ORDERS for _ in range(n)]
+
+    for i in range(vocab.size):
+        # The quantities are placeholders; only op, item and the ANIMAL coalescing are read back.
+        orders = orders_from_heads(vocab, i, ones_p, ones_p, ones_c,
+                                   list(M.PRODUCTS), list(F.CROPS), list(M.ANIMALS))
+        for k, o in enumerate(orders[:MAX_ORDERS]):
+            op = o[0]
+            slot_op[i][k] = op_code[op]
+            slot_item[i][k] = item_space[op].index(o[1]) if op in item_space else 0
+            slot_src[i][k] = src_of.get(op, SRC_FIXED)
+            # Only meaningful for SRC_FIXED. An animal order carries the coalesced count; HIRE and
+            # BUY_LAND are atomic and take one slot each, so their quantity is 1.
+            slot_qty[i][k] = int(o[2]) if len(o) > 2 else 1
+
+    return {"slot_op": slot_op, "slot_item": slot_item,
+            "slot_src": slot_src, "slot_qty": slot_qty}
 
 
 def valid_table(vocab, pad_to=None):

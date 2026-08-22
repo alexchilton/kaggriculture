@@ -18,6 +18,7 @@ from ~100 nats to ~15, which is the size of the noise that was being carried.
 import jax
 import jax.numpy as jnp
 
+from kagg.il import market_bundles as MB
 from kagg.rl import jax_masks, jax_obs, jax_policy as P
 from kagg.sim import jax_sim as J
 from kagg.sim import ops as O
@@ -318,6 +319,16 @@ def to_sim_actions(actions, batch, tables):
 
     **The quantity head's class index IS the quantity.** No ladder lookup: the rungs cost a measured
     27.2% on SELL against a teacher whose numbers are exact. See `jax_policy.MAX_QTY`.
+
+    **The order SEQUENCE is sent explicitly, not left to `_order_book`.** The per-product vectors
+    below say only HOW MUCH of each thing; the sequence they go out in used to be `_order_book`'s
+    canonical layout -- sells, seeds, products, animals, HIRE, BUY_LAND -- while the path to the real
+    environment, `market_bundles.orders_from_heads`, sorted by `SLOT_ORDER` instead. The environment
+    settles slots in sequence, so the same bundle bought a different farm depending on which decoder
+    ran: measured on the teacher's turn 0, bank $484 with one sheep missing against the tape's $13.
+    A simulator that plays a game the ladder will not play makes every sim-side number a measurement
+    of the wrong thing. `_order_book` prefers an explicit list per seat, so filling it here settles
+    the two paths on one sequence. `tests/test_the_sim_sends_the_orders_the_env_sends.py`.
     """
     u = lambda k: _unflat(actions[k], batch)   # noqa: E731
     idx = u("bundle")
@@ -327,17 +338,39 @@ def to_sim_actions(actions, batch, tables):
         drawn = u(head).astype(J._I)                    # [B, P, K] the quantity, as itself
         return jnp.where(want > 0, jnp.maximum(drawn, 1), 0).astype(J._I)
 
+    sell = gated(tables["sell"], "qty_sell")
+    buy_seed = gated(tables["buy_seed"], "qty_buy_seed")
+    buy_product = gated(tables["buy_product"], "qty_buy_product")
+
+    # The slot tables are static per bundle: WHICH op, WHICH item, and where the magnitude comes
+    # from. The magnitudes themselves are per-turn, so gather them by the slot's own item index.
+    slot_op = tables["slot_op"][idx]                     # [B, P, MAX_ORDERS]
+    slot_item = tables["slot_item"][idx]
+    slot_src = tables["slot_src"][idx]
+    slot_qty = tables["slot_qty"][idx]
+
+    def pick(vec):
+        """`vec` is [B, P, K]; take each slot's own item entry -> [B, P, MAX_ORDERS]."""
+        return jnp.take_along_axis(vec, jnp.clip(slot_item, 0, vec.shape[-1] - 1), axis=-1)
+
+    order_qty = jnp.where(slot_src == MB.SRC_SELL, pick(sell),
+                 jnp.where(slot_src == MB.SRC_BUY_PRODUCT, pick(buy_product),
+                  jnp.where(slot_src == MB.SRC_BUY_SEED, pick(buy_seed), slot_qty)))
+
     return J.Actions(
         unit_op=u("op").astype(J._I),
         unit_crop=u("crop").astype(J._I),
         unit_item=u("item").astype(J._I),
         unit_qty=P.UNIT_QTY_BUCKETS[u("qty")].astype(J._I),
-        sell=gated(tables["sell"], "qty_sell"),
-        buy_seed=gated(tables["buy_seed"], "qty_buy_seed"),
-        buy_product=gated(tables["buy_product"], "qty_buy_product"),
+        sell=sell,
+        buy_seed=buy_seed,
+        buy_product=buy_product,
         buy_animal=tables["buy_animal"][idx].astype(J._I),
         hire=tables["hire"][idx].astype(J._I),
         buy_land=tables["buy_land"][idx].astype(bool),
+        order_op=slot_op.astype(J._I),
+        order_item=slot_item.astype(J._I),
+        order_qty=order_qty.astype(J._I),
     )
 
 

@@ -921,25 +921,28 @@ def _order_book(actions):
     # Branchless because this runs under `jit`: the override is always computed and selected with a
     # `where` on a per-seat flag, rather than a Python `if` on a traced value.
     #
-    # Compacted by the same `present`/`cumsum` rule as above rather than copied straight through.
-    # `_parse_order` rejects a quantity <= 0 while the reference has already spent that slot
-    # positionally (`reference/kaggriculture.py:534` truncates before parsing), so a zero entry must
-    # vanish instead of padding -- which is also why a caller cannot use this path to smuggle in more
-    # than `MAX_ORDERS` orders.
+    # **Kept POSITIONAL, not compacted.** The reference truncates each player's list by position and
+    # only then parses it -- `queues.append(q[:max_orders])` at `reference/kaggriculture.py:555`,
+    # `_parse_order(q[i])` at :568, `if n <= 0: return None` at :643 -- so an invalid order becomes a
+    # `None` AT ITS OWN POSITION and the slot is spent. The order behind it does not move up.
+    #
+    # This used to compact with the same `present`/`cumsum` rule as the vector path above, on a
+    # comment citing :534 truncating before parsing: the right fact with the consequence backwards.
+    # `_process_market` pairs the two players' i-th ORDERS, so shifting one seat's list up by one
+    # prices a contested unit against a different opponent order. See `game.py::_order_book` and
+    # `tests/test_a_dropped_order_still_spends_its_slot.py`.
+    #
+    # The array is already `MAX_ORDERS` wide, so the positional truncation is structural.
     e_op, e_item, e_qty = actions.order_op, actions.order_item, actions.order_qty
     if e_op is None or e_item is None or e_qty is None:
         return op, item, qty
     atomic = (e_op == ORDER_HIRE) | (e_op == ORDER_BUY_LAND)
     e_present = (e_op != ORDER_NONE) & ((e_qty > 0) | atomic)
-    e_slot = jnp.cumsum(e_present, axis=2) - 1
-    e_target = jnp.where(e_present & (e_slot < MAX_ORDERS), e_slot, MAX_ORDERS)
     # HIRE and BUY_LAND carry no quantity; the atomic branch keys off the op alone, and a zero here
     # would read as "not present" when the slot is walked.
-    e_qty_out = jnp.where(atomic, jnp.maximum(e_qty, 1), e_qty)
-
-    x_op = zeros.at[bi, pi, e_target].set(e_op)[:, :, :MAX_ORDERS]
-    x_item = zeros.at[bi, pi, e_target].set(e_item)[:, :, :MAX_ORDERS]
-    x_qty = zeros.at[bi, pi, e_target].set(e_qty_out)[:, :, :MAX_ORDERS]
+    x_op = jnp.where(e_present, e_op, ORDER_NONE)
+    x_item = jnp.where(e_present, e_item, 0)
+    x_qty = jnp.where(e_present, jnp.maximum(e_qty, 1), 0)
 
     uses = (e_op != ORDER_NONE).any(axis=2)[:, :, None]
     op = jnp.where(uses, x_op, op)
