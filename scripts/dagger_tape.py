@@ -69,6 +69,10 @@ TPD = 24
 # with a static shape, so jitting it is free and roughly halves the rollout.
 _encode = jax.jit(jax_obs.encode)
 
+#: op code -> name, for the per-op agreement breakdown. Inverted from the same table the labels are
+#: built with, so the two cannot drift.
+OP_NAME = {code: name for name, code in RP.OP_CODE.items()}
+
 
 def greedy_action(heads, masks):
     """Argmax over legal options, conditioning on `op` before the heads it selects.
@@ -109,8 +113,64 @@ def tape_games():
         cfg["weedSpawnChance"] = 0.0
         opp = [((s[1 - seat] or {}).get("action") or {}) for s in doc["steps"][1:]]
         games.append(dict(key=key, name=pathlib.Path(tape_path).name, seat=seat, cfg=cfg,
-                          opponent=opp))
+                          opponent=opp, opponent_name="recorded", melon_at_d3=None))
     return games
+
+
+def opponent_pool(limit):
+    """Recorded opponents from `data/opponent_pool_ranked.json`, as `(name, actions, melon_at_d3)`.
+
+    **Why vary the opponent at all.** Re-running a tape on its own seed is byte-identical, so it is
+    more epochs and not more data. Varying the SEED changes the town -- shop timing, prices, money --
+    but not the opponent, and `melon_branch` reads the OPPONENT's melon tile count on day 3
+    (`melon_branch.py:215`). Without opponent variation that latch is constant per tape, so the
+    student sees the branch decision confounded with game identity and can key on anything.
+
+    This is also the honest answer to the review's suggestion of opponent-feature DROPOUT, which was
+    declined: dropout can only teach the net to ignore the opponent block, and the melon count lives
+    in that block. Variation teaches the invariance where the action is invariant AND the dependence
+    where it is not.
+
+    The pool records `melon_at_d3` per entry, so both branches are reachable: Ryo 11, tetsuya 0,
+    Matteo 12 against `melon_branch.OPPONENT_MELON = 9`.
+    """
+    path = REPO / "data/opponent_pool_ranked.json"
+    if not path.exists() or limit <= 0:
+        return []
+    out = []
+    for entry in json.loads(path.read_text())[:limit]:
+        replay = REPO / entry["replay"]
+        if not replay.exists():
+            continue
+        doc = json.loads(replay.read_text())
+        seat = int(entry["seat"])
+        actions = [((s[seat] or {}).get("action") or {}) for s in doc["steps"][1:]]
+        out.append((entry["name"], actions, entry.get("melon_at_d3")))
+    return out
+
+
+def episode_specs(games, opponents, seeds, rng):
+    """The (tape, opponent, seed) combinations an episode is drawn from.
+
+    Index 0 of every axis is the RECORDED configuration -- the tape's own seed and its own
+    opponent -- so the validated case stays in the mix rather than being replaced by variants.
+    """
+    specs = []
+    for game in games:
+        for oi in range(max(1, len(opponents) + 1)):
+            for si in range(max(1, seeds)):
+                spec = dict(game)
+                if oi > 0:
+                    name, actions, melon = opponents[oi - 1]
+                    spec = dict(spec, opponent=actions, opponent_name=name, melon_at_d3=melon)
+                if si > 0:
+                    # A fresh town. The start state is FIXED across every recorded game -- only the
+                    # opponent, the shop unlock timing and the weeds vary -- so a foreign seed is
+                    # not a broken board, it is the same board with a different market. Which is
+                    # exactly what the ladder serves up.
+                    spec = dict(spec, cfg=dict(spec["cfg"], seed=int(rng.integers(1, 2 ** 31 - 1))))
+                specs.append(spec)
+    return specs
 
 
 def opponent_action(game, turn, n_hands):
@@ -196,6 +256,16 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         stats["op_n"] += int(m.sum())
         stats["bundle_n"] += 1
         stats["traded_n"] += int(t_bundle != 0)
+
+        # **Which ops it has learned, not just how many.** A single `op` number cannot say whether
+        # the net has the whole vocabulary slightly wrong or three ops badly wrong -- and those need
+        # different fixes. Counted per TEACHER op, on the greedy decode, live slots only.
+        g_op_slots = np.asarray(greedy["op"])[seat][: len(t_op)]
+        for slot in np.flatnonzero(m):
+            name = OP_NAME.get(int(t_op[slot]), str(int(t_op[slot])))
+            stats["opseen_" + name] += 1
+            if int(g_op_slots[slot]) == int(t_op[slot]):
+                stats["ophit_" + name] += 1
 
         # Who moves the world. beta=1 is plain BC on teacher states; beta=0 is pure DAgger, the
         # student driving and the teacher only labelling.
@@ -293,7 +363,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=8)
     ap.add_argument("--episodes", type=int, default=4,
-                    help="seasons per round; 4 plays each tape once")
+                    help="seasons per round, drawn from the tape x opponent x seed combinations")
+    ap.add_argument("--opponent-pool", type=int, default=0,
+                    help="recorded opponents from data/opponent_pool_ranked.json to mix in; 0 uses "
+                         "only each tape's own recorded opponent")
+    ap.add_argument("--seeds", type=int, default=1,
+                    help="town draws per tape/opponent pair; 1 uses only the tape's recorded seed")
+    ap.add_argument("--playout", type=int, default=1,
+                    help="student-driven seasons per round, reported and never trained on. The "
+                         "bank is the measure agreement only proxies.")
+    ap.add_argument("--holdout", type=int, default=0,
+                    help="episode combinations reserved for measurement only, never trained on. "
+                         "A DIAGNOSTIC, not a gate: memorising the tape is the goal, so this does "
+                         "not guard against overfitting -- it separates having memorised the "
+                         "PROGRAM (same on every seed) from having memorised the DRAW (prices, "
+                         "opponent bank), which look identical on the training metric and do not "
+                         "survive a fresh town. Run with the teacher driving, so the states stay "
+                         "on-tape and the only thing that varies is the market.")
     ap.add_argument("--horizon", type=int, default=719)
     ap.add_argument("--beta0", type=float, default=1.0,
                     help="teacher-execution probability in round 0, annealed to 0 by the last round")
@@ -331,6 +417,18 @@ def main():
     print("tapes: " + ", ".join("%s %s seat %d seed %d"
                                 % (g["key"], g["name"], g["seat"], g["cfg"]["seed"])
                                 for g in games), flush=True)
+    opponents = opponent_pool(args.opponent_pool)
+    if opponents:
+        print("opponents: " + ", ".join("%s (melon d3 %s)" % (n, m) for n, _a, m in opponents),
+              flush=True)
+    all_specs = episode_specs(games, opponents, args.seeds, rng)
+    # The held-out combinations are taken from the END, which is where the varied seeds and
+    # opponents sit; index 0 of every axis is the recorded configuration and stays in training.
+    holdout_specs = all_specs[len(all_specs) - args.holdout:] if args.holdout else []
+    specs = all_specs[:len(all_specs) - len(holdout_specs)]
+    print("episode pool: %d combinations (%d train, %d held out) from %d tapes x %d opponents "
+          "x %d seeds" % (len(all_specs), len(specs), len(holdout_specs), len(games),
+                          len(opponents) + 1, max(1, args.seeds)), flush=True)
 
     # **The vocabulary is an artifact, not a constant** -- it must be the same one a later PPO run
     # loads, or the bundle indices mean different things in the loss and at play time. Measured
@@ -454,6 +552,15 @@ def main():
             seen_expert, seen_student = pools["seen_expert"], pools["seen_student"]
             anneal_start = state.get("anneal_start")
             last_agree = float(state.get("last_agree", 0.0))
+            # **The gate is re-read against the CURRENT bar on resume.** Raising
+            # `--anneal-after-agree` on a run that already started annealing must actually take
+            # effect; otherwise the restored `anneal_start` keeps the handover running at the old,
+            # lower standard and the new argument is silently ignored -- a byte-identical result
+            # that reads exactly like a measured null.
+            if anneal_start is not None and last_agree < args.anneal_after_agree:
+                print("resume: bar raised to %.4f and agreement is %.4f -- anneal reset, the "
+                      "teacher drives again" % (args.anneal_after_agree, last_agree), flush=True)
+                anneal_start = None
             print("resume: %s at round %d, expert %d + student %d turns, %d seen, "
                   "anneal_start %s, last greedy op agreement %.4f"
                   % (run, first_round, len(expert), len(student), seen_total,
@@ -488,14 +595,14 @@ def main():
         fresh, banks = [], []
         agree = collections.Counter()
         for ep in range(args.episodes):
-            game = games[ep % len(games)]
+            game = specs[(rnd * args.episodes + ep) % len(specs)]
             ep_rows, stats, key = run_episode(game, params, model, vocab, bundle_ok, key, beta,
                                               args.horizon, rng)
             fresh.extend(ep_rows)
-            agree.update({k: stats[k] for k in
-                          ("op_hit", "op_n", "bundle_hit", "bundle_n", "traded_hit", "traded_n",
-                           "g_op_hit", "g_bundle_hit", "g_traded_hit")})
-            banks.append((game["name"], stats["bank"], stats["opponent_bank"], stats["latches"]))
+            agree.update({k: v for k, v in stats.items()
+                          if k.startswith(("op_", "bundle_", "traded_", "g_", "opseen_", "ophit_"))})
+            banks.append(("%s v %s" % (game["name"][:8], game["opponent_name"][:12]),
+                          stats["bank"], stats["opponent_bank"], stats["latches"]))
 
         # **Aggregate. The first D in DAgger is Dataset Aggregation and it is not decoration.**
         # Fitting only the newest round is iterative BC on a distribution that moves under the
@@ -515,7 +622,12 @@ def main():
         # thing.
         for row in fresh:
             pool = expert if row.pop("by_teacher") else student
-            cap = args.expert_cap if pool is expert else args.aggregate_cap - args.expert_cap
+            # **The expert pool expands into budget the student pool is not using.** While beta is 1
+            # every turn is teacher-driven, so the student pool is empty and a fixed `--expert-cap`
+            # would discard expert turns while 40k of a 60k budget sat idle. `--expert-cap` is a
+            # FLOOR on the expert share, not a ceiling on it.
+            cap = (max(args.expert_cap, args.aggregate_cap - len(student)) if pool is expert
+                   else args.aggregate_cap - min(len(expert), args.expert_cap))
             seen = seen_expert if pool is expert else seen_student
             seen += 1
             if pool is expert:
@@ -570,7 +682,46 @@ def main():
         print("           per-head (fresh)  "
               + "  ".join("%s %.4f" % (h, float(v)) for h, v in sorted(fresh_heads.items())),
               flush=True)
+        # Per-op agreement, worst first. A single `op` number cannot distinguish "the whole
+        # vocabulary is slightly wrong" from "three ops are badly wrong", and those want different
+        # fixes. Only ops the teacher used at least 20 times, so a 1-of-2 does not lead the table.
+        by_op = sorted(((agree["ophit_" + n] / agree["opseen_" + n], n, agree["opseen_" + n])
+                        for n in {k[len("opseen_"):] for k in agree if k.startswith("opseen_")}
+                        if agree["opseen_" + n] >= 20), key=lambda r: r[0])
+        if by_op:
+            print("           per-op (greedy)   "
+                  + "  ".join("%s %.3f/%d" % (n, r, c) for r, n, c in by_op[:8]), flush=True)
+
+        # **How it actually PLAYS, which agreement only proxies.** One season with the student
+        # driving every turn, reported and NOT trained on -- the bank is the thing, and a per-turn
+        # agreement number cannot tell you whether 0.83 is a good season or a bankrupt one. This is
+        # the project's own rule: prefer a replay to an aggregate.
+        for spec in specs[:args.playout]:
+            _rows, pstats, key = run_episode(spec, params, model, vocab, bundle_ok, key,
+                                             0.0, args.horizon, rng)
+            print("           PLAYOUT %-22s student %8d  opponent %8d  %s  latches %s"
+                  % (spec["name"][:8] + " v " + spec["opponent_name"][:10], pstats["bank"],
+                     pstats["opponent_bank"],
+                     "WIN " if pstats["bank"] > pstats["opponent_bank"] else "loss",
+                     pstats["latches"]), flush=True)
+
         last_agree = g_op
+
+        # **The held-out probe. Reported, never trained on, and it gates nothing.**
+        # Run with the TEACHER driving so the states stay on-tape: the tape is identical, the target
+        # actions are identical, and the only thing that differs is the town draw. So a gap between
+        # this and the training number is the net having memorised prices rather than the program.
+        if holdout_specs:
+            ho = collections.Counter()
+            for spec in holdout_specs:
+                _rows, hstats, key = run_episode(spec, params, model, vocab, bundle_ok, key,
+                                                 1.0, args.horizon, rng)
+                ho.update({k: hstats[k] for k in ("op_n", "bundle_n", "traded_n",
+                                                  "g_op_hit", "g_bundle_hit", "g_traded_hit")})
+            print("           held out (%d)     greedy op %.4f  bundle %.4f  traded %.4f"
+                  % (len(holdout_specs), ho["g_op_hit"] / max(1, ho["op_n"]),
+                     ho["g_bundle_hit"] / max(1, ho["bundle_n"]),
+                     ho["g_traded_hit"] / max(1, ho["traded_n"])), flush=True)
         for name, bank, opp, latch in banks:
             print("           %-16s bank %8d  opp %8d  latches %s" % (name, bank, opp, latch),
                   flush=True)
