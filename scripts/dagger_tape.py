@@ -192,13 +192,18 @@ def main():
     ap.add_argument("--beta0", type=float, default=1.0,
                     help="teacher-execution probability in round 0, annealed to 0 by the last round")
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--epochs", type=int, default=1, help="optimiser passes over each round's data")
+    ap.add_argument("--epochs", type=int, default=1,
+                    help="optimiser passes over the AGGREGATE each round")
+    ap.add_argument("--batch-turns", type=int, default=512,
+                    help="turns per gradient step over the aggregate")
     ap.add_argument("--vocab", default=str(REPO / "data/il/bundle_vocab.json"))
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="tape")
+    ap.add_argument("--init", default=None,
+                    help="warm-start from a BC checkpoint, e.g. data/ckpt/bc_bundle.best.pkl")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -246,6 +251,31 @@ def main():
     if bad:
         raise SystemExit("non-float32 params: %s" % (bad[:3],))
 
+    # **Warm start from BC, and refuse rather than adapt on a mismatch.** The observation widths and
+    # the bundle head are part of the checkpoint, not of this script; a checkpoint trained against
+    # any other width is a different network wearing the same filename. Every field is compared and
+    # a mismatch is fatal, because the failure mode of loading anyway is a net that trains happily
+    # and means something else.
+    if args.init:
+        init_path = pathlib.Path(args.init)
+        with open(init_path, "rb") as fh:
+            ckpt = pickle.load(fh)
+        want = {"tile_features": jax_obs.TILE_FEATURES, "unit_features": jax_obs.UNIT_FEATURES,
+                "global_features": jax_obs.GLOBAL_FEATURES, "n_bundles": P.N_BUNDLES,
+                "vocab_size": vocab.size}
+        bad = {k: (ckpt.get(k), v) for k, v in want.items() if ckpt.get(k) != v}
+        if bad:
+            raise SystemExit("checkpoint %s does not match this build: %s (checkpoint, live)"
+                             % (init_path, bad))
+        shapes_old = jax.tree_util.tree_structure(ckpt["params"])
+        if shapes_old != jax.tree_util.tree_structure(params):
+            raise SystemExit("checkpoint %s has a different parameter tree" % init_path)
+        params = jax.tree_util.tree_map(jnp.asarray, ckpt["params"])
+        hold = ckpt.get("holdout") or {}
+        print("warm start: %s  epoch %s  holdout bundle %.4f / op %.4f"
+              % (init_path, ckpt.get("epoch"), hold.get("bundle_agreement", float("nan")),
+                 hold.get("op_agreement", float("nan"))), flush=True)
+
     optimiser = optax.chain(optax.clip_by_global_norm(0.5), optax.adam(args.lr))
     opt_state = optimiser.init(params)
 
@@ -257,28 +287,44 @@ def main():
 
     from bc_dagger import make_step
 
+    aggregate = []
     for rnd in range(args.rounds):
         beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, args.rounds - 1))
         _rollout, fit = make_step(model, None, 1, args.horizon, optimiser, beta, tables, bundle_ok)
 
         t_start = time.time()
-        rows, banks = [], []
+        fresh, banks = [], []
         for ep in range(args.episodes):
             game = games[ep % len(games)]
             ep_rows, stats, key = run_episode(game, params, model, vocab, bundle_ok, key, beta,
                                               args.horizon, rng)
-            rows.extend(ep_rows)
+            fresh.extend(ep_rows)
             banks.append((game["name"], stats["bank"], stats["opponent_bank"], stats["latches"]))
-        batch_data = stack(rows)
 
+        # **Aggregate. The first D in DAgger is Dataset Aggregation and it is not decoration.**
+        # Fitting only the newest round is iterative BC on a distribution that moves under the
+        # student, and it lets the net forget states it already learned to recover from -- the
+        # oscillation the algorithm exists to prevent. `bc_dagger.py` fits the round's rollout
+        # alone; that is the shortcut, not the algorithm.
+        aggregate.extend(fresh)
+
+        # Minibatched, because the aggregate grows every round and one step over all of it is a
+        # single enormous gradient rather than an epoch.
         losses = []
+        order = np.arange(len(aggregate))
         for _ in range(args.epochs):
-            params, opt_state, loss = fit(params, opt_state, batch_data)
-            losses.append(float(loss))
+            rng.shuffle(order)
+            for start in range(0, len(order), args.batch_turns):
+                chunk = [aggregate[i] for i in order[start:start + args.batch_turns]]
+                if not chunk:
+                    continue
+                params, opt_state, loss = fit(params, opt_state, stack(chunk))
+                losses.append(float(loss))
 
         wins = sum(1 for _n, b, o, _l in banks if b > o)
-        print("round %2d  beta %.2f  turns %5d  loss %8.4f  W%d/%d  %5.0fs"
-              % (rnd, beta, len(rows), losses[-1], wins, len(banks), time.time() - t_start),
+        print("round %2d  beta %.2f  fresh %5d  aggregate %6d  loss %8.4f  W%d/%d  %5.0fs"
+              % (rnd, beta, len(fresh), len(aggregate), float(np.mean(losses[-8:])),
+                 wins, len(banks), time.time() - t_start),
               flush=True)
         for name, bank, opp, latch in banks:
             print("           %-16s bank %8d  opp %8d  latches %s" % (name, bank, opp, latch),
