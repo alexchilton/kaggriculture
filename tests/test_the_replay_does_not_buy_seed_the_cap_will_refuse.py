@@ -42,6 +42,7 @@ def the_season():
     from kaggle_environments import make
 
     from kagg.search import melon_branch as MB, schedule_agent as SA
+    _saved_OPPONENT_MELON = MB.OPPONENT_MELON
     MB.OPPONENT_MELON = 0
 
     d = json.loads(TAPE.read_text())
@@ -75,7 +76,11 @@ def the_season():
         env.step(a)
 
     ob = env.state[s].observation
-    return {
+    try:
+        yield {
+    finally:
+        MB.OPPONENT_MELON = _saved_OPPONENT_MELON
+
         "seeds": {k: int(v) for k, v in ((ob.get("private") or {}).get("seeds") or {}).items() if v},
         "money": int(((ob.get("farms") or [{}, {}])[s] or {}).get("money", 0) or 0),
         "plants": dict(plants),

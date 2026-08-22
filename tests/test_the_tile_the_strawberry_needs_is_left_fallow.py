@@ -45,6 +45,7 @@ def dawn_of_day_five():
     # re-sow this file is about cannot happen -- which is why `FALLOW_UNTIL` was deleted on
     # 2026-08-18. Pinning a superseded window here would have kept the test green against an agent
     # nobody ships.
+    _saved_REPLAY_OPENING_DAYS = SA.REPLAY_OPENING_DAYS
     SA.REPLAY_OPENING_DAYS = (4, 5, 6, 7, 8, 9, 10, 11)
 
     d = json.loads(TAPE.read_text())
@@ -78,7 +79,11 @@ def dawn_of_day_five():
         a[o] = {"farmer": st.get("farmer") or ["PASS"],
                 "hands": list(st.get("hands") or [])[:n[o]], "market": st.get("market") or []}
         env.step(a)
-    return seen["cell"]
+    try:
+        yield seen["cell"]
+    finally:
+        SA.REPLAY_OPENING_DAYS = _saved_REPLAY_OPENING_DAYS
+
 
 
 def test_the_tile_the_strawberry_needs_is_left_fallow(dawn_of_day_five):

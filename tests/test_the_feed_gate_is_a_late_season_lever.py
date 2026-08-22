@@ -46,6 +46,10 @@ def _play(feed_reserve_yields):
 
     from scripts.breakdown import TAPES, TAPE_ONLY, tape_policy
 
+    _saved_FEED_RESERVE_YIELDS_TO_OVERFLOW = SA.FEED_RESERVE_YIELDS_TO_OVERFLOW
+
+    _saved_FEED_DAYS_FLOOR = SA.FEED_DAYS_FLOOR
+
     SA.FEED_RESERVE_YIELDS_TO_OVERFLOW = feed_reserve_yields
     SA.FEED_DAYS_FLOOR = 1
 
@@ -73,7 +77,14 @@ def _play(feed_reserve_yields):
         n1 = len(o0["farms"][1].get("hands") or [])
         env.step([{"farmer": a0["farmer"], "hands": list(a0["hands"])[:n0], "market": a0["market"]},
                   {"farmer": a1["farmer"], "hands": list(a1["hands"])[:n1], "market": a1["market"]}])
-    return rows
+    try:
+        yield rows
+    finally:
+    
+    SA.FEED_RESERVE_YIELDS_TO_OVERFLOW = _saved_FEED_RESERVE_YIELDS_TO_OVERFLOW
+    
+    SA.FEED_DAYS_FLOOR = _saved_FEED_DAYS_FLOOR
+
 
 
 @pytest.fixture(scope="module")

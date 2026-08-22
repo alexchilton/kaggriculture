@@ -40,6 +40,7 @@ def observed():
 
     SA = importlib.import_module("kagg.search.schedule_agent")
     B.schedule_agent = SA
+    _saved_REPLAY_OPENING_DAYS = SA.REPLAY_OPENING_DAYS
     SA.REPLAY_OPENING_DAYS = ()
 
     replay, schedule, team = B.TAPES["kawashigi"]
@@ -72,7 +73,11 @@ def observed():
                    "market": a1["market"]}])
         if env.state[0].status == "DONE":
             break
-    return first
+    try:
+        yield first
+    finally:
+        SA.REPLAY_OPENING_DAYS = _saved_REPLAY_OPENING_DAYS
+
 
 
 @pytest.fixture(scope="module")

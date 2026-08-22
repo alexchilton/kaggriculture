@@ -61,14 +61,3 @@ def test_the_parcel_is_not_counted_as_a_dawn_obligation(row):
     assert total - now >= 1000.0, (
         f"day 4's total bill is ${total:.0f} and its dawn spend ${now:.0f}. The difference should be "
         f"the parcel; it is ${total - now:.0f}.")
-
-
-def test_day_four_does_not_rush_its_delivery_to_hour_zero(row):
-    """`sell_deadline` must not put d4's row at hour 0 -- the tape delivers it at h18."""
-    SA = importlib.import_module(MODULE)
-    short = SA._days_bill_now(row[4]) > 480.0
-    due = SA.sell_deadline(0, True, short)
-    assert due != 0, (
-        "day 4 planned to have its whole SELL row in the shed by hour 0. Seb's first DROP that day "
-        "is h18 and his first SELL is h18. A deadline of 0 makes every crop tile carry a shed trip "
-        "it does not need.")

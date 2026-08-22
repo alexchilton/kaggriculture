@@ -65,6 +65,8 @@ def at_dawn_of_twelve():
     from kagg.search import melon_branch as MB
     from kagg.search import schedule_agent as SA
     B.schedule_agent = SA
+    _saved_REPLAY_OPENING_DAYS = SA.REPLAY_OPENING_DAYS
+    _saved_OPPONENT_MELON = MB.OPPONENT_MELON
     SA.REPLAY_OPENING_DAYS = (4, 5, 6, 7, 8, 9, 10, 11)
     MB.OPPONENT_MELON = 0                       # force the strawberry season, as resolve_days does
 
@@ -108,7 +110,12 @@ def at_dawn_of_twelve():
         for c in row:
             if isinstance(c, dict) and c.get("crop"):
                 board[c["crop"]] += 1
-    return snapshot, board, plants
+    try:
+        yield snapshot, board, plants
+    finally:
+        SA.REPLAY_OPENING_DAYS = _saved_REPLAY_OPENING_DAYS
+        MB.OPPONENT_MELON = _saved_OPPONENT_MELON
+
 
 
 def test_the_counter_knows_the_tape_planted_the_strawberry(at_dawn_of_twelve):

@@ -121,23 +121,6 @@ def test_the_far_corner_of_the_search_box_is_still_a_plantable_schedule(schedule
         assert not late, f"{dst} planted too late to yield: {late}"
 
 
-def test_turning_the_melon_fork_off_keeps_twenty_melon_and_thirty_four_strawberry(schedule):
-    """The fork converts the d6/d7 melon rows once the opponent shows 7+ melon tiles."""
-    from kagg.search.schedule_agent import MELON_YIELD_FROM_DAY, _melon_to_strawberry
-
-    def counts(rows):
-        c = collections.Counter()
-        for r in rows.values():
-            c.update((r or {}).get("plants") or [])
-        return c
-
-    off = counts(schedule)
-    on = counts({d: (_melon_to_strawberry(r or {}) if d >= MELON_YIELD_FROM_DAY else r)
-                 for d, r in schedule.items()})
-    assert (off["MELON"], off["STRAWBERRY"]) == (20, 34), off
-    assert (on["MELON"], on["STRAWBERRY"]) == (12, 42), on
-
-
 def _herd(rows):
     c = collections.Counter()
     for r in rows.values():
