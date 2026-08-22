@@ -71,13 +71,41 @@ GATED_BOARD = ("pen", "weed", "hands",
 CONTAMINATED = ("money", "owned", "SELL", "BUY_PRODUCT")
 
 
+class _WhichTape(dict):
+    """An opening that records the day it was consulted on.
+
+    `replayed` picks its opening per turn off the two latches and then asks `step not in opening`,
+    so `__contains__` fires exactly once per turn on exactly the tape that governs that turn. That
+    is the only place the choice is observable from outside, and reading it needs no change to the
+    agent.
+    """
+
+    def __init__(self, opening, tape, log):
+        super().__init__(opening)
+        self._tape, self._log = tape, log
+
+    def __contains__(self, step):
+        self._log[int(step) // 24] = self._tape
+        return super().__contains__(step)
+
+
 @pytest.fixture(scope="session")
 def season():
-    """`(ours, tape)` for all `DAYS`, played ONCE for the whole session.
+    """`(ours, tape-per-day)` for all `DAYS`, played ONCE for the whole session.
+
+    **The tape column is per DAY, because the agent changes recording mid-season.** It opens on
+    `REPLAY_OPENING_TAPE[(False, False)]`, and `melon_branch` at d3 and `q4_branch` at d5 each swap
+    it for a different カワシギ game. Held to one recording for all 30 days this gate was 285 cells
+    red from `BUY_SEED-5` on -- red by construction, against an agent whose job is to leave that
+    recording. It measured nothing and nobody read it.
+
+    So the tape side is played once per recording the agent actually armed, against the SAME
+    opponent, and each day is compared to the one that governed it. What that gates is the thing
+    that ships: is the replay faithful to the recording it chose.
 
     Session-scoped deliberately: every assertion below is arithmetic on a table already computed,
-    and paying for two 720-turn seasons per test id would make the gate too slow to keep, which is
-    how a gate stops being run.
+    and paying for a 720-turn season per test id would make the gate too slow to keep, which is how
+    a gate stops being run.
     """
     import breakdown as B
 
@@ -89,23 +117,48 @@ def season():
 
     # `run` needs one day beyond the last compared: column d is the board at the END of day d.
     horizon = DAYS + 1
+    # **One opponent for every run.** The tape side varies only in which カワシギ recording sits in
+    # seat 0; seat 1 stays the opponent our own run faced, or the comparison moves two things.
     opp = lambda: B.tape_policy(str(REPO / replay), team, 1)      # noqa: E731
 
-    def ours():
-        a = SA.make_agent(sched, 0)
-        return lambda o, t: a(o)
+    armed = {}
+    plain = SA._replay_opening
+    SA._replay_opening = lambda days, tape=None, team=None: _WhichTape(
+        plain(days, tape, team), tape, armed)
+    try:
+        def ours():
+            a = SA.make_agent(sched, 0)
+            return lambda o, t: a(o)
 
-    # `run` returns FOUR things -- `days[1:], ops, cash, days[0]`. The cash ledger and the dawn
-    # snapshot are not read here; unpacking only two is a ValueError, which is how this arrived.
-    a_days, a_ops, _a_cash, _a_dawn = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
-    b_days, b_ops, _b_cash, _b_dawn = B.run(lambda: B.tape_policy(str(REPO / replay), team, 0), opp,
-                                            SEED, WEEDS, stop_day=horizon)
-    return (a_days, a_ops), (b_days, b_ops)
+        # `run` returns FOUR things -- `days[1:], ops, cash, days[0]`. The cash ledger and the dawn
+        # snapshot are not read here; unpacking only two is a ValueError, which is how this arrived.
+        a_days, a_ops, _a_cash, _a_dawn = B.run(ours, opp, SEED, WEEDS, stop_day=horizon)
+    finally:
+        SA._replay_opening = plain
+
+    assert armed, ("no opening was consulted: the agent never replayed, so this gate is comparing "
+                   "a planner against a tape and would be red by construction")
+
+    columns = {}
+    for tape in dict.fromkeys(armed.values()):
+        seat0 = lambda t=tape: B.tape_policy(str(REPO / t), team, 0)   # noqa: E731
+        b_days, b_ops, _b_cash, _b_dawn = B.run(seat0, opp, SEED, WEEDS, stop_day=horizon)
+        columns[tape] = (b_days, b_ops)
+
+    # A day with no recorded arming is one the replay did not cover; fall back to the opening tape
+    # so the cell still gates rather than disappearing.
+    opening_tape = SA.REPLAY_OPENING_TAPE[(False, False)][0]
+    per_day = {d: armed.get(d, opening_tape) for d in range(DAYS)}
+    return (a_days, a_ops), columns, per_day
 
 
 def _cell(measured, day, row):
-    """`(ours, tape)` for one cell. Ops live in the op counters, board rows in the day snapshots."""
-    (a_days, a_ops), (b_days, b_ops) = measured
+    """`(ours, tape)` for one cell, against the recording that governed THAT day.
+
+    Ops live in the op counters, board rows in the day snapshots.
+    """
+    (a_days, a_ops), columns, per_day = measured
+    b_days, b_ops = columns[per_day[day]]
     if row.isupper():
         return a_ops[day][row], b_ops[day][row]
     return a_days[day].get(row, 0), b_days[day].get(row, 0)
@@ -124,12 +177,20 @@ def test_the_row_matches_the_tape(season, day, row):
     assert ours == tape, f"d{day} {row}: ours {ours} / tape {tape}"
 
 
-@pytest.mark.xfail(strict=False,
-                   reason="ours-dependent by construction: the tape is replayed against US and both "
-                          "seats drain one shared market book. Reported so a change stays visible, "
-                          "never gating. See the module docstring.")
 @pytest.mark.parametrize("day", range(DAYS))
 @pytest.mark.parametrize("row", CONTAMINATED)
-def test_the_contaminated_row_is_reported(season, day, row):
+def test_the_contested_row_matches_too(season, day, row):
+    """**These four gate now.** They were `xfail(strict=False)` for a reason that expired.
+
+    The reason was real while the tape column was one fixed recording: two different seats drained
+    one shared market book, so money, `owned`, SELL and BUY_PRODUCT were ours-dependent and could
+    not be held to equality. Comparing a replay against the recording it is replaying, both seats
+    post the same orders in the same slots on the same turns, so the book drains identically and
+    the four are exact -- all 120 cells xpassed the moment the fixture was repointed.
+
+    A marker that says "expected to fail" on a test that always passes is worth nothing. If the
+    replay ever stops being faithful these are the first rows to show it, because a dropped order
+    moves money before it moves an op count.
+    """
     ours, tape = _cell(season, day, row)
     assert ours == tape, f"d{day} {row}: ours {ours} / tape {tape}"
