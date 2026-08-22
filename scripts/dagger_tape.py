@@ -411,6 +411,17 @@ def save_resume(run, params, opt_state, rnd, seen_total, rng, args, vocab_size,
         tmp.replace(run / "aggregate.pkl")
 
 
+def _expert_marks(expert):
+    """`{(episode, turn)}` for the teacher rows in a pool, skipping any that predate the `ep` tag.
+
+    An aggregate written before episode identity existed has no `ep`, and treating those as
+    `(None, turn)` would make one tape's turn 300 shadow another's. Untagged rows are therefore not
+    deduplicated at all: the pool keeps whatever duplicates it already had, and only fresh rows are
+    filtered. They age out through the reservoir.
+    """
+    return {(r["ep"], r.get("turn")) for r in expert if r.get("ep") is not None}
+
+
 def load_resume(run):
     """`(state, aggregate)` from a run directory, or `(None, [])` if there is nothing to continue."""
     latest = pathlib.Path(run) / "latest.pkl"
@@ -708,6 +719,12 @@ def main():
 
     aggregate, seen_total, first_round = [], 0, 0
     expert, student, seen_expert, seen_student = [], [], 0, 0
+    #: `(episode, turn)` of every teacher row already in `expert`, so a re-rolled identical season
+    #: is not stored again. Rebuilt from the pool on resume rather than checkpointed: an aggregate
+    #: written before this change has no `ep` key, and `(None, turn)` would then collapse four
+    #: different tapes onto one another. `_expert_marks` handles that by refusing to dedup rows
+    #: that predate the tag.
+    expert_seen = set()
     anneal_start, last_agree = None, 0.0
     if args.resume:
         state, pools = load_resume(run)
@@ -741,6 +758,7 @@ def main():
             rng.bit_generator.state = state["rng"]
             expert, student = pools["expert"], pools["student"]
             seen_expert, seen_student = pools["seen_expert"], pools["seen_student"]
+            expert_seen = _expert_marks(expert)
             anneal_start = state.get("anneal_start")
             last_agree = float(state.get("last_agree", 0.0))
             # **The gate is re-read against the CURRENT bar on resume.** Raising
@@ -794,6 +812,13 @@ def main():
             game = specs[(rnd * args.episodes + ep) % len(specs)]
             ep_rows, stats, key = run_episode(game, params, model, vocab, bundle_ok, key, beta,
                                               args.horizon, rng)
+            # Episode identity, so the dedup below can tell "the same turn of the same season"
+            # from "the same turn number of a different one". Tape name, seat and town seed --
+            # `episode_specs` varies the seed and the opponent, and both change the trajectory.
+            ep_id = (game["name"], game["seat"], int(game["cfg"].get("seed", 0)),
+                     game["opponent_name"])
+            for r in ep_rows:
+                r["ep"] = ep_id
             fresh.extend(ep_rows)
             agree.update({k: v for k, v in stats.items()
                           if k.startswith(("op_", "bundle_", "traded_", "g_", "opseen_", "ophit_",
@@ -817,8 +842,28 @@ def main():
         # So teacher-driven turns get their own protected pool, and only the student-driven pool is
         # reservoir-sampled. `expert_cap` is a floor on how much of the aggregate is always the real
         # thing.
+        # **A teacher-driven row the pool already holds is DISCARDED, not appended again.**
+        #
+        # At beta=1 the rollout is deterministic: fixed start state, `weedSpawnChance = 0.0`, a
+        # deterministic teacher, and an opponent that is a fixed recording. So every round produces
+        # byte-identical rows for the same `(episode, turn)`. Measured on `d4fix2` round 24:
+        # **477 unique rows in a pool of 12,000 -- each stored 25.2 times.**
+        #
+        # The cost is not the rollout. Measured 2026-08-22 on this machine: 41.1 s for a 719-turn
+        # episode (17.5 turns/s), so ~205 s of an 868 s box round. The other ~660 s is the fit,
+        # doing ~20x the gradient steps an epoch needs because 20 copies of each row are in it.
+        #
+        # Student rows are NOT deduplicated: once beta anneals they come from a moving policy, two
+        # visits to the same turn are genuinely different states, and the reservoir below is what
+        # keeps that unbiased.
         for row in fresh:
-            pool = expert if row.pop("by_teacher") else student
+            by_teacher = row.pop("by_teacher")
+            if by_teacher:
+                mark = (row.get("ep"), row.get("turn"))
+                if mark in expert_seen:
+                    continue
+                expert_seen.add(mark)
+            pool = expert if by_teacher else student
             # **The expert pool expands into budget the student pool is not using.** While beta is 1
             # every turn is teacher-driven, so the student pool is empty and a fixed `--expert-cap`
             # would discard expert turns while 40k of a 60k budget sat idle. `--expert-cap` is a
