@@ -538,7 +538,7 @@ def _land_this_turn(sched, day, hour, unlocked, money, n_hires, prices=None):
     return R.LAND_ORDER[owned]
 
 
-def _days_bill(row):
+def _days_bill(row, owned=0):
     """Roughly what today's schedule row intends to spend. Compared against the bank, nothing else.
 
     Deliberately coarse: the hire ladder is `mult * fib(n)` (`kaggriculture.py:666`) and
@@ -573,16 +573,31 @@ def _days_bill(row):
     for _ in range(int(row.get("hires") or 0)):            # `mult * fib(n)`, mult 1 by default
         bill += a
         a, b = b, a + b
-    bill += _land_bill(row)
+    bill += _land_bill(row, owned)
     return bill
 
 
-def _land_bill(row):
-    """What the row's parcels cost. Split out because they are the one thing NOT bought at dawn."""
-    return sum(R.LAND_PRICES[:int(row.get("land") or 0)])
+def _land_bill(row, owned=0):
+    """What the row's parcels cost. Split out because they are the one thing NOT bought at dawn.
+
+    **Priced from the parcel we are about to buy, not from the first one.** `row["land"]` is how
+    many parcels this DAY buys, almost always 1, so `LAND_PRICES[:1]` billed $1,000 on every land
+    day of the season while `_do_buy_land` unlocks `LAND_ORDER[owned]` and charges by how many we
+    already hold. `LAND_PRICES` is `[1000, 2000, 4000]`, so on the tape's land days:
+
+        d4    1st parcel, costs 1,000   billed 1,000    correct by coincidence
+        d6    2nd parcel, costs 2,000   billed 1,000    under by 1,000
+        d10   3rd parcel, costs 4,000   billed 1,000    under by 3,000
+
+    The error grows exactly as the parcels get expensive, so the funding rule was least reliable on
+    the days the farm is most stretched. `owned` defaults to 0, which is the old behaviour, so a
+    caller that does not know the count is no worse off than before.
+    """
+    n = int(row.get("land") or 0)
+    return sum(R.LAND_PRICES[owned:owned + n])
 
 
-def _days_bill_now(row):
+def _days_bill_now(row, owned=0):
     """What the row spends AT HOUR 0, which is the only figure the dawn bank has to cover.
 
     `_days_bill` is the day's whole bill and answers a different question. Comparing THAT to the dawn
@@ -602,7 +617,7 @@ def _days_bill_now(row):
 
     This is one slice of `docs/the_day_is_a_cash_ledger.md`.
     """
-    return _days_bill(row) - _land_bill(row)
+    return _days_bill(row, owned) - _land_bill(row, owned)
 
 
 def _solve(units, nodes, budget, depots, carry, supply, at_risk=(), pointless=(), tiles=None,
@@ -4525,7 +4540,10 @@ def make_agent(schedule, me=0, router=True):
         # not scope per category, and over-selling by one turn on a funded day is a far cheaper error
         # than under-funding a $1,000 parcel. If that proves too blunt, the fix is a per-category
         # remainder, not a tolerance.
-        unfunded = (money + pending) < _days_bill(row)
+        # **Priced off the parcel we are actually buying.** See `_land_bill`: billing every
+        # land day at the FIRST parcel's $1,000 under-read d10 by $3,000, on the one day the
+        # farm is most stretched.
+        unfunded = (money + pending) < _days_bill(row, len(unlocked) - 1)
         for prod in SELLABLE:
             have = int(shed.get(prod, 0))
             # What the EVICTION may reach, which is `have` for everything except wheat. See
