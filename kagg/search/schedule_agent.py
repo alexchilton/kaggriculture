@@ -3804,11 +3804,35 @@ REPLAY_OPENING_TAPE = {
     # About +$20k a game and every game flips from a loss to a win. Held by
     # `tests/test_the_yarn_latch_is_not_thrown_away_when_the_melon_latch_fires.py`.
     #
-    # **NOT settled: whether this is the BEST tape for the key, only that the old one was wrong.**
-    # The paragraph above argues a q4 STRAWBERRY tape is the principled choice and names three --
-    # `93459936`, `92508348`, `91906088` -- none of which is registered. They are untested and may
-    # beat this. The evidence here is 14 configurations on one seed across three towns.
-    (True, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
+    # **SETTLED 2026-08-22 by the shootout the paragraph above asked for.** It ended "NOT settled:
+    # whether this is the BEST tape for the key, only that the old one was wrong", and named
+    # `93459936`, `92508348` and `91906088` as untested candidates that might beat it. Two of the
+    # three were run, against the incumbent and against the pre-`(True,True)` mapping.
+    #
+    # 6,048 seasons: 48 stratified towns x 9 ladder opponents x 3 seeds (11, 42, 7) x 6 arms, on the
+    # Windows box, 2h16m. Rows in `data/logs/tape_shootout_rows_2026-08-22b.csv`, write-up in
+    # `docs/tape_shootout_2026-08-22.md`. Restricted to the 420 seasons each arm actually changed:
+    #
+    #     arm                     n diff  arm win%  incumbent win%   swing  mean delta $
+    #     91906088  (this one)       420     90.0%           62.1%   +27.9          -822
+    #     93459936                   420     73.8%           62.1%   +11.7        -1,653
+    #     92488785                   420     64.8%           62.1%    +2.6        -3,564
+    #     92466371  (pre-q4 map)     420      6.0%           62.1%   -56.2       -21,835
+    #
+    # **It banks LESS and wins MORE, and win rate is the selection criterion.** The ladder is
+    # Elo-style: a $43k win and a $4k win score identically, so $822 a season is the right price for
+    # 27.9 points. Anyone reading "mean bank 87,939 against 88,282" as a regression has read the
+    # wrong column -- see the SELECTION RULE in `docs/REGISTER.md`.
+    #
+    # The ordering does not track the recordings' own banks: 128k beats 136k beats 81k. The best
+    # tape to replay is not the highest-banking one.
+    #
+    # Blast radius confirmed rather than assumed -- the arm changed 420 seasons on the `q4melon`
+    # tape key and 0 of the 588 on `straw`, which is exactly the key it is meant to touch.
+    #
+    # Caveats: 3 seeds, and project seed variance is ~15%. A 27.9-point swing clears that; the
+    # +2.6 of `92488785` does not. Win rate is against the seated opponent, not a simulated ladder.
+    (True, True): ("data/seed_scripts/downloads_2026-08-13/91906088.json", "カワシギ"),
 }
 
 #: The two species the herd split may exchange, derived rather than written down so it cannot go stale
