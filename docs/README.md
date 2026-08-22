@@ -1,14 +1,28 @@
 # docs/ — index
 
-**Consolidated 2026-08-22, second pass.** 124 files merged down to 20 top-level docs.
+**Consolidated 2026-08-22, in three passes.** 124 files down to 20 top-level docs, and the five
+topic docs down from 6,343 lines to 372.
 Every original file is preserved, unedited, in `docs/history/` — nothing was deleted.
-Each merged topic doc names its own source files with a `source:` tag next to every number, so a
-claim can always be traced back to the file and date that measured it.
 
-The first 2026-08-22 pass (see `docs/consolidation_2026-08-22.md`) read all 124 files and classified
-them but did not reduce the file count.
-This second pass does the reduction, using that classification as its input — it did not re-judge
-any file's status.
+- **Pass 1** (`consolidation_2026-08-22.md`) read all 124 files and classified them. It reduced
+  nothing; it is the input the other two passes used, and neither re-judged any file's status.
+- **Pass 2** merged 110 files into five topic docs and `git mv`'d the originals into `history/`.
+  It concatenated rather than decided, so the result was 6,343 lines in five files instead of
+  6,343 lines in 110 — the same mess in fewer bowls.
+- **Pass 3** cut those five to a settled-facts sheet each: one claim per line, the number and date
+  that settle it on the line, and the `history/<file>.md` it came from at the end of the line.
+
+That trailing pointer is what makes the cut safe. A line here is an index entry, never a
+replacement for the file it points at. Contradictions are carried under their own heading and are
+never resolved — an unresolved disagreement is information.
+
+| topic doc | lines |
+|---|---:|
+| `market_and_economics.md` | 95 |
+| `the_tape_and_planner.md` | 85 |
+| `field_and_strategy.md` | 79 |
+| `bc_and_rl_pipeline.md` | 60 |
+| `animals_and_the_herd.md` | 53 |
 
 ## Read first
 

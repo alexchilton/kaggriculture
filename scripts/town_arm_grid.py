@@ -390,10 +390,17 @@ def main():
 
     print("towns      %d sampled (rng %d), shops drawn with replacement at d%s"
           % (len(towns), args.town_seed, ",d".join(map(str, S.UNLOCK_DAYS))))
-    byband = collections.Counter(bands[o][3] for o in bands)
-    print("opponents  %d = %s + mirror   (bands are Kaggle LEADERBOARD rank, not bank)"
-          % (len(opps), ", ".join("%s x%d" % (b, n) for b, n in sorted(byband.items()))))
-    for o in sorted(bands, key=lambda k: bands[k][4]):
+    # **The bands of the opponents IN THIS RUN, not of the pool.** This counted `bands`, the whole
+    # ranked pool, so a two-opponent run printed "opponents 2 = low x6, mid x6, top x6 + mirror"
+    # and every line of the pool under it. The header is what gets pasted with the result, so it
+    # described a run nobody had made. Same class as the `farm:0.445` win rate: a correct number
+    # under a label that does not describe what was measured.
+    ranked = [o for o in opps if o != MIRROR]
+    byband = collections.Counter(bands[o][3] for o in ranked)
+    print("opponents  %d = %s%s   (bands are Kaggle LEADERBOARD rank, not bank)"
+          % (len(opps), ", ".join("%s x%d" % (b, n) for b, n in sorted(byband.items())) or "none",
+             " + mirror" if MIRROR in opps else ""))
+    for o in sorted(ranked, key=lambda k: bands[k][4]):
         print("             %-28s rank %4d  %7.1f  melon@d3 %2s  %s"
               % (o[:28], bands[o][4], bands[o][5], bands[o][2], bands[o][3]))
     print("arms       %s" % " ".join(arms))
