@@ -57,6 +57,35 @@ All four are planner-side, so flipping one moves an answer that is discarded —
 say so out loud. `CARE_ON_THE_WAY_PAST` is in the same position and is noted at its own definition
 in `schedule_agent.py`.
 
+## The three that needed a different argument
+
+`test_every_seat_the_day_owns_is_given_work.py`, `test_a_unit_walks_the_route_it_was_given.py` and
+`test_the_dusk_topup_stays_inside_the_days_row.py` came in second, on 2026-08-22, and they are worth
+a note because the obvious reasoning would have got them wrong.
+
+They build a real env, so the first classifier kept them.
+And unlike `test_router.py`, switching the replay off does not rescue them — it makes them worse,
+and it changes *which* tests fail:
+
+    replay ON  (shipped)   20 failed, 57 passed
+    replay OFF (planner)   25 failed, 52 passed
+
+`test_no_hand_passes_the_whole_day` passes with the tape and fails 8 times with the planner.
+So "the replay is swamping them" is false here; each mode fails a different real thing.
+
+What settles it is what they compare, not how they fail.
+`test_the_first_stop_walked_is_the_first_stop_planned` asserts `route[0] == first tile worked` --
+the planner's route against what the unit did.
+With the tape playing, the route is the discarded answer and the mismatch is guaranteed by
+construction.
+The `buys` row tests compare against a schedule the tape does not use.
+And `test_every_seat_the_day_owns_is_given_work.py:156` says it outright in its own docstring:
+*"Every assertion in this file is about what the PLANNER did."*
+
+The lesson is the one already in `CLAUDE.md` about `farm:0.445` -- ask what unit an assertion is
+over before trusting how it fails.
+A test can fail differently in two modes and still be measuring nothing in the one that ships.
+
 ## What would make this matter again
 
 Any of these, and the archive should come back:
