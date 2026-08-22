@@ -1091,21 +1091,7 @@ def plant_prize(crop, day):
         # planted wheat that could never be collected: 32 of 66 wheat plantings sat unharvested at
         # season end against the tape's 1 of 66, each costing a seed, a PLANT turn and a WATER turn,
         # and holding ground that a later replant could have used.
-        #
-        # **The `day < LATE_TRUNCATED_PLANT_DAY` exemption that used to sit on this line is gone,
-        # and carrot loses nothing by it.** That constant opens d26 onward to a one-shot whose
-        # window the season cannot finish, for the carrot d25-d27 result. But it exempted EVERY
-        # one-shot, and `max_day` differs between them:
-        #
-        #     crop      max_day   d25   d26   d27      XX = priced, harvest gate can never fire
-        #     WHEAT           4    75    50XX  25XX
-        #     CARROT          3    70    70    35XX
-        #
-        # A d26 carrot reaches age 3 by d29 and harvests on its own merits -- `days_left 3 <
-        # max_day 3` is false, so this gate never fired for it and the exemption bought it nothing.
-        # A d26 wheat needs age 4, which needs a day 30. The exemption was paying $50 and $25 for
-        # wheat that cannot be collected, and $35 for a d27 carrot in the same state.
-        if days_left < info["max_day"]:
+        if days_left < info["max_day"] and day < LATE_TRUNCATED_PLANT_DAY:
             return 0
         window_end = min(info["max_day"], days_left)
         waters = window_end - (info["max_day"] + 1) // 2 + 1
