@@ -64,6 +64,11 @@ from kagg.search import schedule_agent as SA                                   #
 RUN_DIR = REPO / "data/dagger_tape"
 TPD = 24
 
+# **`encode` is 12.9 ms of a 14 ms turn, and only because it is dispatched op by op.** Measured
+# 2026-08-22 over 240 turns: teacher 2.08, step 1.14, adapt 0.86, encode 12.89. It is array code
+# with a static shape, so jitting it is free and roughly halves the rollout.
+_encode = jax.jit(jax_obs.encode)
+
 
 def tape_games():
     """The four recordings, each with the economy and seed it was actually played on.
@@ -130,16 +135,41 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         # worse in the game than it scored in training.
         privates = [obs["private"] if p == seat else AD.agent_private_stub() for p in range(2)]
         sim_state = AD.state_from_obs(obs, privates)
-        tiles, units, glob = jax_obs.encode(sim_state)
+        tiles, units, glob = _encode(sim_state)
         flat = (A._flat(tiles), A._flat(units), A._flat(glob))
         masks = A.masks_for(sim_state, bundle_ok)
 
         n_units = 1 + len(obs["farms"][seat].get("hands") or [])
         labels = RP.encode_action(teacher_action, n_units)
 
+        # `unit_live` gates the unit heads. MAX_UNITS is 24 against a crew of a few, so scoring dead
+        # slots makes ~85% of the loss a constant -- a padding mistake this project has made three
+        # times, once in this very loss.
+        live = np.asarray(units[..., 0]).reshape(2, -1)[seat] > 0.5
+
         heads, _v = model.apply(params, *flat)
         key, ka = jax.random.split(key)
         sampled = A.sample(ka, heads, masks)[0]
+
+        # **"Can it repeat the teacher yet" is the stopping criterion, and it is free here.** Both
+        # sides are already in hand: the student's own action and the teacher's label, on a state
+        # the student is standing in. Measured on the SAMPLED action rather than an argmax, because
+        # sampling is what the agent actually plays -- `neural.py` refuses argmax on the grounds
+        # that it destroys the joint. Directly comparable to the BC checkpoint's holdout numbers,
+        # which are bundle 0.9728 / op 0.8530 against tetsuya.
+        s_op = np.asarray(sampled["op"])[seat]
+        t_op = np.asarray(labels["op"])
+        if live.any():
+            stats["op_hit"] += int((s_op[: len(t_op)][live[: len(t_op)]]
+                                    == t_op[live[: len(t_op)]]).sum())
+            stats["op_n"] += int(live[: len(t_op)].sum())
+        s_bundle = int(np.asarray(sampled["bundle"]).reshape(-1)[seat])
+        t_bundle = int(np.asarray(labels["bundle"]).reshape(-1)[0])
+        stats["bundle_hit"] += int(s_bundle == t_bundle)
+        stats["bundle_n"] += 1
+        if t_bundle != 0:                      # the teacher actually traded this turn
+            stats["traded_hit"] += int(s_bundle == t_bundle)
+            stats["traded_n"] += 1
 
         # Who moves the world. beta=1 is plain BC on teacher states; beta=0 is pure DAgger, the
         # student driving and the teacher only labelling.
@@ -151,10 +181,6 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
             action = NEURAL.decode_action(sampled, n_units, vocab, seat=seat)
             stats["turns_student"] += 1
 
-        # `unit_live` gates the unit heads. MAX_UNITS is 24 against a crew of a few, so scoring dead
-        # slots makes ~85% of the loss a constant -- a padding mistake this project has made three
-        # times, once in this very loss.
-        live = np.asarray(units[..., 0]).reshape(2, -1)[seat] > 0.5
         rows.append(dict(obs=[np.asarray(x)[seat] for x in flat],
                          masks={k: np.asarray(v)[seat] for k, v in masks.items()},
                          labels={k: np.asarray(v) for k, v in labels.items()},
@@ -196,6 +222,10 @@ def main():
                     help="optimiser passes over the AGGREGATE each round")
     ap.add_argument("--batch-turns", type=int, default=512,
                     help="turns per gradient step over the aggregate")
+    ap.add_argument("--aggregate-cap", type=int, default=60000,
+                    help="reservoir size in turns; ~13.7 KB each, so 60k is roughly 0.9 GB")
+    ap.add_argument("--anneal-rounds", type=int, default=0,
+                    help="rounds over which beta reaches 0; 0 means use --rounds")
     ap.add_argument("--vocab", default=str(REPO / "data/il/bundle_vocab.json"))
     ap.add_argument("--d-model", type=int, default=128)
     ap.add_argument("--heads", type=int, default=4)
@@ -287,18 +317,25 @@ def main():
 
     from bc_dagger import make_step
 
-    aggregate = []
+    aggregate, seen_total = [], 0
     for rnd in range(args.rounds):
-        beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, args.rounds - 1))
+        # **Beta must not be tied to `--rounds`.** It was, which coupled the exploration schedule to
+        # an arbitrary stopping point: asking for more rounds silently made the teacher drive for
+        # longer. The anneal is its own schedule now, and the run length is decided by agreement.
+        anneal = args.anneal_rounds or args.rounds
+        beta = args.beta0 * max(0.0, 1.0 - rnd / max(1, anneal - 1))
         _rollout, fit = make_step(model, None, 1, args.horizon, optimiser, beta, tables, bundle_ok)
 
         t_start = time.time()
         fresh, banks = [], []
+        agree = collections.Counter()
         for ep in range(args.episodes):
             game = games[ep % len(games)]
             ep_rows, stats, key = run_episode(game, params, model, vocab, bundle_ok, key, beta,
                                               args.horizon, rng)
             fresh.extend(ep_rows)
+            agree.update({k: stats[k] for k in
+                          ("op_hit", "op_n", "bundle_hit", "bundle_n", "traded_hit", "traded_n")})
             banks.append((game["name"], stats["bank"], stats["opponent_bank"], stats["latches"]))
 
         # **Aggregate. The first D in DAgger is Dataset Aggregation and it is not decoration.**
@@ -306,7 +343,19 @@ def main():
         # student, and it lets the net forget states it already learned to recover from -- the
         # oscillation the algorithm exists to prevent. `bc_dagger.py` fits the round's rollout
         # alone; that is the shortcut, not the algorithm.
-        aggregate.extend(fresh)
+        # **Capped, by reservoir sampling rather than by dropping the oldest.** An unbounded
+        # aggregate is ~13.7 KB a turn, so 100 rounds of 2876 turns is 4-5 GB and the run dies on
+        # memory before it converges. Dropping the oldest instead would throw away round 0, which is
+        # the only round whose states are the TAPE's own -- exactly the trajectory the student must
+        # not forget how to rejoin. A reservoir keeps a uniform sample of everything ever seen.
+        for row in fresh:
+            seen_total += 1
+            if len(aggregate) < args.aggregate_cap:
+                aggregate.append(row)
+            else:
+                j = int(rng.integers(0, seen_total))
+                if j < args.aggregate_cap:
+                    aggregate[j] = row
 
         # Minibatched, because the aggregate grows every round and one step over all of it is a
         # single enormous gradient rather than an epoch.
@@ -322,9 +371,17 @@ def main():
                 losses.append(float(loss))
 
         wins = sum(1 for _n, b, o, _l in banks if b > o)
-        print("round %2d  beta %.2f  fresh %5d  aggregate %6d  loss %8.4f  W%d/%d  %5.0fs"
-              % (rnd, beta, len(fresh), len(aggregate), float(np.mean(losses[-8:])),
-                 wins, len(banks), time.time() - t_start),
+        op_ag = agree["op_hit"] / max(1, agree["op_n"])
+        bd_ag = agree["bundle_hit"] / max(1, agree["bundle_n"])
+        tr_ag = agree["traded_hit"] / max(1, agree["traded_n"])
+        # **`W` is the TEACHER's win rate while beta is high, not the student's.** At beta=1 the
+        # teacher drives every turn, so that column only becomes a statement about the student as
+        # beta anneals to 0. Agreement is the number that answers "can it repeat the teacher yet",
+        # and it is measured on states the student is standing in at every beta.
+        print("round %2d  beta %.2f  agree op %.4f  bundle %.4f  traded %.4f  "
+              "loss %7.4f  agg %6d  W%d/%d  %4.0fs"
+              % (rnd, beta, op_ag, bd_ag, tr_ag, float(np.mean(losses[-8:])),
+                 len(aggregate), wins, len(banks), time.time() - t_start),
               flush=True)
         for name, bank, opp, latch in banks:
             print("           %-16s bank %8d  opp %8d  latches %s" % (name, bank, opp, latch),
