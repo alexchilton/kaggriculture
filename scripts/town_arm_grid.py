@@ -322,6 +322,36 @@ def band_of(name, bands):
     return "mirror" if name == MIRROR else bands[name][3]
 
 
+#: The columns before the drain vector. Named once so the header and the row cannot drift.
+ROW_FIELDS = ("town", "stratum", "tape", "opponent", "band", "rank", "arm", "seed",
+              "ours", "theirs", "weed")
+
+
+def rows_header():
+    return ",".join(ROW_FIELDS + tuple("drain_" + p for p in sorted(DRAIN_KEYS))) + "\n"
+
+
+def rows_line(town, stratum, tape, opponent, band, rank, arm, seed, ours, theirs, weed, drains):
+    """One season, as one CSV line.
+
+    **This lived inline in `main` as a `%`-format with eleven specifiers and twelve arguments.**
+    Python raises `TypeError: not all arguments converted during string formatting` -- at the point
+    the file is written, which is after the last season. A 6,048-season run spent 1.7 hours and
+    produced a traceback and no CSV. Building the line here, off the same `ROW_FIELDS` the header
+    uses, is what makes that a test instead of a lost afternoon.
+
+    The opponent name comes off the leaderboard and is free text, so its commas are replaced rather
+    than quoted: a shifted column is read by INDEX downstream and mis-attributes every value after
+    the gap, silently.
+    """
+    cells = [town, stratum, tape, str(opponent).replace(",", " "), band, rank, arm,
+             seed, ours, theirs, weed]
+    assert len(cells) == len(ROW_FIELDS), (
+        f"{len(cells)} values for {len(ROW_FIELDS)} named columns")
+    cells += [drains.get(p, 0) for p in sorted(DRAIN_KEYS)]
+    return ",".join(str(c) for c in cells) + "\n"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--towns", type=int, default=48)
@@ -393,15 +423,11 @@ def main():
     raw = pathlib.Path(os.environ.get("GRID_ROWS",
                                   REPO / "data/logs/town_arm_grid_rows_2026-08-21.csv"))
     with open(raw, "w") as fh:
-        fh.write("town,stratum,tape,opponent,band,rank,arm,seed,ours,theirs,weed," +
-                 ",".join("drain_" + p for p in sorted(DRAIN_KEYS)) + "\n")
+        fh.write(rows_header())
         for (ti, o, a, sd), (m, t, w, tp) in sorted(got.items()):
-            dv = towns[ti][1]
-            fh.write("%d,%s,%s,%s,%s,%s,%s,%d,%d,%d,%s\n"
-                     % (ti, towns[ti][2] if len(towns[ti]) > 2 else "uniform", tp,
-                        o.replace(",", " "), band_of(o, bands),
-                        "-" if o == MIRROR else bands[o][4], a, sd, m, t, w,
-                        ",".join(str(dv.get(p, 0)) for p in sorted(DRAIN_KEYS))))
+            fh.write(rows_line(ti, towns[ti][2] if len(towns[ti]) > 2 else "uniform", tp, o,
+                               band_of(o, bands), "-" if o == MIRROR else bands[o][4],
+                               a, sd, m, t, w, towns[ti][1]))
     print("\nraw rows -> %s" % raw)
 
     def dmargin(ti, o, a):

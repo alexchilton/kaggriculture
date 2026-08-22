@@ -324,8 +324,30 @@ def edited_openings(edits):
     for key, opening in _base_openings().items():
         if key in remap:
             tgt = remap[key]
-            opening = (_base_openings()[tgt] if isinstance(tgt, tuple)
-                       else SA._replay_opening(SA.REPLAY_OPENING_DAYS, str(REPO / tgt), "\u30ab\u30ef\u30b7\u30ae"))
+            if isinstance(tgt, tuple):
+                opening = _base_openings()[tgt]
+            else:
+                # **A missing tape must stop the sweep, not degrade it.** `_replay_opening` returns
+                # `{}` when the file is not on disk, deliberately: a submission bundle carries no
+                # `data/` tree and must fall back to a planned opening rather than raise. That is
+                # right for the artifact and wrong here -- an arm whose whole definition is "replay
+                # THIS recording" silently becomes "replay nothing" and still reports a number.
+                #
+                # Measured 2026-08-22: three of the five `(True, True)` shootout candidates were
+                # never synced to the Windows box, and the grid ran 80 minutes and 2,800 seasons
+                # with `tt_straw_q4_128k`, `tt_straw_q4_81k` and `tt_straw_q4_136k` all quietly
+                # playing the planner. No error, no warning, three arms measuring the same nothing.
+                path = REPO / tgt
+                if not path.exists():
+                    raise FileNotFoundError(
+                        f"arm re-tapes {key} to {tgt}, which is not on this machine. "
+                        f"Sync it before running, or the arm silently replays nothing.")
+                opening = SA._replay_opening(SA.REPLAY_OPENING_DAYS, str(path),
+                                             "\u30ab\u30ef\u30b7\u30ae")
+                if not opening:
+                    raise ValueError(
+                        f"arm re-tapes {key} to {tgt}, which yielded an EMPTY opening. "
+                        f"Check the team name and REPLAY_OPENING_DAYS.")
         for e in edits:
             if e[0] == "swap":
                 _, days, frm, to, per_day = e
