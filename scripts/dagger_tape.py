@@ -199,6 +199,51 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
     return rows, stats, key
 
 
+def save_resume(run, params, opt_state, rnd, seen_total, rng, args, aggregate=None):
+    """Everything needed to continue this run on a different day.
+
+    **Params alone are not a resumable run.** Restarting from them restarts Adam cold and, worse,
+    restarts the reservoir empty -- which silently turns Dataset Aggregation back into iterative BC
+    and throws away round 0, the only round whose states are the tape's own.
+
+    `latest.pkl` is small (~7 MB) and written every round. The aggregate is ~13.7 KB a turn, so it
+    is written separately and less often; losing at most `--save-data-every` rounds of it on a hard
+    power-off is the trade.
+    """
+    tmp = run / "latest.pkl.tmp"
+    with open(tmp, "wb") as fh:
+        pickle.dump(dict(params=jax.device_get(params), opt_state=jax.device_get(opt_state),
+                         round=rnd, seen_total=seen_total, rng=rng.bit_generator.state,
+                         args=vars(args), tile_features=jax_obs.TILE_FEATURES,
+                         unit_features=jax_obs.UNIT_FEATURES,
+                         global_features=jax_obs.GLOBAL_FEATURES, n_bundles=P.N_BUNDLES),
+                    fh, protocol=5)
+    # Renamed into place, never written in place: a power cut during the write would otherwise
+    # leave a truncated checkpoint that loads as far as the corruption and then fails.
+    tmp.replace(run / "latest.pkl")
+
+    if aggregate is not None:
+        tmp = run / "aggregate.pkl.tmp"
+        with open(tmp, "wb") as fh:
+            pickle.dump(aggregate, fh, protocol=5)
+        tmp.replace(run / "aggregate.pkl")
+
+
+def load_resume(run):
+    """`(state, aggregate)` from a run directory, or `(None, [])` if there is nothing to continue."""
+    latest = pathlib.Path(run) / "latest.pkl"
+    if not latest.exists():
+        return None, []
+    with open(latest, "rb") as fh:
+        state = pickle.load(fh)
+    agg_path = pathlib.Path(run) / "aggregate.pkl"
+    aggregate = []
+    if agg_path.exists():
+        with open(agg_path, "rb") as fh:
+            aggregate = pickle.load(fh)
+    return state, aggregate
+
+
 def stack(rows):
     """Per-turn dicts -> the `batch_data` the jitted `fit` already consumes."""
     obs = tuple(jnp.asarray(np.stack([r["obs"][i] for r in rows])) for i in range(3))
@@ -234,6 +279,10 @@ def main():
     ap.add_argument("--tag", default="tape")
     ap.add_argument("--init", default=None,
                     help="warm-start from a BC checkpoint, e.g. data/ckpt/bc_bundle.best.pkl")
+    ap.add_argument("--resume", default=None,
+                    help="continue a run directory: params, optimiser state, reservoir and round")
+    ap.add_argument("--save-data-every", type=int, default=10,
+                    help="rounds between writes of the aggregate; latest.pkl is written every round")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -309,7 +358,8 @@ def main():
     optimiser = optax.chain(optax.clip_by_global_norm(0.5), optax.adam(args.lr))
     opt_state = optimiser.init(params)
 
-    run = RUN_DIR / ("%s-%s" % (args.tag, time.strftime("%Y%m%d-%H%M%S")))
+    run = (pathlib.Path(args.resume) if args.resume
+           else RUN_DIR / ("%s-%s" % (args.tag, time.strftime("%Y%m%d-%H%M%S"))))
     run.mkdir(parents=True, exist_ok=True)
     print("params: {:,}   run dir: {}".format(n_params, run), flush=True)
     print("tile/unit/glob widths: %d/%d/%d  -- a PPO run must use the same or this will not load"
@@ -317,8 +367,28 @@ def main():
 
     from bc_dagger import make_step
 
-    aggregate, seen_total = [], 0
-    for rnd in range(args.rounds):
+    aggregate, seen_total, first_round = [], 0, 0
+    if args.resume:
+        state, aggregate = load_resume(run)
+        if state is None:
+            print("resume: nothing to continue in %s, starting fresh" % run, flush=True)
+        else:
+            widths = {"tile_features": jax_obs.TILE_FEATURES,
+                      "unit_features": jax_obs.UNIT_FEATURES,
+                      "global_features": jax_obs.GLOBAL_FEATURES, "n_bundles": P.N_BUNDLES}
+            bad = {k: (state.get(k), v) for k, v in widths.items() if state.get(k) != v}
+            if bad:
+                raise SystemExit("resume %s does not match this build: %s" % (run, bad))
+            params = jax.tree_util.tree_map(jnp.asarray, state["params"])
+            opt_state = jax.tree_util.tree_map(
+                lambda x: jnp.asarray(x) if hasattr(x, "shape") else x, state["opt_state"])
+            seen_total = int(state["seen_total"])
+            first_round = int(state["round"]) + 1
+            rng.bit_generator.state = state["rng"]
+            print("resume: %s at round %d, reservoir %d turns, %d turns seen"
+                  % (run, first_round, len(aggregate), seen_total), flush=True)
+
+    for rnd in range(first_round, args.rounds):
         # **Beta must not be tied to `--rounds`.** It was, which coupled the exploration schedule to
         # an arbitrary stopping point: asking for more rounds silently made the teacher drive for
         # longer. The anneal is its own schedule now, and the run length is decided by agreement.
@@ -387,9 +457,12 @@ def main():
             print("           %-16s bank %8d  opp %8d  latches %s" % (name, bank, opp, latch),
                   flush=True)
 
-        with open(run / ("round%02d.pkl" % rnd), "wb") as fh:
-            pickle.dump(dict(params=jax.device_get(params), vocab_size=vocab.size,
-                             round=rnd, beta=beta, loss=losses[-1]), fh)
+        # Written every round so the machine can be switched off between any two of them. The
+        # aggregate is large, so it goes less often; at worst `--save-data-every` rounds of
+        # reservoir are lost on a hard power-off, and never the params or the optimiser.
+        due = ((rnd + 1) % max(1, args.save_data_every) == 0) or (rnd + 1 == args.rounds)
+        save_resume(run, params, opt_state, rnd, seen_total, rng, args,
+                    aggregate=aggregate if due else None)
 
     print("done. checkpoints in %s" % run, flush=True)
 
