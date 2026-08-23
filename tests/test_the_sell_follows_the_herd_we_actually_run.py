@@ -90,7 +90,7 @@ def test_stock_with_no_tape_sell_still_gets_offered():
     carrot sell after the crop lands is `t696 d29 h0` and one order cannot clear 54 units in the
     hours left. Offering on every turn stock exists removes the dependency on the tape's cadence.
     """
-    out = SA.top_up_the_sell_orders([["BUY_SEED", "WHEAT", 3]], {"CARROT": 54, "WOOL": 12})
+    out = SA.top_up_the_sell_orders([["BUY_SEED", "WHEAT", 3]], {"CARROT": 54, "WOOL": 12}, 29)
     assert ["SELL", "CARROT", 54] in out, "carrot in the shed must be offered: %r" % (out,)
     assert ["SELL", "WOOL", 12] in out, "wool in the shed must be offered: %r" % (out,)
     assert out[0] == ["BUY_SEED", "WHEAT", 3], "the tape's own orders keep their slots first"
@@ -98,13 +98,13 @@ def test_stock_with_no_tape_sell_still_gets_offered():
 
 def test_no_duplicate_when_the_tape_already_sells_it():
     """The resize already handled that order. Two sells of the same product waste a slot."""
-    out = SA.top_up_the_sell_orders([["SELL", "CARROT", 54]], {"CARROT": 54, "WOOL": 0})
+    out = SA.top_up_the_sell_orders([["SELL", "CARROT", 54]], {"CARROT": 54, "WOOL": 0}, 29)
     assert out == [["SELL", "CARROT", 54]], "no second carrot order: %r" % (out,)
 
 
 def test_an_empty_shed_adds_nothing():
     orders = [["SELL", "WHEAT", 5]]
-    assert SA.top_up_the_sell_orders(orders, {"CARROT": 0, "WOOL": 0}) == orders
+    assert SA.top_up_the_sell_orders(orders, {"CARROT": 0, "WOOL": 0}, 29) == orders
 
 
 def test_a_full_turn_never_displaces_a_tape_order():
@@ -114,13 +114,28 @@ def test_a_full_turn_never_displaces_a_tape_order():
     come back untouched.
     """
     full = [["SELL", "WHEAT", 1]] * 10
-    out = SA.top_up_the_sell_orders(list(full), {"CARROT": 54, "WOOL": 12})
+    out = SA.top_up_the_sell_orders(list(full), {"CARROT": 54, "WOOL": 12}, 29)
     assert out == full, "a full turn must not grow past the cap: %r" % (len(out),)
 
 
 def test_it_fills_only_the_slots_that_are_free():
     """Nine tape orders leaves exactly one slot: the bigger holding gets it."""
     nine = [["SELL", "WHEAT", 1]] * 9
-    out = SA.top_up_the_sell_orders(list(nine), {"CARROT": 54, "WOOL": 12})
+    out = SA.top_up_the_sell_orders(list(nine), {"CARROT": 54, "WOOL": 12}, 29)
     assert len(out) == 10, "one slot free, one order added: %r" % (len(out),)
     assert out[9] == ["SELL", "CARROT", 54], "the larger holding takes the slot: %r" % (out[9],)
+
+
+def test_the_top_up_is_silent_before_the_final_day():
+    """**The ladder measured this.** Firing every turn scored 1250.3 against 1446.4 for not firing
+    at all -- the two submitted two minutes apart, so equal games played.
+
+    Hundreds of extra orders into live books all season, to recover ~$1,900 at the bell. On the last
+    day there is no future price left to protect, so the same orders are free.
+    """
+    orders = [["BUY_SEED", "WHEAT", 3]]
+    for day in (0, 12, 27, 28):
+        assert SA.top_up_the_sell_orders(list(orders), {"CARROT": 54, "WOOL": 12}, day) == orders, \
+            "must not fire on day %d" % day
+    out = SA.top_up_the_sell_orders(list(orders), {"CARROT": 54, "WOOL": 12}, 29)
+    assert ["SELL", "CARROT", 54] in out, "but it must fire on the last day: %r" % (out,)

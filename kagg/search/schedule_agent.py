@@ -3840,7 +3840,14 @@ _SELL_THE_WHOLE_SHED = ("WOOL", "CARROT")
 MAX_MARKET_ORDERS = 10
 
 
-def top_up_the_sell_orders(orders, shed, max_orders=MAX_MARKET_ORDERS):
+#: The last day. From here there is no future price to protect, so clearing the shed is free.
+#: Firing this on EVERY turn instead measured **-196 rating** on the ladder (1250.3 against the
+#: resize-only build's 1446.4, submitted two minutes apart) -- hundreds of extra orders into live
+#: books all season, to recover something worth ~$1,900 at the very end.
+SELL_THE_SHED_FROM_DAY = 29
+
+
+def top_up_the_sell_orders(orders, shed, day, max_orders=MAX_MARKET_ORDERS):
     """Offer WOOL and CARROT the turn they arrive, not only when the tape happens to sell.
 
     `sell_all_the_wool` can only resize an order the TAPE posts, so it does nothing on a turn with
@@ -3854,7 +3861,7 @@ def top_up_the_sell_orders(orders, shed, max_orders=MAX_MARKET_ORDERS):
 
     Largest holding first, so when only one slot is free it goes to the bigger pile.
     """
-    if len(orders) >= max_orders:
+    if day < SELL_THE_SHED_FROM_DAY or len(orders) >= max_orders:
         return orders
     already = {o[1] for o in orders if o and len(o) > 1 and o[0] == "SELL"}
     for product in sorted(_SELL_THE_WHOLE_SHED,
@@ -6140,7 +6147,7 @@ def make_agent(schedule, me=0, router=True):
         # ended holding 8-24 CARROT because the only carrot sell after the crop lands is one order
         # on d29. Appended, so the reference's `q[:max_orders]` truncation drops ours and never the
         # tape's -- see `top_up_the_sell_orders`.
-        orders = top_up_the_sell_orders(orders, shed_)
+        orders = top_up_the_sell_orders(orders, shed_, int(obs.get("day", 0) or 0))
 
         # **Credit the tape's PLANTs, the same way the planner credits its own.** `:2374` increments
         # on EMISSION, not on the crop appearing, so this matches the convention exactly -- a plant
