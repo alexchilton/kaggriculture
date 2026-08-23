@@ -278,7 +278,13 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         # tables. They were the same file by luck. Worse, the default file was built from 640
         # leaderboard games and could not express 90 of this teacher's own bundles, which were
         # therefore labelled EMPTY -- 12.3% of its trades, including the entire opening.
-        labels = RP.encode_action(teacher_action, n_units, vocab=vocab)
+        # **A label the mask forbids is taught as NOOP -- see `replays.fold_illegal_ops_to_noop`.**
+        # 7 of the teacher's 104 DIG labels are on an already-empty tile, which the reference
+        # no-ops. Encoded as `O.DIG` they are unemittable and zero-weighted, so DIG is pinned at
+        # 97/104 = 0.933 whatever the net is trained for, and at round 27 every first divergence on
+        # all four tapes was one of them.
+        labels = RP.encode_action_legal(teacher_action, n_units, vocab,
+                                        RP.seat_op_mask(masks, seat))
         stats["bundle_miss"] += int(labels["w_bundle_miss"])
 
         # `unit_live` gates the unit heads. MAX_UNITS is 24 against a crew of a few, so scoring dead

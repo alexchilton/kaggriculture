@@ -44,6 +44,59 @@ OP_CODE = {
     "BUILD_COOP": O.BUILD_COOP, "BUILD_PASTURE": O.BUILD_PASTURE,
 }
 
+def fold_illegal_ops_to_noop(op_labels, op_mask, n_units):
+    """Teach NOOP wherever the mask forbids the teacher's op -- what the simulator did anyway.
+
+    The header above has claimed this since it was written, and `OP_CODE` only ever folded PASS:
+    `encode_action` never sees the board, so it cannot test legality. `ops.py:41` says the same
+    thing about the code itself -- "NOOP covers both PASS and any action that turns out to be
+    illegal" -- so this is the fold both files already describe, applied where the mask exists.
+
+    Measured over the four tapes, whole season: **104 DIG labels, 97 legal, 7 on an already-empty
+    tile**, where `reference/kaggriculture.py:484` returns without touching anything.
+
+    Left as `O.DIG` those 7 are blocked twice over -- `-1e9` under `greedy_action`'s argmax over
+    `_masked_logits`, and weight zero from `bc.py:232` -- so they are invisible in the loss AND in
+    sampled agreement. DIG's ceiling is `97/104 = 0.933` and a converged net sits exactly there.
+
+    The cost is not the agreement figure, it is what the net emits when asked a question it cannot
+    answer. Round 27, greedy decode, full season, first pure model error on each of the four tapes
+    was one of these digs:
+
+        tape          on-tape    off-tape       gap   substitute
+        92498144      150,316     149,599      -717   PLANT   (in place, hand stays)
+        91906088      128,471     126,541    -1,930   SOUTH   (hand walks off)
+        91907974       88,882      46,839   -42,043   WEST    (hand walks off)
+        92466371      147,036         372  -146,664   PLANT
+
+    `op_mask` is this seat's slice, `(units, ops)`. NOOP is never masked (`jax_masks.py:117`), so
+    the fold cannot move the problem to another op.
+    """
+    out = np.array(op_labels)
+    for u in range(min(int(n_units), len(out))):
+        if not bool(op_mask[u, int(out[u])]):
+            out[u] = O.NOOP
+    return out
+
+
+def seat_op_mask(masks, seat):
+    """This seat's `(units, ops)` slice of a two-seat op mask."""
+    flat = np.asarray(masks["op"])
+    return flat.reshape(2, -1, flat.shape[-1])[seat]
+
+
+def encode_action_legal(action, n_units, vocab, op_mask):
+    """`encode_action`, with every op the mask forbids folded to NOOP.
+
+    The one entry point for producing training labels. Both the trainer and
+    `tests/test_a_label_the_mask_forbids_is_taught_as_doing_nothing.py` go through it, so the test
+    covers the path that actually trains rather than a re-implementation of it.
+    """
+    labels = encode_action(action, n_units, vocab=vocab)
+    labels["op"] = fold_illegal_ops_to_noop(labels["op"], op_mask, n_units)
+    return labels
+
+
 ANIMAL_INDEX = {"GOOSE": 0, "COW": 1, "SHEEP": 2}
 PRODUCTS = [k for k, v in sorted(ITEM_INDEX.items(), key=lambda kv: kv[1]) if v < 9]
 
