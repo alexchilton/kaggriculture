@@ -872,8 +872,22 @@ def role_logits_per_slot(role_p, seed_days, n_slots):
     if seed_days is None:
         return out
     day0 = jnp.asarray(seed_days) == 0
-    return out.at[:, ROLE_IDLE].set(
-        jnp.where(day0, lp[ROLE_IDLE], jnp.log(jnp.asarray(1e-12, dtype=jnp.float32))))
+    shut = jnp.log(jnp.asarray(1e-12, dtype=jnp.float32))
+    out = out.at[:, ROLE_IDLE].set(jnp.where(day0, lp[ROLE_IDLE], shut))
+
+    # **A tape plays the whole game from turn 0, or it does not play.**
+    #
+    # The recording is a fixed 719-turn script and `weed_chance` is 0, so replayed from turn 0 on
+    # the fixed start board it is deterministic and every move it makes is one the board allows.
+    # Dropped into a slot seeded at day 17 it is handed an EMPTY farm it never built and asked for
+    # the move it made on its own developed one: measured at 126 of 576 unit-ops refused, 22%,
+    # climbing to 36-59% by the last third as the two boards drift further apart.
+    #
+    # That is not a tape being weak, it is a tape being asked an impossible question -- and it is
+    # what made the replayed seats look like they were stalling. Same restriction `idle` already
+    # gets one line up, for a related reason: a role whose meaning depends on the starting phase
+    # must not be drawn on the phases where the meaning does not hold.
+    return out.at[:, ROLE_TAPE].set(jnp.where(day0, lp[ROLE_TAPE], shut))
 
 
 def op_census(op_rows, live, n_ops=CM.N_POLICY_OPS):
@@ -1204,10 +1218,32 @@ def make_update(model, clip, vf_coef, ent_coef, max_grad_norm, optimiser, seat_c
         # Rows chosen by a frozen opponent carry log-probs from other parameters; including them
         # would make the ratio a comparison of two unrelated policies. Weight them out rather than
         # index them out, so every minibatch keeps a static shape and the graph stays jittable.
-        w = batch_data["trainable"].astype(jnp.float32)
+        keep = batch_data["trainable"]
+        w = keep.astype(jnp.float32)
         w_sum = jnp.maximum(w.sum(), 1.0)
 
-        ratio = jnp.exp(logp - batch_data["old_logp"])
+        # **Sanitise the untrainable rows BEFORE the subtraction, not after the multiply.**
+        #
+        # A seat driven by a recorded tape can hold an action the legality mask forbids -- measured
+        # at 126 of 576 unit-ops, 22%, on the trainer's own start states. `jax_policy.eval_head:435`
+        # reads that action's entry out of a masked `log_softmax`, so `logp` is `-inf`; the stored
+        # `old_logp` is `-inf` for the same reason; and `exp(-inf - -inf)` is `exp(nan)`. Weighting
+        # by `w = 0` afterwards cannot rescue it, because `0 * nan` is `nan` and one poisoned row
+        # takes the whole sum with it. Run `bc40` died at update 0 with exactly this:
+        #
+        #     [0] ret +0.1076  ent 0.0 (op nan)  clip 0.000  kl +nan  seatL nan
+        #
+        # `eval_head:437` already guards the same `0 * -inf` shape for the entropy term, and the
+        # op-entropy metric further down repeats the guard with a comment naming it -- neither was
+        # ever applied to the objective itself. This is that guard, in the one place it decides
+        # whether the run lives.
+        #
+        # Substituting 0 for both sides makes the ratio exactly 1 on rows the objective discards,
+        # which is the value they would have had anyway. It changes no trainable row.
+        old_logp = jnp.where(keep, batch_data["old_logp"], 0.0)
+        cur_logp = jnp.where(keep, logp, 0.0)
+
+        ratio = jnp.exp(cur_logp - old_logp)
         adv = batch_data["adv"]
         # Normalising per minibatch is standard and matters here: terminal-only rewards make raw
         # advantages tiny for most of an episode and large at the end. Statistics are taken over
