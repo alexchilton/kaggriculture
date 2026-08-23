@@ -64,6 +64,27 @@ from kagg.sim import ops as O
 # different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
 _BUNDLE_SELLS = None
 _BUNDLE_TABLES = None
+#: Which vocabulary file this process uses. `--vocab` sets it before anything reads a bundle.
+#:
+#: **This was a live bug on 2026-08-23.** The default is `bundle_vocab.json` (197 entries, built
+#: from leaderboard games). The DAgger clone and `opponent_tape_actions.npz` were both built with
+#: `bundle_vocab_teacher.json` (151). Bundle index 50 is a different basket in each, so the tape
+#: opponents were emitting scrambled orders and a `--init` from the clone would have been
+#: meaningless -- and neither shows up offline, because every index is still a valid index.
+_VOCAB_PATH = None
+
+
+def _set_vocab(path):
+    """Pin the vocabulary for this process. Must run before any bundle is read."""
+    global _VOCAB_PATH, _BUNDLE_SELLS, _BUNDLE_TABLES
+    _VOCAB_PATH = path
+    _BUNDLE_SELLS = None
+    _BUNDLE_TABLES = None
+
+
+def _vocab():
+    from kagg.il import market_bundles as _MB
+    return _MB.load_vocab() if _VOCAB_PATH is None else _MB.load_vocab(_VOCAB_PATH)
 
 
 def _bundle_sells():
@@ -71,7 +92,7 @@ def _bundle_sells():
     if _BUNDLE_SELLS is None:
         from kagg.il import market_bundles as _MB
         from kagg.rl import jax_policy as _PP
-        _BUNDLE_SELLS = _MB.valid_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+        _BUNDLE_SELLS = _MB.valid_table(_vocab(), pad_to=_PP.N_BUNDLES)
     return _BUNDLE_SELLS
 
 
@@ -90,7 +111,7 @@ def _bundle_tables():
         from kagg.il import market_bundles as _MB
         from kagg.rl import jax_policy as _PP
         _BUNDLE_TABLES = {k: jnp.asarray(v) for k, v in
-                          _MB.tables(_MB.load_vocab(), pad_to=_PP.N_BUNDLES).items()}
+                          _MB.tables(_vocab(), pad_to=_PP.N_BUNDLES).items()}
     return _BUNDLE_TABLES
 
 
@@ -1575,6 +1596,13 @@ def main():
                          "board pushed far off the tape's own line the recorded action degrades "
                          "toward a no-op, which is fine for an opponent and is exactly why the same "
                          "tapes cannot serve as a teacher. 0 disables.")
+    ap.add_argument("--vocab", default=None,
+                    help="bundle vocabulary file. MUST be the same one the checkpoint in --init "
+                         "was fitted with and the same one --tape-actions was encoded with, or "
+                         "every bundle index means a different basket of orders and nothing "
+                         "offline shows it. Default is market_bundles.DEFAULT_VOCAB "
+                         "(bundle_vocab.json, 197 entries); the DAgger clone and the tape actions "
+                         "both use bundle_vocab_teacher.json (151).")
     ap.add_argument("--tape-actions", default="data/il/opponent_tape_actions.npz",
                     help="head labels for the recorded seats, from "
                          "scripts/build_opponent_tape_actions.py")
@@ -1723,6 +1751,17 @@ def main():
                          "whatever bad habit the clone has. Anchor later as a separate experiment "
                          "if PPO is measurably unlearning something good. Ignored with --resume.")
     args = ap.parse_args()
+
+    # **Pin the vocabulary before anything reads a bundle.** `_bundle_sells` and `_bundle_tables`
+    # cache on first use, and the first use is inside the traced rollout, so setting it later would
+    # silently keep the default. Printed rather than assumed: on 2026-08-23 the tape opponents were
+    # encoded with the 151-entry teacher vocabulary while this process decoded with the 197-entry
+    # default, and every index was still a valid index, so nothing failed -- the opponents simply
+    # played baskets they had never chosen.
+    if args.vocab:
+        _set_vocab(args.vocab)
+    print(f"vocab: {args.vocab or 'default (market_bundles.DEFAULT_VOCAB)'} "
+          f"-> {_vocab().size} entries", flush=True)
 
     gamma = args.gamma_per_day ** (1.0 / TURNS_PER_DAY)
 
