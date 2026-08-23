@@ -658,3 +658,31 @@ To check before building it:
   (game 97495667) so it has depth; CARROT is `above_func: sqrt, above_target 0.70` and has not
   been measured.
 - whether a daily offer bunches the sale into a floor the way MILK already sits at $1.
+
+---
+
+## CLOSED 2026-08-23 — changing what the agent EMITS invalidates the bundle vocabulary
+
+Cost a dead training round. Worth one line in any future change to the market path.
+
+`TapeTeacher` wraps the live `SA.make_agent`, so the DAgger labels are whatever the shipped agent
+emits. `data/il/bundle_vocab_teacher.json` enumerates the market-order combinations that agent
+produces, and `market_bundles` can only label a turn whose combination has a slot.
+
+`top_up_the_sell_orders` appends `SELL WOOL <shed>` and `SELL CARROT <shed>` on turns the tape posts
+neither, which are combinations the old teacher never produced. The vocabulary had 149 entries and
+none of them fit, so `dagger_tape` refused to start:
+
+    6 teacher turns could not be expressed by data/il/bundle_vocab_teacher.json
+    and were labelled EMPTY
+
+**That refusal is the fix working.** The guard exists because a stale vocabulary once silently
+labelled 12.3% of the teacher's trades EMPTY -- 512 HIRE and 444 SELL -- and the student learned to
+do nothing (`docs/the_vocabulary_labels_the_opening_as_nothing_2026-08-22.md`).
+
+Rebuilt: **151 bundles, 0 missing**, the two new entries being the top-up's own orders. Previous
+vocabulary kept at `data/il/bundle_vocab_teacher_pre_topup.json`.
+
+**The rule: any change to the agent's market orders needs
+`scripts/build_teacher_bundle_vocab.py` re-run before training.** The agent and the training
+representation are coupled through the teacher and nothing else in the repo says so.
