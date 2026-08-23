@@ -84,13 +84,19 @@ def test_the_launch_configuration_fits_the_value_head():
     shaping must fit inside the head's widened range, or `ret_clipped` fires and the critic silently
     saturates."""
     # **The live configuration, 2026-08-23.** Was `6.0, 0.75`, which no run has used since the
-    # coefficient came down to 1.0 -- a stale pair here asserts nothing about what ships. Under linear
-    # a $28k season contributes 0.282, so `--value-margin 0.3` clears it by 0.018 and would clip the
-    # moment the policy did better than the scripted farmer. 0.5 is the launch value.
-    coef, margin = 1.0, 0.5
-    realistic = float(MP.shaping(0.0, 28_168.0, coef=coef))
-    assert realistic < margin, f"a $28k season contributes {realistic:.3f} against margin {margin}"
-    # The head must also hold terminal + shaping together, which is what actually lands in `ret`.
-    assert 1.0 + realistic < 1.0 + margin
-    # And the worst case is bounded, which is the whole point of the cap.
+    # coefficient came down to 1.0 -- a stale pair here asserts nothing about what ships.
+    coef, margin = 1.0, 1.0
+
+    # **The bound is the WORST case, not a realistic season, and getting that wrong cost a restart.**
+    # An earlier version of this test compared `margin` against a $28k season's shaping alone (0.252)
+    # and passed at `margin 0.5`. What lands in `ret` is terminal PLUS shaping, and `shaped2` clipped
+    # 0.09% of rows at update 1 with `ret [-0.422, +1.523]` against a head of [-0.50, +1.50]. A win is
+    # 1.0 and shaping is capped at `coef`, so the head must reach `1 + coef` or the critic saturates
+    # on exactly the seasons worth learning from -- and it saturates silently, reading as confidence.
+    assert 1.0 + float(MP.shaping(0.0, 1e9, coef=coef)) <= 1.0 + margin
+
+    # The floor side: a season that ends below where it started is negative shaping, bounded by -coef.
+    assert -float(MP.shaping(0.0, 1e9, coef=coef)) >= -margin
+
+    # And the worst case is bounded at all, which is the whole point of the cap.
     assert float(MP.shaping(0.0, 1e9, coef=coef)) == pytest.approx(coef)
