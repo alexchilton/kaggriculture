@@ -2147,10 +2147,23 @@ def main():
     # one season as each game terminates and re-draws.
     roles = jax.random.categorical(
         jax.random.PRNGKey(args.seed + 1), role_logp, shape=(args.batch,))
-    # Without a curriculum every slot starts mid-season on an empty board, so no slot's *first*
-    # termination is a real result. With one, the opening state IS a seeded board and its first
-    # episode is genuine -- see `initial_virgin`. Cleared per slot as soon as it restarts anyway.
-    virgin = jnp.full((args.batch,), initial_virgin(seeded=_seeded_start), dtype=bool)
+    # **Per slot, on the only thing that decides it: does this slot start at turn 0.**
+    #
+    # The rule `initial_virgin` encodes is right and its input was too coarse. A slot dropped at
+    # turn 700 on an empty board is an impossible position -- both sides stand still and tie at
+    # $3,000 -- so its first result must be suppressed. A slot that starts at turn 0 is a real game
+    # from the first turn and its result is genuine, whether a curriculum put it there or
+    # `--n-phases 1` did.
+    #
+    # As a batch-wide flag keyed on `_seeded_start` it threw away the first finished episode of
+    # EVERY slot on a `--n-phases 1` run, where every slot legitimately starts at turn 0. At
+    # horizon 128 a 719-turn season ends inside update 5, so the first real signal was pushed from
+    # update 5 out to update 11 -- and `docs/` already records this same reward being wrongly
+    # discarded once before, for curriculum runs. Same rule, new doorway.
+    # Read off the state's own start turn rather than `seed_days`, which is None whenever no
+    # curriculum is on -- exactly the runs this is for. `state.step_index` is per game and is the
+    # turn each slot actually begins at, under both `staggered_states` and a curriculum seed.
+    virgin = jnp.asarray(state.step_index) != 0
 
     n_seats = 2 * args.batch
     flat_n = args.horizon * n_seats
