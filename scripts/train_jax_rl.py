@@ -63,6 +63,7 @@ from kagg.sim import ops as O
 # must be byte-identical across labelling, fitting and play or every bundle index means something
 # different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
 _BUNDLE_SELLS = None
+_BUNDLE_TABLES = None
 
 
 def _bundle_sells():
@@ -72,6 +73,25 @@ def _bundle_sells():
         from kagg.rl import jax_policy as _PP
         _BUNDLE_SELLS = _MB.valid_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
     return _BUNDLE_SELLS
+
+
+def _bundle_tables():
+    """The decode tables `jax_act.to_sim_actions` needs: bundle index -> which orders go out.
+
+    **This trainer had not been run since the argument was added.** `to_sim_actions` gained its
+    third parameter in `f75174e` (2026-08-22); this file was last touched in `7f24249` (2026-08-20)
+    and still called it with two, so every invocation died in the first traced turn. Padded to the
+    head width for the reason `market_bundles.tables` gives -- JAX clamps an out-of-range gather
+    under jit rather than raising, so an unpadded table returns a real, confidently-emitted, wrong
+    order.
+    """
+    global _BUNDLE_TABLES
+    if _BUNDLE_TABLES is None:
+        from kagg.il import market_bundles as _MB
+        from kagg.rl import jax_policy as _PP
+        _BUNDLE_TABLES = {k: jnp.asarray(v) for k, v in
+                          _MB.tables(_MB.load_vocab(), pad_to=_PP.N_BUNDLES).items()}
+    return _BUNDLE_TABLES
 
 
 # TF32 tensor cores for matmuls. Ender runs `--matmul-precision high` by default; JAX's own default
@@ -250,15 +270,15 @@ def ema_update(target, params, decay):
 # permutation was written for -- at batch 256 the realised share of a p=0.30 role has an s.d. of
 # ~2.9%, and `role_counts` logs what actually happened so this is checked rather than assumed.
 (ROLE_SELF, ROLE_POOL, ROLE_FARM, ROLE_TRADE, ROLE_IDLE, ROLE_RANCH, ROLE_CARROT,
- ROLE_HOME) = range(8)
-N_ROLES = 8
-ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch", "carrot", "home")
+ ROLE_HOME, ROLE_TAPE) = range(9)
+N_ROLES = 9
+ROLE_NAMES = ("self", "pool", "farm", "trade", "idle", "ranch", "carrot", "home", "tape")
 
 # One list, because the per-opponent census and the opponent-by-day cross-tab have to agree on
 # both the names and the order or the two views of the same rows disagree silently.
 OPPONENT_FLAGS = (("idle", "vs_idle"), ("trade", "vs_trade"), ("farm", "vs_farm"),
                   ("ranch", "vs_ranch"), ("carrot", "vs_carrot"), ("home", "vs_home"),
-                  ("pool", "vs_pool"))
+                  ("pool", "vs_pool"), ("tape", "vs_tape"))
 OPPONENT_NAMES = tuple(n for n, _ in OPPONENT_FLAGS)
 
 PRODUCT_NAMES = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON",
@@ -291,18 +311,64 @@ TEACHER_BUY = (0.455, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.000)
 TEACHER_SELL = (0.367, 0.021, 0.002, 0.019, 0.023, 0.001, 0.070, 0.093, 0.179)
 
 
-def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coef=0.0):
+def _blend_seat(mine, theirs, seat_mask):
+    """Put `theirs`'s actions on the masked seat, field by field, on a `jax_sim.Actions`.
+
+    **A heuristic opponent leaves `order_op/order_item/order_qty` as None.** It has no explicit
+    order SEQUENCE, only per-product vectors, while `to_sim_actions` fills those columns for the
+    policy -- so a plain `tree_map` over the two pytrees hands `jnp.where` a None and dies. That is
+    what had killed this trainer outright since `f75174e` (2026-08-22).
+
+    Dropping the columns for the whole batch would also take the sequence away from the POLICY's
+    seat, and the sequence is load-bearing: the environment settles slots in order, measured at
+    bank $484 with a sheep missing against the tape's $13 on one turn of the teacher's opening.
+
+    `_explicit_orders` (`jax_sim.py:947`) keys presence off `order_op` **per seat** --
+    `(e_op != ORDER_NONE).any(axis=2)` is `[B, P]` -- so writing ORDER_NONE into the heuristic's
+    seat makes exactly that seat fall back to the canonical `_order_book` derivation from its
+    vectors, while the policy's seat keeps its explicit list. `ORDER_NONE` is 0, which is also what
+    `Actions`' own default columns hold.
+    """
+    def one(a, b):
+        if b is None:
+            b = jnp.zeros_like(a)                  # ORDER_NONE: this seat falls back
+        return jnp.where(seat_mask.reshape(seat_mask.shape + (1,) * (a.ndim - 2)), b, a)
+
+    return mine._replace(**{f: one(getattr(mine, f), getattr(theirs, f))
+                            for f in J.Actions._fields})
+
+
+def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coef=0.0,
+                 tape_actions=None):
     """Build the jitted rollout: `horizon` turns of self-play across all phase groups, plus GAE.
 
     `gamma` and `gae_lambda` are pinned to float32. A bare Python float promotes to float64 under
     the x64 flag `jax_sim` sets, and `gamma * next_value` would then drag the whole advantage and
     return computation into float64 -- which this card runs at 1/32 rate. See `jax_policy.DTYPE`.
+
+    `tape_actions` is `{head: [n_tapes, EPISODE_TURNS, ...]}` from
+    `scripts/build_opponent_tape_actions.py` -- 31 real recorded seats, replayed by turn index at
+    seat 1 wherever the role is `ROLE_TAPE`. None disables the role.
     """
     gamma = jnp.asarray(gamma, dtype=jnp.float32)
     gae_lambda = jnp.asarray(gae_lambda, dtype=jnp.float32)
     # Even-numbered envs are the early-game ones, matching Ender's split exactly.
     is_early = (jnp.arange(batch) % 2) == 0
     _EARLY_ROWS = jnp.repeat(is_early, 2)         # [B*2], for splitting per-seat statistics
+
+    # **The tape a slot faces is its slot index, not a draw.** A per-episode draw would have to ride
+    # in the scan carry beside `roles`; keying off the slot makes it sticky by construction and
+    # touches nothing. `batch` and `n_tapes` are coprime often enough that the pairing with the
+    # staggered start phase cycles over `lcm(batch % n_tapes ...)` rather than repeating -- and the
+    # slot's board seed varies independently, so a tape is not welded to one board.
+    _TAPE_IDS = None if tape_actions is None else jnp.arange(batch) % len(tape_actions["op"])
+    _TAPE_LAST = None if tape_actions is None else (tape_actions["op"].shape[1] - 1)
+
+    # **Built here, eagerly, and NOT lazily inside the scan.** A lazy global whose first call lands
+    # inside `one_turn` caches the tracer, which then escapes the transformation and raises
+    # `UnexpectedTracerError` on the next update. Binding it in `make_rollout`'s own body -- which
+    # runs before anything is traced -- makes the closure capture concrete arrays.
+    _TABLES = _bundle_tables()
 
     @functools.partial(jax.jit, static_argnums=())
     def rollout(params, value_params, opp_params, roles, role_logp, virgin,
@@ -320,6 +386,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
             use_ranch = roles == ROLE_RANCH
             use_carrot = roles == ROLE_CARROT
             use_home = roles == ROLE_HOME
+            use_tape = roles == ROLE_TAPE
 
             # Observations are stored, not recomputed: the update needs exactly the inputs the
             # behaviour policy saw, and re-encoding from a later state would silently score the
@@ -376,8 +443,43 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
                 lambda a: jnp.where(
                     take_idle.reshape((-1,) + (1,) * (a.ndim - 1)), 0, a),
                 actions)
+            # **A seat that replays a real recorded player, by turn index.**
+            #
+            # Every other opponent here is a heuristic, and the measured ceiling of that whole
+            # family is about $15k -- so "beat the pool" is a question about $15k play, while the
+            # ladder is decided at $130k-$180k. These 31 seats are downloaded games: the actions a
+            # human-designed schedule actually sent, including its market cadence.
+            #
+            # Time-indexed, not state-conditioned. On a board the student has pushed far off the
+            # tape's own line the recorded action can be a no-op or a refused purchase, and the
+            # simulator will simply reject it. That is acceptable for an OPPONENT -- it degrades
+            # toward a weaker player rather than toward an illegal one -- and it is exactly why the
+            # same tapes cannot serve as a DAgger teacher, which needs a correct label rather than a
+            # plausible one.
+            #
+            # 5.39% of the recorded turns carry a market bundle the 151-entry vocabulary cannot
+            # express; those fall to EMPTY, so the tape opponent drops about one trade in twenty.
+            if tape_actions is not None:
+                idx = jnp.clip(state.step_index, 0, _TAPE_LAST)          # [B]
+                take_tape = jnp.broadcast_to(
+                    use_tape[:, None] & (seat == 1), (batch, 2)).reshape(-1)
+                replayed = {}
+                for head, mine in actions.items():
+                    table = tape_actions.get(head)
+                    if table is None:
+                        replayed[head] = mine
+                        continue
+                    picked = table[_TAPE_IDS, idx]                       # [B, ...]
+                    theirs = jnp.broadcast_to(
+                        picked[:, None], (batch, 2) + picked.shape[1:]
+                    ).reshape((batch * 2,) + picked.shape[1:])
+                    replayed[head] = jnp.where(
+                        take_tape.reshape((-1,) + (1,) * (mine.ndim - 1)),
+                        theirs.astype(mine.dtype), mine)
+                actions = replayed
+
             take_opp = take_opp | take_idle | jnp.broadcast_to(
-                (use_trade | use_farm | use_ranch | use_carrot | use_home)[:, None]
+                (use_trade | use_farm | use_ranch | use_carrot | use_home | use_tape)[:, None]
                 & (seat == 1),
                 (batch, 2)).reshape(-1)
 
@@ -391,7 +493,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
             u32 = lambda k: A._unflat(actions[k], batch).astype(jnp.int32)   # noqa: E731
             sim_op, sim_crop, sim_item, sim_qty, cmt_next, decided = CM.resolve(
                 cmt, state, u32("op"), u32("crop"), u32("item"), u32("qty"))
-            sim_actions = A.to_sim_actions(actions, batch)._replace(
+            sim_actions = A.to_sim_actions(actions, batch, _TABLES)._replace(
                 unit_op=sim_op.astype(J._I), unit_crop=sim_crop.astype(J._I),
                 unit_item=sim_item.astype(J._I),
                 unit_qty=P.UNIT_QTY_BUCKETS[sim_qty].astype(J._I))
@@ -470,18 +572,10 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
             # long cycle against carpeting every tile with carrot on a three-day one, which is the
             # tempo diversity `CLAUDE.md` says this pool has never had.
             carrot_seat = jnp.broadcast_to(use_carrot[:, None] & (seat == 1), (batch, 2))
-            carrot = CARROT.actions(state)
-            sim_actions = jax.tree_util.tree_map(
-                lambda mine, theirs: jnp.where(
-                    carrot_seat.reshape(carrot_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
-                sim_actions, carrot)
+            sim_actions = _blend_seat(sim_actions, CARROT.actions(state), carrot_seat)
 
             ranch_seat = jnp.broadcast_to(use_ranch[:, None] & (seat == 1), (batch, 2))
-            ranch = RANCH.actions(state)
-            sim_actions = jax.tree_util.tree_map(
-                lambda mine, theirs: jnp.where(
-                    ranch_seat.reshape(ranch_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
-                sim_actions, ranch)
+            sim_actions = _blend_seat(sim_actions, RANCH.actions(state), ranch_seat)
 
             # **The only seat that farms and ranches at once.** Every other opponent is a
             # specialist, so a trainee can climb the whole pool without meeting a board that both
@@ -489,18 +583,10 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
             # than ported -- weaker than `farm` on bank ($24,957 vs $30,292, 0/48) and here for its
             # strategy class, not its strength. See `kagg/rl/jax_homestead.py`.
             home_seat = jnp.broadcast_to(use_home[:, None] & (seat == 1), (batch, 2))
-            home = HOME.actions(state)
-            sim_actions = jax.tree_util.tree_map(
-                lambda mine, theirs: jnp.where(
-                    home_seat.reshape(home_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
-                sim_actions, home)
+            sim_actions = _blend_seat(sim_actions, HOME.actions(state), home_seat)
 
             farm_seat = jnp.broadcast_to(use_farm[:, None] & (seat == 1), (batch, 2))
-            heur = HEUR.actions(state)
-            sim_actions = jax.tree_util.tree_map(
-                lambda mine, theirs: jnp.where(
-                    farm_seat.reshape(farm_seat.shape + (1,) * (mine.ndim - 2)), theirs, mine),
-                sim_actions, heur)
+            sim_actions = _blend_seat(sim_actions, HEUR.actions(state), farm_seat)
             nxt = J.step(state, sim_actions)
 
             # `just_done` is [B]: every game crosses its own episode boundary on its own turn,
@@ -677,6 +763,7 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
                 vs_ranch=jnp.broadcast_to(use_ranch[:, None], (batch, 2)).reshape(-1),
                 vs_carrot=jnp.broadcast_to(use_carrot[:, None], (batch, 2)).reshape(-1),
                 vs_home=jnp.broadcast_to(use_home[:, None], (batch, 2)).reshape(-1),
+                vs_tape=jnp.broadcast_to(use_tape[:, None], (batch, 2)).reshape(-1),
                 roles=roles,
                 # **Which unit-turns were the policy's own decision**, in network-flat layout.
                 # False on the intermediate turns of a commitment: the unit was walking a path it
@@ -1479,6 +1566,18 @@ def main():
                          "than drawing. That removes the 0.5 payoff for inaction, which is the "
                          "actual fixed point -- our idle farm is a stable $3,000 forever, where "
                          "Ender's game punished standing still on its own. 0 disables.")
+    ap.add_argument("--tape-frac", type=float, default=0.0,
+                    help="fraction of games whose seat 1 REPLAYS a real recorded player, drawn from "
+                         "the 31 downloaded seats in --tape-actions. Every other opponent in this "
+                         "pool is a heuristic and the whole family caps out near $15,000, while the "
+                         "ladder is decided at $130,000-$180,000 -- so 'beats the pool' has never "
+                         "been a question about ladder-strength play. These are time-indexed: on a "
+                         "board pushed far off the tape's own line the recorded action degrades "
+                         "toward a no-op, which is fine for an opponent and is exactly why the same "
+                         "tapes cannot serve as a teacher. 0 disables.")
+    ap.add_argument("--tape-actions", default="data/il/opponent_tape_actions.npz",
+                    help="head labels for the recorded seats, from "
+                         "scripts/build_opponent_tape_actions.py")
     ap.add_argument("--ranch-frac", type=float, default=0.0,
                     help="fraction of games whose seat 1 is `jax_rancher`. It banks $12,078 "
                          "against the scripted farmer's $23,783, so it is the WEAKER opponent -- "
@@ -1921,8 +2020,24 @@ def main():
     print(f"log:  {log_path}")
     print(f"tail: scripts/deploy_train.sh watch", flush=True)
 
+    # **Load the recorded seats before the rollout is built**, because the rollout captures them as
+    # closure constants. A missing file with `--tape-frac 0` is not an error; with a non-zero frac
+    # it is, and it must fail here rather than silently seating a self-play opponent under a label
+    # that says `tape` -- the unstable-label failure CLAUDE.md records for `farm:0.445`.
+    tape_actions = None
+    if args.tape_frac > 0:
+        with np.load(args.tape_actions) as npz:
+            tape_actions = {k: jnp.asarray(npz[k]) for k in npz.files
+                            if k not in ("names",) and not k.startswith("w_")}
+        n_tapes, n_turns = tape_actions["op"].shape[:2]
+        print(f"tape opponents: {n_tapes} recorded seats x {n_turns} turns, "
+              f"heads {sorted(tape_actions)}", flush=True)
+        if n_turns != EPISODE_TURNS:
+            raise SystemExit(f"tape actions are {n_turns} turns, episode is {EPISODE_TURNS}")
+
     rollout = make_rollout(model, args.batch, args.horizon, gamma, args.gae_lambda,
-                           args.n_phases, shaping_coef=args.shaping_coef)
+                           args.n_phases, shaping_coef=args.shaping_coef,
+                           tape_actions=tape_actions)
     update, run_epochs = make_update(model, args.clip, args.vf_coef, args.ent_coef,
                                      args.max_grad_norm, optimiser, seat_coef=args.seat_coef,
                                      kl_coef=args.kl_coef, prior_params=prior_params,
@@ -1933,10 +2048,11 @@ def main():
     # now explicitly rather than by falling through a partition.
     role_p = np.array([0.0, args.opponent_frac, args.farm_frac,
                        args.trade_frac, args.idle_frac, args.ranch_frac,
-                       args.carrot_frac, args.homestead_frac], dtype=np.float64)
+                       args.carrot_frac, args.homestead_frac,
+                       args.tape_frac if tape_actions is not None else 0.0], dtype=np.float64)
     if role_p[1:].sum() > 1.0:
         raise SystemExit(
-            "opponent/farm/trade/idle/ranch/carrot/homestead fracs sum to "
+            "opponent/farm/trade/idle/ranch/carrot/homestead/tape fracs sum to "
             f"{role_p[1:].sum():.2f} > 1.0")
     role_p[ROLE_SELF] = 1.0 - role_p[1:].sum()
     print("seat-1 roles, sticky per episode: "
@@ -2311,15 +2427,31 @@ def main():
         # A census distinguishes "never sampled" from "sampled vanishingly rarely" and costs the
         # same one-hot sum the op census already does. Per-product rather than WHEAT-only, so no
         # item index is hard-coded here; name the column when reading it.
+        # **Read off the BUNDLE, because the `trade` head no longer exists.** The market heads were
+        # replaced by a single bundle index in the 2026-08-22 refactor -- `P.N_TRADE_MODES` is gone
+        # and `actions["trade"]`, `["sell"]`, `["buy_product"]` and `["buy_animal"]` with it. The
+        # question this census answers is unchanged, so it is re-derived rather than deleted: the
+        # bundle row says WHICH kinds of order go out, and the four counts below are the same four
+        # modes the old head enumerated. `trade_counts` is now (sells / buys seed / buys product /
+        # hires), one column each, and the print at the bottom of this file reads it positionally.
         seat_rows = batch_data_full["trainable"].astype(jnp.float32)
         n_seat = jnp.maximum(seat_rows.sum(), 1.0)
-        trade_counts = (jax.nn.one_hot(batch_data_full["actions"]["trade"],
-                                       P.N_TRADE_MODES, dtype=jnp.float32)
-                        * seat_rows[:, None]).sum(axis=0)
-        # Class 0 of a market quantity head is quantity zero, so "> 0" is "actually traded".
-        buy_rate = ((batch_data_full["actions"]["buy_product"] > 0).astype(jnp.float32)
+        _tb = _bundle_tables()
+        bundle_rows = batch_data_full["actions"]["bundle"]
+        _any = lambda col: (_tb[col][bundle_rows] > 0).any(axis=-1)          # noqa: E731
+        trade_counts = jnp.stack([
+            (_any("sell") * seat_rows).sum(),
+            (_any("buy_seed") * seat_rows).sum(),
+            (_any("buy_product") * seat_rows).sum(),
+            ((_tb["hire"][bundle_rows] > 0) * seat_rows).sum(),
+        ])
+        # Class 0 of a market quantity head is quantity zero, so "> 0" is "actually traded". The
+        # quantity is only read for the products the bundle activated, so gate on both.
+        buy_rate = (((batch_data_full["actions"]["qty_buy_product"] > 0)
+                     & (_tb["buy_product"][bundle_rows] > 0)).astype(jnp.float32)
                     * seat_rows[:, None]).sum(axis=0) / n_seat
-        sell_rate = ((batch_data_full["actions"]["sell"] > 0).astype(jnp.float32)
+        sell_rate = (((batch_data_full["actions"]["qty_sell"] > 0)
+                      & (_tb["sell"][bundle_rows] > 0)).astype(jnp.float32)
                      * seat_rows[:, None]).sum(axis=0) / n_seat
         # `crop` is a unit head and only PLANT reads it, so count it where a plant was chosen.
         planting = live_units & (op_rows == O.PLANT_OP)
@@ -2349,7 +2481,9 @@ def main():
         # to be unlearned later -- the hire collapse's shape, but deterministic rather than
         # probabilistic. `PLACE` counts bound this from above and mix in ordinary shed-drops, so
         # count the purchase head itself. It is binary per animal type.
-        buy_animal_rate = ((batch_data_full["actions"]["buy_animal"] > 0).astype(jnp.float32)
+        # Off the bundle now, for the same reason `trade_counts` is: there is no `buy_animal` head
+        # any more. The bundle row carries a count per animal type, so this is the same quantity.
+        buy_animal_rate = ((_tb["buy_animal"][bundle_rows] > 0).astype(jnp.float32)
                            * seat_rows[:, None]).sum(axis=0) / n_seat
 
         # **Where the $3,000 goes.**
@@ -2366,8 +2500,12 @@ def main():
         # `buy_seed` is per crop so its action is [rows, N_CROPS]; `hire` and `buy_land` are single
         # binary decisions, so [rows]. "Any nonzero this turn" is the comparable rate across all
         # three -- class 0 of a market quantity head is quantity zero.
-        def _spend(name):
-            a = batch_data_full["actions"][name]
+        # Off the bundle for the same reason as `trade_counts` above: `buy_seed`, `hire` and
+        # `buy_land` stopped being heads of their own in the 2026-08-22 refactor. The bundle row
+        # carries all three, so the rate measured is unchanged -- "did this turn's chosen bundle
+        # fire this kind of order at all".
+        def _spend(col):
+            a = _tb[col][bundle_rows]
             fired = (a > 0).any(axis=tuple(range(1, a.ndim))) if a.ndim > 1 else (a > 0)
             return (fired.astype(jnp.float32) * seat_rows).sum() / n_seat
 
