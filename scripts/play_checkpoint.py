@@ -59,16 +59,59 @@ from kagg.sim import ops as O
 # every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
 # must be byte-identical across labelling, fitting and play or every bundle index means something
 # different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
+#
+# **It must NOT default silently, which it did until 2026-08-23.** `load_vocab()` with no argument
+# takes `DEFAULT_VOCAB = data/il/bundle_vocab.json` (197 entries), while every run since the DAgger
+# teacher work uses `data/il/bundle_vocab_teacher.json` (151). Playing a teacher-vocab checkpoint
+# through the 197-entry table decodes every market order into a different order -- and nothing
+# raises, because every index is still a valid index. The output looks entirely plausible and is
+# meaningless. `--vocab` is required for that reason: an assumed tokenizer is not a default, it is a
+# silent corruption, and this script's own docstring above says so one paragraph earlier.
 _BUNDLE_SELLS = None
+_BUNDLE_TABLES = None
+_VOCAB_PATH = None
+
+
+def _set_vocab(path):
+    global _VOCAB_PATH, _BUNDLE_SELLS, _BUNDLE_TABLES
+    _VOCAB_PATH, _BUNDLE_SELLS, _BUNDLE_TABLES = path, None, None
+
+
+def _vocab():
+    from kagg.il import market_bundles as _MB
+    return _MB.load_vocab(_VOCAB_PATH) if _VOCAB_PATH else _MB.load_vocab()
 
 
 def _bundle_sells():
     global _BUNDLE_SELLS
     if _BUNDLE_SELLS is None:
+        from kagg.rl import jax_policy as _PP
+        from kagg.il import market_bundles as _MB
+        _BUNDLE_SELLS = _MB.valid_table(_vocab(), pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS
+
+
+def _bundle_tables():
+    """The decode tables `jax_act.to_sim_actions` needs: bundle index -> which orders go out.
+
+    **This script had not been run since the argument was added.** `to_sim_actions` gained its third
+    parameter in `f75174e` (2026-08-22) and every call here still passed two, so the first traced
+    turn died with `missing 1 required positional argument: 'tables'`. `train_jax_rl.py:99` carries
+    the identical note about itself; `eval_policy.py` and `diagnose_policy.py` are still broken the
+    same way and are NOT fixed here.
+
+    Padded to the head width for the reason `market_bundles.tables` gives -- JAX clamps an
+    out-of-range gather under jit rather than raising, so an unpadded table returns a real,
+    confidently-emitted, wrong order.
+    """
+    global _BUNDLE_TABLES
+    if _BUNDLE_TABLES is None:
+        import jax.numpy as _jnp
         from kagg.il import market_bundles as _MB
         from kagg.rl import jax_policy as _PP
-        _BUNDLE_SELLS = _MB.valid_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
-    return _BUNDLE_SELLS
+        _BUNDLE_TABLES = {k: _jnp.asarray(v) for k, v in
+                          _MB.tables(_vocab(), pad_to=_PP.N_BUNDLES).items()}
+    return _BUNDLE_TABLES
 
 
 # 719, matching `train_jax_rl.py:81` and `eval_policy.py:32`. 720 runs one turn past natural
@@ -118,6 +161,11 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
     only -- `MAX_UNITS` is 24 against a crew of a few, so counting every slot is the padding
     mistake `train_jax_rl.py` already made twice.
     """
+    # Built eagerly, OUTSIDE the scan. Calling `_bundle_tables()` from inside `one_turn` builds the
+    # arrays under the trace and leaks a tracer out of the cache -- the same fault that had to be
+    # fixed in `train_jax_rl.py:392`.
+    tables = _bundle_tables()
+
     # `reset_with_shops`, not `reset`: a plain reset never opens a shop, so the town drains 140 wheat
     # a season instead of ~700 and end-of-season wheat prices at $37 against the real $51. The
     # money-flow decomposition this script produces is the input to P4's "the farm runs at a loss"
@@ -144,7 +192,7 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
         u32 = lambda k: A._unflat(act[k], batch).astype(jnp.int32)   # noqa: E731
         sim_op, sim_crop, sim_item, sim_qty, cmt, _decided = CM.resolve(
             cmt, state, u32("op"), u32("crop"), u32("item"), u32("qty"))
-        sim_actions = A.to_sim_actions(act, batch)._replace(
+        sim_actions = A.to_sim_actions(act, batch, tables)._replace(
             unit_op=sim_op.astype(J._I), unit_crop=sim_crop.astype(J._I),
             unit_item=sim_item.astype(J._I),
             unit_qty=P.UNIT_QTY_BUCKETS[sim_qty].astype(J._I))
@@ -154,12 +202,23 @@ def play(params, model, batch, key, swap, greedy=False, turns=EPISODE_TURNS,
                 else opponent_fn(state))
 
         # The opponent takes whichever seat the policy does not.
+        #
+        # **`tree_map` alone is wrong here, and it raises rather than corrupting -- which is luck.**
+        # A scripted opponent may leave a market field as `None` to mean ORDER_NONE, "this seat sends
+        # no orders and falls back to the canonical book". `tree_map` then hands `jnp.where` a None
+        # and it dies with `where requires ndarray or scalar arguments, got NoneType`. Substituting
+        # zeros is the correct reading: bucket 0 of every market head IS quantity zero, so a zeroed
+        # field is exactly "no order". `train_jax_rl.py` carries the identical fix as `_blend_seat`.
         seats = jnp.arange(2)[None, :]
         theirs = jnp.broadcast_to(seats != seat, (batch, 2))
-        sim_actions = jax.tree_util.tree_map(
-            lambda mine, other: jnp.where(
-                theirs.reshape(theirs.shape + (1,) * (mine.ndim - 2)), other, mine),
-            sim_actions, heur)
+
+        def _blend(mine, other):
+            if other is None:
+                other = jnp.zeros_like(mine)
+            return jnp.where(theirs.reshape(theirs.shape + (1,) * (mine.ndim - 2)), other, mine)
+
+        sim_actions = sim_actions._replace(**{
+            f: _blend(getattr(sim_actions, f), getattr(heur, f)) for f in J.Actions._fields})
 
         # **Accounted, so the bank curve can be read as causes rather than levels.**
         # The per-game-day bank showed the farmer replay falling -21/day to day 10 and -552/day to
@@ -274,11 +333,30 @@ def main():
                          "Kept only for reproducing that comparison.")
     ap.add_argument("--sample", action="store_true",
                     help="deprecated no-op; sampling is now the default")
+    ap.add_argument("--vocab", default=None,
+                    help="bundle vocabulary this checkpoint was TRAINED with. Defaults to the path "
+                         "recorded in the checkpoint's own args, and falls back to "
+                         "market_bundles.DEFAULT_VOCAB only if the checkpoint predates that field. "
+                         "Getting this wrong decodes every market order into a different order and "
+                         "raises nothing -- see the note by `_bundle_sells`.")
     args = ap.parse_args()
 
     with pathlib.Path(args.checkpoint).open("rb") as fh:
         ck = pickle.load(fh)
     saved = ck.get("args", {})
+
+    # The vocabulary travels with the model, so the checkpoint is the authority and the flag is an
+    # override. Printed either way: a tokenizer chosen by default is exactly the kind of thing that
+    # is never noticed until the numbers have already been believed.
+    vocab_path = args.vocab or saved.get("vocab")
+    _set_vocab(vocab_path)
+    if vocab_path:
+        src = "--vocab" if args.vocab else "checkpoint"
+        print(f"vocab: {vocab_path}  (from {src})")
+    else:
+        from kagg.il import market_bundles as _MBv
+        print(f"vocab: {_MBv.DEFAULT_VOCAB}  (DEFAULT -- checkpoint records none; "
+              f"if this model was trained on another vocabulary every order below is wrong)")
     # The checkpoint stores `args`, whose names are the CLI's (`heads`, `layers`), while the module
     # fields are `n_heads`/`n_layers`. `eval_policy.py:128` does the same translation.
     model = P.Policy(d_model=saved.get("d_model", 128),
