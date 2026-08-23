@@ -10772,6 +10772,72 @@ def _wheat_to(row, crop, budget):
 #:
 #: The +$240 is not a different plan. It is his ops exactly, minus the seed he buys and never sows;
 #: see the `BUY_SEED` trim, which is kept on this arm for precisely that reason.
+#: Which animal makes which product, for the sell-cadence scaling below.
+_PRODUCE_OF = {"MILK": "COW", "WOOL": "SHEEP", "EGG": "GOOSE"}
+
+
+#: Animal produce whose book absorbs whatever we offer, so the whole shed can go out.
+#: Measured 2026-08-23, ladder game 97495667: WOOL held **227-234 every day** while we offered 8 to
+#: 20 units, and MILK fell **185 -> 1** over the same days. Wool is drain-limited, not
+#: price-limited, so an unfilled offer costs nothing and holding 40 units at 229 to the bell
+#: realises zero. Milk is the book we flood ourselves, and there the herd ratio correctly offers
+#: LESS. Per-product plan content read off a price series, not a switch.
+_SELL_THE_WHOLE_SHED = ("WOOL",)
+
+#: From this day, unsold animal produce is worth nothing at the final bell, so there is no future
+#: price left to protect and everything goes out -- milk included.
+SELL_EVERYTHING_FROM_DAY = 27
+
+
+def scale_the_sell_to_the_herd(order, ours, tape_herd, shed, day):
+    """Scale a SELL of animal produce by the herd we actually run. Returns None to drop it.
+
+    `replayed()` re-points `BUY_ANIMAL` against `state["herd_split"]` (`:6035`) and trims `BUY_SEED`
+    to what the season can still plant (`:6017`), and the seed trim's comment says why -- "his seed
+    COUNT is sized for his season, not ours". `SELL` was never given the same treatment, so the herd
+    moves and the cadence that sells its produce does not.
+
+    Measured on two ladder games, both losses, 2026-08-23:
+
+        97495667  straw_q3  seat 1    tape COW 10 SHEEP 4    ours COW 8 SHEEP 6
+                                      WOOL sells 29 / 29     MILK sells 23 / 23
+                                      WOOL price 223, 38 unsold (~$8,474); MILK price 1
+        97486506  melon_q3  seat 0    tape COW 10 SHEEP 4    ours COW 9 SHEEP 5
+                                      WOOL price 245; MILK price 1
+
+    `_herd_split` moves animals to SHEEP because the town drew a YARN_STORE. Running the tape's
+    cow-heavy cadence over that herd then posts too much milk into a floored book and too little
+    wool into a starving one, which throws the split's gain away.
+
+    Bounded by the shed, because an offer of stock we do not hold is not a sale. Left alone when the
+    tape bought none of that species, since there is no baseline to scale against.
+    """
+    if not order or len(order) < 3 or order[0] != "SELL":
+        return order
+    species = _PRODUCE_OF.get(order[1])
+    if species is None:
+        return order
+    held = int(shed.get(order[1], 0) or 0)
+    qty = int(order[2])
+
+    if order[1] in _SELL_THE_WHOLE_SHED or day >= SELL_EVERYTHING_FROM_DAY:
+        qty = held
+    else:
+        mine = int(ours.get(species, 0) or 0)
+        theirs = int(tape_herd.get(species, 0) or 0)
+        if theirs > 0 and mine != theirs:
+            qty = int(round(qty * mine / theirs))
+        qty = min(qty, held)
+
+    if qty <= 0:
+        return None
+    # **The tape's own object, unchanged, when nothing moved.** Rebuilding an equal-looking order
+    # is how the weed fix regressed boards it never touched.
+    if qty == int(order[2]):
+        return order
+    return [order[0], order[1], qty]
+
+
 REPLAY_OPENING_DAYS = tuple(range(30))
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
@@ -12818,6 +12884,19 @@ def make_agent(schedule, me=0, router=True):
                 {key: _replay_opening(REPLAY_OPENING_DAYS, *tape)
                  for key, tape in REPLAY_OPENING_TAPE.items()})
 
+    # **What each arm's tape buys, so its SELL cadence can be scaled to the herd we actually run.**
+    # Read off the tape's own `BUY_ANIMAL` orders rather than off `sched`, because the cadence being
+    # scaled is the tape's and the baseline must be the herd that cadence was written for.
+    # See `scale_the_sell_to_the_herd`.
+    tape_herds = {}
+    for _key, _op in openings.items():
+        _h = collections.Counter()
+        for _s, (_f, _hd, _mk) in _op.items():
+            for _o in (_mk or []):
+                if _o and _o[0] == "BUY_ANIMAL" and len(_o) > 2:
+                    _h[_o[1]] += int(_o[2])
+        tape_herds[_key] = dict(_h)
+
     def replayed(obs, config=None):
         # Snapshot before driving the planner, because a replayed turn throws its answer away and
         # must not keep its side effects on the purchase counter -- see below.
@@ -12991,6 +13070,18 @@ def make_agent(schedule, me=0, router=True):
                         orders[-1][2] += 1
                     else:
                         orders.append(["BUY_ANIMAL", a, 1])
+                continue
+            # **The SELL of animal produce follows the herd, the same way BUY_ANIMAL above does.**
+            # `state["bought"]` is the herd we actually ordered; `tape_herds` is the herd whose
+            # cadence this order was written for. Without this the split moves animals to SHEEP and
+            # we keep posting the tape's cow-heavy mix over them -- measured on two ladder losses as
+            # 38 unsold WOOL at a price of 223 while MILK sat on its $1 floor.
+            o = scale_the_sell_to_the_herd(
+                o, state["bought"],
+                tape_herds.get((bool(state.get(_MB.BRANCH.armed_key)),
+                                bool(state.get(_Q4.BRANCH.armed_key)))) or {},
+                shed_, int(obs.get("day", 0) or 0))
+            if o is None:
                 continue
             orders.append(o)
 
