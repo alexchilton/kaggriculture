@@ -765,9 +765,14 @@ def make_rollout(model, batch, horizon, gamma, gae_lambda, n_phases, shaping_coe
                 # Which rows belong to a game the frozen opponent is playing in. Not the same as
                 # `~trainable`: that marks the opponent's own seat, while this marks *both* seats
                 # of a cross-play game, so the live policy's side of one can be picked out.
+                # `use_tape` belongs here for the same reason every other role does, and leaving it
+                # out silently dropped every tape game's policy seat from `ret` -- the one metric
+                # whose 0.500-pinning pathology the comment above exists to prevent, excluding the
+                # one opponent it was added to measure. `take_opp` included it from the start, so
+                # the two lists disagreed and only `wr_tape` (via OPPONENT_FLAGS) still worked.
                 crossplay=jnp.broadcast_to(
                     (use_opp | use_idle | use_trade | use_farm | use_ranch
-                     | use_carrot | use_home)[:, None],
+                     | use_carrot | use_home | use_tape)[:, None],
                     (batch, 2)).reshape(-1),
                 # Games against a *pool checkpoint* specifically. `crossplay` covers every scripted
                 # seat too, which is right for the win-rate metric and wrong for deciding how hard
