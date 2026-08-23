@@ -43,12 +43,19 @@ def test_a_bankrupt_season_still_has_a_gradient():
     assert d > 0.0, "a $1,000 gain below the old floor must be worth something"
 
 
-def test_hoarding_the_stake_is_still_worth_almost_nothing():
-    """What the floor was *for*, delivered by the convexity instead. Recovering to the $3,000 opening
-    stake must be worth a rounding error against a real season, or thrift becomes a strategy."""
-    stake = float(MP.potential(jnp.asarray(3_000.0)))
-    season = float(MP.potential(jnp.asarray(28_168.0)))
-    assert stake / season < 0.02, f"stake is {stake / season:.1%} of a season; too much"
+def test_hoarding_the_stake_earns_exactly_nothing():
+    """What the floor was *for*, delivered by the telescoping rather than by the curve's shape.
+
+    **Rewritten 2026-08-23 with EXPONENT 2.0 -> 1.0.** This asserted the stake was under 2% of a $28k
+    season, which measures the potential's *level*. Linear puts it at 10.7% and the assertion failed --
+    but thrift was never paid by the level. Episodes start at $3,000 (`jax_sim.py:487`) and shaping
+    pays `PHI(end) - PHI(start)`, so ending on the opening stake is worth zero at any EXPONENT. That is
+    the requirement, and it is now asserted directly.
+    """
+    assert float(MP.shaping(3_000.0, 3_000.0, coef=1.0)) == pytest.approx(0.0)
+    # Clawing back toward the stake from below still pays -- deleting that signal is what the old hard
+    # floor did, and it is the regression the test above pins.
+    assert float(MP.shaping(1_856.0, 3_000.0, coef=1.0)) > 0.0
 
 
 def test_zero_is_zero():
@@ -76,8 +83,14 @@ def test_the_launch_configuration_fits_the_value_head():
     """The check that keeps `--value-margin` honest. At the configured coefficient, a season's total
     shaping must fit inside the head's widened range, or `ret_clipped` fires and the critic silently
     saturates."""
-    coef, margin = 6.0, 0.75
+    # **The live configuration, 2026-08-23.** Was `6.0, 0.75`, which no run has used since the
+    # coefficient came down to 1.0 -- a stale pair here asserts nothing about what ships. Under linear
+    # a $28k season contributes 0.282, so `--value-margin 0.3` clears it by 0.018 and would clip the
+    # moment the policy did better than the scripted farmer. 0.5 is the launch value.
+    coef, margin = 1.0, 0.5
     realistic = float(MP.shaping(0.0, 28_168.0, coef=coef))
     assert realistic < margin, f"a $28k season contributes {realistic:.3f} against margin {margin}"
+    # The head must also hold terminal + shaping together, which is what actually lands in `ret`.
+    assert 1.0 + realistic < 1.0 + margin
     # And the worst case is bounded, which is the whole point of the cap.
     assert float(MP.shaping(0.0, 1e9, coef=coef)) == pytest.approx(coef)

@@ -69,6 +69,24 @@ from kagg.rl.money_potential import (  # noqa: F401
 # `jax_sim.py:1159`: `escaped = has_animal & (unfed >= 2)`. Not a tunable -- it is the rule.
 ESCAPE_AFTER = 2.0
 
+# **What unpicked yield is worth against the same product sitting in the shed.**
+#
+# v1 marked it at 1.0, and that made HARVEST pay exactly nothing: a ripe melon was $250 on the tile and
+# $250 in the hand, so `PHI` did not move. Measured on `shaped-20260823-205541`, `harv` ran at 0.07% of
+# ops against a teacher harvest/plant ratio of 2.05 to our 0.37 -- the op we most wanted was the one op
+# the ledger was silent about. Alex, 2026-08-23: *"the only thing he is not doing is harvest and
+# collecting milk and wool -- that is where we want the encouragement"*.
+#
+# The discount splits the credit: half when the crop ripens or the cow fills, half on the turn a hand
+# picks it up. It is not a thumb on the scale. Unpicked yield really is worth less than shed product
+# because it can still be lost -- `jax_sim.py:1249` zeroes `yield_units` when a crop dies of thirst and
+# `:1332` zeroes it when an animal escapes. Nothing can take product out of the shed.
+#
+# It must never reach 0. At 0 the FERTILIZE hole reopens: fertiliser destroys a ~$100 unit and its
+# doubled yield would show up nowhere until picked, which is the trap `standing_yield_value` exists to
+# close. `test_uncollected_yield_is_still_worth_something` pins that.
+UNPICKED = 0.5
+
 
 def freshness(tiles):
     """`[B, P, TILES]` in [0, 1]: how much of an animal's value survives tonight.
@@ -108,7 +126,9 @@ def stock_value(state):
 
 
 def standing_yield_value(state):
-    """`[B, P]` -- product that has grown but not yet been harvested, marked to market.
+    """`[B, P]` -- product that has grown but not yet been harvested, marked at `UNPICKED` of price.
+
+    The discount is what makes HARVEST pay; see the constant for why it is neither 1.0 nor 0.0.
 
     **This is the fix for the FERTILIZE hole, and it is load-bearing.** Without it `FERTILIZE` is
     strictly negative: it destroys a ~$100 unit of fertiliser and, with nothing on the plant side of
@@ -137,7 +157,7 @@ def standing_yield_value(state):
 
     wide = jnp.broadcast_to(px[:, None, :], product.shape[:-1] + (px.shape[-1],))
     unit_price = jnp.take_along_axis(wide, product, axis=-1)
-    return (t.yield_units.astype(jnp.float32) * unit_price).sum(axis=-1)
+    return (t.yield_units.astype(jnp.float32) * unit_price * UNPICKED).sum(axis=-1)
 
 
 def net_worth(state):

@@ -67,9 +67,25 @@ CAP = 1.0
 # order as the terminal reward, rather than dwarfing it.
 SCALE = 100_000.0
 
-# > 1 makes it convex: the same $1,000 is worth far more at $90k than at $4k, which is what
-# separates a real farm from a $5 win against an equally broke mirror.
-EXPONENT = 2.0
+# **Was 2.0. Linear from 2026-08-23, and the reason is arithmetic rather than taste.**
+#
+# Convexity put the credit in the $30k-$100k band. The policy has never been there: measured on
+# `shaped-20260823-205541`, bank median $0 and max $85, so its entire lived experience maps into
+# PHI in [0, 0.001] -- one thousandth of the potential's range. At `--shaping-coef 1.0` a $250 melon
+# moved PHI by 1.6e-4 against a terminal win of 1.0, one part in 6,400, and the run logged
+# `shape ... mean 2.86e-05`. That is shaping switched on and doing nothing.
+#
+# Linear multiplies the gradient at $3,000 by SCALE/2m ~ 16.7x: the same melon is now 2.5e-3, and a
+# teacher-grade $28k season telescopes to 0.28 rather than 0.079.
+#
+# Raising `coef` instead does not work. Reaching 1% of a win per melon needs coef ~64, and a season
+# that later approaches PHI 1 would then contribute 64 against a terminal 1.0 -- the failure the CAP
+# comment below already records at coef 6 contributing 7.3.
+#
+# What convexity was for still holds without it. "$5 more than an equally broke mirror is worth almost
+# nothing" is SCALE's doing: linear, $5 is 5e-5. And thrift still pays zero, because episodes start at
+# $3,000 (`jax_sim.py:487`) and the terms telescope, so holding the stake moves PHI not at all.
+EXPONENT = 1.0
 
 # **Off.** A run with this at 0 is byte-identical to a run made before the term existed.
 DEFAULT_COEF = 0.0

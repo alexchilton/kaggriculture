@@ -143,7 +143,7 @@ def test_unharvested_yield_on_a_plant_is_an_asset(state):
     )
     after = NW.net_worth(state._replace(tiles=tiles))
     melon_px = float(J.price(state.inventory)[0, 4])
-    assert float(after[0, 0] - before[0, 0]) == pytest.approx(6 * melon_px, rel=1e-3)
+    assert float(after[0, 0] - before[0, 0]) == pytest.approx(6 * melon_px * NW.UNPICKED, rel=1e-3)
 
 
 def test_animal_product_uses_the_sims_own_pairing(state):
@@ -155,7 +155,7 @@ def test_animal_product_uses_the_sims_own_pairing(state):
     goose = goose._replace(tiles=t._replace(yield_units=t.yield_units.at[:, 0, 0].set(4)))
     egg_px = float(J.price(state.inventory)[0, int(J.ANIMAL_TO_PRODUCT[0])])
     gain = float(NW.net_worth(goose)[0, 0] - before[0, 0])
-    assert gain == pytest.approx(float(J.ANIMAL_COST[0]) + 4 * egg_px, rel=1e-3)
+    assert gain == pytest.approx(float(J.ANIMAL_COST[0]) + 4 * egg_px * NW.UNPICKED, rel=1e-3)
 
 
 def test_fertilizing_is_not_punished_once_the_yield_lands(state):
@@ -175,27 +175,44 @@ def test_fertilizing_is_not_punished_once_the_yield_lands(state):
     assert float(NW.net_worth(doubled)[0, 0]) > float(NW.net_worth(holding)[0, 0])
 
 
-def test_the_opening_stake_is_worth_a_rounding_error(state):
-    """Alex's requirement is "0 for 0", and standing still on the $3,000 stake must earn effectively
-    nothing.
+def test_hoarding_the_opening_stake_earns_exactly_nothing(state):
+    """Alex's requirement is "0 for 0", and standing still on the $3,000 stake must earn nothing.
 
-    **This asserted `PHI(3_000) == 0` exactly until the floor moved to $0 on 2026-08-03.** The hard
-    floor turned out to be a dead zone: `bank_final_med` fell to $1,856, so whole seasons sat where the
-    gradient was identically zero. The convexity does the same job -- the stake is 1.1% of a $28k
-    season -- without deleting the signal. See `tests/test_potential_floor_and_cap.py`.
+    **Rewritten 2026-08-23, when EXPONENT went 2.0 -> 1.0 (Alex's call, on the numbers in
+    `docs/fable_shaping_scale_and_plant_2026-08-23.md`).** This used to assert the stake was under 2%
+    of a $28k season, which is a statement about the potential's *level* and was carrying the
+    requirement only by accident. Linear puts the stake at 10.6% of a season and the assertion failed,
+    while the thing Alex actually asked for was untouched.
+
+    What enforces "0 for 0" is not the level, it is the telescoping. Episodes start at $3,000
+    (`jax_sim.py:487`) and shaping pays `PHI(end) - PHI(start)`, so a policy that ends on its opening
+    stake earns zero however the curve is shaped. That is asserted directly here rather than inferred
+    from a ratio, and it holds for any EXPONENT.
     """
     assert float(NW.potential(jnp.asarray(0.0))) == pytest.approx(0.0)
-    stake = float(NW.potential(jnp.asarray(3_000.0)))
-    season = float(NW.potential(jnp.asarray(28_168.0)))
-    assert stake >= 0.0 and stake / season < 0.02
+    assert float(NW.shaping(3_000.0, 3_000.0, coef=1.0)) == pytest.approx(0.0)
+
+    # And going broke is a loss rather than a free option, which the old hard floor at $3,000 made it.
+    assert float(NW.shaping(3_000.0, 0.0, coef=1.0)) < 0.0
 
 
-def test_the_potential_is_convex_above_the_stake():
-    """Alex's requirement: the same $1,000 is worth far more at $90k than at $4k, so a $5 win over an
-    equally broke mirror earns almost nothing."""
-    near = NW.potential(jnp.asarray(5_000.0)) - NW.potential(jnp.asarray(4_000.0))
-    far = NW.potential(jnp.asarray(91_000.0)) - NW.potential(jnp.asarray(90_000.0))
-    assert float(far) > 10 * float(near)
+def test_a_bare_win_over_an_equally_broke_mirror_earns_almost_nothing():
+    """**Alex's actual requirement**, which convexity was one way of delivering and SCALE is another.
+
+    The old test asserted convexity itself -- `far > 10 * near` -- which is the mechanism, not the
+    goal, and linear fails it by construction while satisfying the goal comfortably: $5 over a broke
+    mirror is 5e-5 against a terminal win of 1.0, one part in 20,000. The margin is not what the Elo
+    ladder scores (`CLAUDE.md`: *"A $43k win and a $4k win score identically"*), so what matters is
+    that a hairline margin cannot compete with the win itself.
+    """
+    edge = float(NW.shaping(3_000.0, 3_005.0, coef=1.0))
+    assert 0.0 < edge < 1e-4, edge
+
+    # A real season, by contrast, must be worth a visible fraction of a win -- that is the whole point
+    # of the rescale. $28,168 is the scripted farmer's bank.
+    season = float(NW.shaping(3_000.0, 28_168.0, coef=1.0))
+    assert 0.1 < season < 1.0, season
+    assert season > 1_000 * edge
 
 
 def test_the_shaping_telescopes_so_only_the_endpoints_matter():
@@ -220,10 +237,92 @@ def test_the_potential_of_a_realistic_season_stays_below_the_terminal_reward(sta
     we are trying to close must sit well under 1.0."""
     ours = float(NW.potential(jnp.asarray(12_478.0)))
     theirs = float(NW.potential(jnp.asarray(28_168.0)))
-    assert 0.0 < ours < theirs < 0.25, (ours, theirs)
+    assert 0.0 < ours < theirs < 0.5, (ours, theirs)
+
+
+# ---- the ops the policy will not do --------------------------------------------------------------
+#
+# Alex, 2026-08-23: *"the only thing he is not doing is harvest and collecting milk and wool -- that is
+# where we want the encouragement"*. Measured on the running job, `harv` is 0.07-0.09% of ops and
+# `feed` is 0.00%, against a teacher harvest/plant ratio of 2.05 to our 0.37.
+#
+# v1 could not encourage either, and the reason is that it marked uncollected yield at FULL price. The
+# milk was already on the books the moment the cow made it, so HARVEST moved $160 from one term to
+# another and `PHI` did not change. The strongest thing in the ledger paid exactly nothing.
+#
+# Marking uncollected yield BELOW price splits the credit: some when it appears, the rest on the turn a
+# hand picks it up. The discount is not a thumb on the scale -- uncollected yield is genuinely at risk
+# in a way shed product is not. `jax_sim.py:1249` zeroes `yield_units` when a crop dies of thirst and
+# `:1332` zeroes it when an animal escapes. Product in the shed cannot be lost either way.
+
+
+def test_harvesting_a_ripe_crop_pays_on_the_turn_it_happens(state):
+    """**The acceptance test for the whole change.** Under v1 this was worth exactly zero.
+
+    A ripe melon is $250 on the tile and $250 in the hand, so the difference was nil and the op with
+    the second-strongest correlation to money paid nothing at all.
+    """
+    ripe = _with_yield(state, crop=4, units=1)                 # melon on the tile
+    picked = _harvested(ripe, product=M.PRODUCTS.index("MELON"), units=1)
+
+    assert float(NW.net_worth(picked)[0, 0]) > float(NW.net_worth(ripe)[0, 0])
+
+
+def test_collecting_milk_pays_on_the_turn_it_happens(state):
+    """The animal side of the same defect. `ANIMAL_TO_PRODUCT` maps a cow to MILK, so milk sitting on
+    the cow was already marked at $160 and the hand that walked over to collect it earned nothing."""
+    full = _with_yield(state, animal=1, units=1)                # cow
+    picked = _harvested(full, product=M.PRODUCTS.index("MILK"), units=1)
+
+    assert float(NW.net_worth(picked)[0, 0]) > float(NW.net_worth(full)[0, 0])
+
+
+def test_uncollected_yield_is_still_worth_something(state):
+    """The guard on the other side, and it is load-bearing. Marking uncollected yield at zero would
+    make HARVEST pay the most, and would also make FERTILIZE strictly negative again -- it destroys a
+    $100 unit of fertiliser and its doubled yield would show up nowhere until picked. That is the exact
+    trap `standing_yield_value` was written to close, so the discount must be a fraction, never zero."""
+    bare = float(NW.net_worth(state)[0, 0])
+    ripe = float(NW.net_worth(_with_yield(state, crop=4, units=1))[0, 0])
+    price = float(J.price(state.inventory)[0, M.PRODUCTS.index("MELON")])
+
+    assert 0.0 < (ripe - bare) < price, (ripe - bare, price)
+
+
+def test_the_two_halves_of_a_harvest_add_up_to_the_price(state):
+    """Nothing is invented and nothing is lost. Ripening plus picking must together be worth exactly
+    what the product sells for, or the potential is paying a bonus for the round trip."""
+    bare = float(NW.net_worth(state)[0, 0])
+    ripe = _with_yield(state, crop=4, units=1)
+    picked = _harvested(ripe, product=M.PRODUCTS.index("MELON"), units=1)
+    price = float(J.price(state.inventory)[0, M.PRODUCTS.index("MELON")])
+
+    assert float(NW.net_worth(picked)[0, 0]) - bare == pytest.approx(price, abs=1e-3)
 
 
 # ---- helpers -------------------------------------------------------------------------------------
+
+
+def _with_yield(state, crop=J.NO_CROP, animal=J.NO_ANIMAL, units=1):
+    """Seat 0 has `units` of unpicked yield on tile 0, from a crop or from an animal."""
+    t = state.tiles
+    kind = J.PASTURE if animal != J.NO_ANIMAL else J.PLANT
+    tiles = t._replace(
+        kind=t.kind.at[:, 0, 0].set(kind),
+        crop=t.crop.at[:, 0, 0].set(crop),
+        animal=t.animal.at[:, 0, 0].set(animal),
+        yield_units=t.yield_units.at[:, 0, 0].set(units),
+        fed_today=t.fed_today.at[:, 0, 0].set(True),
+    )
+    return state._replace(tiles=tiles)
+
+
+def _harvested(state, product, units=1):
+    """`jax_sim.py:668,846` -- the op decrements `yield_units` and the product lands in a unit's hands."""
+    t = state.tiles
+    tiles = t._replace(yield_units=t.yield_units.at[:, 0, 0].add(-units))
+    farm = state.farm._replace(carried=state.farm.carried.at[:, 0, 0, product].add(units))
+    return state._replace(tiles=tiles, farm=farm)
 
 
 def _with_animal(state, unfed, fed_today, animal=0, carry_wheat=False):
