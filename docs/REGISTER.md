@@ -631,3 +631,30 @@ by DROP/PICKUP/PLACE contributes zero — so confirm a difference is real before
 
 **The uncontested number says we finish ahead. The contested head-to-head says we lose both seatings
 on the valid seed.** Nothing here is a ladder result until that closes.
+
+---
+
+## OPEN 2026-08-23 — sell any and all CARROT and WOOL the moment it arrives
+
+Alex's, and it supersedes the fix shipped the same day.
+
+`sell_all_the_wool` scales an order the TAPE posts, so it can only fire on a turn the tape happened
+to post a sell for that product. Measured on validation game 97523402, seat 0: the tape posts
+**4 CARROT sells in the whole season**, and the only one after the crop lands is `t696 d29 h0`,
+offering 5 against a shed holding 54. Scaling that one order recovers most of it, but the mechanism
+still depends on the tape choosing to sell that day at all.
+
+The stronger form: emit a `SELL <product> <shed>` on any turn stock exists, independent of the
+tape's cadence. Removes the dependency entirely.
+
+Why it was not done first: it ADDS market orders the tape never had, rather than resizing existing
+ones. That is a bigger behavioural change than a resize and needs its own gate — the same
+generalisation that halved the money when the herd-ratio scaler went in
+(`170b8ef`, reverted by `d02296d`).
+
+To check before building it:
+
+- whether extra offers walk the price down. WOOL held 227-234 against 8-20 units offered
+  (game 97495667) so it has depth; CARROT is `above_func: sqrt, above_target 0.70` and has not
+  been measured.
+- whether a daily offer bunches the sale into a floor the way MILK already sits at $1.

@@ -10772,8 +10772,49 @@ def _wheat_to(row, crop, budget):
 #:
 #: The +$240 is not a different plan. It is his ops exactly, minus the seed he buys and never sows;
 #: see the `BUY_SEED` trim, which is kept on this arm for precisely that reason.
+#: Products whose SELL offers the whole shed instead of the tape's count.
+#:
+#: **WOOL** because `_herd_split` runs 6 sheep where the tape recorded 4, so the produce outruns the
+#: tape's cadence. **CARROT** because `CARROT_SWAP_DAYS` is our own addition: we plant a crop the
+#: tape barely grew, and it posts 4 CARROT sells a season against 73 in the shed at the bell.
+#: `reference/kaggriculture.py:1069` does exactly this for carrot in its own baseline agent.
+_SELL_THE_WHOLE_SHED = ("WOOL", "CARROT")
+
+
+#: `maxMarketOrdersPerTurn`, `reference/kaggriculture.py:551`. The reference truncates each player's
+#: queue with `q[:max_orders]`, so an order appended past this is silently dropped.
+MAX_MARKET_ORDERS = 10
+
+
+def top_up_the_sell_orders(orders, shed, max_orders=MAX_MARKET_ORDERS):
+    """Offer WOOL and CARROT the turn they arrive, not only when the tape happens to sell.
+
+    `sell_all_the_wool` can only resize an order the TAPE posts, so it does nothing on a turn with
+    no sell for that product. Measured after that fix, 9 seasons: 5 cleared and **4 still held 8-24
+    CARROT**, because the only carrot sell after the crop lands is `t696 d29 h0` and one order
+    cannot clear 54 units in the hours left.
+
+    **Appended, never inserted.** The reference keeps `q[:max_orders]`, so anything past slot 10 is
+    dropped -- and by appending, the one dropped is always ours rather than the tape's. A turn
+    already at the cap comes back untouched.
+
+    Largest holding first, so when only one slot is free it goes to the bigger pile.
+    """
+    if len(orders) >= max_orders:
+        return orders
+    already = {o[1] for o in orders if o and len(o) > 1 and o[0] == "SELL"}
+    for product in sorted(_SELL_THE_WHOLE_SHED,
+                          key=lambda p: -int(shed.get(p, 0) or 0)):
+        if len(orders) >= max_orders:
+            break
+        held = int(shed.get(product, 0) or 0)
+        if held > 0 and product not in already:
+            orders.append(["SELL", product, held])
+    return orders
+
+
 def sell_all_the_wool(order, shed):
-    """A WOOL sell offers whatever is in the shed. Nothing else is touched.
+    """A WOOL or CARROT sell offers whatever is in the shed. Nothing else is touched.
 
     Measured 2026-08-23 on ladder game 97495667 (lost by $1,991 holding **38 WOOL at 223**, about
     $8,474). The tape's WOOL cadence is sized for the herd it recorded -- 4 sheep -- and
@@ -10805,13 +10846,13 @@ def sell_all_the_wool(order, shed):
     Roughly half the money, gone. The wool half worked -- 12 of 12 seasons ended with an empty shed
     -- so what ships is the wool half alone.
     """
-    if not order or len(order) < 3 or order[0] != "SELL" or order[1] != "WOOL":
+    if not order or len(order) < 3 or order[0] != "SELL" or order[1] not in _SELL_THE_WHOLE_SHED:
         return order
-    held = int(shed.get("WOOL", 0) or 0)
+    held = int(shed.get(order[1], 0) or 0)
     # Never reduce the tape's own cadence: this may only ever put MORE on the book.
     if held <= int(order[2]):
         return order
-    return ["SELL", "WOOL", held]
+    return ["SELL", order[1], held]
 
 
 REPLAY_OPENING_DAYS = tuple(range(30))
@@ -13039,6 +13080,13 @@ def make_agent(schedule, me=0, router=True):
             # Only ever increases, and only WOOL -- see `sell_all_the_wool`.
             o = sell_all_the_wool(o, shed_)
             orders.append(o)
+
+        # **And offer WOOL and CARROT on any turn they are sitting in the shed.** Resizing the
+        # tape's own order only helps on a turn the tape sells that product; 4 of 9 seasons still
+        # ended holding 8-24 CARROT because the only carrot sell after the crop lands is one order
+        # on d29. Appended, so the reference's `q[:max_orders]` truncation drops ours and never the
+        # tape's -- see `top_up_the_sell_orders`.
+        orders = top_up_the_sell_orders(orders, shed_)
 
         # **Credit the tape's PLANTs, the same way the planner credits its own.** `:2374` increments
         # on EMISSION, not on the crop appearing, so this matches the convention exactly -- a plant

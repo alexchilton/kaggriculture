@@ -43,6 +43,22 @@ def test_wool_is_never_reduced_below_the_tapes_own_cadence():
     assert SA.sell_all_the_wool(order, {"WOOL": 0}) is order
 
 
+def test_carrot_offers_the_whole_shed():
+    """`CARROT_SWAP_DAYS` is our own addition: we grow a crop the tape barely grew.
+
+    Validation game 97523402, seed 0: **73 CARROT in the shed at the bell at a price of 90**
+    (~$6,570) against 4 CARROT sell orders posted all season. Carrot ripens in 2-3 days
+    (`first_yield_day: 2, max_yield_day: 3`), so planted d25-27 there is time to sell -- the orders
+    were simply never posted. `reference/kaggriculture.py:1069` sells the whole carrot shed too.
+    """
+    assert SA.sell_all_the_wool(["SELL", "CARROT", 4], {"CARROT": 73}) == ["SELL", "CARROT", 73]
+
+
+def test_carrot_is_never_reduced_below_the_tapes_own_cadence():
+    order = ["SELL", "CARROT", 9]
+    assert SA.sell_all_the_wool(order, {"CARROT": 2}) is order
+
+
 def test_milk_is_untouched():
     """The regression that halved the money. MILK is the tape's cadence, always."""
     order = ["SELL", "MILK", 10]
@@ -63,3 +79,48 @@ def test_an_equal_shed_returns_the_tapes_own_object():
     """Nothing moved, so the tape's order passes through unrebuilt."""
     order = ["SELL", "WOOL", 38]
     assert SA.sell_all_the_wool(order, {"WOOL": 38}) is order
+
+
+# --- selling the moment it arrives, not only when the tape happens to post -------------------
+
+def test_stock_with_no_tape_sell_still_gets_offered():
+    """RED: resizing the tape's order cannot help on a turn the tape posts no sell at all.
+
+    Measured after the resize fix, 9 seasons: 5 cleared, 4 still held 8-24 CARROT, because the only
+    carrot sell after the crop lands is `t696 d29 h0` and one order cannot clear 54 units in the
+    hours left. Offering on every turn stock exists removes the dependency on the tape's cadence.
+    """
+    out = SA.top_up_the_sell_orders([["BUY_SEED", "WHEAT", 3]], {"CARROT": 54, "WOOL": 12})
+    assert ["SELL", "CARROT", 54] in out, "carrot in the shed must be offered: %r" % (out,)
+    assert ["SELL", "WOOL", 12] in out, "wool in the shed must be offered: %r" % (out,)
+    assert out[0] == ["BUY_SEED", "WHEAT", 3], "the tape's own orders keep their slots first"
+
+
+def test_no_duplicate_when_the_tape_already_sells_it():
+    """The resize already handled that order. Two sells of the same product waste a slot."""
+    out = SA.top_up_the_sell_orders([["SELL", "CARROT", 54]], {"CARROT": 54, "WOOL": 0})
+    assert out == [["SELL", "CARROT", 54]], "no second carrot order: %r" % (out,)
+
+
+def test_an_empty_shed_adds_nothing():
+    orders = [["SELL", "WHEAT", 5]]
+    assert SA.top_up_the_sell_orders(orders, {"CARROT": 0, "WOOL": 0}) == orders
+
+
+def test_a_full_turn_never_displaces_a_tape_order():
+    """`maxMarketOrdersPerTurn` is 10 and the reference truncates with `q[:max_orders]`.
+
+    Appending means OUR order is the one dropped, never the tape's. A turn already at the cap must
+    come back untouched.
+    """
+    full = [["SELL", "WHEAT", 1]] * 10
+    out = SA.top_up_the_sell_orders(list(full), {"CARROT": 54, "WOOL": 12})
+    assert out == full, "a full turn must not grow past the cap: %r" % (len(out),)
+
+
+def test_it_fills_only_the_slots_that_are_free():
+    """Nine tape orders leaves exactly one slot: the bigger holding gets it."""
+    nine = [["SELL", "WHEAT", 1]] * 9
+    out = SA.top_up_the_sell_orders(list(nine), {"CARROT": 54, "WOOL": 12})
+    assert len(out) == 10, "one slot free, one order added: %r" % (len(out),)
+    assert out[9] == ["SELL", "CARROT", 54], "the larger holding takes the slot: %r" % (out[9],)
