@@ -65,15 +65,41 @@ OPPONENTS = {
     # around the shed), different hiring curve, different job priorities (waters before it
     # harvests), different sell rule (per-product floors from the market curve shape), and it is
     # the only opponent whose crop choice depends on what the candidate is growing.
+    # **The hinge player.** Copied from a real opponent that beat us by $29,384 in ladder game
+    # 98495047 (seed 1640915609), and added because the pool could not previously produce the
+    # situation at all.
+    #
+    # CARROT, TOMATO and EGG sit on the `hinge` price shape since the 2026-08-15 balance change
+    # (`reference/kaggriculture.py:43-47`): below the knee the price is linear in `x/T`, above it a
+    # quadratic with `HINGE_GAIN = 8.0` takes over, so a product nobody supplies goes vertical.
+    # CARROT has the largest `below_target` of the three, 1.00.
+    #
+    # What that opponent did, read off the tape: 0 carrot tiles until d21, **32 tiles by d26**, sold
+    # NOTHING until d29, then cleared 76 units at $498 -- 14x base -- for $37,848 on the final day.
+    # The book did not collapse under its own dump: it closed at $498 having been $96 on d21.
+    #
+    # This matters beyond carrot. Every sweep this pool has ever run measured agents that sell as
+    # they harvest, so no arm about WITHHOLDING stock could differ from control. `CARROT_OPP_MAX = 7`
+    # shipped on exactly that null -- `docs/carrot_refine_2026-08-22.md` states plainly that "the
+    # opponent half of the rule is still untested and needs a field containing a carrot player", and
+    # six of its nine arms were a wash by construction. 12,096 seasons could not see it.
+    #
+    # `hold_days` already expresses the behaviour, so this is a parameter set and not new code: stop
+    # selling at `endgame_day - hold_days` and dump at the close. `heuristic:302`.
+    "carrot_hinge": {"filler_crop": "CARROT", "melon_tiles": 0, "strawberry_tiles": 0,
+                     "cow_tiles": 0, "max_tiles": 100, "hold_days": 6, "endgame_day": 29},
     "contrarian": ("module", "kagg.agents.contrarian"),
     "starter": "starter",
     "pass": "pass",
 }
 
 # The pool worth optimising against: everything that actually competes for market prices.
+#
+# `carrot_hinge` was added 2026-08-24. Gate numbers taken before that date are over nine opponents
+# and are NOT directly comparable with numbers taken after -- the pool got harder on purpose.
 COMPETITIVE = (
     "mirror", "wheat_only", "melon_heavy", "strawberry", "cow_heavy",
-    "carrot_25", "small_farm", "straw_small", "contrarian",
+    "carrot_25", "small_farm", "straw_small", "contrarian", "carrot_hinge",
 )
 
 
