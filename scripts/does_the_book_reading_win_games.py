@@ -46,8 +46,24 @@ GAMES = ("98495047", "98460892", "98494953", "98499540", "98501831", "98428765")
 
 
 def _find(ep):
+    """First hit that is actually a full replay (`info` + `steps`), not a derived summary.
+
+    `data/seed_scripts/field_leaders/*.json` (and similar dirs) hold a lightweight per-game
+    summary -- keys `team, episode, seat_in_recording, their_money, our_money, actions` -- for the
+    same episode id as the real download elsewhere in the tree. `rglob` order is filesystem order,
+    not "real replay first", so picking `hits[0]` blind can hand back the summary file and crash on
+    `rec["info"]`. Found 2026-08-24 scanning drain 7-8 games: `field_leaders/91108446.json` sorted
+    before `top_guys/91108446.json`.
+    """
     hits = list((REPO / "data/seed_scripts").rglob(f"{ep}.json"))
-    return hits[0] if hits else None
+    for h in hits:
+        try:
+            rec = json.loads(h.read_text())
+        except Exception:                                                   # noqa: BLE001
+            continue
+        if isinstance(rec, dict) and "info" in rec and "steps" in rec:
+            return h
+    return None
 
 
 def _recorded(steps, t, seat):
@@ -73,7 +89,12 @@ def _old_gate(obs, me=0):
 
 
 def play(path, our_seat, seed, handover, use_old_gate):
-    """Replay both tapes to `handover`, then our agent plays out. Returns a row."""
+    """Replay both tapes to `handover`, then our agent plays out. Returns a row.
+
+    `handover=None` never calls our agent at all: both tapes run to the bell. That arm is the zero
+    the money columns are read against, because taking the wheel at the handover is itself worth
+    -$6,817 to -$20,878 before any arm acts.
+    """
     from kaggle_environments import make
 
     import breakdown as B
@@ -95,13 +116,23 @@ def play(path, our_seat, seed, handover, use_old_gate):
 
         env = make("kaggriculture", configuration=dict(cfg, seed=seed), debug=False)
         env.reset(2)
-        agent = SA.make_agent(sched, our_seat)
-        cut = handover * TPD
+        agent = None if handover is None else SA.make_agent(sched, our_seat)
+        cut = 30 * TPD if handover is None else handover * TPD
+        carrot_at_close = 0
 
         for t in range(30 * TPD):
             o_us = env.state[our_seat].observation
             n_us = len(o_us["farms"][our_seat].get("hands") or [])
             n_them = len(o_us["farms"][them].get("hands") or [])
+            if t == 29 * TPD:
+                # Fable's intermediate assertion. The corner is a POSITION, and whether it was
+                # built is visible here, one day before money can confound it. On 98495047 the
+                # opponent who beat us by $29,384 opened d29 holding ~76 units.
+                p = env.state[our_seat].observation["private"]
+                c = collections.Counter(p.get("shed") or {})
+                for i in (p.get("inventories") or []):
+                    c.update(i)
+                carrot_at_close = int(c.get("CARROT", 0))
             if t >= cut:
                 a = agent(o_us)
                 mine = {"farmer": a["farmer"], "hands": list(a["hands"] or [])[:n_us],
@@ -133,7 +164,8 @@ def play(path, our_seat, seed, handover, use_old_gate):
         return {"ours": farms[our_seat]["money"], "theirs": farms[them]["money"],
                 "carrot_price": float(px.get("CARROT", 0) or 0),
                 "deficit": 10_000 - int(inv.get("CARROT", 10_000)),
-                "our_carrot_tiles": carrot_tiles}
+                "our_carrot_tiles": carrot_tiles,
+                "carrot_at_close": carrot_at_close}
     finally:
         SA._carrot_pays = live
 
@@ -147,17 +179,23 @@ def main():
 
     out = REPO / a.out
     out.parent.mkdir(parents=True, exist_ok=True)
-    cols = ["episode", "seed", "recorded_margin", "control_margin", "treat_margin",
-            "control_win", "treat_win", "flip", "treat_carrot_tiles", "treat_carrot_price",
+    cols = ["episode", "seed", "recorded_margin", "tape_margin", "control_margin", "treat_margin",
+            "handover_bias", "control_win", "treat_win", "flip", "treat_carrot_tiles",
+            "treat_carrot_at_close", "control_carrot_at_close", "treat_carrot_price",
             "treat_deficit"]
     fh = out.open("w")
     fh.write(",".join(cols) + "\n")
     fh.flush()
 
     print(f"handover d{a.handover}; both tapes replayed to there so the BOOK is real")
-    print("metric is FLIPPED GAMES -- Elo pays the same for $1 and $30,000\n", flush=True)
-    print(f"{'episode':>10} {'recorded':>10} {'control':>10} {'treat':>10} {'flip':>6} "
-          f"{'tiles':>6} {'price':>6} {'deficit':>8}", flush=True)
+    print("metric is FLIPPED GAMES -- Elo pays the same for $1 and $30,000")
+    print("`tape` replays BOTH tapes to the bell and never calls our agent. `bias` is")
+    print("control - tape: what taking the wheel at the handover costs before any arm acts.")
+    print("`d29 c` is carrot held at d29 dawn -- the POSITION, before money can confound it.\n",
+          flush=True)
+    print(f"{'episode':>10} {'recorded':>10} {'tape':>10} {'control':>10} {'treat':>10} "
+          f"{'bias':>10} {'flip':>5} {'tiles':>6} {'d29 c/t':>9} {'price':>6} {'deficit':>8}",
+          flush=True)
 
     t0 = time.time()
     flips = unflips = 0
@@ -174,24 +212,31 @@ def main():
         seed = rec["info"]["seed"]
         rw = rec.get("rewards") or [0, 0]
         try:
+            z = play(path, seat, seed, None, use_old_gate=True)
             c = play(path, seat, seed, a.handover, use_old_gate=True)
             t = play(path, seat, seed, a.handover, use_old_gate=False)
         except Exception as e:                                               # noqa: BLE001
             print(f"{ep:>10}  {e!r}", flush=True)
             continue
+        zm = z["ours"] - z["theirs"]
         cm = c["ours"] - c["theirs"]
         tm = t["ours"] - t["theirs"]
         cw, tw = int(cm > 0), int(tm > 0)
         flip = tw - cw
         flips += flip == 1
         unflips += flip == -1
-        print(f"{ep:>10} {rw[seat] - rw[1 - seat]:>+10,.0f} {cm:>+10,.0f} {tm:>+10,.0f} "
-              f"{['', 'WIN', ''][flip + 1] if flip else '':>6} "
-              f"{t['our_carrot_tiles']:>6} {t['carrot_price']:>6.0f} {t['deficit']:>8}",
+        print(f"{ep:>10} {rw[seat] - rw[1 - seat]:>+10,.0f} {zm:>+10,.0f} {cm:>+10,.0f} "
+              f"{tm:>+10,.0f} {cm - zm:>+10,.0f} "
+              f"{['', 'WIN', ''][flip + 1] if flip else '':>5} "
+              f"{t['our_carrot_tiles']:>6} "
+              f"{str(c['carrot_at_close']) + '/' + str(t['carrot_at_close']):>9} "
+              f"{t['carrot_price']:>6.0f} {t['deficit']:>8}",
               flush=True)
-        fh.write(",".join(str(x) for x in [ep, seed, round(rw[seat] - rw[1 - seat]), round(cm),
-                                           round(tm), cw, tw, flip, t["our_carrot_tiles"],
-                                           round(t["carrot_price"]), t["deficit"]]) + "\n")
+        fh.write(",".join(str(x) for x in [ep, seed, round(rw[seat] - rw[1 - seat]), round(zm),
+                                           round(cm), round(tm), round(cm - zm), cw, tw, flip,
+                                           t["our_carrot_tiles"], t["carrot_at_close"],
+                                           c["carrot_at_close"], round(t["carrot_price"]),
+                                           t["deficit"]]) + "\n")
         fh.flush()
     fh.close()
     print(f"\nlosses flipped to wins: {flips}    wins lost: {unflips}    ({time.time() - t0:.0f}s)")
