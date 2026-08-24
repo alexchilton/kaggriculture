@@ -54,6 +54,7 @@ underperforms.
 """
 import importlib
 
+from . import routines as R
 from .branch import Branch
 
 #: Switched off ships the three-quadrant plan unchanged, and is byte-identical to not importing this.
@@ -291,10 +292,22 @@ class Q4Branch(Branch):
         # greedy has more ground to cover with the same crew, so giving away d24-d29 costs more than
         # the produce it recovers. Do not re-derive it: an A/B here that reads byte-identical means
         # this line was left in, not that the range does nothing.
-        cover.UNSOLVE_DAYS = ()
+        # **The close is the one part of the table that cannot be solved offline.** A route table is
+        # computed with no knowledge of the town's book, and the book is what decides the last two
+        # days: the same board pays $270 for milk in one game and $1 in another. On ladder game
+        # 98428765 this table walked past three cows holding $2,430 and a sheep holding $576 while
+        # hauling wheat the town paid $21 for, and no prize change could reach it, because on a
+        # four-quadrant board d28 and d29 come from here rather than from the greedy.
+        #
+        # The 2026-08-18 revert above gave away the WHOLE range, d24-d29, and lost $295/$1,856 --
+        # measured when every close prize still carried `CRITICAL`, so the greedy it lost to could
+        # not rank by value at all. `router.the_close` removed that constant. This gives back only
+        # the two days Alex named, not the range.
+        cover.UNSOLVE_DAYS = tuple(range(R.SEASON_DAYS - 2, R.SEASON_DAYS))
         cover.PRECOMPUTED_ROUTES = {d: {u: [(tuple(tile), tuple(ops)) for tile, ops in seq]
                                         for u, seq in units.items()}
-                                    for d, units in q4.SOLVED_DAYS.items()}
+                                    for d, units in q4.SOLVED_DAYS.items()
+                                    if d not in cover.UNSOLVE_DAYS}
         return moved
 
 

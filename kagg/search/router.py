@@ -433,7 +433,7 @@ TOP_UP_FROM_DAY = 7
 TOP_UP_DISCOUNT = 8.0
 
 
-def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
+def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None, product_price=None):
     """`[(op, item, prize)]` worth doing on a planted tile today, in the order they must be emitted.
 
     FERTILIZE precedes WATER because WATER reads `fertilized_until_day` at the moment it runs.
@@ -452,7 +452,9 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     time to earn any other way.
     """
     info = CROP[cell["crop"]]
-    price = BASE_PRICE[cell["crop"]]
+    # What the town pays for this crop RIGHT NOW. Omitted, it falls back to `BASE_PRICE` and every
+    # caller that has not been threaded behaves exactly as before.
+    price = BASE_PRICE[cell["crop"]] if product_price is None else float(product_price)
     fert_price = BASE_PRICE["FERTILIZER"] if fertilizer_price is None else float(fertilizer_price)
     age = day - cell["planted_day"]
     held = cell.get("yield_units", 0)
@@ -635,14 +637,30 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # becomes legal; `age >= max_day + 1` is the day `_decay_plants` starts eating it, one unit
         # every two steps from h00. So this fires on exactly the one day the tile can be taken
         # whole, and on any day after it while something is still left to save.
-        # **The last day is every tile's last safe day.** `_last_safe_age` promotes a harvest on the
-        # day decay would start eating it, which is right while there is a tomorrow to be eaten by.
-        # On d29 a tile left standing is not decayed, it is discarded whole, so the age test cannot
-        # express the deadline. Reads as a null on the kawashigi grid, which ends empty; the ladder
-        # corpus leaves 519 WHEAT standing over 30 games. See the note in `animal_ops`.
-        if (upkeep_buys_nothing(day)
-                or (day is not None and day >= HARVEST_CRITICAL_FROM_DAY
-                    and age >= _last_safe_age(info))):
+        # **On the last day there is no deadline to express, so there is no constant here.**
+        # `CRITICAL` means "this decays overnight and there is a tomorrow to lose it in". On d29
+        # every standing tile is discarded whole at the same moment, so the term would be identical
+        # on every tile -- and a term that is equal everywhere cannot order anything, it can only
+        # destroy the ordering underneath it.
+        #
+        # It did exactly that. Adding it here while `animal_ops` priced its last-day harvest at
+        # `units * live price` made every crop outrank every pen. Ladder game 98428765, seed
+        # 1236821574, lost by $1,783:
+        #
+        #     wheat tile, 3 units, town paying $21   3 * 25 + 1,000,000 = 1,000,075
+        #     cow pen,    3 milk,  town paying $270  3 * 270            =       810
+        #
+        # A 1,235x inversion. The day hauled 53 wheat and left three cows and a sheep standing --
+        # $3,006, well over the losing margin. Alex, 2026-08-24: *"i would prefer in that case you
+        # take the milk and the wool before the wheat! when they are both so high!"* and *"you add
+        # up the shit on the board, you look at the shop price and you calculate how to get the
+        # best shit in"*.
+        #
+        # Before the last day the promotion is a real deadline and stays: `_last_safe_age` is the
+        # day `_decay_plants` starts eating the tile, and skipping it then genuinely loses units.
+        if (not the_close(day)
+                and day is not None and day >= HARVEST_CRITICAL_FROM_DAY
+                and age >= _last_safe_age(info)):
             prize += CRITICAL
         out.append(("HARVEST", None, prize))
     # **A finished ongoing crop is ground, not a crop.** A one-shot HARVEST clears its tile
@@ -928,6 +946,31 @@ def upkeep_buys_nothing(day):
     return NO_UPKEEP_ON_THE_LAST_DAY and day is not None and day >= R.SEASON_DAYS - 1
 
 
+def the_close(day):
+    """The last two days, d28 and d29 -- the window where a harvest is priced at the SHOP.
+
+    Distinct from `upkeep_buys_nothing`, which is d29 only: a FEED on d28 still pays out on d29 and
+    is worth buying, so upkeep must not stop a day early.
+
+    What this window changes is *pricing*. Across d0-d27 a harvest prize can carry `CRITICAL`, which
+    means "this decays overnight and there is a tomorrow to lose it in" -- a deadline, and a real
+    one. In the last two days there is no such tomorrow: everything still standing at the close is
+    discarded whole, at the same moment, on every tile. A term that is identical on every tile
+    cannot order them; it can only flatten the value ranking underneath it.
+
+    Measured, ladder game 98428765, seed 1236821574, lost by $1,783 -- d29 with `CRITICAL` on the
+    crops and not on the pens:
+
+        wheat tile, 3 units, town paying $21    3 * 25 + 1,000,000 = 1,000,075
+        cow pen,    3 milk,  town paying $270   3 * 270            =       810
+
+    The day hauled 53 wheat and left three cows and a sheep standing, $3,006, well over the margin.
+    Alex, 2026-08-24: *"you add up the shit on the board, you look at the shop price and you
+    calculate how to get the best shit in"*.
+    """
+    return day is not None and day >= R.SEASON_DAYS - 2
+
+
 def animal_ops(cell, day, have_wheat, product_price=None):
     """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed.
 
@@ -1039,13 +1082,13 @@ def animal_ops(cell, day, have_wheat, product_price=None):
         # (`kaggriculture.py:942` then `:946`), so milk left standing on a pen tomorrow is produce
         # that can never be money.
         #
-        # A crop already reaches CRITICAL through `_last_safe_age` -- it has a filling window that
-        # closes. A pen has no such window, so nothing ever promotes it, and the grid shows 48 idle
-        # unit-turns on d28 with the field still holding. This is the pen's version of the same
-        # deadline, and it is d28 ONLY: d29's own harvest is priced by the `upkeep_buys_nothing`
-        # branch at the top of this function.
-        if day is not None and day == R.SEASON_DAYS - 2:
-            prize += CRITICAL
+        # **No constant in the close.** This used to add `CRITICAL` on d28 to stop pens being
+        # ignored while 48 unit-turns sat idle. It worked by making every pen infinitely urgent,
+        # which also made every pen equal to every other pen and to every promoted crop -- so the
+        # thing it fixed came back as "collects pens, but the cheapest ones first". `the_close`
+        # explains why the deadline is not expressible as a constant here. The pen's urgency is
+        # already in its price: `units * live price` is what it banks if taken and what is lost if
+        # not, and that number orders pens against crops correctly without a thumb on the scale.
         out.append(("HARVEST", None, prize))
     return out
 
@@ -1271,7 +1314,10 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                 continue
             kind = cell.get("kind")
             if kind == "PLANT":
-                ops = crop_ops(cell, day, have_fert, fertilizer_price, tile=tile)
+                # `prices` is the town's live book; omitted, `crop_ops` falls back to `BASE_PRICE`
+                # and this line is byte-identical to before.
+                ops = crop_ops(cell, day, have_fert, fertilizer_price, tile=tile,
+                               product_price=(prices or {}).get(cell["crop"]))
                 # **A one-shot harvest is a demolition, so the tile it clears is plantable ground.**
                 # See `REPLANT_A_CLEARED_TILE`. Budgeted from the day's remaining `plants` row, in
                 # iteration order, exactly as `chain_left` budgets placements: the row is a count and

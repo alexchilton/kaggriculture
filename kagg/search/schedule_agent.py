@@ -1279,7 +1279,8 @@ def _emit(op, item):
     return [op]
 
 
-def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0, pen_for=None):
+def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0, pen_for=None,
+              prices=None):
     """The ops still worth doing at `tile`, **re-derived from the live board every turn**.
 
     This is the whole trick to committing to a tour without going back to predicting state. The route
@@ -1315,10 +1316,15 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0, 
         return []
     kind = cell.get("kind")
     if kind == "PLANT":
+        # The executor re-derives the work at each stop and orders the ops it emits, so it must
+        # price them the same way the plan did. Reading `BASE_PRICE` here while the plan reads the
+        # town's book means the two disagree about which op at this tile is worth the turn.
         ops = RT.crop_ops(cell, day, inv.get("FERTILIZER", 0) > 0, fertilizer_price,
-                          tile=tile)
+                          tile=tile, product_price=(prices or {}).get(cell.get("crop")))
     elif "animal" in cell:
-        ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0)
+        ops = RT.animal_ops(cell, day, inv.get("WHEAT", 0) > 0,
+                            product_price=(prices or {}).get(
+                                RT.ANIMALS[cell["animal"]]["product"]))
     elif kind in ("PASTURE", "COOP"):
         # **The pen takes the animal the schedule ordered for it.** `_refresh_pins` reads the row's
         # ordered `places` -- d0 is `['SHEEP','COW','SHEEP','COW']` -- and reserves a tile per entry
@@ -2325,7 +2331,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                 break
             cell_here = tiles[node.tile[1]][node.tile[0]]
             ops = _live_ops(node.tile, cell_here, day, inv, pins, seeds, fertilizer_price,
-                            hour=hour, pen_for=state.get("pen_for") or {})
+                            hour=hour, pen_for=state.get("pen_for") or {}, prices=prices)
             if not ops:
                 # **Go back for the feed rather than abandon the animal you just placed.**
                 # `SERVE_THE_ANIMAL_IT_PLACES` hangs the FEED and CARE off the placement node, and
