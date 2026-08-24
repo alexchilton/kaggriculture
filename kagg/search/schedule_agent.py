@@ -1753,7 +1753,8 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
 
 
 def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0,
-                 arriving=(), unlocked_shops=(), fertilizer_price=None, hold_farmer=False):
+                 arriving=(), unlocked_shops=(), fertilizer_price=None, hold_farmer=False,
+                 prices=None):
     """One turn of the routed plan. The plan is built ONCE, at dawn, and then only walked.
 
     `arriving` is where today's hires will land (`_arrivals`). They are planned as vehicles even
@@ -1910,6 +1911,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                                           pen_for=state.get("pen_for") or {},
                                           plantable=_plantable,
                                           fertilizer_price=fertilizer_price,
+                                          prices=prices,
                                           replant=collections.Counter(_replant),
                                           dated=collections.Counter(_dated))
                 if n.tile not in skip]
@@ -1927,7 +1929,8 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # routed *tiles* silently swallowed every new placement and the trigger never fired once.
     urgent = {(n.tile, o) for n in RT.build_nodes(tiles, day, shed, carried, unlocked, pins, hour,
                                                  pen_for=state.get("pen_for") or {},
-                                                 fertilizer_price=fertilizer_price)
+                                                 fertilizer_price=fertilizer_price,
+                                                 prices=prices)
               for o, _i in n.ops if o in URGENT_OPS} if URGENT_OPS else set()
     routed = {(n.tile, o) for st in routes.values() for n in st["route"] for o, _i in n.ops}
     fresh = urgent - state["seen_urgent"] - routed
@@ -3780,12 +3783,17 @@ def make_agent(schedule, me=0, router=True):
             # 17 and $20 by day 26 in 85 of 85 recorded games. Pricing it at the $100 base means
             # refusing to fertilize a tile because the unit is notionally worth five times what
             # anyone will pay. The quote is in the observation, so it need not be estimated.
-            _fert = ((obs.get("market") or {}).get("prices") or {}).get("FERTILIZER")
+            # The town's whole book, not just the fertilizer quote. It is in the observation, so
+            # it need not be estimated -- and on the last day it is what decides which pen is worth
+            # the walk. See `router.animal_ops`.
+            _prices = dict((obs.get("market") or {}).get("prices") or {})
+            _fert = _prices.get("FERTILIZER")
             acts = _router_acts(state, sched, day, hour, plan_tiles, units, invs, shed,
                                 seeds, plan_unlocked, money, arriving=arriving,
                                 unlocked_shops=list((obs.get("town") or {}).get("unlocked_shops")
                                                     or []),
-                                fertilizer_price=_fert, hold_farmer=step_off is not None)
+                                fertilizer_price=_fert, prices=_prices,
+                                hold_farmer=step_off is not None)
             if step_off is not None and acts:
                 # The plan was cut from where the farmer STANDS, so its first stop is simply reached
                 # a turn later. That is the whole price: one farmer turn against a hand's twenty-three.

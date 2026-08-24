@@ -928,10 +928,23 @@ def upkeep_buys_nothing(day):
     return NO_UPKEEP_ON_THE_LAST_DAY and day is not None and day >= R.SEASON_DAYS - 1
 
 
-def animal_ops(cell, day, have_wheat):
-    """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed."""
+def animal_ops(cell, day, have_wheat, product_price=None):
+    """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed.
+
+    `product_price` is what the town is paying for this animal's product **right now**. Omitted, it
+    falls back to `BASE_PRICE` and every caller behaves exactly as before.
+
+    **Why a constant cannot do this job.** The price of wool and milk in our game is largely set by
+    what we ourselves sold into the book earlier in the season. Both runs of ladder game 98335212,
+    same seed 34935263:
+
+        recorded submission     WOOL $183   MILK $1
+        our own rematch         WOOL $5     MILK $214
+
+    Same board, opposite ranking. `BASE_PRICE` says WOOL 200 / MILK 160 in both.
+    """
     a = ANIMALS[cell["animal"]]
-    price = BASE_PRICE[a["product"]]
+    price = BASE_PRICE[a["product"]] if product_price is None else float(product_price)
     out = []
     fed = cell["fed_today"]
     if upkeep_buys_nothing(day):
@@ -951,7 +964,20 @@ def animal_ops(cell, day, have_wheat):
             # corpus -- and four losses are narrower than what we left in the ground
             # (`93839424 -158` with 22 standing, `93826137 -623` with 24). Measure this with
             # `scripts/rematch_the_losses.py`, which pins each game's own seed, never on one grid.
-            out.append(("HARVEST", None, CRITICAL + cell["yield_units"] * price))
+            #
+            # **`CRITICAL` was removed from this prize on 2026-08-24, and it was the whole defect.**
+            # At `CRITICAL = 1_000_000` a cow holding 3 milk at $214 priced 1,000,642 and a sheep
+            # holding 4 wool at $5 priced 1,000,020 -- a $642 pen and a $20 pen differing by 0.06%.
+            # The price term existed and decided nothing, so the route took the pens in whatever
+            # order the board offered. Measured on d29 of game 98335212 with the planner owning the
+            # last two days: four pens left holding at the close, $1,600 standing, ~$1,284 of it the
+            # milk it walked past.
+            #
+            # On the last day the pen's whole worth IS its standing product, so the prize is that
+            # money and nothing else -- which is what lets a rich pen outrank a poor one, and lets
+            # both lose to a richer job elsewhere. Alex, 2026-08-24: *"we are wanting to optimise
+            # based on the actual price in the shop not what you set it"*.
+            out.append(("HARVEST", None, cell["yield_units"] * price))
         return out
     if not fed and have_wheat:
         hungry = cell.get("consecutive_unfed", 0) >= 1
@@ -1221,7 +1247,8 @@ def _best_replant_crop(replant, day, dated=None):
 
 
 def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=None,
-                plantable=None, fertilizer_price=None, replant=None, dated=None):
+                plantable=None, fertilizer_price=None, replant=None, dated=None,
+                prices=None):
     """Every tile worth visiting today, as routing nodes.
 
     `carried` is the union of what the crew already holds, so a task whose input is neither in the
@@ -1272,7 +1299,11 @@ def build_nodes(tiles, day, shed, carried, unlocked, pinned, hour=0, pen_for=Non
                         if PLANT_THEN_WATER:
                             ops.extend(crop_ops(_freshly_planted(crop, day), day, have_fert))
             elif "animal" in cell:
-                ops = animal_ops(cell, day, have_wheat)
+                # `prices` is the town's live book; omitted, `animal_ops` falls back to
+                # `BASE_PRICE` and this line is byte-identical to before.
+                ops = animal_ops(cell, day, have_wheat,
+                                 product_price=(prices or {}).get(
+                                     ANIMALS[cell["animal"]]["product"]))
             elif kind in ("PASTURE", "COOP"):
                 # TRIED: PASTURE is shared by COW and SHEEP, and picking the first match in
                 # `R.ANIMAL_NAMES = ["GOOSE", "COW", "SHEEP"]` order means COW wins every time both are
