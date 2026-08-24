@@ -3674,7 +3674,7 @@ EMBEDDED_OPENINGS = {}
 #: keyed on one latch replays the wrong season's actions on the other arm.
 REPLAY_OPENING_TAPE = {
     (False, False): ("data/seed_scripts/kawashigi/92498144.json", "カワシギ"),
-    (True, False): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
+    (True, False): ("data/seed_scripts/kawa_2026-08-24/97466318.json", "カワシギ"),
     (False, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
     # **The three-quadrant strawberry tape, and this is exact rather than a compromise.** The note
     # here used to say no four-quadrant strawberry game had been identified, and that was simply
@@ -3708,7 +3708,7 @@ REPLAY_OPENING_TAPE = {
     # against `0 0 4 6 8 19 19 19`, because it sows melon on the squares this arm wants strawberry
     # on. Land, pens and animals are identical in every tape through d12, so crop is the only axis
     # this choice has.
-    (True, True): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
+    (True, True): ("data/seed_scripts/kawa_2026-08-24/97466318.json", "カワシギ"),
 }
 
 #: The two species the herd split may exchange, derived rather than written down so it cannot go stale
