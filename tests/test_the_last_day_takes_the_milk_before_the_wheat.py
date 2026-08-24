@@ -110,6 +110,28 @@ def test_the_last_day_crop_prize_is_the_live_price_not_the_constant():
     assert prize == pytest.approx(63.0)
 
 
+def test_the_wheat_goes_first_when_the_animal_book_has_crashed():
+    """The rule reversed, and this is the half that proves it is a rule and not a preference.
+
+    Alex, 2026-08-24: *"so will it get the wheat in first if the cow and sheep have crashed to 1?"*
+
+    We flood our own book, so the same board that pays $270 for milk in one game pays $1 in the next
+    -- both measured on seed 34935263. Nothing here knows what a cow is; it multiplies units by
+    what the town pays this turn. A pen holding 3 milk at $1 is worth $3 and must LOSE to a wheat
+    tile worth $63.
+
+    This is why the earlier rematch of game 98428765 leaving three cows standing was correct play
+    rather than a failure: milk was $1 in that run.
+    """
+    cow = harvest_prize(RT.animal_ops(a_cow(), LAST_DAY, True, product_price=1.0))
+    sheep = harvest_prize(RT.animal_ops(a_sheep(), LAST_DAY, True, product_price=1.0))
+    wheat = harvest_prize(RT.crop_ops(a_wheat_tile(), LAST_DAY, False, None,
+                                      tile=(9, 6), product_price=WHEAT))
+    assert wheat > sheep > cow, (
+        f"crashed book: wheat {wheat:,.0f}, wool {sheep:,.0f}, milk {cow:,.0f} -- "
+        f"a constant anywhere in this chain breaks the reversed case first")
+
+
 def test_a_crop_still_gets_the_deadline_promotion_before_the_last_day():
     """The `CRITICAL` deadline is real on a day that HAS a tomorrow. Do not remove it there.
 
