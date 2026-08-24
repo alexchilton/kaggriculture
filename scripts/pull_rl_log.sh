@@ -80,7 +80,19 @@ for line in open(sys.argv[1], errors="replace"):
         g = re.search(r'END \$?([\d,-]+|n/a)', line)
         if g:
             cur['end'] = g.group(1)
-        for k in ('pool', 'tape'):
+        # **The crop mix is the leading indicator, and `END` is the lagging one.**
+        # Alex, 2026-08-23: the previous run of this shape unlearnt the imitation, turned into a
+        # melon farmer and beat the pool -- but it took a long time. The crop switch has to happen
+        # before the money can, so melon share moves first and is the cheap early read on whether
+        # this run is walking the same road. It opens as a wheat farmer (WHEAT 0.59, MELON 0.03).
+        g = re.search(r'crop .*?WHEAT:([\d.]+).*?MELON:([\d.]+)', line)
+        if g:
+            cur['wheat'], cur['melon'] = float(g.group(1)), float(g.group(2))
+        # **Every opponent that actually played, not a hardcoded pair.** This named `pool` and
+        # `tape` and so printed an empty column for a disabled opponent while hiding carrot, trade
+        # and ranch -- the three the 2026-08-24 league change turned on. Same species of staleness
+        # as the hardcoded log path: correct when written, silently wrong afterwards.
+        for k in ('pool', 'tape', 'carrot', 'trade', 'ranch', 'farm', 'idle', 'home'):
             g = re.search(k + r':([\d.]+)/(\d+)x/d(\d+)%', line)
             if g:
                 # W = wr - D/2, since a draw pays half. Two broke farms draw with certainty
@@ -92,13 +104,18 @@ if cur:
     rows.append(cur)
 
 term = [r for r in rows if r['term']] or rows[-3:]
+# Only the opponents that actually appeared in this run get a column.
+seen = [k for k in ('carrot', 'trade', 'ranch', 'pool', 'farm', 'idle', 'tape', 'home')
+        if any(r.get(k, '-') != '-' for r in term)]
 print("terminations only -- W/D/L%% derived from wr and the draw share")
-print("%4s %7s %10s %9s %9s   %-16s %-16s" %
-      ("up", "wr", "END", "bank med", "bank max", "pool W/D/L", "tape W/D/L"))
+print("%4s %7s %10s %9s %9s   %s" %
+      ("up", "wr", "END", "bank med", "bank max",
+       "  ".join("%-15s" % (k + " W/D/L") for k in seen)))
 for r in term[-10:]:
-    print("%4d %7s %10s %9s %9s   %-16s %-16s" %
+    print("%4d %7s %10s %9s %9s   %s" %
           (r['up'], "%.3f" % r['wr'] if r['wr'] is not None else "-",
-           r['end'], r['med'], r['mx'], r['pool'], r['tape']))
+           r['end'], r['med'], r['mx'],
+           "  ".join("%-15s" % r.get(k, '-') for k in seen)))
 if rows:
     print("\nlatest update %d (of %d logged); END prints only on a termination update"
           % (rows[-1]['up'], len(rows)))
