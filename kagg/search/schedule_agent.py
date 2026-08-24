@@ -3330,12 +3330,18 @@ def _sow_carrot_instead(acts, orders, budget=None):
     return acts, orders, spent
 
 
-def sell_all_the_wool(order, shed):
+def sell_the_whole_shed(order, shed):
     """Resize a SELL of a whole-shed product up to everything held. Never down.
 
     Validation game 97523402, seed 0 mirror: 73 CARROT in the shed at the bell at a price of 90 --
     about $6,570 -- against a single d29 order offering 5 of 54. This may only ever put MORE on the
     book, so it cannot disturb a cadence that was already right.
+
+    It runs on EVERY day, unlike `top_up_the_sell_orders`, and that is deliberate rather than an
+    oversight. Measured 2026-08-24 on six ladder games: withholding CARROT until d29 instead cost
+    **-$21,872** on 98495047 and -$88 on 98460892, because dumping 80 units at once walks our own
+    close from $498 to $316 while selling as we go never pays that walk-down. See
+    `docs/abstention_is_a_loss_2026-08-24.md`.
     """
     if not order or len(order) < 3 or order[0] != "SELL" or order[1] not in _SELL_THE_WHOLE_SHED:
         return order
@@ -3628,14 +3634,30 @@ def _wheat_to(row, crop, budget):
     return _recrew(row, "WHEAT", crop, budget)
 
 
-#: Which days are played from the tape instead of planned. A DAY SET, not a prefix count: d0-d5 are
-#: ours. That is not a limitation to work around, it is what makes the handover legal -- our own
-#: d0-d5 already tracks the tape to within a few dollars (`money` closes 13/16, 168/171, 44/42, 3/1,
-#: 113/111, 43/43), so the board the tape's d6 actions assume is the board we hand it. The further
-#: back a replay starts the less true that is.
+#: Which days are played from the tape instead of planned. A DAY SET, not a prefix count.
 #: `resolve_days.py` and `breakdown.py` both read this, so the routes are solved for the trajectory
 #: we actually play.
-REPLAY_OPENING_DAYS = (4, 5, 6, 7, 8, 9, 10, 11)
+#:
+#: **d0-d2 added 2026-08-24. d3 is deliberately NOT in the set.**
+#:
+#: The comment this replaces claimed our own d0-d5 tracked the tape "to within a few dollars" and
+#: cited six matching `money` closes. The BOARD converged; the ACTIONS never did. Measured on
+#: 97204026 and 97210773, our agent against his tape in his seat on the game's own seed, EVERY turn
+#: of d0-d3 differed -- at d0 h0 he does `BUILD_PASTURE` and buys 6 WHEAT as feed while we `PASS`
+#: and buy none, and one hand sits on `PASS` for most of the opening. The boards meet again at d4
+#: and part for good at d5.
+#:
+#: **Why d0-d2 is safe and d3 is not.** The tape is chosen by `(melon_armed, q4_armed)`, and those
+#: latches decide at `melon_branch.DECIDE_BY_DAY = 3` and `q4_branch.DECIDE_BY_DAY = 6`. Hashing
+#: the four tapes day by day: d0, d1 and d2 are IDENTICAL in all four, d3 splits two ways on the
+#: melon latch, d4 splits three ways. So d0-d2 carry no branch and need no latch to replay. d3
+#: does, and the latch that would choose it only decides on d3 itself.
+#:
+#: That line is not cosmetic. Replaying d0-d11 blind -- which reads the unset latch for three days
+#: -- measured **mean -$96,897 over 14 games, better in only 2**, with eight seasons collapsing by
+#: $100k-$200k. `tests/test_the_first_three_days_are_his.py` pins the tape-agreement guard so a
+#: future tape edit cannot quietly reintroduce it.
+REPLAY_OPENING_DAYS = (0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11)
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
 #: `scripts/build_planner_submission.py`. Empty in the repo, where the tapes are read off disk.
@@ -5401,7 +5423,7 @@ def make_agent(schedule, me=0, router=True):
             day = int(obs.get("day", 0) or 0)
             orders = [list(o) for o in (act.get("market") or [])]
             shed = (obs.get("private") or {}).get("shed") or {}
-            orders = [sell_all_the_wool(o, shed) for o in orders]
+            orders = [sell_the_whole_shed(o, shed) for o in orders]
             orders = top_up_the_sell_orders(orders, shed, day)
             acts = [act.get("farmer") or ["PASS"]] + list(act.get("hands") or [])
             if day in CARROT_SWAP_DAYS:
@@ -5463,7 +5485,15 @@ def make_agent(schedule, me=0, router=True):
         bought_before = dict(state["bought"])
         planted_before = dict(state["planted"])
         live = agent(obs, config)
-        step = int(obs.get("step", 0) or 0)
+        # **`step` is only given to seat 0.** `kaggle-environments` hands seat 1 `step: None`
+        # (`project_kaggriculture_seat1_has_no_step`), so `int(obs.get("step", 0) or 0)` read 0 on
+        # every turn of the season for that seat. With `REPLAY_OPENING_DAYS = (4..11)` that was
+        # SILENT: step 0 is not in the opening, the lookup below fell through to `return live`, and
+        # seat 1 simply never replayed anything. Nothing detected it because the fallback is the
+        # legal path. `day` and `hour` are on both seats' observation, so derive it.
+        step = obs.get("step")
+        step = (int(obs.get("day", 0) or 0) * TPD + int(obs.get("hour", 0) or 0)
+                if step is None else int(step))
         # Both latches, read through the branches' OWN `armed_key` rather than a string written here.
         # A hand-written `"branch_armed"` pinned the melon latch False -- nothing writes that name,
         # `MelonBranch.armed_key` is `"melon_armed"` -- so the strawberry tape was unreachable by
