@@ -117,14 +117,24 @@ def test_missing_a_feed_costs_something_on_the_turn_the_clock_moves(state):
     assert float(NW.net_worth(skipped)[0, 0]) < float(NW.net_worth(fed)[0, 0])
 
 
-def test_inventory_is_marked_to_the_towns_price(state):
-    """Held product is an asset. Without this a harvest would look like it created nothing until the
-    sale, which is the same credit-delay problem one link further down the chain."""
+def test_inventory_is_marked_below_the_towns_price(state):
+    """Held product is an asset, but not worth as much as the cash it fetches.
+
+    **Was `== 10 * px` until 2026-08-24.** Marking held stock at the town's FULL price is what made
+    SELL pay nothing: goods and the cash for them were the same number, so the last link in the chain
+    -- the only one the game actually scores -- moved `PHI` not at all. `HELD` is the discount that
+    makes selling pay the remainder; `test_selling_pays_the_gap_between_book_value_and_cash` is the
+    acceptance test and this one is the guard that the mark is still most of the price, so a harvest
+    still lands as an asset rather than as nothing.
+    """
     before = NW.net_worth(state)
     farm = state.farm._replace(shed=state.farm.shed.at[:, 0, 0].add(10))   # 10 wheat
     after = NW.net_worth(state._replace(farm=farm))
     px = float(J.price(state.inventory)[0, 0])
-    assert float(after[0, 0] - before[0, 0]) == pytest.approx(10 * px, rel=1e-3)
+    gain = float(after[0, 0] - before[0, 0])
+
+    assert gain == pytest.approx(10 * px * NW.HELD, rel=1e-3)
+    assert 0.0 < gain < 10 * px
 
 
 # ---- the potential and the shaping ---------------------------------------------------------------
@@ -289,15 +299,68 @@ def test_uncollected_yield_is_still_worth_something(state):
     assert 0.0 < (ripe - bare) < price, (ripe - bare, price)
 
 
-def test_the_two_halves_of_a_harvest_add_up_to_the_price(state):
-    """Nothing is invented and nothing is lost. Ripening plus picking must together be worth exactly
-    what the product sells for, or the potential is paying a bonus for the round trip."""
+def test_the_three_steps_of_a_crop_sum_to_its_price(state):
+    """Nothing is invented and nothing is lost. Ripening, picking and selling must together be worth
+    exactly what the product fetches, or the potential pays a bonus for the round trip."""
     bare = float(NW.net_worth(state)[0, 0])
+    px = float(J.price(state.inventory)[0, M.PRODUCTS.index("MELON")])
+
     ripe = _with_yield(state, crop=4, units=1)
     picked = _harvested(ripe, product=M.PRODUCTS.index("MELON"), units=1)
-    price = float(J.price(state.inventory)[0, M.PRODUCTS.index("MELON")])
+    sold = state._replace(farm=state.farm._replace(money=state.farm.money.at[:, 0].add(px)))
 
-    assert float(NW.net_worth(picked)[0, 0]) - bare == pytest.approx(price, abs=1e-3)
+    assert float(NW.net_worth(sold)[0, 0]) - bare == pytest.approx(px, abs=1e-3)
+    # And each step is a strict increase, so no link in the chain is a dead spot.
+    assert bare < float(NW.net_worth(ripe)[0, 0]) < float(NW.net_worth(picked)[0, 0]) \
+        < float(NW.net_worth(sold)[0, 0])
+
+
+# ---- the link that paid nothing: selling ----------------------------------------------------------
+#
+# Alex, 2026-08-24: *"i still think the money should be a dense strategy"*, and *"it aint learning
+# that money is important at all"*. He is right, and the reason is in this file rather than in the
+# trainer. `stock_value` marked shed goods at the town's full price, so swapping $160 of milk for
+# $160 of cash moved `PHI` by nothing -- and slightly DOWN once the sale pushes the price on the
+# stock still held. The ledger was indifferent between a barn full of wool and the money for it.
+#
+# Cash is the only thing the game scores: `END` is `bank_final_med`, the median bank a season
+# FINISHED on, and `shaped2` sat at $0-$1 for 136 updates while harvesting and feeding both climbed.
+# Marking held goods BELOW their sale price makes the last link pay, and the discount is honest for
+# the same reason `UNPICKED` is: shed stock is marked optimistically, since selling N units walks the
+# price down (`net_worth.py` "Known conservatism").
+
+
+def test_selling_pays_the_gap_between_book_value_and_cash(state):
+    """**The acceptance test for money being dense.** Under v1 this was worth exactly zero."""
+    px = float(J.price(state.inventory)[0, M.PRODUCTS.index("MILK")])
+    holding = state._replace(farm=state.farm._replace(
+        shed=state.farm.shed.at[:, 0, M.PRODUCTS.index("MILK")].add(1)))
+    sold = state._replace(farm=state.farm._replace(money=state.farm.money.at[:, 0].add(px)))
+
+    assert float(NW.net_worth(sold)[0, 0]) > float(NW.net_worth(holding)[0, 0])
+
+
+def test_holding_stock_is_still_worth_most_of_its_price(state):
+    """The guard on the other side. Marking shed goods at zero would make HARVEST and every
+    collection pay nothing again, and would price a full shed as an empty one."""
+    px = float(J.price(state.inventory)[0, M.PRODUCTS.index("MILK")])
+    bare = float(NW.net_worth(state)[0, 0])
+    holding = state._replace(farm=state.farm._replace(
+        shed=state.farm.shed.at[:, 0, M.PRODUCTS.index("MILK")].add(1)))
+
+    assert 0.0 < float(NW.net_worth(holding)[0, 0]) - bare < px
+
+
+def test_an_animal_in_the_shed_is_still_marked_at_full_cost(state):
+    """**The discount is on PRODUCTS only.** Livestock must stay at cost or BUY_ANIMAL stops being
+    neutral and the ledger starts arguing against the animal chain -- the exact thing this module was
+    written to prevent. `test_buying_an_animal_at_cost_is_a_wash` is the pair to this."""
+    before = NW.net_worth(state)
+    cost = float(J.ANIMAL_COST[0])
+    farm = state.farm._replace(shed=state.farm.shed.at[:, 0, M.N_PRODUCTS + 0].add(1))
+    after = NW.net_worth(state._replace(farm=farm))
+
+    assert float(after[0, 0] - before[0, 0]) == pytest.approx(cost, abs=1e-3)
 
 
 # ---- helpers -------------------------------------------------------------------------------------

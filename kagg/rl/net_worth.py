@@ -87,6 +87,33 @@ ESCAPE_AFTER = 2.0
 # close. `test_uncollected_yield_is_still_worth_something` pins that.
 UNPICKED = 0.5
 
+# **What product in the shed or in a hand is worth against the cash it would fetch.**
+#
+# v1 marked it at 1.0, which made SELL pay exactly nothing: $160 of milk became $160 of cash and
+# `PHI` did not move -- and it moved slightly DOWN once the sale walked the town's price down on the
+# stock still held. The ledger was indifferent between a barn full of wool and the money for it, and
+# mildly preferred the barn.
+#
+# Cash is the only thing the game scores. `END` is `bank_final_med`, the median bank a season
+# actually FINISHED on, and `shaped2` held $0-$1 across 136 updates while harvesting, feeding and
+# pasture-building all climbed. Alex, 2026-08-24: *"it aint learning that money is important at
+# all"*. Making the last link pay is what this constant is for.
+#
+# It is not a bonus. With `UNPICKED` at 0.5 the whole chain still sums to exactly one sale price:
+#
+#     crop ripens on the tile    0.5 x price      +0.50
+#     harvested into a hand      0.7 x price      +0.20
+#     sold for cash              1.0 x price      +0.30
+#
+# The discount is honest on the same basis as `UNPICKED`: shed stock is marked optimistically,
+# because `price(inventory)` is a first-order mark and selling N units moves it down. See "Known
+# conservatism" in the module docstring.
+#
+# **PRODUCTS only.** Livestock in the shed stays at `ANIMAL_COST`, or BUY_ANIMAL stops being neutral
+# and the ledger starts arguing against the animal chain -- the precise thing this module exists to
+# avoid. `test_an_animal_in_the_shed_is_still_marked_at_full_cost` pins that.
+HELD = 0.7
+
 
 def freshness(tiles):
     """`[B, P, TILES]` in [0, 1]: how much of an animal's value survives tonight.
@@ -108,7 +135,10 @@ def livestock_value(tiles):
 
 
 def stock_value(state):
-    """`[B, P]` -- everything in the shed and in units' hands, marked to market.
+    """`[B, P]` -- everything in the shed and in units' hands.
+
+    Products mark at `HELD` of the town's price so that SELLING pays the remainder; animals mark at
+    full `ANIMAL_COST` so that BUYING one stays neutral. See both constants.
 
     The item axis is `PRODUCTS + ANIMALS` (`market.py:42`), so the split below is a slice. That layout
     is pinned by `tests/test_net_worth.py::test_animals_occupy_the_tail_of_the_item_axis` rather than
@@ -119,7 +149,7 @@ def stock_value(state):
     """
     held = (state.farm.shed + state.farm.carried.sum(axis=2)).astype(jnp.float32)
     px = J.price(state.inventory).astype(jnp.float32)              # [B, N_PRODUCTS]
-    products = (held[..., :J.N_PRODUCTS] * px[:, None, :]).sum(axis=-1)
+    products = (held[..., :J.N_PRODUCTS] * px[:, None, :] * HELD).sum(axis=-1)
     animals = (held[..., J.N_PRODUCTS:] * J.ANIMAL_COST[None, None, :].astype(jnp.float32)
                ).sum(axis=-1)
     return products + animals
