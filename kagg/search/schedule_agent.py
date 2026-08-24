@@ -5317,11 +5317,30 @@ def make_agent(schedule, me=0, router=True):
             # that is SHORT, not to add to one already met, and a wheat round trip pays the spread
             # both ways -- the same lesson `NET_THE_TWO_LEGS` records on the sell side.
             #
-            # A day with no `buys` row keeps the top-up unbounded: there the formula is the only rule
-            # there is.
+            # **A row asking for NOTHING is a ration of zero, not an absent rule.** This used to
+            # exempt a day with no `buys` row -- "there the formula is the only rule there is" --
+            # and d3's row is exactly that, `buys {}`. Measured 2026-08-24 over all 35 kawashigi
+            # replays, each on its own seed against its own recorded opponent, the exemption cost
+            # the same amount in every single game:
+            #
+            #     d3 orders          his   ours
+            #       BUY_ANIMAL COW     1     1
+            #       HIRE               5     5
+            #       BUY_SEED CARROT    1     1
+            #       SELL FERTILIZER    4     7
+            #       BUY_PRODUCT WHEAT  0     4    <- the row asks for none
+            #
+            # He buys no wheat at any hour of d3 and sells FERTILIZER 4 the next day, so the stock
+            # is meant to be held overnight. Four wheat at about $30 is ~$120, and the bank gap that
+            # opens here settles at -$119 and never closes: it refuses the last HIRE of d7, which
+            # costs a hand, a FEED, a CARE and an animal placement, and the board first differs at
+            # d8. At d3 h0 our bank and shed match his EXACTLY in all 35 games, so d3 creates all
+            # of it.
+            #
+            # Five days have no `buys.WHEAT` row -- d3, d15, d16, d20, d29 -- so this binds on
+            # those five and changes nothing on the other twenty-five.
             row_buys = int((row.get("buys") or {}).get("WHEAT", 0) or 0)
-            if row_buys > 0:
-                gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
+            gap = min(gap, row_buys - int(state["ordered"][("buys", "WHEAT")]))
             if gap > 0:
                 orders.append(["BUY_PRODUCT", "WHEAT", gap])
                 topup_orders.add(id(orders[-1]))
@@ -5539,6 +5558,57 @@ def make_agent(schedule, me=0, router=True):
         # made, on his turn, in his quantity.
         split = state.get("herd_split") or {}
         acts = [list(farmer)] + [list(h) for h in hands[:owned]]
+
+        # **A tape PLANT onto ground that is not bare is a silent no-op, so DIG first and sow next
+        # turn.** `kaggriculture.py:420` returns from PLANT when `tile is not None` -- without even
+        # spending the seed -- and `weedSpawnChance` is 0.005 on the ladder, so which tiles carry a
+        # weed, and which of his plants have expired by now, is a per-game draw the canned tape
+        # cannot know. His own recording does the pair: `97397843` d5 h11 DIG, d5 h12 PLANT
+        # STRAWBERRY. Ours planted at h11 into a spent plant, watered at h12, and tile (3,1) was a
+        # WEED at d6 -- the whole board difference in both games that first diverge at d6.
+        #
+        # The plant is HELD rather than dropped, because the tape's next op for that unit is a
+        # WATER written for ground it believed was already sown. Held per unit index, released on
+        # its next replayed turn if it has not moved and the tile is now bare, and abandoned if it
+        # has. Same construction as the PICKUP/PLACE species rewrite below: read the live board,
+        # keep the tape's turn and the tape's intent.
+        farm_ = farms_[me_] if len(farms_) > me_ else {}
+        tiles_ = farm_.get("tiles") or []
+        at = [tuple(farm_.get("farmer") or (-1, -1))] + \
+             [tuple(p) for p in (farm_.get("hands") or [])]
+
+        def _tile(pos):
+            # A unit position is `(x, y)` and `tiles` is indexed `[y][x]` -- `kaggriculture.py:320`
+            # unpacks `fx, fy = pos[0], pos[1]` and then reads `farm["tiles"][fy][fx]`. Reading it
+            # the other way round rewrote a PLANT on the wrong tile's contents and broke the board
+            # at d1 in all 32 kawashigi games, against d6-d13 without the rewrite at all.
+            x, y = pos
+            row = tiles_[y] if 0 <= y < len(tiles_) else None
+            return row[x] if row is not None and 0 <= x < len(row) else "LOCKED"
+
+        # **d4 onwards only.** d0-d2 replay a tape whose board is the fixed start state -- identical
+        # in all 78 recorded openings -- so nothing there can be occupied unexpectedly and any
+        # rewrite is a change with no case to answer. From d4 the tape is a different game's
+        # recording and the ground under a hand is a per-game draw.
+        held = state.setdefault("held_plant", {})
+        for i, a in enumerate(acts if step // TPD >= 4 else []):
+            pos = at[i] if i < len(at) else None
+            if pos is None:
+                continue
+            owed = held.get(i)
+            if owed is not None:
+                crop, where = owed
+                if tuple(where) != pos:
+                    del held[i]                      # walked away; the row is the planner's problem
+                elif _tile(pos) is None:
+                    acts[i] = a = ["PLANT", crop]
+                    del held[i]
+            if a and a[0] == "PLANT" and len(a) >= 2 and _tile(pos) is not None:
+                if _tile(pos) != "LOCKED" and not (isinstance(_tile(pos), dict)
+                                                   and "animal" in _tile(pos)):
+                    held[i] = (a[1], pos)            # DIG cannot clear a placed animal (`:487`)
+                    acts[i] = a = ["DIG"]
+
         for i, a in enumerate(acts):
             if len(a) < 2 or a[1] not in _PASTURE:
                 continue
