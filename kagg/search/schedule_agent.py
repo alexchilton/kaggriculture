@@ -44,6 +44,7 @@ from . import cover as DP
 from . import melon_branch as _MB
 from . import q4_branch as _Q4
 from . import router as RT
+from . import tree_clamp as _TC
 
 
 
@@ -3730,6 +3731,13 @@ def make_agent(schedule, me=0, router=True):
                 if _moved:
                     sched[day] = _r
                     row = _r
+
+            # **The middle window plants what the board supports, read off a fitted tree.** See
+            # `kagg/search/tree_clamp.py`. Applied LAST so every branch above rewrites its rows
+            # before the cap lands on them. d13-d18 only: the tree is dead from d19, and d0-d12
+            # are the tape's.
+            if _TC.apply(sched, day, obs, me):
+                row = sched.get(day) or row
 
         units = [tuple(farm["farmer"])] + [tuple(h) for h in (farm.get("hands") or [])]
 
