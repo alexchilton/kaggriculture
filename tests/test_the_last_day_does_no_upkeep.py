@@ -120,7 +120,25 @@ def test_a_ripe_pen_is_still_harvested_on_the_last_day():
 
 @pytest.mark.parametrize("day", [20, 25, 28])
 def test_every_other_day_is_untouched(day):
-    """This must be the LAST day only -- d28's feed still pays out at the d29 rollover."""
-    ops = RT.animal_ops(_pen(unfed=1), day, have_wheat=True)
+    """This must be the LAST day only -- d28's feed still pays out at the d29 rollover.
+
+    **d28 is no longer unconditional, knowingly, 2026-08-25.** `SHEEP_GO_HUNGRY_FROM_DAY = 27` lets
+    a pen that can no longer earn its ration go hungry on d27 and d28, which is what makes it escape
+    at the d28 rollover -- カワシギ's own timing, and worth `+$480 a game, sem 128, t=3.75` over 60
+    paired tapes (`docs/kawa_herd_and_the_tape_gate_2026-08-25.md`). Exempting d28 would make the
+    whole rule a no-op, because an escape needs two consecutive misses.
+
+    Alex, told this test stood in the way: *"well that test is not relevant if we break it
+    knowingly"*.
+
+    So the claim is narrowed rather than dropped: on d20, d25 and d28 a pen that **still has product
+    coming** is fed. That is what the docstring above always meant -- the original fixture happened
+    to be a COW whose d29 rollover is `(29-0-8) = 21`, odd, so at `interval` 2 it produced nothing
+    and the feed it asserted bought nothing.
+    """
+    pen = _pen(unfed=1)
+    # A pen with a yield still to come, which is the case the rule is protecting.
+    pen["yield_units"] = 2
+    ops = RT.animal_ops(pen, day, have_wheat=True)
     assert [o for o in ops if o[0] == "FEED"], (
-        f"d{day} stopped offering FEED to a hungry pen; only d{LAST_DAY} may: {ops}")
+        f"d{day} stopped offering FEED to a hungry pen that still has product: {ops}")

@@ -1520,6 +1520,44 @@ def _claimed_tiles(units, routes, idle, margin):
 DIG_A_WEED_WHEN_THE_ROW_IS_SHORT_OF_GROUND = True
 
 
+#: Cache for `_plants_still_to_sow`, keyed by `id(sched)`. The schedule is built once per agent and
+#: never mutated, so the suffix sums are computed on the first call of a game and read thereafter.
+_STILL_TO_SOW_CACHE = {}
+
+
+def _plants_still_to_sow(sched, day):
+    """How many of each crop the schedule still plants on `day` or later.
+
+    This is the a-priori bound on seed: a crop the tape will not sow again is a crop whose store can
+    never be spent, so buying more of it is unconditional loss at `RT.SEED_COST`.
+
+    Read off `plants`, which lists the crops actually sown each day, NOT off `plant_tiles`. Those two
+    disagree: `plant_tiles` is empty on d3, d5, d6 and d18-d25 while `plants` on the same rows is not,
+    so counting tiles reports the tape sowing zero carrot all season when it sows eight.
+
+    NULL, measured 2026-08-25: filtering these rows by `RT.plant_prize(crop, day) > 0` -- so that a
+    planting the router will refuse stops being budgeted -- produced a byte-identical season on seed
+    700 vs `contrarian`. It is not on the path. This table feeds only the FLOOR branch of the buy,
+    while wheat quantity comes from the schedule row's own `qty`, and the late wheat that the d27
+    guard refuses is emitted by the live planner (d24-d29), which is not in `sched["plants"]` at all.
+    """
+    key = id(sched)
+    table = _STILL_TO_SOW_CACHE.get(key)
+    if table is None:
+        table = {}
+        running = collections.Counter()
+        for d in sorted(sched, reverse=True):
+            running.update(sched[d].get("plants") or [])
+            table[int(d)] = dict(running)
+        _STILL_TO_SOW_CACHE[key] = table
+    if not table:
+        return {}
+    if day in table:
+        return table[day]
+    # Past the last scripted day nothing more is sown; before the first, everything still is.
+    return {} if day > max(table) else table[min(table)]
+
+
 def _pens_due_before_more_land(sched, day):
     """How many pens the schedule builds after `day` but before it buys its next parcel."""
     nxt = min((d for d in sorted(sched)
@@ -2155,7 +2193,11 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
             # **Ask the same question the planner asked.** `underfoot` used to feed any unfed pen it
             # stood on, so a ration `will_be_fed` had deliberately declined went in anyway the moment
             # a loaded hand crossed the tile -- d0 planned two feeds and emitted three.
-            if not here.get("fed_today") and inv.get("WHEAT", 0) > 0 and RT.will_be_fed(here, day):
+            # The price goes in for the same reason: from d27 `will_be_fed` asks whether the pen
+            # still earns its ration, and without the town's book it cannot (`pays_for_its_ration`).
+            if (not here.get("fed_today") and inv.get("WHEAT", 0) > 0
+                    and RT.will_be_fed(here, day, (prices or {}).get(
+                        RT.ANIMALS[here["animal"]]["product"]) if "animal" in here else None)):
                 owed = sum(1 for nd in st["route"]
                            for o, _i in getattr(nd, "ops", ()) if o == "FEED")
                 if inv["WHEAT"] > owed:
@@ -3011,6 +3053,25 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
         # **Both branches of his step function are pinned, not just the capped one.** An early yarn
         # store means 6 cows; anything else means 10. Leaving the second case to the greedy below
         # was wrong on the majority of his recorded seats -- see `WOOL_SHOP_NO_YARN_COW`.
+        #
+        # **The residual form is CORRECT and was verified 2026-08-25. Do not re-target the sheep.**
+        # Capping sheep absolutely (6 early, 2 otherwise) to chase his 6/6 and 10/2 was tried and
+        # reverted the same day. Those two are his SURVIVING herds, not his policy. Counting `PLACE`
+        # instead -- a unit op, emitted once, and you cannot place an animal you do not own -- over
+        # 76 post-change tapes that explicitly contain him:
+        #
+        #     PLACED            ALIVE at the bell        placed -> alive
+        #     10/4 = 14  53.9%  10/2 = 12  46.1%         10/4 -> 10/2  35 seats  sheep -2, cows 0
+        #     6/12 = 18  22.4%   6/6 = 12  18.4%         6/12 ->  6/6  10 seats  sheep -6, cows 0
+        #      6/8 = 14  15.8%   6/4 = 10  11.8%          6/8 ->  6/4   9 seats  sheep -4, cows 0
+        #
+        #     mean PLACED 15.01   mean ALIVE 12.20
+        #
+        # His placed mode is 10/4 at a total of 14, which is what this residual line already
+        # produces. **He never starves a cow -- zero cows lost in every row.** The 12 he finishes on
+        # is 14 placed minus two sheep he stops feeding once the wool book is crushed, and that is a
+        # late-season UPKEEP decision, not a herd-size one. Matching it means not feeding sheep late,
+        # not buying fewer.
         early = "YARN_STORE" in list(unlocked_shops or ())[:WOOL_SHOP_DRAW_LIMIT]
         target = WOOL_SHOP_COW_CAP if early else WOOL_SHOP_NO_YARN_COW
         if split["COW"] <= target:
@@ -3018,6 +3079,35 @@ def _herd_split(want_total, bought, day, hour, unlocked_shops, last_day=29):
             split["COW"] = max(split["COW"], min(target, total - split["SHEEP"]))
             return split
 
+    # **The presence test is gone; the town's demand decides the mix.** What used to sit here asked
+    # only whether a YARN_STORE was in the first three draws, pinned cows to 6 if so and 10 if not,
+    # and returned before the assignment below ever ran. So the demand-aware code existed and never
+    # executed, on either branch, and milk was never consulted at all.
+    #
+    # Measured 2026-08-25, `scripts/the_herd_against_the_drain.py`, 6 forced shop worlds x 8 seeds,
+    # mirror against the shipped agent. 54% is the seat-0 baseline -- identical agents, seat 0 holds
+    # the earlier market order slots -- not 50%:
+    #
+    #     arm               win  games
+    #     greedy            98%     48     <- this code, reached
+    #     proportional      94%     48
+    #     cow4              65%     48
+    #     ship              54%     48     <- the presence test
+    #     cow6              46%     48
+    #     cow12             38%     40
+    #     cow10             28%     43
+    #     cow14             28%     40
+    #     cow8              17%     48
+    #
+    # **The contradiction this does not resolve, and it is not small.** Scored against 60 of
+    # カワシギ's own seats, the presence test reproduces his cow count 62% exactly and this code
+    # reproduces it 0% -- it says COW 11-12 on nearly every town where he plays 6 or 10, because his
+    # milk drain usually exceeds his wool drain. One of the two measurements is asking the wrong
+    # question and it is not yet known which. The mirror gives greedy a FIXED opponent playing the
+    # presence test, so part of the 98% may be anti-correlation -- taking whatever the opponent is
+    # not flooding -- rather than reading the town. That is the shape that moved melon 25 -> 12 -> 25.
+    #
+    # Deciding it needs greedy-vs-greedy and greedy-vs-pool, neither of which has been run.
     step_now = day * TPD + hour
     days_left = max(0, last_day - day)
     headroom, per_animal = {}, {}
@@ -4273,9 +4363,13 @@ def make_agent(schedule, me=0, router=True):
         # the wheat that really left the shed this turn. Feed half as often and `drawn` halves while
         # the reserve does not, so the guard holds back roughly twice the herd's appetite and the day
         # stops selling -- d2 `sell 4/5 -> 2/5`, d3 money $448 -> $95, season $9,975 -> $5,774.
+        # **From d27 a pen we are letting go is not a mouth.** `will_be_fed` needs the town's book to
+        # answer that (`pays_for_its_ration`), and this reserve is the wheat we refuse to sell in
+        # order to feed it -- so without the price we hold back rations for animals nobody will feed.
+        _book = (obs.get("market") or {}).get("prices") or {}
         alive = sum(1 for r in tiles for c in r
                     if isinstance(c, dict) and "animal" in c
-                    and RT.will_be_fed(c, day))
+                    and RT.will_be_fed(c, day, _book.get(RT.ANIMALS[c["animal"]]["product"])))
         # **An animal today's row will PLACE is a mouth today, and `alive` cannot see it.** `alive`
         # is a board read, so on the morning of a placement it is short by exactly the animals still
         # sitting in the shop. Day 4 is where that first costs something, because it is the first
@@ -4301,7 +4395,8 @@ def make_agent(schedule, me=0, router=True):
                            and int(c.get("placed_day", -1)) == day)
         arriving = sum(1 for a in list((row.get("places") or []))[placed_today:]
                        if RT.will_be_fed({"animal": a, "consecutive_unfed": 0,
-                                          "placed_day": day}, day))
+                                          "placed_day": day}, day,
+                                         _book.get(RT.ANIMALS[a]["product"])))
         # SELL first: the proceeds have to be in the bank before anything below spends them, and that
         # ordering is exactly what decided whether BUY_LAND cleared at all.
         #
@@ -5241,7 +5336,31 @@ def make_agent(schedule, me=0, router=True):
             _done = state["planted"][crop] - state["planted_dawn"][crop]
             _bought = (int(seeds.get(crop, 0)) + _done
                        - int(state["seeds_dawn"].get(crop, 0)))
-            short = max(short, _row_q - max(0, _bought))
+            # **The floor may not push the store above what the season can still sow.**
+            #
+            # The rows are a transcript of the tape's BUY_SEED actions, and the tape itself buys seed
+            # it never plants. Counted over `plants` across the whole schedule:
+            #
+            #     crop        bought  planted  never sown
+            #     CARROT          16        8           8      <- d3 buys 1, d6 buys 7, sown: none
+            #     WHEAT          144      136           8
+            #     MELON           20       20           0
+            #     STRAWBERRY      34       34           0
+            #
+            # So the CARROT 8 we hold at every bell is his CARROT 8, transcribed faithfully. On top of
+            # that the floor re-offers a row daily however full the store is, which is what carries
+            # WHEAT to 27 held on seed 701. Measured before this cap, seed 700 vs `contrarian`:
+            # CARROT bought 13 sown 5, WHEAT bought 134 sown 123 -- $270 of seed that never met soil.
+            #
+            # `short` on the line above is the REAL demand (outstanding pins less the store) and is
+            # left alone, so nothing that would have been planted goes unbought. Only the floor -- the
+            # part that deliberately orders ABOVE demand -- is bounded, and only by the tape's own
+            # remaining plantings for that crop. Where the season still means to sow the crop the
+            # headroom is wide and the floor behaves exactly as it did, which is what keeps the d7
+            # strawberry row intact (`:5231`): at d7 the tape has 30-odd strawberry still to sow.
+            _headroom = _plants_still_to_sow(sched, day).get(crop, 0) - int(seeds.get(crop, 0))
+            if _headroom > 0:
+                short = max(short, min(_row_q - max(0, _bought), _headroom))
             if short > 0 and len(orders) < 9:
                 orders.append(["BUY_SEED", crop, short])
 
