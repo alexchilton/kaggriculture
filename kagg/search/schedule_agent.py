@@ -5550,11 +5550,26 @@ def make_agent(schedule, me=0, router=True):
         orders = []
         for o in market:
             o = list(o)
-            if split and len(o) > 2 and o[0] == "BUY_ANIMAL" and o[1] in _PASTURE:
+            # **Counted whether or not there is a split, and that `split and` is what broke it.**
+            # `split` is `state["herd_split"]`, written only by the `SHOP_ADAPT_HERD and day >=
+            # SHOP_ADAPT_FROM_DAY` block, so it does not exist until d3. `REPLAY_OPENING_DAYS`
+            # begins at d0, so the opening tape's `BUY_ANIMAL COW 2` and `SHEEP 2` on d0 fell to
+            # `orders.append(o)` below and were never counted. The buy loop asks for
+            # `want_total[a] - state["bought"][a]`, so at d12 -- the first day it plans freely --
+            # it saw COW 8 / SHEEP 2 against a season target of COW 10 / SHEEP 4 and bought that
+            # row a SECOND time. 18 animals against the 14 pens the schedule builds.
+            #
+            # Measured on both games played by submission 55764542: 14 placed, 2 COW and 2 SHEEP
+            # standing in the shed from d12 to the bell, $1,800 of stock earning nothing, and the
+            # last animal PLACE of the season on d11.
+            #
+            # The RE-LABELLING needs the split -- with no target there is nothing to aim at, so the
+            # head keeps the species the tape gave it. The COUNTING never did.
+            if len(o) > 2 and o[0] == "BUY_ANIMAL" and o[1] in _PASTURE:
                 # One head at a time against the target, so a row of two cows can come back split.
                 for _ in range(int(o[2])):
                     a = o[1]
-                    if state["bought"][a] >= int(split.get(a, 0)):
+                    if split and state["bought"][a] >= int(split.get(a, 0)):
                         alt = next(s for s in _PASTURE if s != a)
                         if state["bought"][alt] < int(split.get(alt, 0)):
                             a = alt
