@@ -49,7 +49,7 @@
    5
   ],
   [
-   4,
+   5,
    5
   ]
  ],
@@ -98,23 +98,23 @@
   "12": {}
  },
  "supply": {
-  "WHEAT": 22,
+  "WHEAT": 36,
   "CARROT": 0,
   "TOMATO": 0,
   "STRAWBERRY": 12,
   "MELON": 0,
   "EGG": 0,
-  "MILK": 9,
-  "WOOL": 13,
+  "MILK": 18,
+  "WOOL": 4,
   "FERTILIZER": 12,
   "GOOSE": 0,
-  "COW": 0,
-  "SHEEP": 0
+  "COW": 2,
+  "SHEEP": 2
  },
  "deliver": false,
  "wanted": {
   "FERTILIZER": 252,
-  "MILK": 15
+  "MILK": 6
  },
  "rush": false,
  "day": 18,
@@ -127,31 +127,21 @@
    ],
    "ops": [
     [
-     "WATER",
-     null
-    ],
-    [
-     "HARVEST",
-     null
-    ],
-    [
-     "PLANT",
-     "WHEAT"
+     "FERTILIZE",
+     "FERTILIZER"
     ],
     [
      "WATER",
      null
     ]
    ],
-   "needs": {},
-   "gives": {
-    "WHEAT": 3
+   "needs": {
+    "FERTILIZER": 1
    },
+   "gives": {},
    "at_risk": true,
    "funds": false,
-   "products": [
-    "WHEAT"
-   ]
+   "products": []
   },
   {
    "tile": [
@@ -160,48 +150,21 @@
    ],
    "ops": [
     [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    3,
-    0
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ],
-    [
-     "HARVEST",
-     null
-    ],
-    [
-     "PLANT",
-     "WHEAT"
+     "FERTILIZE",
+     "FERTILIZER"
     ],
     [
      "WATER",
      null
     ]
    ],
-   "needs": {},
-   "gives": {
-    "WHEAT": 3
+   "needs": {
+    "FERTILIZER": 1
    },
+   "gives": {},
    "at_risk": true,
    "funds": false,
-   "products": [
-    "WHEAT"
-   ]
+   "products": []
   },
   {
    "tile": [
@@ -210,13 +173,19 @@
    ],
    "ops": [
     [
+     "FERTILIZE",
+     "FERTILIZER"
+    ],
+    [
      "WATER",
      null
     ]
    ],
-   "needs": {},
+   "needs": {
+    "FERTILIZER": 1
+   },
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -226,10 +195,6 @@
     0
    ],
    "ops": [
-    [
-     "WATER",
-     null
-    ],
     [
      "HARVEST",
      null
@@ -254,21 +219,13 @@
     [
      "WATER",
      null
-    ],
-    [
-     "HARVEST",
-     null
     ]
    ],
    "needs": {},
-   "gives": {
-    "STRAWBERRY": 2
-   },
-   "at_risk": false,
+   "gives": {},
+   "at_risk": true,
    "funds": false,
-   "products": [
-    "STRAWBERRY"
-   ]
+   "products": []
   },
   {
    "tile": [
@@ -276,10 +233,6 @@
     0
    ],
    "ops": [
-    [
-     "WATER",
-     null
-    ],
     [
      "HARVEST",
      null
@@ -327,15 +280,19 @@
    ],
    "ops": [
     [
-     "WATER",
+     "HARVEST",
      null
     ]
    ],
    "needs": {},
-   "gives": {},
+   "gives": {
+    "STRAWBERRY": 2
+   },
    "at_risk": false,
    "funds": false,
-   "products": []
+   "products": [
+    "STRAWBERRY"
+   ]
   },
   {
    "tile": [
@@ -344,11 +301,17 @@
    ],
    "ops": [
     [
+     "FERTILIZE",
+     "FERTILIZER"
+    ],
+    [
      "WATER",
      null
     ]
    ],
-   "needs": {},
+   "needs": {
+    "FERTILIZER": 1
+   },
    "gives": {},
    "at_risk": false,
    "funds": false,
@@ -373,7 +336,7 @@
     "FERTILIZER": 1
    },
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -401,13 +364,19 @@
    ],
    "ops": [
     [
+     "FERTILIZE",
+     "FERTILIZER"
+    ],
+    [
      "WATER",
      null
     ]
    ],
-   "needs": {},
+   "needs": {
+    "FERTILIZER": 1
+   },
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -420,13 +389,21 @@
     [
      "WATER",
      null
+    ],
+    [
+     "HARVEST",
+     null
     ]
    ],
    "needs": {},
-   "gives": {},
+   "gives": {
+    "STRAWBERRY": 2
+   },
    "at_risk": false,
    "funds": false,
-   "products": []
+   "products": [
+    "STRAWBERRY"
+   ]
   },
   {
    "tile": [
@@ -434,10 +411,6 @@
     1
    ],
    "ops": [
-    [
-     "WATER",
-     null
-    ],
     [
      "HARVEST",
      null
@@ -485,10 +458,6 @@
    ],
    "ops": [
     [
-     "WATER",
-     null
-    ],
-    [
      "HARVEST",
      null
     ]
@@ -535,36 +504,25 @@
    ],
    "ops": [
     [
+     "FERTILIZE",
+     "FERTILIZER"
+    ],
+    [
      "WATER",
      null
     ]
    ],
-   "needs": {},
+   "needs": {
+    "FERTILIZER": 1
+   },
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
   {
    "tile": [
     1,
-    2
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    2,
     2
    ],
    "ops": [
@@ -582,6 +540,23 @@
    },
    "gives": {},
    "at_risk": false,
+   "funds": false,
+   "products": []
+  },
+  {
+   "tile": [
+    2,
+    2
+   ],
+   "ops": [
+    [
+     "WATER",
+     null
+    ]
+   ],
+   "needs": {},
+   "gives": {},
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -677,7 +652,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -687,27 +662,6 @@
     2
    ],
    "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    8,
-    2
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ],
     [
      "HARVEST",
      null
@@ -725,7 +679,7 @@
   },
   {
    "tile": [
-    9,
+    8,
     2
    ],
    "ops": [
@@ -755,11 +709,17 @@
    ],
    "ops": [
     [
+     "FERTILIZE",
+     "FERTILIZER"
+    ],
+    [
      "WATER",
      null
     ]
    ],
-   "needs": {},
+   "needs": {
+    "FERTILIZER": 1
+   },
    "gives": {},
    "at_risk": false,
    "funds": false,
@@ -784,7 +744,7 @@
     "FERTILIZER": 1
    },
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -838,8 +798,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -875,8 +835,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "WOOL",
-    "FERTILIZER"
+    "FERTILIZER",
+    "WOOL"
    ]
   },
   {
@@ -973,27 +933,6 @@
    ],
    "ops": [
     [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    9,
-    3
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ],
-    [
      "HARVEST",
      null
     ]
@@ -1007,6 +946,23 @@
    "products": [
     "STRAWBERRY"
    ]
+  },
+  {
+   "tile": [
+    9,
+    3
+   ],
+   "ops": [
+    [
+     "WATER",
+     null
+    ]
+   ],
+   "needs": {},
+   "gives": {},
+   "at_risk": false,
+   "funds": false,
+   "products": []
   },
   {
    "tile": [
@@ -1015,13 +971,19 @@
    ],
    "ops": [
     [
+     "FERTILIZE",
+     "FERTILIZER"
+    ],
+    [
      "WATER",
      null
     ]
    ],
-   "needs": {},
+   "needs": {
+    "FERTILIZER": 1
+   },
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1112,8 +1074,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -1149,8 +1111,8 @@
    "at_risk": false,
    "funds": false,
    "products": [
-    "MILK",
-    "FERTILIZER"
+    "FERTILIZER",
+    "MILK"
    ]
   },
   {
@@ -1255,21 +1217,13 @@
     [
      "WATER",
      null
-    ],
-    [
-     "HARVEST",
-     null
     ]
    ],
    "needs": {},
-   "gives": {
-    "STRAWBERRY": 2
-   },
-   "at_risk": false,
+   "gives": {},
+   "at_risk": true,
    "funds": false,
-   "products": [
-    "STRAWBERRY"
-   ]
+   "products": []
   },
   {
    "tile": [
@@ -1280,30 +1234,33 @@
     [
      "WATER",
      null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    0,
-    5
-   ],
-   "ops": [
+    ],
+    [
+     "HARVEST",
+     null
+    ],
+    [
+     "HARVEST",
+     null
+    ],
+    [
+     "PLANT",
+     "WHEAT"
+    ],
     [
      "WATER",
      null
     ]
    ],
    "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "gives": {
+    "WHEAT": 10
+   },
+   "at_risk": true,
    "funds": false,
-   "products": []
+   "products": [
+    "WHEAT"
+   ]
   },
   {
    "tile": [
@@ -1319,23 +1276,6 @@
    "needs": {},
    "gives": {},
    "at_risk": true,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    2,
-    5
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
    "funds": false,
    "products": []
   },
@@ -1414,24 +1354,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    1,
-    6
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1454,23 +1377,6 @@
   },
   {
    "tile": [
-    3,
-    6
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
     4,
     6
    ],
@@ -1482,24 +1388,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    0,
-    7
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1516,24 +1405,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    2,
-    7
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1550,24 +1422,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    4,
-    7
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1584,24 +1439,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    1,
-    8
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
@@ -1618,13 +1456,13 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
   {
    "tile": [
-    3,
+    4,
     8
    ],
    "ops": [
@@ -1635,14 +1473,14 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   },
   {
    "tile": [
-    4,
-    8
+    0,
+    9
    ],
    "ops": [
     [
@@ -1665,30 +1503,33 @@
     [
      "WATER",
      null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    2,
-    9
-   ],
-   "ops": [
+    ],
+    [
+     "HARVEST",
+     null
+    ],
+    [
+     "HARVEST",
+     null
+    ],
+    [
+     "PLANT",
+     "WHEAT"
+    ],
     [
      "WATER",
      null
     ]
    ],
    "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "gives": {
+    "WHEAT": 10
+   },
+   "at_risk": true,
    "funds": false,
-   "products": []
+   "products": [
+    "WHEAT"
+   ]
   },
   {
    "tile": [
@@ -1703,24 +1544,7 @@
    ],
    "needs": {},
    "gives": {},
-   "at_risk": false,
-   "funds": false,
-   "products": []
-  },
-  {
-   "tile": [
-    4,
-    9
-   ],
-   "ops": [
-    [
-     "WATER",
-     null
-    ]
-   ],
-   "needs": {},
-   "gives": {},
-   "at_risk": false,
+   "at_risk": true,
    "funds": false,
    "products": []
   }
