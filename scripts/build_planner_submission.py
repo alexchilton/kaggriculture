@@ -120,11 +120,16 @@ MODULES = (
     # imports nothing from `kagg`. Its absence is what made this builder refuse to run at all --
     # `q4_branch.py: imports ['kagg.search.branch'], which the bundle does not carry`.
     ("kagg.search.branch", "kagg/search/branch.py"),
-    # **`corner_the_book` is NOT bundled, deliberately.** It backed the late-carrot swap, which was
-    # cut from the agent on 2026-08-25 -- see `_with_the_late_field` in `schedule_agent.py` for the
-    # 546-seeds-at-the-bell measurement that ended it. The module and its own test stay in the repo
-    # because the book-depth reading is still an open question; nothing shipped calls them, and this
-    # builder refuses any module the agent does not import, so it must not be listed here.
+    # **`corner_the_book` IS bundled again as of 2026-08-25.** It was excluded earlier the same day
+    # because the late-carrot swap had been cut from the agent -- `_sow_carrot_instead` capped the
+    # PLANT rewrite and left the BUY_SEED rewrite uncapped, giving 546 seeds at the bell against 45
+    # sown. The swap is restored with BOTH halves capped, `schedule_agent` imports this module at
+    # line 43, and the builder refuses any module the agent imports but the bundle does not carry --
+    # which is how the omission was caught, by `ImportError` on the standalone check rather than in
+    # a game.
+    #
+    # A leaf: `import math` and nothing from `kagg`, so it can sit anywhere before `schedule_agent`.
+    ("kagg.search.corner_the_book", "kagg/search/corner_the_book.py"),
     # **Before `schedule_agent`, which does `from . import melon_branch as _MB` at module scope.**
     # This is the d3 melon/strawberry decision; without it the bundle cannot import.
     ("kagg.search.melon_branch", "kagg/search/melon_branch.py"),
