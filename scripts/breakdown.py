@@ -122,6 +122,21 @@ TAPES = {
     "kawashigi_q4c": ("data/seed_scripts/downloads_2026-08-13/91907974.json",
                       "data/seed_scripts/kawashigi_q4c/schedule.json",
                       "\u30ab\u30ef\u30b7\u30ae"),
+    # **The STRAWBERRY tape the agent actually ships, and it was unreachable from this grid.**
+    # `9ab0f19` swapped `REPLAY_OPENING_TAPE[(True, False)]` to `97466318` on a leave-one-out score
+    # -- it reproduces 135 of 192 turns across the other 19 strawberry games against `92466371`'s
+    # 126 -- and then no ours/tape grid was ever run on it, because this table had no entry and
+    # `kawa_2026-08-24/` had no extracted schedule. So every per-day verification of the swap was a
+    # melon-arm number quietly standing in for a strawberry-arm claim.
+    #
+    # Its own seed is **468411728** (`info.seed` in the replay). The replay is only exact on that
+    # seed -- `project_kaggriculture_replay_is_exact_to_d12` -- so `--seed 468411728` is not
+    # optional here, and the default 11 would measure a different game.
+    #
+    # Schedule extracted 2026-08-25 by `scripts/extract_leader_schedule.py` from the replay itself:
+    # 14 pens, 181 tile-plantings, land on d6 and d11, peak crew 12.
+    "kawa_straw": ("data/seed_scripts/kawa_2026-08-24/97466318.json",
+                   "data/seed_scripts/kawa_straw/schedule.json", "\u30ab\u30ef\u30b7\u30ae"),
 }
 
 #: **Removed on 2026-08-13, on Alex's instruction: "no seb - only vic or the new nr 1".**
