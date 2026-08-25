@@ -120,6 +120,12 @@ MODULES = (
     # imports nothing from `kagg`. Its absence is what made this builder refuse to run at all --
     # `q4_branch.py: imports ['kagg.search.branch'], which the bundle does not carry`.
     ("kagg.search.branch", "kagg/search/branch.py"),
+    # **`schedule_agent.py:43` does `from . import corner_the_book as CORNER` at module scope**, so
+    # the bundle must carry it or every build dies with `ImportError: cannot import name
+    # 'corner_the_book' from 'kagg.search'`. This entry only ever existed as an uncommitted edit, so
+    # reverting the commit that cut the carrot did NOT bring it back -- that commit's diff, taken
+    # against HEAD, recorded adding a comment rather than removing this line.
+    ("kagg.search.corner_the_book", "kagg/search/corner_the_book.py"),
     # **Before `schedule_agent`, which does `from . import melon_branch as _MB` at module scope.**
     # This is the d3 melon/strawberry decision; without it the bundle cannot import.
     ("kagg.search.melon_branch", "kagg/search/melon_branch.py"),
