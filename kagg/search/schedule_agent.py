@@ -947,6 +947,34 @@ PEN_NEAREST_DEPOT_FROM_DAY = 11
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
+def _sells_first(orders):
+    """Hoist every SELL to the front, keeping the relative order of both groups.
+
+    **The slot index decides the price, not just the turn.** `_process_market` walks order SLOTS
+    (`reference/kaggriculture.py:562`) and only interleaves the two players where they share a slot
+    index, so a SELL sitting behind one of our own non-sell orders is quoted after the opponent's
+    units have already walked the book down. Measured in the real env, both players selling 20 WOOL
+    from identical sheds:
+
+        SELL alone, slot 0                us $3,428   them $3,428
+        BUY_SEED first, SELL in slot 1    us $2,953   them $3,856     -13.9%, and they GAIN it
+        SELL first, BUY_SEED in slot 1    us $3,428   them $3,428     fully recovered
+
+    **This does not break the funding argument in `_wheat_row_first`.** That one forbids moving a
+    SELL LATER, because a sell settles before any atomic order in a later slot and that is what lets
+    a thin day pay for its own purchases. Moving sells EARLIER strictly strengthens it: every
+    purchase still sits behind every sale.
+
+    Measured frequency on the shipped agent: 3 of 280 selling turns over 3 seasons, 34 units, all on
+    d29, all with HIRE ahead. So this is worth a few hundred dollars a season, not 13.9% of the sell
+    side -- the penalty is per occurrence and occurrences are rare.
+    """
+    sells = [o for o in orders if o and o[0] == "SELL"]
+    if not sells:
+        return orders
+    return sells + [o for o in orders if not (o and o[0] == "SELL")]
+
+
 def _order_sells(orders):
     """The same orders, with the SELLs ranked biggest-first among the slots they already occupy."""
     at = [i for i, o in enumerate(orders) if o and o[0] == "SELL"]
@@ -2516,6 +2544,64 @@ def market_price(prod, inventory):
     if _KG is None:                                                         # pragma: no cover
         return float(RT.BASE_PRICE.get(prod, 0))
     return _KG.market_price(prod, int(inventory))
+
+
+#: Hours inside a day at which `_town_consume` runs its shop pass, for the shipped
+#: `townShopSellInterval = 4`. The town-centre pass is `% 24`, so it lands on hour 0 only and can
+#: never fall between the current hour and `LATE_SELL_FROM_HOUR`.
+_SHOP_DRAIN_HOURS = (4, 8, 12, 16)
+
+
+def gain_from_waiting(prod, inventory, unlocked_shops, hour):
+    """What one unit of `prod` gains by holding to `LATE_SELL_FROM_HOUR` instead of selling now.
+
+    Both halves are deterministic and both are in the observation, so this is arithmetic rather
+    than a prior. `market_price` (`reference/kaggriculture.py:192`) is a pure function of the book,
+    and `_town_consume` (`:728`) drains it on a fixed schedule:
+
+        for shop_name in town["unlocked_shops"]:
+            multiplier = 2 if len(products) == 1 else 1
+            for item in products:
+                market["inventory"][item] -= multiplier
+
+    `unlocked_shops` is drawn per game WITH REPLACEMENT (`:888`), so the same product is a
+    different asset on different seeds and this MUST be computed live. Measured 2026-08-25 on the
+    two tape seeds, over every solver-zone turn with the shed at 90+:
+
+        product      straw 468411728    melon 1240813987    unit-turns held
+        FERTILIZER            +0.00               +0.00          150 / 208
+        WOOL                  +0.00               +0.00           88 / 104
+        WHEAT                 +0.62               +0.53          504 / 606
+        CARROT                +1.17               +1.67           21 /  22
+        MILK                 +14.00              +11.47          168 / 252
+        STRAWBERRY            +7.38              +20.29          315 / 422
+
+    FERTILIZER is +0.00 on every seed: it is in none of the eight shops and `:114` excludes it from
+    `TOWN_CENTER_PRODUCTS`, so its book never recovers at all. WOOL is +0.00 on BOTH these seeds
+    only because neither drew `YARN_STORE`, which is its sole shop -- on a seed that draws one it
+    drains at 2x and becomes one of the best things to hold. That contrast is the whole reason for
+    reading the draw instead of hardcoding a list.
+
+    Returns 0.0 when nothing will drain, which is the honest answer: waiting gains nothing.
+
+    This is an UPPER bound. Our own sells and the opponent's both add to the book between now and
+    h16, and neither is modelled here. That is the right direction for the decision -- if waiting
+    does not pay before anyone sells into it, it does not pay afterwards either.
+    """
+    if _KG is None:                                                         # pragma: no cover
+        return 0.0
+    drained = 0
+    for h in _SHOP_DRAIN_HOURS:
+        if h <= hour:
+            continue
+        for name in (unlocked_shops or ()):
+            products = _KG.SHOPS.get(name, ())
+            if prod in products:
+                drained += 2 if len(products) == 1 else 1
+    if drained <= 0:
+        return 0.0
+    inv = int(inventory)
+    return float(market_price(prod, inv - drained) - market_price(prod, inv))
 
 
 #: `townCenterSellInterval`: 12 through 1.32.5, 24 from the 1.32.6 town rebalance.
@@ -4250,7 +4336,25 @@ def make_agent(schedule, me=0, router=True):
         # did. The residue is exactly that shape -- 17 units on d21, 10 on d23. Closing it needs
         # the ROUTER to stop collecting into a shed that cannot take the load, which is the same
         # assignment defect as OPEN-4. See `docs/REGISTER.md`.
-        for p in sorted(SELLABLE, key=lambda p: -int(shed.get(p, 0))):
+        # **Released cheapest-to-give-up first, not largest-holding first.**
+        #
+        # Largest-first was wrong for a reason the measurement makes plain: it ranks by how much we
+        # HOLD when the question is what the book will pay back. On melon seed 1240813987 the two
+        # biggest piles are WHEAT 606 unit-turns and STRAWBERRY 422, so largest-first released the
+        # wheat and then went straight into strawberry -- at **+$20.29 a unit of forgone recovery**,
+        # the most patience-rewarding product in the game. That is where the -$533 came from.
+        #
+        # `gain_from_waiting` reads the actual shop draw for THIS game, so the ranking adapts to the
+        # seed instead of assuming one. It puts FERTILIZER (+0.00 always, no shop and no town
+        # centre) and WOOL (+0.00 unless a YARN_STORE was drawn) ahead of WHEAT (~+$0.6), and keeps
+        # MILK and STRAWBERRY at the back where they belong.
+        #
+        # Holding size stays as the tie-break, so among products that are equally cheap to release
+        # the one actually causing the crowding is still the one that moves.
+        _shops = list((obs.get("town") or {}).get("unlocked_shops") or ())
+        _book = (obs.get("market") or {}).get("inventory") or {}
+        for p in sorted(SELLABLE, key=lambda p: (
+                gain_from_waiting(p, _book.get(p, 0), _shops, hour), -int(shed.get(p, 0)))):
             if room_needed <= 0:
                 break
             take = min(int(shed.get(p, 0)), room_needed)
@@ -4623,12 +4727,60 @@ def make_agent(schedule, me=0, router=True):
             # file already puts off limits: stock has no terminal value on the last day, and every
             # other cap in this loop already exempts it on that same principle.
             last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
+            # **Waiting for the evening price assumes the goods survive until evening.** The gate
+            # above holds every offer until h16 because a book that collapsed this morning has
+            # recovered by then -- shops drain every 4 steps, the town centre every 12. That is a
+            # statement about PRICE and it is correct while there is somewhere to put the crop.
+            #
+            # A shed at `SHED_CAPACITY` is not holding for a better price, it is destroying stock:
+            # `_drop_inventories_to_shed` discards the overflow at every dawn (`:878`), and HARVEST
+            # puts yield in the unit's own inventory (`:466`) where no SELL can reach it. Measured on
+            # the strawberry arm's own seed, d19 and d21 each sat 97/100 from h2 to h15 and offered
+            # NOTHING -- wheat quoting $44-47 throughout, so no floor was binding, and the feed
+            # reserve is ~14 units against 59 held. 34 such turns over d12-d23.
+            #
+            # From `SHED_HEADROOM_FROM_DAY` only, which is the solver and planner zones. d0-d11 is
+            # the authored opening and the tape replay, both matched op-for-op, and nothing here
+            # may move them.
+            # **What rots is the shed PLUS what the hands are still carrying.** `sum(shed)` alone
+            # cannot predict the dawn drop, because the shed is already capped at `shedCapacity`
+            # when we read it -- `_drop_inventories_to_shed` applies the cap at dawn (`:843`), so
+            # this quantity can never exceed 100 and the test can only ever fire on the flat top.
+            # HARVEST puts yield in the unit's OWN inventory (`:466`), and that is the stock about
+            # to be destroyed: measured over 6 seasons, 27.5 units and $3,716 a season die at dawn,
+            # led by STRAWBERRY 6.2 and WOOL 4.8 at ~$230/unit against WHEAT's 11.5 at $42.
+            #
+            # This is the same defect that made four of the 2026-08-25 rot arms no-ops -- they all
+            # computed `sum(shed) - 100` on an already-capped shed and got zero on every turn of
+            # every season.
+            _carried = 0
+            for _inv in (priv.get("inventories") or []):
+                _carried += sum(int(v or 0) for k, v in (_inv or {}).items() if k in SELLABLE)
+            shed_is_pressed = (day >= SHED_HEADROOM_FROM_DAY
+                               and int(sum(shed.values())) + _carried >= SHED_TARGET)
             if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
                     and not unfunded
                     and not (prod in NO_DRAIN_PRODUCTS
                              and (day >= SELL_AT_ONCE_FROM_DAY
                                   or day in SELL_AT_ONCE_DAYS))):
-                n = 0
+                # A pressed shed may release its OVERFLOW before h16, and nothing beyond it.
+                #
+                # Letting the whole day's quota through instead measured **-$7,617** on melon and
+                # -$426 on strawberry (d29 154,039 -> 146,422), and the mechanism is in
+                # `reference/kaggriculture.py:728`: a SELL adds to `market["inventory"]`, price
+                # falls monotonically in it, and the only thing that lifts the book back is the
+                # drain -- 1-2 units per shop instance every 4 steps plus 1 per product per 24.
+                # That budget is small and fixed. Dumping the full holding at h2 spends all of it
+                # absorbing our own lot, so the h16 sale then lands on a book we already
+                # flattened: melon d20 banked +$1,546 and d21 sold $3,824 less.
+                #
+                # `release[prod]` is already the right size for this -- `:4253` fills it to
+                # `room_needed`, the overflow above `SHED_TARGET` only, taking the LARGEST holding
+                # first. In the jammed shed that is wheat (59 of 100 units, and at base 25 the
+                # cheapest thing in there), so the metering and the product choice both fall out
+                # of the existing sort. Milk and wool keep their h16 timing, which is where their
+                # price actually matters.
+                n = min(n, int(release[prod])) if shed_is_pressed else 0
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
             # whole stack clears near what the LAST unit fetches. Measured over one season as the herd
@@ -5385,7 +5537,8 @@ def make_agent(schedule, me=0, router=True):
         orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
-                "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
+                "market": _sells_first(
+                    _order_sells(_fit_slots(_wheat_row_first(orders, hour), state)))}
 
     def _with_the_late_field(fn):
         """Apply the whole-shed sells at the OUTERMOST boundary.
