@@ -646,6 +646,29 @@ CROP = R.CROP_TABLE
 #: fits (`kaggriculture.py:333`), so dropping into a full shed destroys the load rather than refusing.
 SHED_CAPACITY = 100
 
+#: **Occupancy the shed is sold down towards, once `SHED_HEADROOM_FROM_DAY` is reached.**
+#:
+#: A tuning number, not a switch: set to `SHED_CAPACITY` this contributes nothing and the reactive
+#: rule is unchanged. Below it, the sell release keeps free slots BEFORE the rollover instead of
+#: reacting to an overflow that dawn has already binned.
+#:
+#: Measured 2026-08-25, 35 of our own ladder games, d12-d23: the shed is at 100/100 for 137 turns
+#: and at 90-99 for 969 more, and every sampled cap turn is at hour 0, 1 or 2 -- straight after
+#: `_drop_inventories_to_shed`. Kawa over the same days peaks at 97 and never caps until his d29
+#: liquidation, selling on 75 turns in lots averaging 10.6.
+#:
+#: **90 is his peak, not a swept optimum.** The forecast-inflow version of this idea was measured
+#: earlier and REJECTED at -$4,385 of final bank -- discards 101 -> 47, but selling earlier walks
+#: the price down by more than the product saved is worth. That rejection judged FINAL BANK on one
+#: seed; the ladder scores win rate. If this arm cannot beat the reactive rule on win rate it goes
+#: the same way, and the number belongs in the commit message.
+SHED_TARGET = 90
+
+#: The opening is off limits: `d0-d11` is the replayed tape and the two days that still match it
+#: exactly, d4 and d5, are what killed the `shed_dusk` arm for a cause its author never found.
+#: The jam we measured is entirely in d12 onwards, so that is the only window this opens.
+SHED_HEADROOM_FROM_DAY = 12
+
 #: Days of feed to hold per animal. 1 is the consumption rate and leaves no slack; the tape carries
 #: over two. Also the multiplier the sell guard protects, so raising it withholds more wheat from sale.
 #: **RAISED 2 -> 4 on 2026-08-08, and the evidence is a COUNT rather than a season total.** Six
@@ -4194,6 +4217,24 @@ def make_agent(schedule, me=0, router=True):
         release = collections.Counter()
         carried_home = sum(int(v) for iv in invs for v in (iv or {}).values() if int(v) > 0)
         room_needed = max(0, int(sum(shed.values())) + carried_home - SHED_CAPACITY)
+        # **Keep HEADROOM from d12, rather than only reacting once the shed is already over.**
+        # Measured 2026-08-25 over 35 of our own ladder games, solver zone d12-d23: the shed sits
+        # at 100/100 for 137 turns and at 90-99 for a further 969, and EVERY sampled cap turn is at
+        # hour 0, 1 or 2 -- immediately after `_drop_inventories_to_shed` has filled it and binned
+        # the remainder. At hour 0 `private["inventories"]` has already been reset, so the reactive
+        # line above is looking at an overflow that no longer exists to be prevented.
+        #
+        # Kawa's own game 97466318 over the same days: 75 turns carry a fill, 797 units, mean lot
+        # 10.6, and his shed PEAKS AT 97 -- he reaches 100 exactly once, on d29, as the closing
+        # liquidation. He is not selling more per lot, he is selling on a quarter of all turns and
+        # never letting the store fill.
+        #
+        # `SHED_TARGET` is the occupancy we sell down towards, and it is a tuning number, not a
+        # switch: at `SHED_CAPACITY` this line contributes nothing and the behaviour is exactly the
+        # reactive rule above.
+        if day >= SHED_HEADROOM_FROM_DAY:
+            room_needed = max(room_needed,
+                              int(sum(shed.values())) + carried_home - SHED_TARGET)
         # **TRIED and REJECTED: forecast the day's inflow at dawn instead of reacting to it.**
         # Counting the standing `yield_units` on every pen and ripe crop as arriving today, and
         # pacing the release over `TPD - hour` turns, is the better-shaped idea and it does move
