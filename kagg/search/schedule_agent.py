@@ -40,7 +40,6 @@ import itertools
 import json
 import pathlib
 
-from . import corner_the_book as CORNER
 from . import cover as DP
 from . import melon_branch as _MB
 from . import q4_branch as _Q4
@@ -3236,23 +3235,11 @@ def town_drain_remaining(prod, step, unlocked_shops, end_step=720,
 # tape only d4-d11, so the window this rewrites is planner output rather than tape output. The
 # mechanism is the same -- more carrot into a town that can drain it -- but the number is not
 # inherited and must be re-measured on this build.
-#: Widened from (25, 26, 27) on 2026-08-24. CARROT is `first_yield_day 2`, so a tile
-#: sown on d27 is not collectable until d29 and competes with the closing walk -- a
-#: third of the old window could never ripen in time. The schedule commits 63 plantings
-#: across d21-d27 and the old window could only see 29 of them, which is why the arm
-#: reached 14 tiles where the opponent who won 98495047 reached 32. How many are
-#: actually taken is decided by `corner_the_book.plan`, not by the width of this window.
-CARROT_SWAP_DAYS = tuple(range(21, 28))
-CARROT_DRAIN_MIN = 5
-#: Cheap insurance on a thin tail. Over 85 downloaded games and 170 seats, 94% hold no carrot at d25
-#: and 85% never plant one -- so this almost never binds, which is why a sweep over 3/7/99 came back
-#: byte-identical. It stays because the `opp CA 15+` bucket measured -$510 / 28% improved and 1-2%
-#: of seats reach it.
-CARROT_OPP_MAX = 7
 
 #: Products we hold to the end and then dump whole. WOOL because the shed caps at 6 per animal and
-#: the surplus is destroyed; CARROT because `CARROT_SWAP_DAYS` grows a crop this agent's sell
-#: cadence was never written for.
+#: the surplus is destroyed; CARROT because the schedule's own d21-d26 rows grow a crop this agent's
+#: sell cadence was never written for. The late-carrot SWAP that used to grow far more of it was cut
+#: on 2026-08-25 -- see `_with_the_late_field` -- but the schedule's carrot rows remain.
 _SELL_THE_WHOLE_SHED = ("WOOL", "CARROT")
 #: `reference/kaggriculture.py:551` truncates each turn's queue with `q[:max_orders]` at 10, so an
 #: APPENDED order is the one dropped when the turn is full -- ours, never the planner's own.
@@ -3262,72 +3249,7 @@ MAX_MARKET_ORDERS = 10
 SELL_THE_SHED_FROM_DAY = 29
 
 
-def _carrot_town_drain(obs):
-    """Units of CARROT this town's unlocked shops pull per tick.
 
-    Mirrors `_town_consume` the same way `town_drain_remaining` does: 1 per product, doubled for a
-    shop that sells only carrot.
-    """
-    if _KG is None:                                                         # pragma: no cover
-        return 0
-    shops = _KG.SHOPS
-    drain = 0
-    for name in ((obs.get("town") or {}).get("unlocked_shops") or []):
-        products = shops.get(name) or []
-        if "CARROT" in products:
-            drain += 2 if len(products) == 1 else 1
-    return drain
-
-
-def _carrot_pays(obs, me=0):
-    """Will the late carrot pay on this board? Read once, on the first turn of `CARROT_SWAP_DAYS`.
-
-    **This used to be two constants and one of them was never measured.** `CARROT_DRAIN_MIN = 5`
-    has 12,096 seasons behind it. `CARROT_OPP_MAX = 7` has none: every opponent in the pool sells
-    as it harvests, so no arm about the opponent's holdings could ever differ from control, and
-    `docs/carrot_refine_2026-08-22.md` says so in its own conclusions.
-
-    It cost a game. Ladder 98495047, seed 1640915609, lost by $29,384: drain 11 so the first gate
-    passed, opponent holding 10 carrot tiles at d25 so the second refused. They cleared 76 units at
-    $498 on the last day. The rule read their carrot as "the book is taken" when at drain 11 it
-    meant "the book is rich".
-
-    Both constants were proxies for one quantity that is directly readable. Price is a pure function
-    of the town's inventory (`reference/kaggriculture.py:192-207`) and `market.inventory` is in the
-    shared observation, so `corner_the_book.plan` computes whether the deficit will still be past
-    the hinge knee after everything BOTH seats still sell -- with the opponent's holdings subtracted
-    as supply rather than treated as a veto. See `kagg/search/corner_the_book.py`.
-    """
-    if _KG is None:                                                         # pragma: no cover
-        return False
-    seat = int(obs.get("player", me) or 0)
-    tiles, _why = CORNER.plan(obs, _KG.SHOPS, me=seat, product="CARROT")
-    return tiles > 0
-
-
-def _sow_carrot_instead(acts, orders, budget=None):
-    """Rewrite this turn's `PLANT WHEAT` to CARROT and re-point its wheat seed row.
-
-    **Both halves, always.** Seed is bought on turns that plant nothing, so gating the seed rewrite
-    on having planted leaves the day buying wheat it will never sow: measured `d25-27 plants
-    {CARROT 30} seeds {WHEAT 11, CARROT 19}` against the clean `{CARROT 30} / {CARROT 30}`.
-
-    Applied at the boundary, on the way out, so the planner's own `state["planted"]` bookkeeping
-    stays wheat-consistent -- which is exactly how the arm behaved when it was measured.
-    """
-    acts = [list(a) for a in acts]
-    spent = 0
-    for a in acts:
-        if budget is not None and spent >= budget:
-            break
-        if len(a) >= 2 and a[0] == "PLANT" and a[1] == "WHEAT":
-            a[1] = "CARROT"
-            spent += 1
-    orders = [list(o) for o in orders]
-    for o in orders:
-        if len(o) >= 3 and o[0] == "BUY_SEED" and o[1] == "WHEAT":
-            o[1] = "CARROT"
-    return acts, orders, spent
 
 
 def sell_the_whole_shed(order, shed):
@@ -5425,17 +5347,27 @@ def make_agent(schedule, me=0, router=True):
                 "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
 
     def _with_the_late_field(fn):
-        """Apply the late carrot and the whole-shed sells at the OUTERMOST boundary.
+        """Apply the whole-shed sells at the OUTERMOST boundary.
 
         **It has to be here and not inside `agent`.** `replayed` calls `agent` and then, for any
         step the opening covers, THROWS THAT ANSWER AWAY and sends the tape's own actions. A rule
-        hooked inside `agent` therefore reaches only the turns the tape does not cover. On this
-        build the tape covers d4-d11 and the carrot window is d25-d27, so that particular collision
-        does not arise -- but the SELL half runs on every day of the season, including replayed
-        ones, and wrapping from outside is the only placement where both halves see every turn.
+        hooked inside `agent` therefore reaches only the turns the tape does not cover, and the SELL
+        rule runs on every day of the season, including replayed ones. Wrapping from outside is the
+        only placement that sees every turn.
 
-        The carrot decision is read once, on the first turn of the window, and held: a decision
-        that could flip mid-window would sow half a field of each.
+        **The late-carrot swap was here and was CUT on 2026-08-25, on Alex's call.** It bought
+        carrot seed it never sowed: `_sow_carrot_instead` capped the PLANT rewrite at the budget
+        `corner_the_book.plan` sized and left the BUY_SEED rewrite uncapped, so the wheat cadence's
+        seed row was re-pointed at carrot on all 24 turns of every day in a 7-day window and bought
+        again each time. Validation game `99067358`, seed 0, our seat: **546 carrot seeds held at
+        the bell against 45 carrots ever planted** -- 538 x $20 = **$10,760** on seed that never
+        reached the ground, in a game won by $1,628, with the bank falling four days straight while
+        the pile grew. The uncapped half predates the budget; `f711306` added the cap to the plant
+        side only and the two halves have been out of step since.
+
+        `kagg/search/corner_the_book.py` and `tests/test_the_carrot_gate_reads_the_book.py` are
+        deliberately kept -- the book-depth reading is still the open question and is still tested
+        directly. Nothing in the shipped agent calls them.
         """
         def wrapped(obs, config=None):
             act = fn(obs, config)
@@ -5445,23 +5377,6 @@ def make_agent(schedule, me=0, router=True):
             orders = [sell_the_whole_shed(o, shed) for o in orders]
             orders = top_up_the_sell_orders(orders, shed, day)
             acts = [act.get("farmer") or ["PASS"]] + list(act.get("hands") or [])
-            if day in CARROT_SWAP_DAYS:
-                if state["carrot"] is None:
-                    # How MANY tiles, not merely whether. `corner_the_book.plan` sizes the position
-                    # from the book's depth so we stay above the knee after our own dump lands, and
-                    # `state["carrot_budget"]` spends that across the window rather than converting
-                    # every planting the day happens to schedule.
-                    if _KG is None:                                          # pragma: no cover
-                        state["carrot"], state["carrot_budget"] = False, 0
-                    else:
-                        seat = int(obs.get("player", me) or 0)
-                        tiles, _why = CORNER.plan(obs, _KG.SHOPS, me=seat, product="CARROT")
-                        state["carrot"] = tiles > 0
-                        state["carrot_budget"] = tiles
-                if state["carrot"] and state.get("carrot_budget", 0) > 0:
-                    acts, orders, spent = _sow_carrot_instead(
-                        acts, orders, budget=state["carrot_budget"])
-                    state["carrot_budget"] -= spent
             return {"farmer": acts[0], "hands": acts[1:], "market": orders}
         return wrapped
 

@@ -120,6 +120,11 @@ MODULES = (
     # imports nothing from `kagg`. Its absence is what made this builder refuse to run at all --
     # `q4_branch.py: imports ['kagg.search.branch'], which the bundle does not carry`.
     ("kagg.search.branch", "kagg/search/branch.py"),
+    # **`corner_the_book` is NOT bundled, deliberately.** It backed the late-carrot swap, which was
+    # cut from the agent on 2026-08-25 -- see `_with_the_late_field` in `schedule_agent.py` for the
+    # 546-seeds-at-the-bell measurement that ended it. The module and its own test stay in the repo
+    # because the book-depth reading is still an open question; nothing shipped calls them, and this
+    # builder refuses any module the agent does not import, so it must not be listed here.
     # **Before `schedule_agent`, which does `from . import melon_branch as _MB` at module scope.**
     # This is the d3 melon/strawberry decision; without it the bundle cannot import.
     ("kagg.search.melon_branch", "kagg/search/melon_branch.py"),
