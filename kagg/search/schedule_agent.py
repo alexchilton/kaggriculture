@@ -3305,12 +3305,24 @@ def _carrot_pays(obs, me=0):
     return tiles > 0
 
 
-def _sow_carrot_instead(acts, orders, budget=None):
+def _sow_carrot_instead(acts, orders, budget=None, held=0):
     """Rewrite this turn's `PLANT WHEAT` to CARROT and re-point its wheat seed row.
 
     **Both halves, always.** Seed is bought on turns that plant nothing, so gating the seed rewrite
     on having planted leaves the day buying wheat it will never sow: measured `d25-27 plants
     {CARROT 30} seeds {WHEAT 11, CARROT 19}` against the clean `{CARROT 30} / {CARROT 30}`.
+
+    **But the seed half must be sized against the tiles still owed.** `budget` capped the PLANT
+    rewrite and nothing capped the buying, so the wheat cadence's row was re-pointed at CARROT on
+    every one of the 24 turns of every day in the window and bought again each time. Validation game
+    `99067358`, seed 0, our seat: **546 carrot seeds held at the bell against 45 carrots ever
+    planted** -- 538 x $20 = $10,760 on seed that never reached the ground, in a game won by $1,628.
+
+    Every carrot arm measured on the box before 2026-08-25 was paying that bill, so those 31 rows
+    say nothing about whether cornering the book works.
+
+    `held` is the carrot seed already in stock. What we still need to BUY is `budget - held`, so the
+    row is clamped to that and left as wheat when it is zero.
 
     Applied at the boundary, on the way out, so the planner's own `state["planted"]` bookkeeping
     stays wheat-consistent -- which is exactly how the arm behaved when it was measured.
@@ -3324,9 +3336,12 @@ def _sow_carrot_instead(acts, orders, budget=None):
             a[1] = "CARROT"
             spent += 1
     orders = [list(o) for o in orders]
+    need = (10 ** 9 if budget is None else max(0, int(budget) - int(held or 0)))
     for o in orders:
-        if len(o) >= 3 and o[0] == "BUY_SEED" and o[1] == "WHEAT":
-            o[1] = "CARROT"
+        if len(o) >= 3 and o[0] == "BUY_SEED" and o[1] == "WHEAT" and need > 0:
+            take = min(int(o[2]), need)
+            o[1], o[2] = "CARROT", take
+            need -= take
     return acts, orders, spent
 
 
@@ -5459,8 +5474,13 @@ def make_agent(schedule, me=0, router=True):
                         state["carrot"] = tiles > 0
                         state["carrot_budget"] = tiles
                 if state["carrot"] and state.get("carrot_budget", 0) > 0:
+                    # The seed row is sized against the tiles still owed MINUS the seed already in
+                    # stock. Without the second term the wheat cadence's row was re-pointed at
+                    # carrot on all 24 turns of every day in the window and bought again each time.
+                    seeds = (obs.get("private") or {}).get("seeds") or {}
                     acts, orders, spent = _sow_carrot_instead(
-                        acts, orders, budget=state["carrot_budget"])
+                        acts, orders, budget=state["carrot_budget"],
+                        held=int(seeds.get("CARROT", 0) or 0))
                     state["carrot_budget"] -= spent
             return {"farmer": acts[0], "hands": acts[1:], "market": orders}
         return wrapped
