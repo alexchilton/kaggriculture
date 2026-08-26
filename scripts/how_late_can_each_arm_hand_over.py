@@ -219,6 +219,15 @@ def main():
                 # move with the opening or the planner catches up from the wrong day.
                 m._OPENINGS = {a: op[:stop * TPD] for a, op in full.items()}
                 m._ARM_STOP = {a: min(stop, v) for a, v in m._ARM_STOP.items()}
+                # **`_STOP_TABLE` must be cleared or this sweep measures nothing above it.** The
+                # bundle picks `stop = _stop(obs, me, arm) if _STOP_TABLE else _ARM_STOP[arm]`, so
+                # a baked table overrides the `_ARM_STOP` set above and every requested stop day at
+                # or beyond the table's own entry collapses onto it. Measured 2026-08-26: with
+                # `{"yarn6": 20, "open_yarn_seen": 20}` in place, yarn_d6 returned 117,501 at d20,
+                # d24 AND d28, and yarn_d12 returned 132,323 three times -- byte-identical rows that
+                # read as a plateau and were a clamp. The table being re-derived cannot be allowed
+                # to constrain the experiment that derives it.
+                m._STOP_TABLE = {}
                 ours = season(path, team, shops, economy,
                               lambda o, _t, _m=m: _m.agent(o, None))
                 arm_seen = m._ARM.get(0, "?")

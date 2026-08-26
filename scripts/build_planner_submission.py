@@ -224,11 +224,26 @@ REPLAY_ARMS = {
     # like "the handover day does not matter" and is really "there was no tape there to move it
     # into". The stop day is now a real parameter on all three arms; where each one SHOULD sit is
     # what the sweep answers.
-    "yarn3": (pathlib.Path("data/seed_scripts/clone_yarn3/98889302.json"), "WeAreFarmers", 28,
+    "yarn3": (pathlib.Path("data/seed_scripts/clone_yarn3/98889302.json"), "WeAreFarmers", 29,
               pathlib.Path("data/seed_scripts/clone_yarn3/schedule.json")),
-    "yarn6": (pathlib.Path("data/seed_scripts/clone_yarn6/98857364.json"), "Bharath Varma", 28,
-              pathlib.Path("data/seed_scripts/clone_yarn6/schedule.json")),
-    "open": (pathlib.Path("data/seed_scripts/clone_open/98907591.json"), "UjjwalPardeshi", 28,
+    # **`yarn6` was cloned from a MIRROR and is replaced, 2026-08-26.** 98857364 has both seats
+    # sending identical actions on all 719 turns and both farms ending on 134,682 -- so it carries
+    # no opponent, and its bank is a self-play figure. 10 of 120 recordings in that day's download
+    # have the same defect. `nao.kwmr / 98921350` is the class-best real game: 133,792 on a margin
+    # of 14,372.
+    "yarn6": (pathlib.Path("data/seed_scripts/arm_yarn6b/98921350.json"), "nao.kwmr", 29,
+              pathlib.Path("data/seed_scripts/arm_yarn6b/schedule.json")),
+    # **`open` carries 72% of all draws and was the worst-chosen arm.** It served 87 of 120 shop
+    # draws -- every class from d9 to never -- on UjjwalPardeshi's THIRD-best game, 98907591 at
+    # 100,149. His 98884730 is the d15 class winner at 141,250 and is byte-identical to the other
+    # arms until turn 88, so it is a drop-in.
+    #
+    # Measured head to head, both tapes replayed end to end on 14 draws sampled across every class
+    # this arm serves, opponent = each draw's own recorded opponent:
+    #
+    #     proposed better on 13/14 draws, mean +$3,028
+    #     best +10,769 (d21)   worst -5,417 (d18)
+    "open": (pathlib.Path("data/seed_scripts/clone_open/98907591.json"), "UjjwalPardeshi", 29,
              pathlib.Path("data/seed_scripts/clone_open/schedule.json")),
 }
 ARM_DEFAULT = "open"
