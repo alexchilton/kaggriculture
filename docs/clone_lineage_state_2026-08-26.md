@@ -1037,3 +1037,94 @@ The finding still stands and is still the largest unexploited one: CARROT never 
 (185-296% across eight draws), its book is the deepest in the game at `T = 450`, the d21 decision
 sees seven of the eight shop draws, and we plant 20 on every draw regardless. It is a planner task,
 not a tape task.
+
+## Crop Dusta sizes EVERY product to its own sinks, not just carrots
+
+From `/tmp/cd146.json`, 146 games. All four are monotone in the count of shops that drain them:
+
+    CARROT      by carrot sinks    0 -> 4.4 -> 23.0 -> 31.5 -> 44.4
+    STRAWBERRY  by straw sinks    16 -> 24 -> 26 -> 32 -> 34 -> 37 -> 44
+    COW         by milk sinks     4.0 -> 4.7 -> 6.1 -> 6.4 -> 8.1 -> 10.3 -> 12.0
+    SHEEP       by wool sinks     3.3 -> 7.6 -> 10.7 -> 13.1
+
+One rule, not four: **size each product to the number of shops that drain it.**
+
+What pays for the carrots is the HERD, not the other crops:
+
+     carrots   n   WHEAT  CARROT  TOMATO  STRAW  MELON  SHEEP   COW  animals  crop tiles
+           0  68     123       0       4     32     16    7.8   7.7     15.4         175
+        1-14  15     104       8      10     29     18   10.1   6.9     16.9         169
+       15-29  10     109      24       6     31     16    7.8   6.4     14.2         187
+       30-44  19      92      36      13     29     18    5.9   6.5     12.4         188
+         45+  34     100      59       2     28     18    6.8   6.1     12.9         206
+
+    CARROT vs total animals   -0.33      CARROT vs total crops   +0.52
+    CARROT vs WHEAT           -0.26      CARROT vs STRAWBERRY    -0.19
+    CARROT vs bank            -0.52      CARROT vs margin        +0.05
+
+Animals fall 15.4 -> 12.9 while crop tiles rise 175 -> 206: livestock capital converted into tile
+throughput. And once more, bank and margin point opposite ways.
+
+## Is e2500 adaptable? Partly -- and the open window is d24-d29
+
+    UNSOLVE_DAYS = tuple(range(24, 30))
+    SOLVED_DAYS covers days 12..29, but 24-29 are excluded from PRECOMPUTED_ROUTES
+
+    days     how they are played                       adaptable
+    0-11     router solves live from the schedule      YES
+    12-23    frozen (tile, ops) tours                  no
+    24-29    excluded from the route table             YES
+
+`_apply_precomputed` keys a stop on the exact `(tile, ops)` tuple, so a solved day is a frozen tour,
+not a target: change what is planted and the stop stops matching. The clone arms are worse still --
+they replay recorded actions verbatim.
+
+**d24-d29 is the window and the timing is ideal.** Shops unlock on d3, 6, 9, 12, 15, 18, 21 and 24,
+so a decision on d24 sees ALL EIGHT draws. Crop Dusta's own 1-14 band starts d26 and his 15-29 band
+d24; only his 45+ band needs d21-d22, which is inside our frozen region.
+
+So a sink-sized carrot row for d24-d29 is a schedule-level edit inside a window the router already
+plans live. It needs no handover change and no new architecture.
+
+**NOT MEASURED:** whether e2500 has free tiles and spare hand-turns in d24-d29. The idle-hand census
+in this file was taken on the CLONE TAPE (3 free tiles at d24-d26, 4% idle hands), which is a
+different agent on a different board. That number must be taken on e2500 before any of this is real.
+
+### Hazard: SOLVED_DAYS exists in FOUR copies and only the last is live
+
+`submission/e2500_carrot.py` lines 1314, 1586, 1858 and 2130 each define `SOLVED_DAYS`, all covering
+days 12-29 with the same day keys and differing tours. Python keeps the last. `PRECOMPUTED_ROUTES`
+is derived from it at import.
+
+This is verbatim the failure already recorded in the global rules -- *"SOLVED_DAYS was patched while
+the code read PRECOMPUTED_ROUTES, derived from it at import, and 'changes nothing' was reported"*.
+Any edit to the first three copies is a silent no-op.
+
+## The handover measurement in the shipped file does not survive more draws
+
+`make_agent`'s docstring claims d20 handover banks 94,496 against the tape's 94,000 and that the
+boundary is *"worth +$11,256 over the d11 we ship"*, on its own stated basis of ONE seed and ONE tape.
+
+Three sweeps from 2026-08-26 disagree. `stop` is the handover day; day 30 is the tape playing the
+whole season:
+
+    handover day    mean bank   vs full tape   beats tape
+      all_draws (27 draws)
+            12         82,040        -12,411        0/27
+            20         86,151         -8,300        0/27
+            28         92,498         -1,953        0/27
+      fine (18 draws)
+            14         95,129         -1,437       10/18
+            18         92,570         -3,996        5/18
+            22         96,429           -137       12/18
+            24         95,074         -1,492        4/18
+            26         94,767         -1,799        1/18
+      class (18 draws)
+            12         91,989         -4,577        6/18
+            20         96,008           -558        9/18
+            28         94,762         -1,804        2/18
+
+**The planner is worse than the tape at every handover day tested.** Best is d22 at -$137 mean, and
+even there only 12 of 18 draws improve. Two caveats: these sweeps carry no opponent bank, so they
+are scored on MONEY, which this session has established is the wrong metric; and they disagree with
+each other badly (d12 is -12,411 in one and -4,577 in another), so variance across draw sets is large.
