@@ -310,3 +310,202 @@ at turn 88: the opening is not perturbable.
 **Late-game carrots are not expressible as a tape edit either.** An inserted PLANT has no seed
 bought, no hand routed to the tile, no water and no harvest, so it would measure the cost of a seed.
 That is the `add_land` failure recorded in the global instructions. Carrots need the planner.
+
+## The 53-tape sweep answered a narrower question than I reported
+
+Alex asked whether the 4 sheep / 11 cow herd really suits 70% of shop draws, and whether some tapes
+suit some shop systems better than others.
+Checking that exposed a selection error in the sweep itself.
+
+The sweep filtered the corpus to tapes whose **own yarn day was not d3 or d6**, meaning to exclude
+the two yarn arms.
+Yarn day is the herd signal: the census in the section above measures d3/d6 tapes at 10.4 mean sheep
+and d9-plus tapes at 4.1.
+So the filter removed every sheep-heavy tape in the corpus.
+
+Cross-tabbing the sweep's own 371 rows by herd:
+
+    === how many tapes in each herd class ===
+      sheep<=4    53
+
+All 53 tapes in the sweep buy 4 sheep and 11 cows.
+The seven draws do span the shop space -- milk sinks 2 to 5, wool sinks 0 to 3 -- but every tape in
+the comparison bought the same animals.
+The per-draw winner moves around (`98960039`, `98951018`, `98900762`) across a spread of about $6k,
+which is noise between near-identical seasons.
+That is why the 53-tape oracle bought only $1,335 over the best single tape.
+
+**"No split beats e2500" was measured on 53 recordings of one strategy.**
+It is not a statement about splitting.
+
+## Both herds sit in the same prefix family, so both are legal at the latch
+
+Regrouping the corpus by the md5 of the turn 1..88 action prefix -- turn 88 is the shipped
+`ARM_LATCH_TURN` -- gives 17 families across 110 usable tapes.
+One family dominates:
+
+    family       n   herds inside              yarn days                    mean own bank
+    3f557fae    72   4/11 x53   10/6 x19       d3x15 d6x4 d9x3 d12x3 d15x12        90,925
+
+Inside that family:
+
+     sheep  cow   n   mean own bank
+         4   11  53         85,072
+        10    6  19        107,252
+
+All four shipped arms are in it:
+
+      98889302  yarn3 arm    sheep 10 cow  6   yarn d3
+      98921350  yarn6 arm    sheep 10 cow  6   yarn d6
+      98884730  restB open   sheep  4 cow 11   yarn d15
+      98907591  restA open   sheep  4 cow 11   yarn d15
+
+So a herd switch at turn 88 is already expressible with tapes we hold.
+The $22k own-bank gap is **confounded** -- the 19 sheep-heavy tapes are yarn-d3/d6 tapes, so they
+played wool-rich draws by construction, and their authors differ.
+It is not evidence that 10/6 is better.
+
+What it does establish is that the 10/6 arm has **never been replayed on a default draw**.
+The assumption that it loses there is what the yarn latch is built on, and nothing has tested it.
+
+## Why the shop system is a real signal and we latch on only half of it
+
+Shops are demand sinks (`reference/kaggriculture.py:733-740`): every `townShopSellInterval` steps
+each unlocked instance drains its listed products out of the market inventory, which is what stops
+the price collapsing as we sell into it.
+`BUY_ANIMAL` is **not** shop-gated (`:604`, `:679`) -- it needs cash and shed room only -- so the
+herd order always lands and the shops act purely on the sell side.
+
+    MILK sinks:  PIZZA_SHOP, ICE_CREAM_SHOP, SMOOTHIE_SHOP     3 of 8 shop types
+    WOOL sinks:  YARN_STORE                                    1 of 8
+
+Shops are drawn **with replacement**, one every `townShopUnlockInterval` days, capped at
+`MAX_SHOP_INSTANCES = 8` (`:886-891`), so the sink count per product varies widely per draw.
+Across the 110 recordings both signals move the herd, in opposite directions:
+
+    MILK sinks unlocked by end of d10   draws   mean cow   mean sheep   mean bank
+      0                                    29        7.7          7.1      86,819
+      1                                    48        9.3          5.9      86,011
+      2                                    25       10.1          5.1     101,862
+      3                                     8       11.5          4.0     128,240
+
+    WOOL sinks (season end)             draws   mean cow   mean sheep   mean bank
+      0                                    32       10.8          4.0      88,833
+      1                                    55        9.2          5.8      92,161
+      2                                    19        7.0          9.1      99,378
+      3                                     3        6.0         10.0     112,882
+
+**This is correlational and confounded** -- different players on different draws, and a draw with
+more shops of any kind drains more of everything, so part of the bank gradient is just shop count.
+It is not the experiment.
+The experiment is `data/logs/herd_class_on_open_draws.csv`: the same draws, the same opponent, three
+tapes of each herd class, swapping only the tape.
+
+The shipped latch reads YARN_STORE, the 1-in-8 signal, and ignores the 3-in-8 one.
+
+## The herd is decided on d3 information, and that is why it cannot be fixed with tapes
+
+### Swapping the whole TAPE at the latch: cow11 wins the default draws
+
+Three 4/11 tapes and three 10/6 tapes, all from prefix family `3f557fae`, replayed on the 27
+open-arm draws (`YARN_STORE` not unlocked by d6, so neither yarn latch fires).
+Same seed, same opponent per draw, only the tape changes.
+`data/logs/herd_class_on_open_draws.csv`.
+
+     milk_end   n       cow11     sheep10      delta  sheep10 wins
+            0   4      75,177      71,419     -3,758         1/4
+            1   3      70,473      62,523     -7,950         0/3
+            2   5      72,771      67,015     -5,756         1/5
+            3   5      79,854      77,829     -2,025         1/5
+            4   5     108,025      92,737    -15,288         1/5
+            5   4     108,776      88,308    -20,468         1/4
+            6   1     102,770      80,360    -22,410         0/1
+          ALL  27      87,157      77,583     -9,574         5/27
+
+    tape       arm         mean bank   beats opponent
+    98900762   cow11          87,817          16/27
+    98873431   cow11          87,220          15/27
+    98884730   cow11          86,435          13/27
+    98916796   sheep10        81,406           7/27
+    98889302   sheep10        77,122           3/27
+    98921350   sheep10        74,220           3/27
+
+The cell `98832334 / 98900762 = 139,821` is byte-identical to the same cell in the 53-tape sweep,
+so the two harnesses agree.
+
+The yarn latch is directionally right and the shipped default arm is the correct one.
+The sheep penalty deepens monotonically with milk sinks, which is the sink model working.
+
+Cut the same rows by WOOL instead and the sign flips:
+
+     wool_end   n       cow11     sheep10      delta  sheep10 wins
+            0  10      95,166      78,293    -16,873         1/10
+            1  13      85,843      76,046     -9,798         1/13
+            2   3      69,127      77,796     +8,669         2/3
+            4   1      78,243      89,830    +11,587         1/1
+
+**n = 4 on the winning side.** This is the sample size that produced this project's +40% in-sample
+against +12.8% held-out. It is a hypothesis, not a result.
+
+### Swapping the SPECIES instead of the tape: a large, clean loss
+
+`BUY_ANIMAL COW`, `PICKUP COW` and `PLACE COW` rewritten to SHEEP after turn 88.
+Order count and order SLOTS unchanged, unlike the count-trim wrapper that desynchronised the opening.
+Legal at the latch because 98884730's first COW buy is turn 96 (d4h0), after `ARM_LATCH_TURN = 88`.
+Mechanically sound: both species are structure PASTURE and `PLACE` only checks
+`tile.kind == ANIMALS[item]["structure"]` (`reference/kaggriculture.py:377-390`), which is exactly
+what the shipped `_PASTURE` tuple is derived for.
+
+     WOOL sinks   n    baseline   cow2sheep      delta   swap wins
+              0  10      95,166      42,023    -53,143       0/10
+              1  13      85,843      47,482    -38,362       0/13
+              2   3      69,127      59,466     -9,661       0/3
+              4   1      78,243      46,146    -32,097       0/1
+
+     MILK sinks   n    baseline   cow2sheep      delta   swap wins
+              0   4      75,177      57,004    -18,173       0/4
+              4   5     108,025      47,772    -60,253       0/5
+              6   1     102,770      28,448    -74,323       0/1
+
+            ALL  27      87,157      46,742    -40,415       0/27
+    head-to-head:  baseline 44/81    cow2sheep 0/81
+
+**REVERTED. Null recorded, code deleted, no flag.**
+0 of 27 draws and 0 of 81 head-to-head, mean -$40,415.
+
+The gradient is in the predicted direction on both axes, so the sink model is right and the
+intervention is wrong.
+Two reasons it loses far more than swapping the whole tape: 11 sheep overshoots the 10 the sheep
+tapes actually buy, and the tape's collection stops are timed for cows (`first_yield_day` 8,
+`interval` 2, `:822`) while sheep yield on 6 and 3, so a share of the harvest stops arrive at a tile
+holding nothing.
+
+**Correction to an earlier claim in this session.** I wrote that a cow/sheep swap is not expressible
+as a tape edit. That was too strong: the route, pen, walk and stop are identical and the swap runs.
+What shifts is the yield calendar, which is a cost, not a breakage. The measured cost is -$40,415.
+
+### Why no latch can do better: the information is not there yet
+
+Compatibility measured from a sheep tape as base, the reverse of the earlier table:
+
+    base 98889302 (10/6)                   base 98921350 (10/6)
+     latch turn  agreeing  4/11  10/6       latch turn  agreeing  4/11  10/6
+          d3h16        72    53    19            d3h16        72    53    19
+          d3h23        15     0    15            d3h23        57    53     4
+          d5h23        14     0    14            d5h23        53    49     4
+          d6h23        12     0    12            d6h23         1     0     1
+
+From either direction, the last turn at which a cow tape and a sheep tape are BOTH reachable is
+d5h23.
+Shops unlock on the day boundary at d3, d6, d9 (`:886`), so at d5h23 exactly **one** shop instance
+has been drawn.
+After d6h23 every base collapses to one herd.
+
+**The herd must be committed on one shop draw.**
+`P(YARN_STORE)` is 1/8 per draw; MILK is drained by three shop types of eight.
+Committing blind, 4 sheep / 11 cow is the correct marginal bet, and the yarn3/yarn6 latch is
+capturing the only extra information that exists at the decision point.
+
+The wool>=2 signal that predicts a sheep win arrives on d9 or later. It is unreachable by any tape
+latch. Acting on it would require the planner to buy the animals rather than the tape -- which is
+the "optimise the artifact, not a proxy" question, not a tape question.
