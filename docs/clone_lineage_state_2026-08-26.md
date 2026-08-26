@@ -740,3 +740,97 @@ The win counts printed in `data/logs/do_we_need_three_arms.log` under the summar
 that code compared every arm's bank against open-B's opponent bank, and the opponent's bank depends
 on which arm we play. The per-class rows in the same log, and the table above, are recomputed
 per-arm from the CSV and are correct.
+
+## CORRECTION: Ujjwal has FOUR strategies and THREE latch points, and I twice said two
+
+Alex pushed back on the grouping twice -- "there are 4 different strawberry values", "there are 5
+different strawberry values and 3 wheat - how is that 3 UNIQUE strategies" -- and he was right both
+times. Bucketing the tapes destroyed the signal. The per-day grids
+(`data/logs/ujjwal_by_day.log`) locate every difference exactly.
+
+STRAWBERRY is identical on every day except **d10**:
+
+    tape       tot    d2 d3 d5 d6 d7 d8 d9 d10 d11   yarn
+    98845865    41     2  1  4  5  8  1  1  11   8     d9
+    98852727    41     2  1  4  5  8  1  1  11   8    d15
+    98907591    41     2  1  4  5  8  1  1  11   8    d15
+    98834418    38     2  1  4  5  8  1  1   8   8    d15
+    98836697    38     2  1  4  5  8  1  1   8   8   never
+    98884730    38     2  1  4  5  8  1  1   8   8    d15
+    98898462    38     2  1  4  5  8  1  1   8   8   never
+    98912171    38     2  1  4  5  8  1  1   8   8   never
+    98914508    38     2  1  4  5  8  1  1   8   8   never
+
+**41 against 38 is one decision on d10: eleven strawberries or eight.**
+I called it "re-tried plants, not a decision". That was an assertion and it was wrong.
+d10 is the day after the d9 unlock.
+
+The animal cadence separates a fourth group:
+
+    tape       SH CO      d0   d4   d6   d7    d8    d9
+    98859585   10  6      S4   C1   C4   S2  S2C1    S2
+    98916796   10  6      S4   C1   C4   S2  S2C1    S2
+    98923606   10  6      S4   C1   C4   S2  S2C1    S2
+    98889289   10  6      S4   C1   C4   S2    S1  S3C1     <- its own cadence
+    (all nine cow tapes identical:  S4  C1  C5  C2  C1  .  C2 on d10)
+
+His four:
+
+    #  trigger                  SHEEP/COW  WHEAT  STRAW  CARROT        tapes
+    1  yarn at d3                   10/6    132     32   12 (d26)      98859585 98916796 98923606
+    2  yarn at d6                   10/6    128     39   12 (d26)      98889289
+    3  no yarn, d10 -> 8 straw      4/11    134     38   20 (d11+d26)  6 tapes
+    4  no yarn, d10 -> 11 straw     4/11    134     41   20 (d11+d26)  98845865 98852727 98907591
+
+### Three latch points, not one
+
+How long each tape stays byte-identical to `98884730`:
+
+    group                          tape       agrees to    = day/hour
+    1 yarn-d3                      98859585          88       d3h16
+                                   98916796          88       d3h16
+                                   98923606          88       d3h16
+    2 yarn-d6                      98889289         153        d6h9
+    3 open straw-8                 98884730         719      d29h23
+                                   98898462         222        d9h6
+                                   98834418         359      d14h23
+    4 open straw-11                98852727         242       d10h2
+                                   98907591         164       d6h20
+                                   98845865          44       d1h20
+
+Each group peels off exactly one shop draw after the last:
+
+    latch  turn            decides                  on what he had just seen
+      1     88  = d3h16    sheep tape or not        the d3 unlock
+      2    153  = d6h9     the d6 sheep tape        the d6 unlock
+      3    242  = d10h2    11 strawberries or 8     the d9 unlock
+
+`ARM_LATCH_TURN = 88` reaches only the first. Branches 2 and 3 are prefix-compatible and unused.
+
+### The shipped arms are three different players
+
+    98889302  yarn3 arm     WeAreFarmers
+    98921350  yarn6 arm     nao.kwmr
+    98884730  open arm      UjjwalPardeshi
+    98907591  restA open    UjjwalPardeshi
+
+We stitch three unrelated seasons at one latch. Ujjwal's own yarn-d3 and yarn-d6 games
+(`98859585`/`98916796`/`98923606` and `98889289`) are in the corpus and are not used.
+That is why the arms looked incoherent on product, and it makes the earlier "yarn3 beats yarn6 on
+yarn6's own class" a comparison between two strangers rather than between two branches.
+
+**NOT YET MEASURED:** an all-Ujjwal arm set at three latch points against the shipped mixed set.
+That is the next run.
+
+### No signal separates the two open tapes
+
+80 open-class draws, both open tapes, `data/logs/what_selects_open_a.csv`.
+open-A wins 19 of 80. Every candidate separator available at d6 -- the d3 shop, the d6 shop, the
+instance count, and the milk, wool, strawberry, carrot and wheat sink counts -- yields a perfect-split
+gain of **exactly $0** over always playing open-B.
+
+    always open-B    86,391
+    ORACLE           86,656     headroom +265
+
+The headroom itself is $265 across 80 draws, so this pair is not where the value is. The d10
+strawberry branch is a different question and has not been tested.
