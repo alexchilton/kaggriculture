@@ -954,6 +954,13 @@ PEN_NEAREST_DEPOT_FROM_DAY = 11
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
+#: Ops the reference allows at most ONCE per tile per day, so a second one in the same turn can only
+#: waste the turn. `fed_today` (`reference/kaggriculture.py:786`), `cared_today`,
+#: `fertilizer_available` (`:518`), `was_watered` (`:781`), and a HARVEST that takes the available
+#: yield. Used by the per-turn dedupe at the action exit; see the note there for the d12 measurement.
+_ONCE_PER_TILE = frozenset({"FEED", "CARE", "HARVEST", "COLLECT_FERTILIZER", "WATER", "FERTILIZE"})
+
+
 def _sell_by_hour(row, day, state):
     """`{product: [(hour, qty), ...]}` from the row's SELL orders. `None` if the row has no timing.
 
@@ -5955,24 +5962,40 @@ def make_agent(schedule, me=0, router=True, start_day=0):
                 else:
                     _pdone[_crop] += 1
 
-        # Counted across the day, like the buy cap above, and reset when the day changes.
-        # **From the BOARD, not the row.** Alex, 2026-08-26: *"the care passed to router
-        # should be animals on board needing care and feed"*. The row says 15 because HIS
-        # board carried 15 pens; ours is the one being routed, so a herd of fourteen must cap
-        # at fourteen. The row stays the cross-check, never the source.
-        _row_cares = sum(1 for _r in tiles for _c in _r
-                         if isinstance(_c, dict) and _c.get("animal"))
-        if _row_cares > 0:
-            if state.get("_carecap_day") != day:
-                state["_carecap_day"], state["_cared_today"] = day, 0
-            _room = _row_cares - state["_cared_today"]
-            for _i, _op in enumerate(acts):
-                if _op and _op[0] == "CARE":
-                    if _room <= 0:
-                        acts[_i] = ["PASS"]
-                    else:
-                        _room -= 1
-                        state["_cared_today"] += 1
+        # **ONE TILE, ONE SERVICE, PER TURN.** Alex, 2026-08-26: *"the harvest should also be
+        # capped ... like everything else"*.
+        #
+        # Two hands standing on the same cell in the same turn both read `fed_today == False`,
+        # because the environment only sets it while PROCESSING the turn -- so both act and the
+        # second one no-ops. `underfoot()` makes this common: `_refresh_pins` sites pens ON the
+        # shed-access tiles, so a depot cell is where hands congregate.
+        #
+        # Measured d12 of `clone_open`, seed 123641874, handover d12, ops against distinct tiles:
+        #
+        #     FEED      16 ops / 15 tiles     duplicate at (3,4)              his 15
+        #     HARVEST   11 ops / 10 tiles     duplicate at (4,3)              his 10
+        #     CARE      15 ops / 13 tiles     duplicates at (3,4) and (4,3)   his 15
+        #
+        # **The CARE row is why this replaces a count cap rather than joining one.** A cap that
+        # counted CARE against the herd size made 15/15 look matched while only THIRTEEN pens were
+        # served -- two animals got no care at all and the total hid it. Deduping the tile fixes the
+        # count and the coverage together.
+        #
+        # Every op here is once-per-day-per-tile in the reference: `fed_today` (`:786`),
+        # `cared_today`, `fertilizer_available` (`:518`), `was_watered` (`:781`) and a harvest that
+        # takes the available yield. A second call in the same turn can only ever waste the turn.
+        # Positions read HERE, from the live farm, not from the plan-time `units` list -- `acts[0]`
+        # is the farmer and `acts[1:]` are the hands, in `farm` order.
+        _now = [tuple(farm["farmer"])] + [tuple(_h) for _h in (farm.get("hands") or [])]
+        _served = set()
+        for _i, _op in enumerate(acts):
+            if not _op or _op[0] not in _ONCE_PER_TILE or _i >= len(_now):
+                continue
+            _key = (_now[_i], _op[0])
+            if _key in _served:
+                acts[_i] = ["PASS"]
+            else:
+                _served.add(_key)
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _sells_first(
