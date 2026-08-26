@@ -1287,3 +1287,45 @@ money by d10.** He solves it by DEFERRING the purchase, not by predicting the dr
 For e2500: 89% of his herd lands by d10, inside e2500's live window (d0-d11), so most of the rule is
 expressible there. The d15-d19 tail falls in the frozen d12-d23 block and is not reachable without
 unfreezing those days.
+
+## The goose kill stands, on better evidence than the kill itself had
+
+Alex spotted GOOSE purchases in Crop Dusta's day table. This repo killed geese (`Geese lose to the
+mirror and to the field`, then `Delete the geese rather than leave a losing flag in the tree`), and
+a recorded note says the `SELLABLE` bug made EGG unsellable at all, which invalidated the goose
+verdict along with four carrot arms. So the negative may never have been measured properly.
+
+Re-asked against 61 current-version Crop Dusta games (`data/logs/dusta_geese.log`):
+
+    21 of 61 games use geese (34%), mean 2.4 birds when used
+
+    corr(EGG sinks, GEESE bought) = +0.16
+      compare  SHEEP/wool +0.70   COW/milk +0.66   CARROT +0.53   STRAWBERRY +0.51
+
+                     games   mean GOOSE   SHEEP   COW   mean margin       W
+    with geese          21          2.4     5.0   5.1       +18,535   20/21
+    no geese            40          0.0     9.0   7.3       +23,524   36/40
+
+**Geese are the ONE thing he does not size to its own sinks** -- +0.16 against +0.70 for sheep.
+Every other product in his repertoire tracks its own demand. Geese are occasional filler, usually a
+single `d6: 3` order, and his goose games carry less margin while running 5.0/5.1 sheep and cows
+against 9.0/7.3 without.
+
+GOOSE mechanics for the record (`reference/kaggriculture.py:20`): cost 300, structure COOP,
+first_yield_day 4, interval 1, max_held 4, product EGG. Interval 1 is the fastest yield in the game.
+EGG is base 50, T=332, above_func `log` at 0.20 -- one of the flattest above-curves. So the birds are
+cheap and fast and the book resists flooding; they still do not pay here.
+
+**Correlational and confounded**, n=21, selected download set, NOT a controlled A/B. But it is a top
+player's revealed preference across 61 current games and it points the same way as our kill.
+
+So the `SELLABLE` bug invalidated the EVIDENCE for killing geese, not the CONCLUSION. Worth
+re-asking -- that is the "a decision to skip a fix can expire" rule working -- and nothing here
+justifies reopening the machinery.
+
+### A reading caution about the day tables in this file
+
+The per-day animal table above is **summed across all 61 games**, not per game. `d6: 28 GOOSE` means
+28 birds bought on d6 across the whole set, and `d0: 122 SHEEP` is about two per game. Alex misread
+it as one game buying 28 and the header was the reason. Say "summed over N games" whenever one of
+these is quoted.
