@@ -202,7 +202,29 @@ TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 #: bank drifts and later purchases can fail. Weeds are rare (0.005) and the day-0 board is
 #: deterministic -- 25 open tiles, 75 LOCKED, every seed -- so the opening should mostly land. That
 #: is a measurement, not an assumption, and it is what building both artifacts is for.
-REPLAY = pathlib.Path("data/seed_scripts/top2/91854176.json")
+#: **Pointed at the clone lineage on the `clone-lineage` branch, 2026-08-26.**
+#: `data/logs/tape_reach.log`: grouping the 2026-08-25 field by its d0-d11 opening gives five
+#: scripts, and this one -- `123c42fb5d`, 11 seats over ELEVEN DISTINCT SHOP DRAWS -- plays
+#: **identical actions through d27**. That is not a tape that reaches further, it is an agent that
+#: barely reads the board, which is exactly what a replay can reproduce.
+#:
+#: It is also the best of the five on the criterion that decides the ladder. On WIN RATE, not bank:
+#:
+#:     group        seats  WIN%  tape exact   mean bank
+#:     123c42fb5d      11   55%      d27      $ 82,799
+#:     356835aca0      29   48%      d12      $105,080
+#:     d1f515b59d      49   45%      d14      $ 87,218
+#:     62d81623f9      40   40%      d19      $ 84,045
+#:     d198b9f673      10   30%      d11      $110,015
+#:
+#: The bank column runs the other way and is the trap this project has recorded since day one --
+#: a $43k win and a $4k win score the same. Caveat: these seats largely play EACH OTHER, and when
+#: both sides run one script one of them must lose, so intra-lineage rates sit near 50% by
+#: construction. The ordering is suggestive, not decisive.
+#:
+#: Seat 1 of 98907591 is the best margin in the group, +$16,437 ($100,149 against $83,712), on its
+#: own seed 123641874.
+REPLAY = pathlib.Path("data/seed_scripts/clone_open/98907591.json")
 REPLAY_SEAT = 1
 
 TARGET = pathlib.Path("submission/main.py")

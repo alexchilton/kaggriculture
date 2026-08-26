@@ -168,6 +168,27 @@ TAPES = {
     # 14 pens, 181 plantings, land d6/d11 and peak crew 12 -- which is the schedule we ship.
     "clone_late": ("data/seed_scripts/clone_late/98898511.json",
                    "data/seed_scripts/clone_late/schedule.json", "G!vIOne"),
+    # **The most OPEN-LOOP script in the field, and the best of the five on win rate.**
+    # `data/logs/tape_reach.log`: group `123c42fb5d`, 11 seats over ELEVEN DISTINCT SHOP DRAWS,
+    # plays byte-identical actions through **d27**. That is not a tape that reaches further; it is
+    # an agent that barely reads the board, which is exactly what a replay can reproduce.
+    #
+    #     group        seats  WIN%  tape exact   mean bank
+    #     123c42fb5d      11   55%      d27      $ 82,799
+    #     356835aca0      29   48%      d12      $105,080
+    #     d1f515b59d      49   45%      d14      $ 87,218
+    #     62d81623f9      40   40%      d19      $ 84,045
+    #     d198b9f673      10   30%      d11      $110,015
+    #
+    # The bank column runs the OTHER WAY, which is the trap this file's own notes have recorded
+    # since day one -- a $43k win and a $4k win score the same. Caveat: these seats largely play
+    # each other, so intra-lineage rates sit near 50% by construction; the ordering is suggestive.
+    #
+    # Seat 1 of 98907591, the best margin in the group (+$16,437, $100,149 to $83,712), own seed
+    # **123641874**. 15 pens, 206 plantings, land d6+d10, peak crew 15 -- against the shipped
+    # kawashigi plan's 14 pens, 181 plantings, land d6+d11, peak crew 12.
+    "clone_open": ("data/seed_scripts/clone_open/98907591.json",
+                   "data/seed_scripts/clone_open/schedule.json", "UjjwalPardeshi"),
 }
 
 #: **Removed on 2026-08-13, on Alex's instruction: "no seb - only vic or the new nr 1".**
