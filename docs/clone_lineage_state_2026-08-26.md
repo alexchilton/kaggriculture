@@ -928,3 +928,56 @@ The measurement that shows why: switching between the two open tapes moves OUR b
 $1,694 and the OPPONENT's by a median $1,764, and **on 43 of 80 draws it moves them more than us**.
 Ten of the 24 result-flips between those two tapes are driven mainly by the opponent's bank moving,
 not ours. A bank-only comparison cannot see half the effect.
+
+## Crop Dusta sizes his carrot programme to the town's carrot sinks
+
+146 unique Crop Dusta games -- 95 already on disk across five corpora, plus Alex's pull of ~50 more
+into `~/Downloads` on 2026-08-27. `data/logs/crop_dusta_146.log`, rows cached at `/tmp/cd146.json`.
+
+**The era worry is CLOSED and was mine.** I asserted the older folders might predate the 2026-08-08
+drain change or the 2026-08-15 hinge change. Checked directly: `94348150`, `98884730` and
+`99831028` all record `module_version 1.32.7`, `marketParams {}`, `weedSpawnChance 0.005`,
+`townShopSellInterval 4` and identical opening prices. Same economy. All 146 are usable.
+
+    carrot sinks   games   mean carrots   mean margin        W
+               0      16            0.0       +10,576    12/16
+               1      31            4.4       +16,375    23/31
+               2      46           23.0       +13,203    41/46
+               3      39           31.5       +12,182    34/39
+               4      12           44.4       +15,447    10/12
+               5       1           36.0       +22,791      1/1
+               6       1           59.0        +2,163      1/1
+
+Monotone 0 -> 4.4 -> 23.0 -> 31.5 -> 44.4.
+**At the 11-game sample this looked like noise and I reported it as such.** It is a policy.
+
+And the programme starts earlier the bigger it is:
+
+     carrots  games  share   mean bank   mean margin       W   starts
+           0     68    47%     110,866       +11,387   53/68        -
+        1-14     15    10%     111,010       +13,889   12/15      d26
+       15-29     10     7%      97,985       +26,050   10/10      d24
+       30-44     19    13%      95,076       +14,388   17/19      d22
+         45+     34    23%      84,242       +13,326   30/34      d21
+
+52 distinct carrot counts from 0 to 82, and 12-plus distinct (sheep, cow) pairs. He does not select
+from a menu of arms the way the clone family does -- he sizes continuously.
+
+**The bank column falls as carrots rise while the margin does not.** Third time in this session that
+money points the opposite way to the quantity that scores.
+
+### Why this is reachable and the herd is not
+
+Shops unlock on d3, 6, 9, 12, 15, 18, 21 and 24. A decision at **d21 sees seven of the eight draws**.
+The carrot programme is late by design, so its information is essentially complete when the decision
+is made. The herd closes on d10 with one shop visible, which is why no herd latch can do better.
+
+Our clone plants 20 carrots on every draw -- 8 on d11 and 12 on d26 -- whether the town drew zero
+carrot sinks or four. And CARROT is the only product measured that never sells below base
+(185-296% across eight draws, insensitive to its own sink count, `T = 450`, the deepest book).
+
+**NOT MEASURED YET:** whether adding a sink-sized carrot programme from d21 to the clone tape wins.
+It needs free tiles and hand-turns in d21-d26, which is the idle-hand census that has not been run.
+
+    122W / 24L across the 146, mean margin +13,491.
+    This is a SELECTED download set. It is NOT a win rate and must never be quoted as one.
