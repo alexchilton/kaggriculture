@@ -243,8 +243,8 @@ REPLAY_ARMS = {
     #
     #     proposed better on 13/14 draws, mean +$3,028
     #     best +10,769 (d21)   worst -5,417 (d18)
-    "open": (pathlib.Path("data/seed_scripts/clone_open/98907591.json"), "UjjwalPardeshi", 29,
-             pathlib.Path("data/seed_scripts/clone_open/schedule.json")),
+    "open": (pathlib.Path("data/seed_scripts/arm_rest/98884730.json"), "UjjwalPardeshi", 29,
+             pathlib.Path("data/seed_scripts/arm_rest/schedule.json")),
 }
 ARM_DEFAULT = "open"
 
@@ -300,13 +300,22 @@ ARM_DEFAULT = "open"
 #:
 #: One seed per draw and two draws per class. The SHAPE is what was measured; the exact day is not
 #: pinned closer than the d12/d20/d28 grid until the d14-d26 pass lands.
-STOP_TABLE = {
-    "yarn3": 28,
-    "yarn6": 20,
-    #: `open` splits on whether YARN_STORE has appeared at all by the time the stop is read.
-    "open_yarn_seen": 20,
-    "open_no_yarn": 12,
-}
+#: **EMPTIED 2026-08-26, and it must stay empty unless a measurement refills it.** The epilogue
+#: reads `stop = _stop(obs, me, arm) if _STOP_TABLE else _ARM_STOP.get(arm, _REPLAY_DAYS)`, so a
+#: non-empty table OVERRIDES the per-arm stop day the builder was told to use. It shipped
+#: `{yarn3: 28, yarn6: 20, open_yarn_seen: 20, open_no_yarn: 12}` and silently clamped every build:
+#: a bundle built with `--replay-days 29` handed over at d12 or d20 instead. Draw 98818687, the
+#: same seed and opponent throughout -- pure tape 95,776, handover at d28 93,751, and the "d29"
+#: bundle 85,757, which is the d12/d20 clamp and not what was asked for.
+#:
+#: The values it held were also void twice over: derived from a sweep that seated the tape against
+#: a CLONE of itself, on an agent whose schedule the kawashigi branch replaced mid-season.
+#:
+#: Re-measured over 18 shop draws spanning 8 of the 9 yarn classes and all three arms, the answer
+#: has no per-class structure left to encode: d28 is the best handover on EVERY draw and the tape
+#: with no planner beats it on every draw, by $995 to $2,648. So the stop day is simply "as late as
+#: the tape reaches", which is what `_ARM_STOP` already carries.
+STOP_TABLE = {}
 
 #: The first turn at which the arms are allowed to differ: **d3h16**, the earliest measured action
 #: split (`clone_open` vs `clone_yarn3`). Everything before it is asserted identical across arms at
