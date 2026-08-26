@@ -3923,12 +3923,30 @@ def _replay_opening(days, tape=None, team=None):
     return out
 
 
-def make_agent(schedule, me=0, router=True):
+def make_agent(schedule, me=0, router=True, start_day=0):
     """`agent(obs, config) -> action`.
 
     `router=True` solves the day as a Team Orienteering Problem (`kagg/search/router.py`): tiles are
     pinned, tours are committed, and each stop's ops are re-derived from the live board. `router=False`
     is the earlier per-turn greedy, kept only so the two can be measured on one seed list.
+
+    `start_day=N` means **somebody else played days 0..N-1 and MET their rows** -- the shape
+    `--replay-days` ships, where a recorded opening is replayed verbatim and this planner takes over
+    on day N. Restored 2026-08-26; the parameter belonged to the 3,610-line predecessor deleted at
+    `fa96ace` and `--replay-days` has been unbuildable since, because the builder refuses the
+    combination rather than ship an artifact that claims to replay and does not.
+
+    **It has exactly one job: stop the sell rows of the replayed days being carried forward as
+    missed.** The bundle drives this planner on every turn of the opening and discards its answer,
+    so `state["day"]`, the pins, the pen reservations and `planted` all stay warm by construction --
+    nothing else needs seeding. What is NOT true is that this planner placed the opening's sell
+    orders: the replay did. Without this, day N opens believing it owes every unsold unit of days
+    0..N-1 and dumps the backlog into one book.
+
+    Measured 2026-08-26 on `clone_open`, seed 123641874, ours/tape final bank by handover day:
+    d4 58,739/94,000, d12 83,240/94,000, **d20 94,496/94,000**, d28 92,205/94,000. The tape beats
+    this planner through d19 and loses to it after, so the boundary is worth +$11,256 over the d11
+    we ship. One seed, one tape.
     """
     # **The species is ours; the count and the cadence are the schedule's.** See `HERD_GEESE`.
     sched = swap_in_geese(schedule) if HERD_GEESE else {int(k): v for k, v in schedule.items()}
@@ -4013,7 +4031,11 @@ def make_agent(schedule, me=0, router=True):
             # `owed` never reached zero and the offer pinned at the season's largest row every turn from
             # about day 19 -- 63 strawberries at a time. On the old leader tape that turned a trace that
             # was better on every field through day 18 into money -19,407 -> -30,262.
-            for d in range(max(0, state["day"]), day):
+            # **`start_day` days were played by the replay, not by us, so their rows are MET.**
+            # See `make_agent`. Their sells were placed by the recorded opening; carrying them here
+            # would have day N open owing every unsold unit of the opening and dump the backlog into
+            # one book. Inert at the default 0.
+            for d in range(max(0, start_day, state["day"]), day):
                 left = collections.Counter()
                 for p, q in ((sched.get(d, {}) or {}).get("sells") or {}).items():
                     # **`shed_max` is peak STOCK, which is not what was sold.** Fertilizer arrives one
