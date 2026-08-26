@@ -1,0 +1,161 @@
+# Clone lineage, state at 2026-08-26 end of day
+
+Written because most of this session's measurements were void and the reasons must not be
+re-derived tomorrow.
+
+## The headline
+
+**The old `e2500` line beats today's clone-lineage candidates in controlled local play.**
+
+    local, same draws, same opponents, same seed
+    draw 98818687   e2500 105,575   B 103,143   A  94,363
+    draw 98818694   e2500  70,981   B  62,795   A  62,110
+
+**Ladder scores must NOT be compared across dates.** Alex, 2026-08-26: *"the leaderboard moves,
+2500 was scored highest 2600 but now not more than 1600 ish; the 1997 also is around the same now
+at 1600; the board got harder."* The rating is Elo against a live field that keeps improving, and
+each submission's number reflects a different number of games against a different field. So this
+table is a record of what each artifact peaked at, NOT a ranking:
+
+    peaked   settled   artifact                  submitted
+    1991.9   ~1600     main.py                   2026-08-25
+    1779.8     ?       e2500_shopprice.py        2026-08-24
+    2600     ~1600     the e2500 line            2026-08-24
+    1628.0     ?       e2500_carrot.py           2026-08-24
+    1271.6     ?       main_baseline.py          2026-08-26
+
+The 720-point "gap" between today's artifact and the best-ever number is therefore not a measured
+regression -- it is two numbers taken against different fields at different times. **Only the
+controlled local head-to-head above supports a comparison**, and it still favours e2500.
+
+`e2500_shopprice.py` scored 1779.8 and **was never committed** -- it is not on disk and not in git.
+Only `e2500_carrot.py` (1628.0) survives, recovered from commit `3003141`. The branch
+`e2500-shopprice` still exists and could rebuild it.
+
+## Three harness defects, each of which invalidated everything measured through it
+
+1. **The tape played a clone of itself.** `tape_policy(replay, team, seat_wanted)` resolves `seat`
+   for 0 and `1 - seat` for 1 (`breakdown.py:318`). Seven files passed 0 for BOTH seats. The same
+   orders hit the book twice, so prices moved differently from the recording and the replay drifted:
+   $3 on d0 became two silently failed wheat buys on d2 and 5 crops plus $782 by d12. With the real
+   opponent the replay is EXACT -- money identical to the dollar d0-d12, board identical d0-d8, the
+   only difference one weed spawned at d9 (`weedSpawnChance 0.005`, and recordings carry
+   `seed: None`, so it cannot be reproduced). Fixed in 63b0567.
+
+2. **The kawashigi branches replaced the schedule mid-season.** `melon_branch.install()` swapped the
+   ENTIRE schedule for an embedded row set (`B3_ROWS_B64`) whenever the opponent showed enough melon
+   at d3; `q4_branch` did the same to rows 9-29 on the yarn store at d6. So the agent played
+   kawashigi's season while being measured against the clone tape. d12 of `clone_open`:
+
+       running row (B3)              the arm's own row
+       buys   {WHEAT: 9}             {}
+       sells  {FERTILIZER 28, MILK 6} {FERTILIZER 39, WOOL 11, MILK 6, STRAWBERRY 4}
+       plants [W,W,STRAW,W,STRAW]    [WHEAT] * 3
+       feeds/cares 14/14             15/15
+
+   Deleted in 1a6d534, 1,570 lines. This shipped: `main_baseline.py` carries `B3_ROWS_B64`.
+
+3. **A baked table overrode the parameter under test, twice.** `_STOP_TABLE` shipped
+   `{yarn3: 28, yarn6: 20, open_yarn_seen: 20, open_no_yarn: 12}` and the epilogue reads
+   `stop = _stop(...) if _STOP_TABLE else _ARM_STOP[arm]`. It clamped the handover SWEEP (three of
+   four rows byte-identical at d20/d24/d28, which read as a plateau) and it clamped the ARTIFACT
+   (a bundle built `--replay-days 29` handed over at d12/d20). Draw 98818687, same seed and
+   opponent: pure tape 95,776, d28 handover 93,751, the "d29" bundle 85,757. Emptied in e005fc8.
+
+## What is measured and stands
+
+**The planner loses on every day it plays.** 21 shop draws across 8 of the 9 yarn classes and all
+three arms (`data/logs/handover_all_draws.log`): d28 is the best handover on EVERY draw, and the
+tape with no planner beats it on every draw, by **$870 to $2,648**.
+
+**The tape choice is the bigger lever.** Swapping the default arm's tape is worth up to **+$10,769**
+on a single draw, where the entire planner-vs-tape gap is under $2,700.
+
+**The default arm carries 72% of games** -- 87 of 120 draws, every class from d9 to `never` -- and
+was the worst-chosen of the three. `98907591` (100,149) against `98884730` (141,250), same author.
+Head to head on 14 draws across every class it serves: **proposed better on 13/14, mean +$3,028**,
+best +10,769 (d21), worst -5,417 (d18).
+
+**One arm was cloned from a MIRROR.** `98857364` has both seats sending identical actions on all 719
+turns and both farms ending on 134,682; margin 0 is the tell. 10 of 120 recordings in
+`daily_2026-08-26` have it. Replaced by `nao.kwmr / 98921350`, class-best real game, 133,792 on a
+margin of 14,372.
+
+**Seat 1 is slightly worse than seat 0**, about -$250 to -$280 (~0.4%) on two draws, consistent
+direction -- the market slot ordering. Every sweep today used seat 0, so those numbers are
+marginally optimistic.
+
+## Why the nine-slot tape table does NOT work
+
+A tape can only be switched to at a turn where it still agrees with what has been played, and the
+yarn signal for class X arrives the day before X. So splitting off `d24` needs the last two tapes to
+agree to d23h23. Measured over 110 usable recordings, tapes sharing one identical opening:
+
+    d2h23  73     d5h23  53     d8h23  29     d11h23  9     d14h23  7     d17h23  1
+
+The nine best-BANKING tapes are not prefix-compatible -- `d18` parts from `d3` at d0h23, before the
+first decision point. Selecting on bank alone ignores the constraint that binds. Constrained
+selection gives:
+
+    splits at [3]      2 arms   mean bank of chosen tapes 134,165
+    splits at [3,6]    3 arms   mean 134,041     <- the shape to ship
+    splits at [3,6,9]  4 arms   mean 120,154     <- only a weak d9 candidate qualifies
+
+So three arms is right, and the gain is in WHICH tapes fill them, not in more of them.
+
+## Artifacts -- what is safe to pick up
+
+    submission/main_restA.py   yarn3 98889302 | yarn6 98921350 | open 98907591   built, unmeasured on ladder
+    submission/main_restB.py   yarn3 98889302 | yarn6 98921350 | open 98884730   built, unmeasured on ladder
+    submission/e2500_carrot.py recovered from 3003141, scored 1628.0             the comparator
+
+Both candidates replay d0-d28 and plan only d29, carry `_STOP_TABLE = {}`, and are kawashigi-free
+(all remaining mentions are comments; zero live code).
+
+**Do not pick up `main_baseline.py`, `main_perarm*.py`, `main_replay*.py`, `main_split*.py`,
+`main_d28.py` or `main.py` expecting the clone lineage** -- they all carry the deleted branches.
+
+## Why e2500 beats a tape replay -- and why the latch keys on the wrong signal
+
+Alex asked whether the tape "screws up somehow on the replay". It does not. The same tape
+(`98884730`) replayed on its own game and on two foreign draws sends BYTE-IDENTICAL orders with
+identical no-op rates -- nothing refused, nothing blocked:
+
+    order          sent   no-op        (all three draws)
+    BUY_ANIMAL        7       0
+    BUY_LAND          2       0
+    BUY_PRODUCT      37     0-1
+    BUY_SEED         39       0
+    HIRE            282       0
+    SELL            581   29-32
+
+    final bank    HOME 138,131    FOREIGN never 109,940    FOREIGN d15 64,305
+
+$73,826 apart with identical execution. The loss is entirely PRICE, and it tracks what the town
+eats. `_town_consume` walks `unlocked_shops` and drains inventory per product:
+
+    HOME     138,131   STRAWBERRY 6  MILK 5  WHEAT 5  TOMATO 2  WOOL 2  CARROT 1  EGG 1
+    never    109,940   WHEAT 7  MILK 5  STRAWBERRY 3  TOMATO 3  EGG 2  CARROT 2
+    d15       64,305   CARROT 4  WHEAT 3  STRAWBERRY 3  MILK 3  EGG 2  WOOL 2  TOMATO 1
+
+That tape is a STRAWBERRY season. Its home town drains strawberry hardest; the d15 town halves it
+and eats CARROT most, which the tape barely grows. So the tape sells into a town that does not eat
+what it grows, and an agent that reads the live book (e2500) beats it there.
+
+**The latch keys on the wrong signal.** We split arms on `YARN_STORE`, and yarn affects WOOL only --
+2 units of drain out of ~22. The drain profile for strawberry, wheat, milk and carrot is what
+decides the season and our decision tree cannot see any of it. That is why the `open` arm carrying
+72% of draws performs so unevenly: those 87 draws have wildly different drain profiles and are
+treated as one class.
+
+The fix is cheap: `town["unlocked_shops"]` is in the observation from d0, so the drain profile is
+readable immediately -- no waiting for a yarn signal at d15. Key the tape on which products the town
+eats, and pick the recording whose crop mix matches.
+
+## What is NOT known
+
+- Whether either candidate beats `e2500` over more than two draws. On those two it loses.
+- Whether any of today's five planner commits help. None has been on the ladder; the 1271.6
+  predates all of them.
+- Win rate for anything. Every number here is MONEY on fixed draws with recorded opponents. The
+  ladder is Elo, where a $1,000 loss and a $30,000 loss score identically.
