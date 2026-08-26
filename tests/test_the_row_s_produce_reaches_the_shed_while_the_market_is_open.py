@@ -71,7 +71,7 @@ def _carried_at_dusk():
 
     env = kaggle_env.make("kaggriculture", configuration=dict(economy, seed=SEED), debug=False)
     env.reset(2)
-    opp = B.tape_policy(path, team, 0)
+    opp = B.tape_policy(path, team, 1)
     carried = {}
     for t in range((DAY + 1) * TPD):
         for s in (0, 1):

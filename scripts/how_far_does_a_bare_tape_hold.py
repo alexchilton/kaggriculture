@@ -120,7 +120,7 @@ def main():
             # Our seat replays the tape; the other seat replays the SAME tape, so the market is
             # contested the way a real ladder game is and neither side is a pushover.
             mine = B.tape_policy(full, team, 0)
-            opp = B.tape_policy(full, team, 0)
+            opp = B.tape_policy(full, team, 1)
             first = {"money": None, "tiles": None, "crop": None}
             for t in range(719):
                 env.state[0].observation.town["unlocked_shops"] = list(shops(t))

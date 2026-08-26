@@ -42,6 +42,7 @@ def main():
     args = ap.parse_args()
 
     from kaggle_environments import make
+    import kagg.plan as _PLAN
     import scripts.breakdown as B
 
     rel, sched_rel, team = B.TAPES[args.tape]
@@ -57,13 +58,19 @@ def main():
     import kagg.plan as P
     from kagg.search import schedule_agent as SA
     sched = {int(k): v for k, v in json.loads((REPO / sched_rel).read_text()).items()}
-    thin = {d: {k: v for k, v in r.items() if k not in B.TAPE_ONLY} for d, r in sched.items()} \
-        if hasattr(B, "TAPE_ONLY") else sched
+    thin = {d: _PLAN.thin(r) for d, r in sched.items()}
     ours = SA.make_agent(thin, 0, router=True, start_day=args.handover)
 
     env = make("kaggriculture", configuration=dict(economy, seed=args.seed), debug=False)
     env.reset(2)
-    opp = B.tape_policy(path, team, 0)
+    # **`seat_wanted=1`, his REAL opponent.** `tape_policy` resolves `1 - seat` for 1 and
+    # `seat` for 0 (`breakdown.py:318`), so passing 0 here seated a CLONE of the tape against
+    # itself: the same orders hit the book twice, prices moved differently, and the replay
+    # drifted $3 on d0 -> two silently failed wheat buys on d2 -> 5 crops and $782 by d12.
+    # With the real opponent the replay is exact: money identical to the dollar d0-d12 and the
+    # board identical d0-d8, the only difference being one weed spawned at d9 (0.005, and the
+    # recording carries `seed: None` so it cannot be reproduced).
+    opp = B.tape_policy(path, team, 1)
 
     lo, hi = args.day * TPD, (args.day + 1) * TPD
     rows, mine_counts, his_counts = [], collections.Counter(), collections.Counter()

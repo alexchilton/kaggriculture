@@ -61,7 +61,7 @@ def _offers_by_hour():
 
     env = kaggle_env.make("kaggriculture", configuration=dict(economy, seed=SEED), debug=False)
     env.reset(2)
-    opp = B.tape_policy(path, team, 0)
+    opp = B.tape_policy(path, team, 1)
     offers, dawn_shed = {}, None
     for t in range((DAY + 1) * TPD + 1):
         for s in (0, 1):

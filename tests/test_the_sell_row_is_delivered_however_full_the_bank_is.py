@@ -62,7 +62,7 @@ def test_the_row_s_sells_are_offered_when_the_bank_is_healthy():
 
     env = kaggle_env.make("kaggriculture", configuration=dict(economy, seed=123641874), debug=False)
     env.reset(2)
-    opp = B.tape_policy(path, team, 0)
+    opp = B.tape_policy(path, team, 1)
     offered, opening_bank = {}, None
     for t in range(313):
         env.state[0].observation.town["unlocked_shops"] = list(shops(t))

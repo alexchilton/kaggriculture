@@ -98,7 +98,7 @@ def main():
 
     env = make("kaggriculture", configuration=dict(economy, seed=args.seed), debug=False)
     env.reset(2)
-    opp = B.tape_policy(path, team, 0)
+    opp = B.tape_policy(path, team, 1)
 
     by_day = collections.defaultdict(list)
     for t in range(719):
