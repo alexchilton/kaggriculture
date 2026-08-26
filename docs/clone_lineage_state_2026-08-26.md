@@ -1176,3 +1176,68 @@ true and they are the same property seen from the two sides.
 
 For the d24-d29 window in e2500, this ranks what to make dynamic first: sheep, then strawberry, then
 cows, then tomato and carrot. Wheat and melon are not worth wiring to the shop draw at all.
+
+## Crop Dusta's opening is version drift, and the current version is worth $13k more
+
+Alex proposed: copy his d0-d3, then apply the sink ratios. The opening is NOT one script.
+
+    d1 opening    n    episode id range              mean margin      W
+    9c61d7       84    94,545,368 .. 97,518,736           +7,410   65/84   (77%)
+    ad56f6       59    97,601,003 .. 98,951,023          +20,850   54/59   (92%)
+    a8326b        2    97,609,790 .. 97,696,699          +50,034     2/2
+
+**The id ranges do not overlap.** That is version drift, not adaptation -- and it cannot be
+adaptation, because no shop unlocks before d3, so d0-d1 carries no information to branch on. He
+rewrote the agent around episode ~97.5M and gained +$13,440 of margin and 15 points of record.
+
+How far the CURRENT opening holds:
+
+    identical through    current-version games sharing it
+      turn 24  (d1)      59 of 59      <- one script
+      turn 48  (d2)      58 of 59
+      turn 72  (d3)      52 of 59
+      turn 88  (d3h16)   45 of 59, in three groups (27 / 10 / 8)
+
+**d0-d2 is a single script across every current game**, fragmenting at d3h16 -- the first shop draw.
+
+So the plan needs two corrections: copy `ad56f6` specifically, and the copyable prefix is d0-d2.
+
+## Alex's 2026-08-27 pull is the current agent and the best block in the corpus
+
+    directory                n    episode ids                    mean margin
+    Downloads (today)       51    97,601,003 .. 97,710,447           +25,115    48W/3L
+    leaders_2026-08-24       3    97,204,025 .. 97,235,932           +15,576
+    downloads_2026-08-20    30    94,545,368 ..  94,639,447           +7,837
+    downloads_2026-08-21    24    94,742,828 ..  95,702,942           +7,815
+    daily_2026-08-26        11    98,852,910 ..  98,951,023           +6,028
+    kawa_2026-08-24         27    97,245,055 ..  97,518,736           +5,669
+
+**Do not compare margins across those folders.** Each is a different selection, not a random sample:
+`daily_2026-08-26` holds the NEWEST ids and the second-worst margin, which fits the standing note
+that those downloads are biased toward losses. What is valid is that all 51 of today's are
+post-drift, so they are the current agent.
+
+### The sink rule survives the version change
+
+    quantity      ALL 146     OLD 84     NEW 62
+    CARROT          +0.55      +0.54      +0.53
+    STRAWBERRY      +0.64      +0.71      +0.51
+    COW             +0.62      +0.58      +0.66
+    SHEEP           +0.71      +0.76      +0.70
+
+He rewrote the agent and kept the principle. That is evidence the sizing is deliberate rather than
+an artefact of one implementation.
+
+Current agent's carrot ladder, steeper than the pooled one:
+
+    carrot sinks    n   mean carrots   mean margin      W
+               0    3            0.0       +19,588    2/3
+               1   12           11.2       +39,133  12/12
+               2   22           23.7       +19,451  22/22
+               3   17           32.8       +12,852  13/17
+               4    6           47.0       +24,578    6/6
+
+    current agent mean margin  +21,729       old agent  +7,410
+
+At one sink the new version plants 11.2 where the old planted 4.4. It got more aggressive on carrots
+and tripled its margin.
