@@ -137,6 +137,37 @@ TAPES = {
     # 14 pens, 181 tile-plantings, land on d6 and d11, peak crew 12.
     "kawa_straw": ("data/seed_scripts/kawa_2026-08-24/97466318.json",
                    "data/seed_scripts/kawa_straw/schedule.json", "\u30ab\u30ef\u30b7\u30ae"),
+    # ---------------------------------------------------------------- the lineage that passed him
+    # **\u30ab\u30ef\u30b7\u30ae is 12th.** Measured 2026-08-26 over the 120 newest episodes
+    # (`docs/the_clones_beat_kawa_and_us_2026-08-26.md`): the top of the field is ONE published
+    # script run under ~30 names, and it does NOT replay him -- 11% op agreement on day zero against
+    # our own tape-replay control's 100% (`data/logs/clone_divergence.log`).
+    #
+    # Five openings cover 58% of 240 seats, and a decision tree over the shop draw and the
+    # opponent's d3 board recovers the selector as ONE bit -- which slot YARN_STORE lands in
+    # (importance 0.481 + 0.200 of everything it uses, `data/logs/tape_selector.log`). So three
+    # tapes cover it where \u30ab\u30ef\u30b7\u30ae needs four:
+    #
+    #     yarn at d3   356835aca0   29 seats, 18 names, mean $105,080
+    #     yarn at d6   d198b9f673   10 seats, 10 names, mean $110,015
+    #     otherwise    d1f515b59d   49 seats, 20 names, mean $ 87,218
+    #
+    # **The two early-yarn means are CONFOUNDED and are not evidence those branches play better** --
+    # an early yarn store is simply a better draw, because wool then has a town bid all season.
+    # The tree could not split `d1f515b59d` from `62d81623f9` (89 of 139 seats) on any board
+    # feature, which reads as two VERSIONS of the same agent rather than two branches.
+    #
+    # Each entry names the highest-banking seat on that opening. As with every entry here, the
+    # middle element drives OUR agent, so `--tape clone_late` plays the clone's schedule; the tape
+    # column is that seat's recorded season.
+    "clone_yarn3": ("data/seed_scripts/clone_yarn3/98889302.json",
+                    "data/seed_scripts/clone_yarn3/schedule.json", "WeAreFarmers"),
+    "clone_yarn6": ("data/seed_scripts/clone_yarn6/98857364.json",
+                    "data/seed_scripts/clone_yarn6/schedule.json", "Bharath Varma"),
+    # 16 pens, 203 tile-plantings, land on d6 and d10, **peak crew 15**. Against `kawa_straw`'s
+    # 14 pens, 181 plantings, land d6/d11 and peak crew 12 -- which is the schedule we ship.
+    "clone_late": ("data/seed_scripts/clone_late/98898511.json",
+                   "data/seed_scripts/clone_late/schedule.json", "G!vIOne"),
 }
 
 #: **Removed on 2026-08-13, on Alex's instruction: "no seb - only vic or the new nr 1".**
