@@ -9,19 +9,12 @@ submission does not run. That is exactly how a stale `--module` default spent a 
 **A schedule is a per-day target row, not a replay.** The agent plays all 30 days from these rows;
 it does not replay anyone's actions. See `docs/architecture.md`.
 
-Measured 2026-08-13, our agent on each plan against each tape, seed 11, weeds off, shop draw
-injected from the recording:
-
-    tape        plan        our final bank
-    Victor      Victor            $112,402
-    Victor      カワシギ           $115,477     +$3,075
-    カワシギ     Victor             $56,940
-    カワシギ     カワシギ           $112,026    +$55,086
-
-His plan wins on both boards, so this is not a board-specific result. On his own board Victor's plan
-goes broke by d4, misses the d6 land purchase, plays the season on 25 tiles against 50 and loses ten
-animals to starvation at d12 -- none of which is an agent defect, all of which is a plan that does
-not fit that board.
+**KAWASHIGI AND VICTOR ARE GONE FROM THIS BRANCH, 2026-08-26.** Alex: *"remove all kawa from the
+whole fucking repo branch"*. The clone lineage pairs a per-arm TAPE with a per-arm SCHEDULE, and the
+kawashigi branches overwrote that pairing at runtime -- `melon_branch.install()` replaced the entire
+schedule with an embedded row set on a d3 opponent signal, so the agent played kawashigi's season
+while being measured against the clone tape. The shipped `main_baseline.py` carried it and scored
+1243.8 against the older artifact's 1630.6.
 
 `data/` is gitignored, so these files are not recoverable from git. `scripts/extract_leader_schedule.py`
 regenerates one from a downloaded replay.
@@ -31,21 +24,14 @@ import pathlib
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 #: **The plan the submission ships and every harness measures.** Change it here and nowhere else.
-#: **`cheap_mix` was pointed here on 2026-08-26 and MEASURED AS A LOSS; reverted.** That arm was
-#: `kawashigi`'s schedule with the winning lineage's crop mix and nothing else -- carrot 8 -> 20 in
-#: their d11/d26 blocks, melon 20 -> 11, their d24 wheat burst, wheat held at 134. Against the pool
-#: it moved the win rate not at all (95.0% both) and money -$3,269; against the three clone tapes
-#: both arms lost 0/6, and it made `clone_late` $9,815 worse. The generator is kept at
-#: `scripts/make_the_cheap_arm.py` so the arm can be re-run rather than re-argued, but nothing
-#: points at it. Composition alone is not the gap.
-SHIPPED_PLAN = REPO / "data/seed_scripts/kawashigi/schedule.json"
+#: One of the three clone arms; `build_planner_submission.REPLAY_ARMS` picks per arm at the latch.
+SHIPPED_PLAN = REPO / "data/seed_scripts/clone_open/schedule.json"
 
-#: Kept reachable by name so an A/B has something to point `--schedule` at, and so the losing arm
-#: of the table above can be re-run rather than re-argued.
+#: The three clone arms, reachable by name so an A/B has something to point `--schedule` at.
 PLANS = {
-    "kawashigi": REPO / "data/seed_scripts/kawashigi/schedule.json",
-    "victor": REPO / "data/seed_scripts/victor/schedule.json",
-    "cheap_mix": REPO / "data/seed_scripts/cheap_mix/schedule.json",
+    "clone_open": REPO / "data/seed_scripts/clone_open/schedule.json",
+    "clone_yarn3": REPO / "data/seed_scripts/clone_yarn3/schedule.json",
+    "clone_yarn6": REPO / "data/seed_scripts/clone_yarn6/schedule.json",
 }
 
 #: Keys a schedule row carries that describe what the RECORDING did rather than what the agent

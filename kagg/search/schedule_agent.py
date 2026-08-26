@@ -42,8 +42,6 @@ import pathlib
 
 from . import corner_the_book as CORNER
 from . import cover as DP
-from . import melon_branch as _MB
-from . import q4_branch as _Q4
 from . import router as RT
 
 
@@ -3950,42 +3948,14 @@ EMBEDDED_OPENINGS = {}
 #: table starts at d12 -- its plan rows are live inside any d5-d11 replay window, so a single tape
 #: keyed on one latch replays the wrong season's actions on the other arm.
 REPLAY_OPENING_TAPE = {
-    (False, False): ("data/seed_scripts/kawashigi/92498144.json", "カワシギ"),
-    (True, False): ("data/seed_scripts/kawa_2026-08-24/97466318.json", "カワシギ"),
-    (False, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
-    # **The three-quadrant strawberry tape, and this is exact rather than a compromise.** The note
-    # here used to say no four-quadrant strawberry game had been identified, and that was simply
-    # false -- six kawashigi seats qualify, separated from the melon ones by MELON 84 against
-    # MELON 164 over the season:
-    #
-    #     owned  straw%  money    game
-    #       100   55.2%  136,045  field_2026-08-17/93459936
-    #       100   52.5%  135,162  kawashigi/92508348
-    #       100   56.6%  132,069  field_2026-08-17/93506985
-    #       100   56.2%  128,408  downloads_2026-08-13/91906088
-    #       100   56.0%   80,864  kawashigi/92488785
-    #       100   55.6%   68,372  kawashigi/93545421
-    #
-    # It does not matter, because over `REPLAY_OPENING_DAYS` -- d4 to d11 -- the q3 strawberry tape
-    # and all three of the good q4 strawberry tapes are INDISTINGUISHABLE. Measured 2026-08-18,
-    # tiles owned and strawberry standing at dawn:
-    #
-    #                      d4  d5  d6  d7  d8  d9  d10 d11 | d12 d13
-    #     93459936  q4     25  25  25  50  50  50  50  50  |  75 100      land
-    #     92466371  q3     25  25  25  50  50  50  50  50  |  75  75
-    #     93459936  q4      0   0   4   6   8  19  19  19  |  38  38      strawberry
-    #     92466371  q3      0   0   4   6   8  19  19  19  |  37  39
-    #
-    # They part company at d12, which is PAST the handover -- and our own planner then buys the
-    # third parcel on d12 and the fourth on d13, which is the q4 tapes' own timing. So switching
-    # this key to a q4 tape is a byte-identical change to the replay, and the four-quadrant board is
-    # the solver's job (`solved_days_straw_q4.py`), not the tape's.
-    #
-    # The melon q4 tape is the one that would be wrong here: `0 0 4 4 10 11 11 11` strawberry
-    # against `0 0 4 6 8 19 19 19`, because it sows melon on the squares this arm wants strawberry
-    # on. Land, pens and animals are identical in every tape through d12, so crop is the only axis
-    # this choice has.
-    (True, True): ("data/seed_scripts/kawa_2026-08-24/97466318.json", "カワシギ"),
+    # **The clone lineage. Kawashigi is gone from this branch, 2026-08-26.** This table used to key
+    # on `(melon_armed, q4_armed)` and hold four kawashigi recordings, one per branch latch. Both
+    # branches are deleted -- they replaced the arm's own schedule with an embedded kawashigi row
+    # set at runtime -- so both keys are permanently False and only one entry can ever be reached.
+    # The shipped artifact does not use this table at all: `build_planner_submission.REPLAY_ARMS`
+    # embeds the per-arm tape and `EMBEDDED_OPENINGS` short-circuits the branch above. This is the
+    # repo-side default, and it now names the same arm as `kagg.plan.SHIPPED_PLAN`.
+    (False, False): ("data/seed_scripts/clone_open/98907591.json", "UjjwalPardeshi"),
 }
 
 #: The two species the herd split may exchange, derived rather than written down so it cannot go stale
@@ -4061,12 +4031,10 @@ def make_agent(schedule, me=0, router=True, start_day=0):
     def agent(obs, config=None):
         day = int(obs.get("day", 0) or 0)
         hour = int(obs.get("hour", 0) or 0)
-        # **The four-quadrant branch.** Decides once on d6, and only when the yarn store is already
-        # unlocked -- the read three top players make. On an armed draw it rewrites rows 9-29 of
-        # `sched` IN PLACE with the leader's four-quadrant tape and installs the 100-tile routes.
-        # Rows 0-8 are the same plan in both tapes, so the opening cannot move. See
-        # `kagg/search/q4_branch.py` for the measurements, which do NOT show a gain.
-        _Q4.arm(sched, state, obs, day)
+        # **DELETED with the melon branch, 2026-08-26.** `q4_branch.arm` rewrote rows 9-29 of
+        # `sched` IN PLACE with the leader's four-quadrant tape and swapped in 100-tile routes.
+        # Its own note recorded that the measurements do NOT show a gain, and like the melon branch
+        # it replaced the arm's own schedule with kawashigi's.
         farms = obs.get("farms") or []
         if len(farms) <= me:
             return {"farmer": ["PASS"], "hands": [], "market": []}
@@ -4196,8 +4164,16 @@ def make_agent(schedule, me=0, router=True, start_day=0):
             # **The leader's melon branch, as the season he actually recorded for that board.**
             # See `kagg/search/melon_branch.py`. Decided once at d3 off the opponent's melon tiles
             # and installed from d5, which is the first row either season spends melon money on.
-            if _MB.arm(sched, state, obs, day):
-                row = sched.get(day) or row
+            # **THE KAWASHIGI BRANCHES ARE DELETED, 2026-08-26.** `melon_branch.install()` replaced
+            # the WHOLE schedule with an embedded row set (`B3_ROWS_B64`) from the kawashigi
+            # lineage whenever the opponent showed enough melon at d3 -- so on the clone arms the
+            # agent played kawashigi's strawberry season while being measured against the clone
+            # tape. Measured d12 of `clone_open`: the running row was `buys {WHEAT: 9}`,
+            # `sells {FERTILIZER 28, MILK 6}`, `plants [W,W,STRAW,W,STRAW]` against the arm's own
+            # row of `buys {}`, `sells {FERTILIZER 39, WOOL 11, MILK 6, STRAWBERRY 4}`,
+            # `plants [WHEAT]*3`. Two different seasons. Alex, 2026-08-26: *"remove all kawa from
+            # the whole fucking repo branch"*. The row the arm shipped with is now the row that
+            # runs, on every day.
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
@@ -6106,8 +6082,10 @@ def make_agent(schedule, me=0, router=True, start_day=0):
         # A hand-written `"branch_armed"` pinned the melon latch False -- nothing writes that name,
         # `MelonBranch.armed_key` is `"melon_armed"` -- so the strawberry tape was unreachable by
         # construction and the strawberry arm silently replayed his melon season.
-        opening = openings[(bool(state.get(_MB.BRANCH.armed_key)),
-                            bool(state.get(_Q4.BRANCH.armed_key)))]
+        # Both latches are permanently False since the branches were deleted; the key is kept so
+        # `EMBEDDED_OPENINGS` from an older bundle still resolves rather than raising a KeyError.
+        opening = openings.get((bool(state.get("melon_armed")), bool(state.get("q4_armed")))) \
+            or openings.get((False, False)) or {}
         if step not in opening:
             return live
         # **`state["bought"]` must count what the TAPE ordered, not what the discarded planner would
