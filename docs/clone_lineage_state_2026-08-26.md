@@ -1128,3 +1128,51 @@ whole season:
 even there only 12 of 18 draws improve. Two caveats: these sweeps carry no opponent bank, so they
 are scored on MONEY, which this session has established is the wrong metric; and they disagree with
 each other badly (d12 is -12,411 in one and -4,577 in another), so variance across draw sets is large.
+
+## Tomato and melon complete the rule -- and give it a mechanism
+
+Alex spotted both: *"and also tomato - melon looks vaguely constant"*. Measured on the 146
+(`data/logs/all_sinks.log`):
+
+    quantity      sink types   corr with own sinks   planted range
+    SHEEP  (wool)          1                +0.71            2-17
+    STRAWBERRY             4                +0.64            8-52
+    COW    (milk)          3                +0.62            3-13
+    TOMATO                 2                +0.57            0-25
+    CARROT                 2                +0.55            0-82
+    WHEAT                  5                +0.13          43-212
+    MELON                  0                  flat           10-23
+
+**MELON is constant BY CONSTRUCTION.** It appears in no shop (`reference/kaggriculture.py:103-112`);
+its only buyer is the town centre, which is identical on every draw. Sink count is 0 in all 146
+games and he plants 16.6 +/- 2.7. There is no signal to adapt to, so he does not adapt.
+
+**TOMATO is a GATE, not a slope:**
+
+    tomato sinks    n   mean planted
+               0   16            0.0
+               1   32            0.0
+               2   47            5.2
+               3   38           11.1
+               4    8            8.6
+               5    5           17.2
+
+Zero tomatoes until TWO sinks exist -- 48 of 146 games, not one tomato planted. Then it ramps.
+That is a threshold rule and it is directly implementable.
+
+### The mechanism
+
+**The fewer shop types drain a product, the more its quantity varies with the draw.**
+
+WOOL is carried by one shop of eight, so whether the yarn store appears is a large update, and SHEEP
+has the strongest response of anything measured (+0.71). WHEAT is in five of eight, so it is drained
+on nearly every board -- little variance to react to, and it doubles as animal feed, so its count is
+driven by the herd rather than the market (+0.13). MELON is in none and is flat.
+
+This inverts an earlier framing in this file. WOOL being 1-of-8 was written up as what makes it
+DANGEROUS -- `sq` above-curve, T=105, the harshest flood penalty in the table. It is the same fact
+that makes it the most INFORMATIVE: the product where knowing the draw is worth the most. Both are
+true and they are the same property seen from the two sides.
+
+For the d24-d29 window in e2500, this ranks what to make dynamic first: sheep, then strawberry, then
+cows, then tomato and carrot. Wheat and melon are not worth wiring to the shop draw at all.
