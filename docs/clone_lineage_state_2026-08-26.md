@@ -675,3 +675,68 @@ table was wrong; the number I picked to prove it was not.
 
 Use `record_fills` for every market quantity. This is the fourth time this repo has got the same
 answer wrong with a plausible proxy.
+
+## The player we ship has TWO arms, not three, and the rule is exact
+
+All four tapes are the same player, `UjjwalPardeshi`. Thirteen of his games are in the corpus
+(`data/logs/ujjwal_spread.log`), and they contain exactly two strategies:
+
+    tape      d3 shop         d6 shop added    WHEAT STRAW CARR MELON  SHEEP COW  W/L      bank
+    98836697  FARMERS_MARKET  BAKERY             134    38   20    11      4  11    W    62,491
+    98907591  SMOOTHIE_SHOP   BAKERY             134    41   20    11      4  11    W   100,149
+    98912171  FARMERS_MARKET  BRUNCH_SPOT        134    38   20    11      4  11    W    67,278
+    98914508  ICE_CREAM_SHOP  BRUNCH_SPOT        134    38   20    11      4  11    W   105,370
+    98852727  PET_CAFE        FARMERS_MARKET     134    41   20    11      4  11    W    60,856
+    98834418  PIZZA_SHOP      ICE_CREAM_SHOP     134    38   20    11      4  11    W    80,378
+    98898462  SMOOTHIE_SHOP   PET_CAFE           134    38   20    11      4  11    W    84,599
+    98884730  SMOOTHIE_SHOP   PIZZA_SHOP         134    38   20    11      4  11    W   141,250
+    98845865  PET_CAFE        SMOOTHIE_SHOP      134    41   20    11      4  11    W    63,882
+    98859585  YARN_STORE      PIZZA_SHOP         132    32   12    11     10   6    W    78,677
+    98916796  YARN_STORE      SMOOTHIE_SHOP      132    32   12    11     10   6    L   126,578
+    98923606  YARN_STORE      SMOOTHIE_SHOP      132    32   12    11     10   6    L    81,982
+    98889289  ICE_CREAM_SHOP  YARN_STORE         128    39   12    11     10   6    W    97,875
+
+**`YARN_STORE` in either of the first two draws -> 10 sheep / 6 cow and 12 carrots all planted on
+d26. Otherwise -> 4 sheep / 11 cow and 20 carrots spread d11-d26.** Nine cow games, four sheep
+games, no exception. The d6 shop matters only when it IS the yarn store (`98889289`).
+
+The 38-against-41 strawberry difference is NOT a branch: the three tapes at 41 saw BAKERY,
+SMOOTHIE_SHOP and FARMERS_MARKET at d6, no pattern, and they mean $74,962 against the 38-group's
+$90,228. Re-tried plants, not a decision.
+
+**RETRACTED.** Earlier in this session I read the d6h20 divergence between `98907591` and `98884730`
+-- BAKERY against PIZZA_SHOP -- as a milk-axis branch. The differing action was a single
+`SELL FERTILIZER 1`. There is no milk branch in his play.
+
+## Three arms is one too many
+
+All four tapes on eight draws of each class, same seed, each draw's own recorded opponent
+(`data/logs/do_we_need_three_arms.csv`).
+
+    per-class mean bank
+    class          yarn3     yarn6    open-A    open-B
+    yarn3         97,412    90,893    74,038    73,071
+    yarn6        107,497   104,023    86,223    86,486
+    open          83,852    79,956    96,306    99,086
+
+**`yarn3` beats `yarn6` on yarn6's OWN class**, 107,497 against 104,023, best on 5 of those 8 draws.
+
+    policy                                mean bank      wins
+    2-arm: any yarn -> yarn3, else open-B   101,332    10/24
+    shipped 3-arm (yarn3/yarn6/open-B)      100,174     9/24
+    shipped 3-arm with open-A (restA)        99,247     6/24
+    always yarn3                             96,254     5/24
+    always yarn6                             91,624     4/24
+    always open-A                            85,522     3/24
+    always open-B                            86,214     6/24
+    ORACLE over the four tapes              102,292     9/24
+
+Collapsing to two arms, which is the structure the player himself uses, is worth **+$1,158 and one
+more win**, and lands within $960 of the four-tape oracle. `98921350` and `98907591` both drop out.
+
+Also settled: **restB beats restA**, 100,174 against 99,247 and 9 wins against 6.
+
+The win counts printed in `data/logs/do_we_need_three_arms.log` under the summary block are WRONG --
+that code compared every arm's bank against open-B's opponent bank, and the opponent's bank depends
+on which arm we play. The per-class rows in the same log, and the table above, are recomputed
+per-arm from the CSV and are correct.
