@@ -1291,9 +1291,12 @@ unfreezing those days.
 ## The goose kill stands, on better evidence than the kill itself had
 
 Alex spotted GOOSE purchases in Crop Dusta's day table. This repo killed geese (`Geese lose to the
-mirror and to the field`, then `Delete the geese rather than leave a losing flag in the tree`), and
-a recorded note says the `SELLABLE` bug made EGG unsellable at all, which invalidated the goose
-verdict along with four carrot arms. So the negative may never have been measured properly.
+mirror and to the field`, then `Delete the geese rather than leave a losing flag in the tree`), so
+the question is whether the strongest player in the corpus buying them reopens that.
+
+**Do not re-raise the `SELLABLE`/unsellable-EGG bug in this context.** It was fixed long ago, Alex
+has corrected it repeatedly, and the stale memory asserting it invalidated the goose verdict was
+deleted on 2026-08-27. The goose verdict does not depend on it.
 
 Re-asked against 61 current-version Crop Dusta games (`data/logs/dusta_geese.log`):
 
@@ -1319,9 +1322,7 @@ cheap and fast and the book resists flooding; they still do not pay here.
 **Correlational and confounded**, n=21, selected download set, NOT a controlled A/B. But it is a top
 player's revealed preference across 61 current games and it points the same way as our kill.
 
-So the `SELLABLE` bug invalidated the EVIDENCE for killing geese, not the CONCLUSION. Worth
-re-asking -- that is the "a decision to skip a fix can expire" rule working -- and nothing here
-justifies reopening the machinery.
+**The goose kill stands and nothing here justifies reopening the machinery.**
 
 ### A reading caution about the day tables in this file
 
