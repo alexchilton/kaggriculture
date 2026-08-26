@@ -730,31 +730,27 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None, produ
                 # water and then nothing -- 3 weeds by d28, 4 by d29, and seven of d29's turns spent
                 # DIGging our own dead tiles.
                 out.append(("WATER", None, price))
-            elif (tile is not None and (tile[0] + tile[1] + day) % 2 == 0
-                  and not upkeep_buys_nothing(day)):
-                # **The same parity alternation the one-shot branch above already ships.** Without
-                # it an ongoing crop has three gates and all three are shut for its first nine days:
-                # `produces_tomorrow` needs `age + 1 >= info["first"]`, which is 10 for STRAWBERRY,
-                # and `TOP_UP_SAFE_TILES` was a measured-off flag. So a strawberry could only ever be
-                # offered water on the day `consecutive_unwatered >= 1` and tonight's rollover weeds
-                # it -- no margin, and a safe tile returns `[]` so `build_nodes` emits no node at all
-                # and `cover` cannot choose to visit it early.
-                #
-                # NOT `TOP_UP_SAFE_TILES`, which held this slot and measured $79,905 -> $63,645:
-                # that offered EVERY safe tile from a fixed day and doubled the load. Parity offers
-                # HALF and flips daily, so no tile is skipped twice running.
-                #
-                # **The parity term was in this comment and NOT in the condition until 2026-08-18**,
-                # so this branch was `TOP_UP_SAFE_TILES` in all but name -- every safe ongoing tile
-                # offered water every day, the exact shape that flag measured worse. Water does not
-                # grow an ongoing crop: `_daily_refresh_crops` advances `yield_units` off the
-                # calendar alone and reads `was_watered` only to weed the tile at
-                # `consecutive_unwatered >= 2` and to gate the fertilizer doubling
-                # (`reference/kaggriculture.py:783,799`). Measured strawberry arm, own seed
-                # 70683142, every water classified by its tile's dawn state: d12 55 waters against
-                # his 32 with **17** on safe tiles on their off-parity day, d13 61 against 43 with
-                # **21**. See `tests/test_a_safe_ongoing_tile_is_watered_on_alternate_days.py`.
-                out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
+            # **THE PARITY TOP-UP IS DELETED, 2026-08-26.** It offered a SAFE ongoing tile a
+            # water on `(x + y + day) % 2 == 0`, priced at `_crop_remaining / TOP_UP_DISCOUNT`.
+            #
+            # It is our invention and he does not do it. Measured d12 of `clone_open`, seed
+            # 123641874, every water we emit classified by the tile's state at the moment it is
+            # watered:
+            #
+            #     OURS  brink 18   safe-on-parity 14   = 32
+            #     HIS                                    24
+            #
+            # The whole overshoot is this branch. Water does not grow an ongoing crop --
+            # `_daily_refresh_crops` advances `yield_units` off the calendar alone -- and a tile
+            # watered yesterday cannot weed tonight, because that needs `consecutive_unwatered >= 2`.
+            # Skipping it makes it brink tomorrow, where the first branch waters it anyway.
+            #
+            # **Deleted ALONGSIDE the delivery change in `cover.funding`, deliberately.** On its own
+            # this sent 17 turns straight to PASS (idle 18 -> 35) and cost a harvest, because nothing
+            # in the day wanted them. The row's produce now has planned stops to spend them on. The
+            # predecessor `TOP_UP_SAFE_TILES` watered EVERY safe tile daily and measured $79,905 ->
+            # $63,645; this branch halved that and kept the shape. Alex, 2026-08-26: *"we have 8 too
+            # many water to be lost if the ops doesnt work"*.
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
                                               or _one_shot_is_finished(info, age, room, day)):

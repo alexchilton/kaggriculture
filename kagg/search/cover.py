@@ -271,7 +271,8 @@ DELIVER_SURPLUS_NOT_THE_ROW = False
 #: which requires `owed_ahead`. An exemption written for the selective branch alone measured as a
 #: byte-identical d8. And the free drop is safe here by construction: it already refuses whenever
 #: anything in the hand is owed ahead, so the all-or-nothing `DROP` cannot bin a ration.
-BANK_THE_ROWS_PRODUCE_WHILE_REAPING = False
+#: **DELETED 2026-08-26.** Shipped False, never measured either way. The behaviour is
+#: now unconditional at `funding` in `materialise`, paired with the parity-water cut.
 
 def dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -712,8 +713,27 @@ def materialise(start, work, carry=None, depots=SHED, wanted=None, deliver=True,
         # alone: `rush` by itself is the reverted `BANK_MID_TOUR_WHEN_THE_DAY_IS_UNFUNDED`, which
         # fired on fertilizer rounds too; the row test by itself is true on Seb's day 4, where
         # fourteen wheat harvests meet a `WHEAT 49` row and the dusk rule is exactly right.
-        funding = (BANK_THE_ROWS_PRODUCE_WHILE_REAPING and rush
-                   and any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items()))
+        # **The hand is carrying what today's row sells, so it banks it now.** Alex, 2026-08-26:
+        # *"the schedule has sell wool 2 and we don't have any wool in the shed - we know we need to
+        # shove 2 wool to the shed to sell"*.
+        #
+        # `BANK_THE_ROWS_PRODUCE_WHILE_REAPING` shipped False with a full diagnosis in its own
+        # docstring and no measurement either way, and the condition ALSO required `rush` -- the
+        # poverty signal that same note says this must not be. Both are deleted.
+        #
+        # `reaping` is what strands the milk: a herd tour has collects ahead almost all day, so
+        # `not reaping` is false until the tour is ending anyway. Measured d12 of `clone_open`, seed
+        # 123641874, handover d12 -- the day ends holding `{FERTILIZER 5, WOOL 1, MILK 6,
+        # STRAWBERRY 2}`, ~$1,900 at base, against a row asking `{FERTILIZER 39, WOOL 11, MILK 6,
+        # STRAWBERRY 4}`. The row asks MILK 6 at h21; we offer MILK 6 at h23 into a shed that held
+        # ZERO milk on every hour of the day.
+        #
+        # **This costs walking, and the parity water above is what pays for it.** Banking mid-tour
+        # inserts a detour through `nearest`. On its own this arm measured NORTH +1 -> +11, SOUTH
+        # -4 -> +6 and PASS -4 -> -20 on d12, and deleting the parity water on its own sent 17 turns
+        # to PASS because nothing needed them. They are one change: 14 of our 32 waters on d12 are
+        # the parity top-up against his 24 total, and those turns are the delivery budget.
+        funding = any(wanted.get(p, 0) > 0 and q > 0 for p, q in held.items())
         reaping = (any(w.harvests() for w in work[i:])
                    
                    and not funding)
