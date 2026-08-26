@@ -618,3 +618,60 @@ The information matures one day after the last decision it could have changed.
 NOT YET VERIFIED: whether the tape's `BUY_ANIMAL` rows actually pass through `_herd_split`'s
 relabelling during the replayed days. The loop at `main_restB.py:12097` looks like they do. If they
 do not, the float is inert for the entire herd.
+
+## How the three shipped arms differ on PRODUCT
+
+A build ships THREE arms. There are four tapes here because there are two builds:
+
+               yarn3       yarn6       open
+    restA    98889302    98921350    98907591
+    restB    98889302    98921350    98884730
+
+Counted with `kagg.analysis.fills.record_fills`, six open-arm draws, seed 123641874,
+`data/logs/arms_by_product_fills.log`.
+
+    product        yarn3    yarn6   open-A   open-B
+                    units    units    units    units
+    MILK              137      116      241      257     open arms sell ~2x the milk
+    WOOL              224      243      125      128     yarn arms sell ~1.9x the wool
+    STRAWBERRY        177      188      298      269     open arms sell ~1.5x the strawberry
+    CARROT             19       24       57       57     open arms sell ~2.6x the carrot
+    MELON              66       60       57       62     same
+    FERTILIZER        258      258      262      269     same
+    WHEAT (net)    +5,993   +4,533   +6,459   +6,474     same
+
+    BANK           83,709   79,465   90,486   92,069
+
+**The arms differ on four products, not just the herd.** The yarn arms are wool-led with materially
+less crop throughput; the open arms are milk plus strawberry plus carrot. So a whole-tape swap is
+NOT a controlled herd experiment -- it moves the crops too, which is why the tape swap and the
+species swap gave different numbers at wool>=2 (+9,399 against +6,447).
+
+**open-B beats open-A on all six draws**, mean bank 92,069 against 90,486. First direct comparison
+of the two builds on the slot that separates them.
+
+### Wheat trading is a wash and must not be read as an arm difference
+
+    arm      tape        WHEAT bought    $ paid   WHEAT sold    $ got      net
+    yarn3    98889302           1,461    67,515        1,553    73,508   +5,993
+    yarn6    98921350             123     4,799          183     9,332   +4,533
+    open-A   98907591              98     3,753          201    10,212   +6,459
+    open-B   98884730              97     3,713          200    10,187   +6,474
+
+`yarn3` turns over fifteen times the wheat volume for the same ~$6k net. WHEAT's above-curve is
+`log` at 0.20, almost flat, so the extra volume neither earns nor costs. `BUY_PRODUCT` is legal for
+WHEAT and FERTILIZER only (`:601`).
+
+### A measurement error of mine, and the correction to the correction
+
+The first version of this table differenced the shed against the bank. That is failure mode 3 in
+`kagg/analysis/fills.py`'s own docstring -- PICKUP and FEED move the shed, so units shuttled out to
+feed the herd were booked as sales. Cash was worse: the `len(movers) == 1` guard dropped most fills
+and reported STRAWBERRY at $4,080 against the true $24,210.
+
+**I then called `yarn3 WHEAT 1,553` impossible for 132 planted tiles. That reasoning was also
+wrong** -- it forgot `BUY_PRODUCT`. The figure is correct and `record_fills` reproduces it. The
+table was wrong; the number I picked to prove it was not.
+
+Use `record_fills` for every market quantity. This is the fourth time this repo has got the same
+answer wrong with a plausible proxy.
