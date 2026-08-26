@@ -152,6 +152,86 @@ The fix is cheap: `town["unlocked_shops"]` is in the observation from d0, so the
 readable immediately -- no waiting for a yarn signal at d15. Key the tape on which products the town
 eats, and pick the recording whose crop mix matches.
 
+## The tape corpus is exhausted as a source of default-arm gains
+
+Every prefix-compatible non-yarn3/6 tape was replayed on 7 draws, one per class the default arm
+serves, against each draw's real opponent, seed 123641874.
+53 tapes completed all 7 (`data/logs/tape_full_sweep.log`, rows in `tape_full_sweep.csv`).
+
+    current default   98907591  UjjwalPardeshi     105,158
+    best single tape  98900762  G!vIOne            109,245    +4,087
+    ORACLE, perfect per-draw choice over 53        110,580    +5,422
+    e2500                                          111,697    +6,539
+
+**A perfect split of the whole corpus loses to e2500 by 1,117.**
+So "split more often" cannot be the answer, and no number of extra recordings changes that.
+Splitting is worth only **+1,335** over picking the single best tape, and that is with foresight we
+do not have at d3.
+
+The corpus is also far less diverse than 53 suggests.
+Whole blocks replay to within $200 of each other -- `98871034 / 98893887 / 98864187 / 98884743 /
+98903047` give 104,4xx, 111,2xx, 134,3xx on the same three draws.
+It is roughly six distinct seasons recorded many times.
+
+**Selecting a tape by its own recorded bank does not work**, and the earlier 8-candidate pass did
+exactly that.
+Own bank against replayed mean: 98873431 banked 121,922 and replays 1st of the nine; 98884730 banked
+141,250 and replays 3rd; 98832334 banked 134,469 and replays 8th.
+The home bank is a number about the tape's own town.
+
+### The one split that separates anything is CARROT, not YARN_STORE
+
+Oracle minus e2500, per draw:
+
+    draw        class   top drain     oracle    e2500       diff
+    98818694     d15    CARR,WHEA     65,773   70,981     -5,208    <- carrot
+    98832395      d9    WHEA,CARR     99,796  110,542    -10,746    <- carrot
+    98818687     d24    STRA,WHEA    105,497  105,575        -78
+    98818709   never    WHEA,MILK    112,306  112,826       -520
+    98846100     d18    WHEA,STRA    140,824  143,373     -2,549
+    98820898     d12    WOOL,STRA    107,150  103,692     +3,458
+    98832334     d21    WHEA,STRA    142,713  134,892     +7,821
+
+Both draws where CARROT is in the top-2 drain are e2500's two biggest wins.
+Remove those two and the oracle tape split **beats** e2500 by a mean of 1,626.
+The surviving comparator is named `e2500_carrot.py`.
+
+CARROT is in the top-2 drain on **26 of the 87 default-arm draws (29.9%)**, so this is not a corner
+case.
+Top-2 drain frequency across those 87 draws: WHEAT 73 (83.9%), STRAWBERRY 46 (52.9%), CARROT 26
+(29.9%), MILK 16 (18.4%), WOOL 5, TOMATO 5, EGG 3.
+
+**REFUTED the same night.** Tested on 16 held-out draws -- 8 carrot, 8 not, none of the 7 above
+(`data/logs/carrot_test.log`, rows in `carrot_test.csv`).
+Best single tape `98900762` against `e2500_carrot.py`:
+
+    group     tape     e2500   tape-e2500   tape wins
+    CARROT  69,220    74,412      -5,192       2/8
+    plain   81,827    87,159      -5,332       2/8
+
+The tape loses by the same amount in both groups.
+CARROT separates nothing.
+The 2-draw signal was noise.
+
+And the held-out gap is WIDER than the in-sample one, because `98900762` was selected on the 7
+sweep draws:
+
+    best-tape vs e2500      7 sweep draws (in-sample)   -2,452
+                            16 held-out draws           -5,262    tape wins 4/16
+
+Same winner's-curse effect the project already recorded at +40% in-sample against +12.8% held out.
+
+**Conclusion: no tape split beats e2500 on the default arm.** Not a better default, not yarn, not
+drain, not carrot, not a perfect oracle over all 53 compatible tapes.
+Across 23 draws e2500 beats the best available tape on 19.
+The tape is not losing on a keyable subclass -- it is worse everywhere, by about $5k.
+Whatever e2500 does that wins is not in the tape corpus, so the next question is what that is, and
+it is not answerable by choosing tapes.
+
+Drain does NOT otherwise pick the winner: the two `WHEA,STRA` draws chose different tapes
+(98832334 -> 98960039, 98846100 -> 98951018), and those two tapes are 6,330 apart on each other's
+row.
+
 ## What is NOT known
 
 - Whether either candidate beats `e2500` over more than two draws. On those two it loses.
