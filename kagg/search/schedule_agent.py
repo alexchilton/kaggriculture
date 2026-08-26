@@ -222,10 +222,16 @@ def _pointless_tiles(tiles, day, plants_left):
 #: gets the treatment `at_risk` feeds get: covered first, and delivered as soon as it is in hand
 #: rather than batched to `DELIVER_MIN`.
 #:
-#: **This is a rule read off the schedule, not a price.** It asks one question with a yes/no answer --
-#: does today's shopping list exceed the bank -- from numbers that are all on the board at dawn. No
-#: dollar figure enters the routing.
-FUND_THE_DAY_WHEN_SHORT = True
+#: **DELETED 2026-08-26. The row's sells are delivered ALWAYS, not only when the day is short.**
+#: `FUND_THE_DAY_WHEN_SHORT = True` used to gate this on `_days_bill_now(row) > money`, which made
+#: it the on/off switch for whether the schedule's sell row happened at all: on a healthy bank the
+#: delivery fell back to opportunistic, which `router.py:234` records as "free at plan time" -- it
+#: happens only if a hand wanders past the shed. Measured d12 of `clone_open`: the row asks for 60
+#: units across four products, the shed held them by dusk, and we offered none of it -- DROP 1
+#: against his 13, banking $941 against his $4,178.
+#:
+#: Alex, 2026-08-26: *"this was always wrong and never matched kawa either - you built that and i
+#: never agreed"*. It is gone rather than switched off.
 
 
 
@@ -1831,8 +1837,63 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
             taken.add(spot)
             live[crop] += 1
 
-    for crop in sorted(want, key=lambda c: (_outstanding(c), c)):
-        qty = want[crop]
+    # **THE ROW SAYS WHICH SQUARE. Use it.** Alex, 2026-08-26: *"the schedule is the driver - the
+    # board is where the constraints happen"*.
+    #
+    # `plant_tiles` carries the exact coordinates he sowed -- d12 of `clone_open` names
+    # `(0,4) (3,0) (2,2)` WHEAT -- and until now nothing read it. Siting came from
+    # `OPENING_GEOMETRY`, a hand-written spot->crop map that stops at
+    # `OPENING_GEOMETRY_LAST_DAY`, and after that from a nearest-ground sweep that picks whatever
+    # square is closest. So from d12 on we sowed his crops on our geometry.
+    #
+    # Seated BEFORE the sweep and spending the same outstanding counts, so this is a permutation of
+    # the day's plantings and not an extra one -- the same contract `OPENING_GEOMETRY` has.
+    #
+    # **Where the row is silent the sweep still runs.** `plant_tiles` is empty on d3, d5, d6 and
+    # d18-d25 while `plants` on those rows is not (see the note at `_plants_still_to_sow`), so this
+    # cannot be the only path or those days would sow nothing.
+    for spot, crop in ((tuple(t), c) for t, c in (sched.get(day, {}).get("plant_tiles") or [])):
+        if crop not in CROP or RT.plant_prize(crop, day) <= 0:
+            continue
+        if spot in taken or not _owned(spot, unlocked):
+            continue
+        if tiles[spot[1]][spot[0]] is not None:      # the board constrains, the row proposes
+            continue
+        if _outstanding(crop) <= 0:
+            continue
+        pins[spot] = ("PLANT", crop, RT.plant_prize(crop, day))
+        taken.add(spot)
+        live[crop] += 1
+
+    # **TODAY'S ROW FIRST, THE BACKLOG WITH WHAT IS LEFT.** Alex, 2026-08-26: *"the schedule is the
+    # direction"*, *"the planner needs to plan the day based on those numbers and the board"*.
+    #
+    # `want` is CUMULATIVE plants from day 0, and the loop below served the smallest outstanding
+    # count first. Measured at d12 dawn of `clone_open`: five free squares, and the order was
+    # STRAWBERRY (41 sown, 38 credited, 3 owed), MELON (10 owed), WHEAT (23 owed) -- so strawberry
+    # took three squares, melon took two, and the row's own **3 WHEAT never reached any ground**.
+    # PLANT emitted 0 against a row of 3.
+    #
+    # The backlog is mostly crops the tape already planted AND harvested: harvested tiles leave the
+    # board, so the credit that fixes `state["planted"]` can only ever under-count them. Serving it
+    # ahead of today's instruction spends the day on a total that is wrong by construction.
+    # **THE DAY PLANTS TODAY'S ROW. THERE IS NO BACKLOG.** Alex, 2026-08-26: *"we can fairly easily
+    # remove the 6/3 plant and place by the same logic! Only give to the day planner the values in
+    # plant and place!"*
+    #
+    # `want` is cumulative from day 0 and the loop served the smallest outstanding count first.
+    # Measured at d12 dawn of `clone_open`: five free squares, order STRAWBERRY (3 owed), MELON (10),
+    # WHEAT (23) -- strawberry took three, melon took two, and the row's own 3 WHEAT never reached
+    # ground. Serving today's row first fixed that and then over-planted, 6 against 3, because the
+    # backlog still ran behind it.
+    #
+    # The backlog cannot be made right: it counts every `plants` entry since day 0 less what this
+    # agent planted, and after a handover most of those were sown by the tape AND already harvested,
+    # so they have left the board and no credit can see them. A number that is wrong by construction
+    # should not be steering the day.
+    _today = collections.Counter(sched.get(day, {}).get("plants") or [])
+    for crop in sorted(_today, key=lambda c: (-_today[c], c)):
+        qty = _today[crop] + state["planted"][crop] + live[crop]     # today's row, in row terms
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
         for _ in range(qty - state["planted"][crop] - live[crop]):
@@ -1917,8 +1978,9 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     # day's own selling, so counting it here says day 4 is $1,000 short at hour 0 when it is not
     # short at all -- and a short day sets `due = hour`, which drags the entire SELL row to the shed
     # before anything has grown. See `_days_bill_now`.
-    short_of_cash = (FUND_THE_DAY_WHEN_SHORT and any(q > 0 for q in owed_sale.values())
-                     and _days_bill_now(sched.get(day, {})) > money)
+    # The row's sells are always worth delivering: the market reads the shed and nothing else, so a
+    # product the row wants is worth zero while it stands in a field or rides in a hand.
+    short_of_cash = any(q > 0 for q in owed_sale.values())
 
     # **The shed the plan reasons about is the shed the day will have, not the one it wakes to.**
     # `interpreter` runs the unit phase and only then `_process_market` (`kaggriculture.py:922` then
@@ -1962,14 +2024,21 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
     #: Counted the same way `_refresh_pins` counts it -- cumulative over days up to today, less what
     #: is already planted and already pinned -- because a row that failed on a thin board was never
     #: retried and that is what `state["planted"]` is for.
+    # **TODAY'S ROW, NOT THE SEASON'S BACKLOG.** The cumulative form handed `build_nodes` a budget of
+    # 85 plants at d12 of `clone_open` -- every `plants` entry since day 0, less what THIS agent
+    # planted, which after a handover is nothing. `_best_replant_crop` serves the dearest first
+    # (MELON 1500 against WHEAT 75), so every tile the day cleared was earmarked for a crop the row
+    # never asked for.
+    #
+    # Crediting the inherited board cut it to 31 and could not do better: a crop the tape sowed AND
+    # harvested has left the board, so no credit can see it. The number is wrong by construction, so
+    # it does not get to steer the day. Alex, 2026-08-26: *"Only give to the day planner the values
+    # in plant and place!"*
     _replant = collections.Counter()
     if RT.REPLANT_A_CLEARED_TILE:
         _pinned_plants = collections.Counter(p[1] for p in (pins or {}).values()
                                              if p and p[0] == "PLANT")
-        for d in sorted(sched):
-            if d <= day:
-                _replant.update(sched[d].get("plants") or [])
-        _replant -= collections.Counter(state["planted"])
+        _replant.update(sched.get(day, {}).get("plants") or [])
         _replant -= _pinned_plants
 
     # **A weed on ground the day actually needs is dug; one on spare ground is furniture.**
@@ -3975,6 +4044,32 @@ def make_agent(schedule, me=0, router=True, start_day=0):
         seeds = collections.Counter(priv.get("seeds") or {})
         invs = priv.get("inventories") or [{}]
         tiles = farm["tiles"]
+        # **CREDIT THE BOARD WE INHERIT.** Alex, 2026-08-26: *"there can always be some small
+        # mismatch between the tape / schedule and the board - that is where the planner needs to be
+        # good ... it should do its best"*.
+        #
+        # `state["planted"]` counts plantings THIS agent made. On a handover it made none: d0-d11
+        # was the tape, and the planner's own answers were driven and discarded. The comment at
+        # `_refresh_pins` claims "the tape's crop credits `state["planted"]`" and it does not --
+        # measured at the d12 dawn of `clone_open`, `planted` is `{}` while the rows for d0-d12 add
+        # up to MELON 11, WHEAT 30, STRAWBERRY 41, CARROT 8.
+        #
+        # Every cumulative counter then reads the whole opening as still owed. `_replant` handed
+        # `build_nodes` a budget of 85 plants, `_best_replant_crop` serves the dearest first
+        # (MELON 1500, STRAWBERRY 480, WHEAT 75), and so every tile the day cleared was earmarked
+        # for a crop the row never asked for -- six pins on d12, not one of them the row's three
+        # WHEAT, and PLANT emitted 0.
+        #
+        # The board is the best available record of what the replay sowed: standing crop, counted
+        # once, at the first observation after the handover. It is an UNDER-count -- anything sown
+        # and already harvested has left the board -- which is the safe direction: it leaves the
+        # row's own plantings outstanding rather than cancelling them.
+        if start_day and not state.get("_credited_board"):
+            state["_credited_board"] = True
+            for _row in tiles:
+                for _c in _row:
+                    if isinstance(_c, dict) and _c.get("crop"):
+                        state["planted"][_c["crop"]] += 1
         # **Today's arrivals are fed to the schedule's own count.** Recomputed every turn rather
         # than latched at dawn, because a pen placed today does not exist at dawn -- PLACE happens
         # mid-day -- so there is nothing to latch. `_arrived` counts the pens that arrived today and
@@ -5731,6 +5826,41 @@ def make_agent(schedule, me=0, router=True, start_day=0):
             state["ordered"][("sold", prod_)] = max(
                 0, state["ordered"][("sold", prod_)] - cancel)
         orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
+
+        # **NEVER BUY MORE THAN THE ROW ASKS FOR.** Alex, 2026-08-26: *"the buys should be exact and
+        # the sells - we should never buy anything higher than the schedule - it would seem a pretty
+        # fucking easy rule that"*.
+        #
+        # Five separate sites queue purchases (`:5301` animals, `:5386` seed, `:5577` and `:5655`
+        # wheat top-ups, plus the row's own `buys`), and each has its own idea of what is
+        # reasonable. `_row_q` at `:5384` already tries to cap seed and does not hold: measured d12
+        # of `clone_open`, the row asks `seeds {WHEAT: 3}` and `animals_bought` nothing, and the day
+        # bought SEVEN seeds and TWO animals -- $1,010 against his $30, on a day we banked $941
+        # against his $4,178.
+        #
+        # So the cap lives at the single exit instead of in five places. A day's purchases are
+        # counted across the whole day, not per turn, because the row is a day total; the running
+        # tally is kept on `state` and reset when the day changes.
+        _row = sched.get(day) or {}
+        if state.get("_buycap_day") != day:
+            state["_buycap_day"] = day
+            state["_bought_today"] = collections.Counter()
+        _cap = {("BUY_SEED", c): int(q or 0) for c, q in (_row.get("seeds") or {}).items()}
+        _cap.update({("BUY_PRODUCT", p): int(q or 0) for p, q in (_row.get("buys") or {}).items()})
+        for _a in (_row.get("animals_bought") or []):
+            _cap[("BUY_ANIMAL", _a)] = _cap.get(("BUY_ANIMAL", _a), 0) + 1
+        _done = state["_bought_today"]
+        _kept = []
+        for o in orders:
+            if o and o[0] in ("BUY_SEED", "BUY_PRODUCT", "BUY_ANIMAL") and len(o) > 2:
+                key = (o[0], o[1])
+                room = _cap.get(key, 0) - _done[key]
+                take = max(0, min(int(o[2]), room))
+                if take <= 0:
+                    continue
+                o[2], _done[key] = take, _done[key] + take
+            _kept.append(o)
+        orders = _kept
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _sells_first(

@@ -227,6 +227,138 @@ TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
 REPLAY = pathlib.Path("data/seed_scripts/clone_open/98907591.json")
 REPLAY_SEAT = 1
 
+#: **The three-way tape split, keyed on the shop draw.** `arm -> (recording, seat)`.
+#:
+#: The lineage plays three different seasons depending on when YARN_STORE unlocks, and the split is
+#: buildable because the SIGNAL always arrives before the DIVERGENCE. Measured 2026-08-26,
+#: `scripts/where_the_clone_tapes_split.py`, `data/logs/clone_split_points.log` -- first turn the
+#: actions differ against first turn the shop lists differ:
+#:
+#:     pair                          actions split   shops differ   buildable
+#:     clone_open vs clone_yarn3             d3h17          d3h00         YES
+#:     clone_open vs clone_yarn6             d6h10          d3h00         YES
+#:     clone_open vs clone_late              d6h21          d3h00         YES
+#:     clone_yarn3 vs clone_yarn6            d3h17          d3h00         YES
+#:     clone_yarn3 vs clone_late             d3h17          d3h00         YES
+#:     clone_yarn6 vs clone_late             d6h10          d6h00         YES
+#:
+#: **All four tapes are byte-identical to d3h16**, so the first three days need no latch at all and
+#: `ARM_DEFAULT` serves them. That ordering is what makes this safe, and it is the exact trap the
+#: older `(melon_armed, q4_armed)` latch records at `schedule_agent.py:3826`: replaying a branch day
+#: BEFORE its latch decides measured **mean -$96,897 over 14 games, better in only 2**.
+#:
+#: The key is read off `town["unlocked_shops"]`, which is exact -- not the 67.6% decision tree from
+#: `scripts/learn_the_tape_selector.py`. That tree was fitted across 139 seats of five different
+#: openings and answers a different question; here there are three tapes and the shop list names
+#: which one directly.
+#:
+#: `clone_late` is deliberately NOT an arm. It parts from `clone_open` only at d6h21 and takes
+#: YARN_STORE at d12, which is past every handover we ship; a fourth arm would add a branch that
+#: the selector cannot distinguish from `clone_open` until after the opening has ended.
+#: **Each arm carries its own stop day** -- the day the tape hands the season to the planner. A
+#: single handover for all three throws away exact play on the arm that holds longest: `clone_open`'s
+#: group (`123c42fb5d`, 11 seats over ELEVEN distinct shop draws) plays identical actions **through
+#: d27** (`data/logs/tape_reach.log`), so stopping it at d12 replaces 15 days of exact tape with 15
+#: days of approximation.
+#:
+#: The stop day per arm now comes from `STOP_TABLE`, measured. The values here are the LENGTH of
+#: tape embedded, which must be at least the largest stop the table can ask for.
+#: **The SCHEDULE is part of the arm, not a global.** `(recording, team, stop day, schedule)`.
+#:
+#: The planner does not plan from nothing -- it reads schedule rows, and those rows describe the
+#: board the recording built. A bundle that replays `clone_yarn3`'s tape and then plans from
+#: `kawashigi`'s rows hands the season to a planner describing a different lineage's farm, which is
+#: what shipped until 2026-08-26: `PLAN = _PLAN.SHIPPED_PLAN` embedded one schedule for every arm.
+#: The tape and the schedule are derived from the SAME recording and live in the same directory;
+#: they must be selected together or the handover lands on rows that do not describe the board.
+REPLAY_ARMS = {
+    # **Raised 12 -> 28 on 2026-08-26 so the handover day can be MEASURED.** At 12 the bundle
+    # embedded twelve days of yarn tape and no more, so a sweep that truncated the opening at d16,
+    # d20, d24 and d28 truncated nothing and returned five identical seasons -- which reads exactly
+    # like "the handover day does not matter" and is really "there was no tape there to move it
+    # into". The stop day is now a real parameter on all three arms; where each one SHOULD sit is
+    # what the sweep answers.
+    "yarn3": (pathlib.Path("data/seed_scripts/clone_yarn3/98889302.json"), "WeAreFarmers", 28,
+              pathlib.Path("data/seed_scripts/clone_yarn3/schedule.json")),
+    "yarn6": (pathlib.Path("data/seed_scripts/clone_yarn6/98857364.json"), "Bharath Varma", 28,
+              pathlib.Path("data/seed_scripts/clone_yarn6/schedule.json")),
+    "open": (pathlib.Path("data/seed_scripts/clone_open/98907591.json"), "UjjwalPardeshi", 28,
+             pathlib.Path("data/seed_scripts/clone_open/schedule.json")),
+}
+ARM_DEFAULT = "open"
+
+#: **The stop day is per DRAW, not per arm.** Measured 2026-08-26,
+#: `scripts/how_late_can_each_arm_hand_over.py`, `data/logs/handover_sweep2.csv` -- our bank against
+#: the arm's own tape on four injected shop draws:
+#:
+#:     draw      arm         TAPE       d12       d16       d20       d24       d28    best
+#:     yarn_d3   yarn3    126,577   103,572   109,079   116,406   118,770   120,581   d28  -5,996
+#:     yarn_d6   yarn6    129,712   112,493   108,555   119,306   123,092   124,386   d28  -5,326
+#:     yarn_d12  open     143,586   137,047   133,960   142,136   143,645   143,262   d24     +59
+#:     yarn_d15  open      91,429    93,202    84,574    89,888    88,963    89,972   d12  +1,773
+#:
+#: The last two rows are the SAME ARM and they point opposite ways: on the `yarn_d12` draw the
+#: planner should take over at d24-d26, and on the `yarn_d15` draw it should take over at d12 and
+#: every later stop is below the tape. One stop day for `open` is wrong on one of those draws
+#: whichever value is chosen.
+#:
+#: **This is buildable because the two decisions have different deadlines.** The TAPE must be picked
+#: by d6, before the arms part at d6h09. The STOP DAY only binds when the season reaches it, so it
+#: can be read at d12, by which time the draw has shown three more shops. `_stop` in the epilogue
+#: reads it live and the agent is rebuilt if it moves.
+#:
+#: One seed per row. The ORDERING is what was measured; the dollar values run through an uncontested
+#: market and are not quality numbers.
+#: **Measured per YARN CLASS**, 18 draws sampled two per class from `daily_2026-08-26`, mean margin
+#: against that arm's own tape on the same draw (`data/logs/handover_class.csv`):
+#:
+#:     yarn class  arm      n          d12       d20       d28   best
+#:     yarn_d3     yarn3    2      -15,106    -6,124    -5,640   d28  -5,640
+#:     yarn_d6     yarn6    2      -11,256    -2,876    -4,980   d20  -2,876
+#:     yarn_d9     open     2      -19,358      -396    -1,426   d20    -396
+#:     yarn_d12    open     2       -2,486      +258    -1,328   d20    +258
+#:     yarn_d15    open     2         -376      +518      -770   d20    +518
+#:     yarn_d18    open     2       +2,808      +716      -586   d12  +2,808
+#:     yarn_d21    open     2         +266    +1,155      -516   d20  +1,155
+#:     yarn_d24    open     2       -1,364      +882    -1,040   d20    +882
+#:     yarn_none   open     2       +5,681      +848       +50   d12  +5,681
+#:
+#: Two rules fall out, and the second is the one that pays:
+#:
+#: - **Yarn early (d3, d6) -- our engine loses at every stop day.** Best case is -$2,876. The tape is
+#:   simply better than us on those draws, so the stop goes as late as the tape reaches.
+#: - **No yarn all season -- hand over at d12, worth +$5,681**, the largest margin in the table, on
+#:   the largest class: 35 of 120 draws in the corpus have no YARN_STORE at all.
+#:
+#: `yarn_d18` preferring d12 is treated as noise: n=2, and both neighbours (d15, d21) prefer d20.
+#:
+#: **The stop day may be read LATE and the tape may not.** The tape is latched by d6, before the
+#: recordings diverge at d3h16/d6h09; the stop only binds when the season reaches it, so "has yarn
+#: appeared yet" can still be asked at d12. That asymmetry is what makes a no-yarn rule possible at
+#: all -- at d6 there is no way to know yarn will never come.
+#:
+#: One seed per draw and two draws per class. The SHAPE is what was measured; the exact day is not
+#: pinned closer than the d12/d20/d28 grid until the d14-d26 pass lands.
+STOP_TABLE = {
+    "yarn3": 28,
+    "yarn6": 20,
+    #: `open` splits on whether YARN_STORE has appeared at all by the time the stop is read.
+    "open_yarn_seen": 20,
+    "open_no_yarn": 12,
+}
+
+#: The first turn at which the arms are allowed to differ: **d3h16**, the earliest measured action
+#: split (`clone_open` vs `clone_yarn3`). Everything before it is asserted identical across arms at
+#: build time by `_openings`. The signal arrives at d3h00, sixteen turns earlier, which is the
+#: margin that makes the latch honest rather than a guess.
+#:
+#: **d3h16, not d3h17.** `scripts/where_the_clone_tapes_split.py` reports d3h17 for the same turn
+#: because it indexes `steps[t]` while `_opening` indexes `steps[1:][t]` -- step 0 is the initial
+#: state and carries no action. The builder's convention is the one the shipped replay was verified
+#: on, so it is the one that governs here. Set to 17, the build refuses with `arm 'yarn3' differs
+#: at turn 88` -- which is this gate working, on its first run.
+ARM_LATCH_TURN = 3 * 24 + 16
+
 TARGET = pathlib.Path("submission/main.py")
 
 PREAMBLE = '''\
@@ -286,7 +418,75 @@ _SA = _install()
 # stored as a two-element list and turned back into a tuple here.
 _SA.EMBEDDED_OPENINGS = {tuple(json.loads(_k)): _v
                          for _k, _v in json.loads(_EMBEDDED_OPENINGS_JSON).items()}
+# Same shape as `_SCHEDULE` above -- `json.loads` of the thinned rows, string keys and all. The keys
+# are deliberately NOT converted: `_SCHEDULE` is built the same way and is what ships today, so a
+# converted copy here would hand `make_agent` a differently-typed schedule on the split arms only.
+_PLANS = json.loads(_PLANS_JSON)
 _AGENTS = {}
+_AGENT_ARM = {}
+_ARM = {}
+
+
+def _stop(obs, me, arm):
+    """The day the tape hands over, read LIVE from the draw rather than fixed at build time.
+
+    Measured per yarn class (see `STOP_TABLE` in the builder). The rule:
+
+        arm yarn3                      -> 28    our engine loses at every stop; play the tape
+        arm yarn6                      -> 20
+        arm open, YARN_STORE seen      -> 20
+        arm open, no YARN_STORE yet    -> 12    +$5,681, the biggest margin and the biggest class
+
+    **This is read late ON PURPOSE, and it is the reason the no-yarn rule can exist at all.** The
+    TAPE has to be latched by d6, before the recordings part at d3h16/d6h09. The STOP only binds
+    when the season reaches it, so "has yarn appeared" can still be asked at d12 -- and at d6 there
+    is no way to know yarn will never come. Two decisions, two deadlines.
+
+    Not latched: as yarn arrives the answer moves 12 -> 20, which is correct. It can only move
+    LATER, never earlier, so it can never retract a handover that has already happened.
+    """
+    if arm in _STOP_TABLE:
+        return _STOP_TABLE[arm]
+    seen = "YARN_STORE" in set(((obs.get("town") or {}).get("unlocked_shops")) or ())
+    return _STOP_TABLE["open_yarn_seen"] if seen else _STOP_TABLE["open_no_yarn"]
+
+
+def _arm(obs, me):
+    """Which tape arm this game is on: `"yarn3"`, `"yarn6"` or `"open"`. Latched once, then frozen.
+
+    The lineage plays a different season depending on when YARN_STORE unlocks, and the shop list is
+    the whole signal -- read directly off `town["unlocked_shops"]`, no model and no guess:
+
+        YARN_STORE present on day 3   -> "yarn3"    tapes part at d3h17
+        YARN_STORE present on day 6   -> "yarn6"    tapes part at d6h10
+        otherwise                     -> "open"
+
+    Shops unlock on a fixed three-day cadence from d3, so the day-3 list holds exactly one shop and
+    the day-6 list exactly two. The decision is therefore complete by d6h00, four turns before the
+    latest arm needs it.
+
+    **Latched, and never revisited.** YARN_STORE keeps unlocking on later days in every draw, so a
+    rule re-evaluated each turn would flip an `"open"` game to `"yarn6"` the moment yarn arrived at
+    d9 or d12 -- mid-replay, switching tapes under a board built by the other one. The arm is
+    recorded per seat the first time day 6 is reached and read from the dict after that.
+
+    Before the latch fires the arms are byte-identical (asserted at build time by `_openings`), so
+    returning the default early cannot replay the wrong branch.
+    """
+    if me in _ARM:
+        return _ARM[me]
+    day = int(obs.get("day", 0) or 0)
+    shops = set(((obs.get("town") or {}).get("unlocked_shops")) or ())
+    if day < 3:
+        return _ARM_DEFAULT
+    if "YARN_STORE" in shops:
+        arm = "yarn3" if day < 6 else "yarn6"
+    elif day < 6:
+        return _ARM_DEFAULT               # day 3 seen, no yarn: yarn6 is still open, do not latch
+    else:
+        arm = _ARM_DEFAULT
+    _ARM[me] = arm
+    return arm
 
 
 def agent(obs, config=None):
@@ -305,6 +505,19 @@ def agent(obs, config=None):
     """
     me = int(obs.get("player", 0) or 0)
     fresh = int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0
+    if fresh:
+        _ARM.pop(me, None)
+    arm = _arm(obs, me)
+    # **The schedule travels with the tape.** `_PLANS` holds one thinned schedule per arm, read off
+    # the same recording that arm replays. The agent is rebuilt when the latch resolves to a
+    # different arm than the one it was constructed for -- which happens at most once, at d6, and
+    # always before the handover, so the planner it hands to is the one that describes this board.
+    stop = _stop(obs, me, arm) if _STOP_TABLE else _ARM_STOP.get(arm, _REPLAY_DAYS)
+    # Rebuilt when EITHER the arm or the stop day moves. The stop is read live and can climb from 12
+    # to 20 when yarn arrives, and `start_day` is fixed at construction -- an agent built for a d12
+    # handover would otherwise catch up from the wrong day for the rest of the season.
+    if _PLANS and _AGENT_ARM.get(me) not in (None, (arm, stop)):
+        _AGENTS.pop(me, None)
     if fresh or me not in _AGENTS:
         # `start_day` exists only on the older `schedule_agent`. The module bundled here is
         # `schedule_agent`, which plans its opening rather than replaying one, and its
@@ -312,17 +525,29 @@ def agent(obs, config=None):
         # first observation, i.e. a submission that banks the $3,000 start. Sent only when a replay
         # opening was actually asked for; `--replay-days` defaults to 0 and the builder refuses the
         # combination outright if the bundled module cannot honour it.
-        _kw = {"start_day": _REPLAY_DAYS} if _REPLAY_DAYS else {}
-        _AGENTS[me] = _SA.make_agent(_SCHEDULE, me, router=True, **_kw)
+        sched = _PLANS.get(arm, _SCHEDULE)
+        _kw = {"start_day": stop} if _REPLAY_DAYS else {}
+        _AGENTS[me] = _SA.make_agent(sched, me, router=True, **_kw)
+        _AGENT_ARM[me] = (arm, stop)
     live = _AGENTS[me](obs, config)
 
     # **The opening is replayed verbatim; the planner still SEES every turn.** It is driven above
     # unconditionally and its answer discarded during the opening, so its per-day state (pins, pen
     # reservations, the sold ledger) is warm at the handover. Constructing it fresh on day N
     # instead leaves `state["day"]` at -1 and it re-runs a whole first day inside day N.
-    step = int(obs.get("step", 0) or 0)
-    if step < len(_OPENING):
-        farmer, hands, market = _OPENING[step]
+    # **`day * 24 + hour`, NOT `obs["step"]`.** kaggle-environments gives `step` to seat 0 only --
+    # at seat 1 it is None on every turn, so `obs.get("step", 0) or 0` was 0 for the whole season
+    # and this replayed TURN 0 seven hundred and twenty times. Measured 2026-08-26: an artifact
+    # built with `--replay-days 12` banked **$0** at seat 1 against $197,294, while seat 0 played
+    # normally. Half of every ladder match is seat 1, so the feature was unusable from the day it
+    # was written. `day` and `hour` are present and correct at both seats.
+    step = int(obs.get("day", 0) or 0) * 24 + int(obs.get("hour", 0) or 0)
+    # Cut to the stop day the draw asks for. `_OPENINGS` holds the full embedded tape; the slice is
+    # what makes the handover a live decision rather than a build constant.
+    opening = _OPENINGS.get(arm, _OPENING) if _OPENINGS else _OPENING
+    opening = opening[:stop * 24] if _STOP_TABLE else opening
+    if step < len(opening):
+        farmer, hands, market = opening[step]
         owned = len((obs.get("farms") or [{}, {}])[me].get("hands") or [])
         # Truncated to the units this farm actually owns. The reference ignores a surplus unit
         # action for movement and work but still COUNTS it in the atomic-PLANT rule, so sending
@@ -384,15 +609,22 @@ def _literal(name, text):
     return f"_SOURCES[{name!r}] = r'''{text}'''\n"
 
 
-def _opening(days, seat=REPLAY_SEAT):
+def _opening(days, path=None, team=None, seat=REPLAY_SEAT):
     """The replay author's own per-turn actions for days 0..days-1, as `(farmer, hands, market)`.
 
     Empty when `days` is 0, which is the historical behaviour: the submission then holds no
     turn-level action at all and the planner drives from day 0.
+
+    `team` resolves the seat by name when given, because the three split arms come from three
+    different recordings and the author does not hold the same seat in each -- a hard-coded
+    `REPLAY_SEAT` would silently replay the OPPONENT's season on two of the three.
     """
     if not days:
         return []
-    steps = json.loads(REPLAY.read_text())["steps"][1:]
+    rep = json.loads((path or REPLAY).read_text())
+    if team is not None:
+        seat = rep["info"]["TeamNames"].index(team)
+    steps = rep["steps"][1:]
     out = []
     for step in steps[:days * 24]:
         s = (step[seat] or {}) if seat < len(step) else {}
@@ -400,6 +632,37 @@ def _opening(days, seat=REPLAY_SEAT):
         out.append([a.get("farmer") or ["PASS"],
                     list(a.get("hands") or []),
                     list(a.get("market") or [])])
+    return out
+
+
+def _openings(days):
+    """`{arm: opening}` for every arm in `REPLAY_ARMS`, each cut to its OWN stop day.
+
+    `days` is a CAP, not the length. Every arm replays `min(its own stop day, days)`, so
+    `--replay-days 30` gives each arm its natural reach -- `open` to d28, `yarn3`/`yarn6` to d12 --
+    while `--replay-days 12` still pins all three to d12 for a controlled comparison. One parameter,
+    one meaning, and the old uniform behaviour is a value of it rather than a second switch.
+
+    **The arms MUST agree over the turns before the latch can decide**, or the bundle replays a
+    branch on information it does not have. `ARM_LATCH_TURN` in the epilogue is the first turn the
+    selection is allowed to change the answer; every turn before it is asserted identical across
+    arms here, at build time, so a future tape swap cannot reintroduce the blind-replay failure
+    without the build refusing.
+    """
+    if not days:
+        return {}
+    out = {arm: _opening(min(stop, days), path, team)
+           for arm, (path, team, stop, _sched) in REPLAY_ARMS.items()}
+    base = out[ARM_DEFAULT]
+    for arm, op in out.items():
+        for t in range(min(ARM_LATCH_TURN, len(base), len(op))):
+            if op[t] != base[t]:
+                raise SystemExit(
+                    f"arm {arm!r} differs from {ARM_DEFAULT!r} at turn {t} "
+                    f"(d{t // 24}h{t % 24:02d}), which is BEFORE the latch decides at "
+                    f"d{ARM_LATCH_TURN // 24}h{ARM_LATCH_TURN % 24:02d}. Replaying a branch before "
+                    f"its signal arrives measured mean -$96,897 over 14 games "
+                    f"(schedule_agent.py:3826). Refusing to build.")
     return out
 
 
@@ -449,15 +712,39 @@ def build(replay_days=0, target=TARGET):
         _check_imports(name, path, text)
         sources[name] = text
 
-    plan = json.loads(PLAN.read_text())
-    thin = {d: {k: v for k, v in row.items() if k not in TAPE_ONLY} for d, row in plan.items()}
+    def _thin(path):
+        return {d: {k: v for k, v in row.items() if k not in TAPE_ONLY}
+                for d, row in json.loads(path.read_text()).items()}
+
+    thin = _thin(PLAN)
+    # **One schedule per arm, from the SAME recording as that arm's tape.** The planner reads
+    # schedule rows to decide the day, and those rows describe the board the recording built; an arm
+    # that replays `clone_yarn3` and then plans from `kawashigi`'s rows hands over to a planner
+    # describing a different farm. Paired by directory, so the tape and the rows cannot drift apart.
+    plans = ({arm: _thin(sched) for arm, (_p, _t, _s, sched) in REPLAY_ARMS.items()}
+             if replay_days else {})
 
     out = [PREAMBLE.format(order=[n for n, _ in MODULES], packages=list(PACKAGES))]
     out += [_literal(name, sources[name]) for name, _ in MODULES]
-    opening = _opening(replay_days)
+    arms = _openings(replay_days)
+    opening = _opening(min(REPLAY_ARMS[ARM_DEFAULT][2], replay_days) if replay_days else 0)
+    # **`start_day` is the EARLIEST handover, not the default arm's.** It guards the catch-up loop
+    # in `make_agent`, which invents a day's debt for every schedule row before it; setting it to
+    # `open`'s d28 would make the planner skip d12-d27 of catch-up on a game that latched to
+    # `yarn3` and handed over at d12. The shortest arm is the only safe value.
+    start = min((min(s, replay_days) for _a, _t, s, _sc in REPLAY_ARMS.values()),
+                default=replay_days) if replay_days else 0
     out.append(f"_PLAN_JSON = r'''{json.dumps(thin, indent=0)}'''\n")
-    out.append(f"_REPLAY_DAYS = {int(replay_days)}\n")
+    out.append(f"_REPLAY_DAYS = {int(start)}\n")
     out.append(f"_OPENING = json.loads(r'''{json.dumps(opening)}''')\n")
+    # The three shop-keyed arms. `_OPENING` above stays as the single-tape fallback so a bundle
+    # built with an empty `REPLAY_ARMS` behaves exactly as it did before the split existed.
+    out.append(f"_ARM_DEFAULT = {ARM_DEFAULT!r}\n")
+    out.append(f"_OPENINGS = json.loads(r'''{json.dumps(arms)}''')\n")
+    out.append(f"_PLANS_JSON = r'''{json.dumps(plans, indent=0)}'''\n")
+    out.append(f"_STOP_TABLE = json.loads(r'''{json.dumps(STOP_TABLE if replay_days else {})}''')\n")
+    out.append(f"_ARM_STOP = json.loads(r'''"
+               f"{json.dumps({a: min(s, replay_days) for a, (_p, _t, s, _sc) in REPLAY_ARMS.items()} if replay_days else {})}''')\n")
     # The tape days the bundled agent will replay, extracted from the recordings on disk. Empty when
     # `REPLAY_OPENING_DAYS` is empty, which is the no-replay variant.
     out.append(f"_EMBEDDED_OPENINGS_JSON = r'''{json.dumps(_embedded_openings())}'''\n")
@@ -465,8 +752,19 @@ def build(replay_days=0, target=TARGET):
     text = "".join(out)
 
     _assert_verbatim(text, sources, thin)
-    if len(opening) != replay_days * 24:
-        raise SystemExit(f"opening is {len(opening)} turns, expected {replay_days * 24}")
+    # **Per ARM, not one length.** This read `replay_days * 24` when every arm stopped on the same
+    # day; with `open` running to d28 and the yarn arms to d12 it fired on the default arm being
+    # 672 turns against a 720-turn cap, which is correct behaviour rather than a fault. Each arm is
+    # now checked against its OWN stop day, so a recording that is short still refuses to build.
+    for arm, (_p, _t, stop, _sc) in (REPLAY_ARMS.items() if replay_days else ()):
+        want = min(stop, replay_days) * 24
+        got = len(arms.get(arm) or ())
+        if got != want:
+            raise SystemExit(f"arm {arm!r} opening is {got} turns, expected {want} "
+                             f"(stop day {min(stop, replay_days)})")
+    if replay_days and len(opening) != min(REPLAY_ARMS[ARM_DEFAULT][2], replay_days) * 24:
+        raise SystemExit(f"default opening is {len(opening)} turns, expected "
+                         f"{min(REPLAY_ARMS[ARM_DEFAULT][2], replay_days) * 24}")
     target.parent.mkdir(exist_ok=True)
     target.write_text(text)
     return target
@@ -731,7 +1029,28 @@ def plays_a_real_game(seed=700):
     # The threshold is the project's own kill criterion -- an agent that cannot clear $20k against
     # the weakest thing in the game is broken, not merely worse.
     ok = status == "DONE" and reward is not None and reward > 20_000.0
-    return ok, status, reward, final[1]["reward"]
+
+    # **The same file again, SEATED SECOND.** This check ran only as player 0 for its whole life,
+    # and that is what let a `--replay-days` artifact ship "verified" while banking $0 in half its
+    # games: the shipped epilogue indexed its replay opening on `obs["step"]`, which
+    # kaggle-environments provides to seat 0 only, so at seat 1 it replayed turn 0 for all 720
+    # turns. Every other check here -- the import, the entry point, `reproduce()`, and
+    # `beats_the_repo_agent`'s own driving -- reads `farms[0]` or drives the agent directly, so not
+    # one of them could reach the defect.
+    #
+    # A ladder match seats us second half the time, so a file that only works first is broken, not
+    # merely worse. This is the cheapest possible statement of that: one more `env.run`.
+    env2 = make("kaggriculture", configuration={"seed": seed}, debug=True)
+    env2.run(["starter", str(TARGET)])
+    f2 = env2.steps[-1]
+    reward1, status1 = f2[1]["reward"], f2[1]["status"]
+    ok1 = status1 == "DONE" and reward1 is not None and reward1 > 20_000.0
+    if not ok1:
+        print(f"  SEAT 1: status {status1}, reward "
+              f"{'null' if reward1 is None else f'${reward1:,.0f}'} -- REFUSED")
+    else:
+        print(f"  seat 1 OK: ${reward1:,.0f}")
+    return (ok and ok1), status, reward, final[1]["reward"]
 
 
 def beats_the_repo_agent(seeds=(4001, 4002, 4003, 4004, 4005, 4006), floor=0.40):
@@ -832,15 +1151,68 @@ def reproduce(days=30, replay_days=0, verbose=True):
     # somebody else played (see `schedule_agent.make_agent`).
     # Same conditional as the bundled entry point: `start_day` belongs to the older
     # `schedule_agent`, and the module bundled here plans its opening rather than replaying one.
-    repo_agent = SA.make_agent(thin, 0, router=True,
-                               **({"start_day": replay_days} if replay_days else {}))
-    opening = _opening(replay_days) if replay_days else []
+    # **The repo side is built per ARM too, schedule and stop day together.** Comparing a bundle that
+    # picks one of three schedules against a repo agent pinned to `PLAN` measures the difference the
+    # harness itself introduced. Built lazily at the latch, exactly as the bundle does.
+    _repo_plans = ({a: {d: {k: v for k, v in r.items() if k not in TAPE_ONLY}
+                        for d, r in _json.loads(sc.read_text()).items()}
+                    for a, (_p, _t, _s, sc) in REPLAY_ARMS.items()} if replay_days else {})
+    _repo_stop = ({a: min(s, replay_days)
+                   for a, (_p, _t, s, _sc) in REPLAY_ARMS.items()} if replay_days else {})
+    _repo_agents = {}
+    opening = _opening(min(REPLAY_ARMS[ARM_DEFAULT][2], replay_days)) if replay_days else []
+    # The repo side gets the SAME arms and the SAME latch as the bundle, for the same reason it gets
+    # the same opening: a harness that plays one tape against a bundle that picks between three is
+    # comparing two agents, and any difference it reports is its own.
+    arms = _openings(replay_days) if replay_days else {}
+    latched = {}
+
+    def _repo_arm(obs):
+        if 0 in latched:
+            return latched[0]
+        day = int(obs.get("day", 0) or 0)
+        shops = set(((obs.get("town") or {}).get("unlocked_shops")) or ())
+        if day < 3:
+            return ARM_DEFAULT
+        if "YARN_STORE" in shops:
+            latched[0] = "yarn3" if day < 6 else "yarn6"
+        elif day < 6:
+            return ARM_DEFAULT
+        else:
+            latched[0] = ARM_DEFAULT
+        return latched[0]
 
     def repo_play(obs):
-        live = repo_agent(obs)
-        step = int(obs.get("step", 0) or 0)
-        if step < len(opening):
-            farmer, hands, market = opening[step]
+        a = _repo_arm(obs)
+        # **The repo side reads the stop day LIVE, exactly as the epilogue's `_stop` does.** It did
+        # not, and the build refused with "the bundle does not reproduce the measured season" --
+        # correctly, because a bundle whose handover moves with the draw and a repo agent whose
+        # handover is fixed per arm are two different agents and the reproduce check compares them
+        # turn for turn. Mirrored rather than approximated: same table, same fallback.
+        if STOP_TABLE and replay_days:
+            if a in STOP_TABLE:
+                st = STOP_TABLE[a]
+            else:
+                _seen = "YARN_STORE" in set(((obs.get("town") or {}).get("unlocked_shops")) or ())
+                st = STOP_TABLE["open_yarn_seen" if _seen else "open_no_yarn"]
+        else:
+            st = _repo_stop.get(a, replay_days)
+        key = (a, st)
+        if key not in _repo_agents:
+            _repo_agents.clear()          # one arm at a time, mirroring the bundle's rebuild
+            _repo_agents[key] = SA.make_agent(
+                _repo_plans.get(a, thin), 0, router=True,
+                **({"start_day": st} if replay_days else {}))
+        live = _repo_agents[key](obs)
+        op = arms.get(a, opening) if arms else opening
+        op = op[:st * 24] if (STOP_TABLE and replay_days) else op
+        # Same index as the bundled epilogue: `day * 24 + hour`, never `obs["step"]`. This side
+        # always plays SEAT 0, where `step` happens to be present -- which is precisely why the
+        # verification passed while the shipped artifact banked $0 at seat 1. A gate only tests
+        # what it exercises.
+        step = int(obs.get("day", 0) or 0) * 24 + int(obs.get("hour", 0) or 0)
+        if step < len(op):
+            farmer, hands, market = op[step]
             owned = len((obs.get("farms") or [{}, {}])[0].get("hands") or [])
             return {"farmer": list(farmer), "hands": [list(h) for h in hands[:owned]],
                     "market": [list(o) for o in market]}
@@ -928,8 +1300,11 @@ if __name__ == "__main__":
                      f"`start_day` on make_agent. Bundle a module that does, or build with 0.")
     path = build(replay_days=_args.replay_days, target=TARGET)
     if _args.replay_days:
-        print(f"opening: {_args.replay_days} days ({_args.replay_days * 24} turns) replayed from "
-              f"{REPLAY.name} seat {REPLAY_SEAT}, planner from day {_args.replay_days}")
+        print(f"opening: replayed to each arm's own stop day, capped at {_args.replay_days}")
+        for _a, (_p, _t, _s, _sc) in REPLAY_ARMS.items():
+            _d = min(_s, _args.replay_days)
+            print(f"  arm {_a:<7}{_p.name:<16}tape d0-d{_d - 1}, planner from d{_d}"
+                  f"{'   (default)' if _a == ARM_DEFAULT else ''}")
     print(f"wrote {path} ({len(path.read_text().splitlines())} lines, "
           f"{path.stat().st_size / 1024:.0f} KB)")
     ok, out = standalone()
