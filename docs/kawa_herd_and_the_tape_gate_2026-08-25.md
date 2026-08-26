@@ -206,6 +206,161 @@ and wrong because it was measured against the wrong quantity -- the criterion he
 wins the guard is not weaker. The same error the repo already records as *select on win rate, not
 money*, made again inside a session that quoted that rule.
 
+## First ladder games after shipping: the starve rule is fine, the HERD SPLIT is not
+
+Three games downloaded 2026-08-25 evening, read with `scripts/what_the_ladder_did_to_the_herd.py`.
+Ours is seat 0 in all three.
+
+    99514111  WIN   $122,582 v $21,411   wool $161-193, sheep kept, cows dropped (milk $5-11)
+    99505365  WIN    $50,042 v $47,173   MIRROR, both books at $1, whole herd goes on d29
+    99523212  LOSS  $103,250 v $111,781  see below
+
+**The rule behaved correctly in all three**, including the two that looked wrong at first glance.
+The all-animals-die game is a mirror where wool and milk are both at $1: nothing there is worth its
+wheat. The 4-sheep-no-cow game is wool $190 against milk $7, which is the rule discriminating.
+
+### The loss is not a starve failure, and the herd explanation for it is WITHDRAWN
+
+    day  cows  sheep     WOOL     MILK   WHEAT
+     24     6     12      167      231      46
+     26     6     12       93      233      48
+     27     6     12       31      239      49
+     28     6     12       11      243      49
+     29     6     12       11      237      45
+
+No sheep died there, and correctly: at d27 wool was still $31, so a sheep holding 2 units priced
+`2 x 31 = $62 > $50` and passed. By d28 wool was $11, so the rule valued held wool at three times
+what it sold for -- a spot price standing in for a forward price. That part holds.
+
+**"Twelve sheep flooded our own wool book" was written here and is WITHDRAWN the same evening.**
+`scripts/could_the_town_take_more_milk.py` compares what our herd produced against the town's
+season-long drain, which is fixed by the unlocked shops and does not move with our supply:
+
+    game        herd          product   drain   made   headroom   price     agrees?
+    99523212    6C/13S        WOOL        390     68       +322   $11       NO
+    99523212    6C/13S        MILK        750     51       +699   $239      yes
+    99514111    10C/4S        MILK        210     83       +127   $5-11     NO
+    99505365    10C/4S        MILK         30     83        -53   $1        yes
+
+Sixty-eight units of wool into a town that absorbs 390 is not oversupply. **Season-total supply does
+not predict the price** -- two of four cases go the wrong way -- so the herd count cannot be blamed
+for that crash and "we should have had more cows" does not follow from "milk was $239". Milk may be
+at $239 *because* only six cows sold into it; the price is endogenous, and that is exactly the trap
+the per-tile revenue rankings already fell into once.
+
+The one clean case is the mirror, 99505365: 83 milk into a 30-unit drain, price $1. That is genuine
+oversupply and it is why the whole herd starved there.
+
+What is left unexplained is the wool crash. Candidates, neither measured: the book clears at a fixed
+rate so a large single-day dump collapses it whatever the season drain is, and **the opponent sells
+into the same book** -- nothing above accounts for their supply at all.
+
+### Open, in priority order
+
+1. **The book's depth over time, against BOTH players' sales.** This is the thing that actually sets
+   the price, and every herd-sizing argument in this file is downstream of it. Do not re-open
+   `WOOL_SHOP_SETS_THE_HERD` before this exists -- the count is not what was measured wrong.
+2. **The ration is overstated 2x.** `(29 - day) * $25` charges two feeds; escape needs two
+   *consecutive* misses, so one feed on d27 carries a pen to the bell. The cost is $25. On 99514111
+   a cow holding 6 milk at $7 priced $49 against $50 and died by one dollar.
+3. The cow guard, if the ladder score comes back soft.
+
+## 2026-08-26: we abandon ripe crop while idle, and it is NOT about distance or turns
+
+Alex, on the carrot-only validation game: *"you are planting lots of carrot but then leaving them in
+the ground ... seems a bit daft"*. He is right, and the cause is neither of the two obvious ones.
+
+Game 99819981, our seat (`scripts/what_we_plant_and_never_take.py`):
+
+    crop          planted  tiles@bell  units standing
+    CARROT             45           5              13
+    WHEAT              82           4               6
+    STRAWBERRY         42           3               0
+
+All five abandoned carrot tiles were planted on **d26** -- 8 sown that day, 5 abandoned, 62% waste.
+Carrot first-yields at age 2, so they were ripe and sitting there.
+
+### Not turns
+
+    LAST WEEK:  day  harvests  PASSes
+                 26        15      36
+                 28        25      23
+                 29        19      31
+
+**31 PASSes on the last day** with ripe crop on the board. This also **retracts a claim made in
+commit 9f17302 and earlier in this file**: that we are turn-starved at the close while カワシギ is
+not, which was the last surviving justification for the late-starve rule. We have idle turns too.
+
+### Not distance either -- and the first reading of this was wrong
+
+The shed sits at the centre (`routines.shed_access_tiles` = (4,4),(5,4),(4,5),(5,5) on a 10x10), so
+"on the edge" is distance from the middle, Chebyshev, max 5. Measured with
+`scripts/does_he_plant_closer_late.py`:
+
+    KAWASHIGI (10 seats)   early (d<20) mean 3.23 over 1238   LATE (d>=20) mean 3.25 over 690
+    OURS 99819981          early        mean 3.27 over  113   LATE        mean 3.41 over   68
+    OURS 99514111          early        mean 3.28 over  112   LATE        mean 3.43 over   69
+
+**He does not pull his planting inward late.** Flat all season. And the decisive row:
+
+    99819981   ABANDONED  9 tiles mean dist 3.33      collected 59 mean dist 3.42
+    99514111   ABANDONED  3 tiles mean dist 2.67      collected 66 mean dist 3.47
+
+**The abandoned tiles are CLOSER than the collected ones**, in both games. Distance explains nothing.
+
+The abandoned tiles were first called "on the outer rim, near the worst case" because they sit at
+distance 3-4 of a maximum 5. The typical tile is at **3.4**. Five numbers were read without a
+baseline and used to confirm a hypothesis instead of testing it.
+
+### Not a missing top-up either -- the day is FULL, and full of walking
+
+A harvest-only top-up was proposed here (give a unit that finishes its tour the best unclaimed
+HARVEST that still fits) on the grounds that the day was under-filled. **The per-unit breakdown of
+d29 killed it before it was built** (`data/logs/d29_per_unit.log`):
+
+    unit  PASS  work  move  idle from h   ends at
+       0     8     3    13           17    (4, 5)
+       1     2    11    10           22    (5, 4)
+       2     3     4    16           21    (4, 5)
+       ...   every other unit idle from h21-h22, standing on the shed
+
+Units work to h21-h22, walk home, and PASS for the last two turns. A distance-4 tile costs
+4 out + 1 harvest + 4 back = **9 turns**; two turns buys nothing. Only unit 0 had the ~7 spare turns
+to fetch one tile. So the honest prize was ~$276, not the $1,380 first quoted, and the dawn solve
+was RIGHT to drop those stops.
+
+**Of 264 unit-turns on d29, 118 went on movement.** The day is not under-planned; it is spent
+walking.
+
+### The consolidation lead is DEAD -- it was a three-game artifact
+
+`scripts/is_his_late_planting_clustered.py`, late = d20+, single-linkage clumps at distance 1. The
+middle column is what was first written up here; the right-hand column is the same measurement after
+`scripts/drip_our_episodes.py` pulled 54 of our own ladder games:
+
+                            KAWA (67)    OURS (3)     OURS (54)
+    late plantings/seat        67.1        68.0          67.5
+    nearest-neighbour          1.02        1.03          1.02
+    clumps/seat                 2.9         4.7           2.9
+    mean clump size           17.28        9.17         18.97
+    LEFT STANDING at bell       2.2         9.7          14.0
+                        on      1.5         5.7           6.6 tiles
+
+**On a real sample the geometry is identical and our blocks are slightly BIGGER than his.** The
+"~5 thin blocks against his ~3 fat ones" claim came from three games and does not survive. Radius
+was already ruled out (his 3.23 early vs 3.25 late; ours 3.27 vs 3.41), and now spread is too.
+
+**What does survive, and got worse: he leaves 2.2 units on 1.5 tiles and we leave 14.0 on 6.6.**
+Six times as much crop rotting, from the same volume, in the same shape, at the same distance.
+
+So the loss is entirely in the COLLECTING, not the planting, and no tile-selection rule addresses
+it. Whatever he does differently happens after the seed is in the ground.
+
+**Read this section as a worked example of the sample-size trap.** Three games produced a clean,
+plausible, mechanistic story that fitted the walking-cost evidence, and it was wrong. The number that
+mattered -- units left standing -- was visible in both samples and pointed at collection the whole
+time.
+
 ## Why the tape gate exists
 
 `gate_pool`'s members are all `heuristic.make_agent` with different dials: same routing, same hiring,

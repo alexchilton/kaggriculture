@@ -446,7 +446,13 @@ def _animal_remaining(cell, day):
 #: in this environment (Alex), so an animal leaves the board exactly one way and this is deliberate.
 #:
 #: The day is his and is not derived from anything; the *choice of which pen* is the economics below.
-SHEEP_GO_HUNGRY_FROM_DAY = 27
+#: **MOVED 27 -> 28 on 2026-08-26, after the d27 build scored 1576.3 against the base's 1991.9.**
+#: At 27 a pen misses d27 and d28, so `consecutive_unfed` reaches 2 at the END OF d28 and the animal
+#: -- with the product standing on it -- is gone for the whole of d29. At 28 it misses d28 and d29
+#: (we never feed on d29 anyway, `upkeep_buys_nothing`), so the counter reaches 2 at the end of d29,
+#: a rollover that lands after the final market phase. The upkeep turns are freed and **nothing is
+#: ever lost during scored play**. Same rule, and the irreversible half of it removed.
+SHEEP_GO_HUNGRY_FROM_DAY = 28
 
 
 def _productions_left(cell, day, last_day):
