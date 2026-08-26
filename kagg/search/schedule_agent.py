@@ -954,6 +954,31 @@ PEN_NEAREST_DEPOT_FROM_DAY = 11
 #: Market orders that survive a turn (`kaggriculture.py:535` keeps `orders[:10]`).
 ORDER_SLOTS = 10
 
+def _sell_by_hour(row, day, state):
+    """`{product: [(hour, qty), ...]}` from the row's SELL orders. `None` if the row has no timing.
+
+    **The only view of `row["orders"]` the agent is allowed.** `orders` is the recording's turn-level
+    action stream and travels with the row so the sell HOUR is reachable; everything else in it --
+    which unit acted, where it stood, its HIREs, land and seed buys -- is a tape and must not be
+    replayed. Taking only `(product, hour, qty)` off SELL rows is what keeps the schedule a target
+    sheet. See `kagg/plan.TAPE_ONLY`.
+
+    Cached per day on `state`: the row does not change within a day, and this is read once per
+    product per turn.
+    """
+    if state.get("_sellhour_day") != day:
+        out = None
+        if (row or {}).get("orders"):
+            out = {}
+            for o in row["orders"]:
+                if len(o) > 3 and o[1] == "SELL" and o[3]:
+                    out.setdefault(o[2], []).append((int(o[0]), int(o[3])))
+            for v in out.values():
+                v.sort()
+        state["_sellhour_day"], state["_sellhour"] = day, out
+    return state["_sellhour"]
+
+
 def _sells_first(orders):
     """Hoist every SELL to the front, keeping the relative order of both groups.
 
@@ -2622,13 +2647,13 @@ RESERVATION_SLIP = 0.10
 #:     d3   SELL FERTILIZER  h15x4 h18x1      nothing to fund
 #:     d6   SELL WOOL        h09x6 h13x6      BUY_LAND at h13, bank $5 -> $1,349
 #:
-#: `LATE_SELL_BIAS` has shipped OFF this whole time, and switched on FLAT it is strictly worse on
-#: d6: it delays the wool past h13 and the parcel that the wool was for. The gate below is the
-#: missing half, and it is Alex's framing -- once the bank covers the day the timing is free money,
-#: while it does not the timing IS the purchase.
-LATE_SELL_BIAS = True
-LATE_SELL_FROM_HOUR = 16
-#: Products no shop consumes, so the within-day recovery `LATE_SELL_BIAS` waits for never arrives.
+#: **`LATE_SELL_BIAS` / `LATE_SELL_FROM_HOUR = 16` ARE DELETED, 2026-08-26.** They held every
+#: offer to a fixed hour, which made the hour on every row order dead data -- 260 of `clone_open`'s
+#: 591 sell orders fall before h16. The release now comes from the row itself; see the gate in
+#: `agent`. The tape excerpt above is the evidence for that change, not against it: his sell hour
+#: was never a constant.
+#:
+#: Products no shop consumes, so the within-day recovery a late sale waits for never arrives.
 #: FERTILIZER is drainless too (not even a town-centre product) but is held out of v1: no measurement
 #: says it is costing us, and each extra product widens what the A/B has to explain.
 NO_DRAIN_PRODUCTS = ("MELON",)
@@ -2660,12 +2685,12 @@ def market_price(prod, inventory):
 
 #: Hours inside a day at which `_town_consume` runs its shop pass, for the shipped
 #: `townShopSellInterval = 4`. The town-centre pass is `% 24`, so it lands on hour 0 only and can
-#: never fall between the current hour and `LATE_SELL_FROM_HOUR`.
+#: never fall between the current hour and the end of the day.
 _SHOP_DRAIN_HOURS = (4, 8, 12, 16)
 
 
 def gain_from_waiting(prod, inventory, unlocked_shops, hour):
-    """What one unit of `prod` gains by holding to `LATE_SELL_FROM_HOUR` instead of selling now.
+    """What one unit of `prod` gains by holding to the end of the day instead of selling now.
 
     Both halves are deterministic and both are in the observation, so this is arithmetic rather
     than a prior. `market_price` (`reference/kaggriculture.py:192`) is a pure function of the book,
@@ -4651,7 +4676,7 @@ def make_agent(schedule, me=0, router=True, start_day=0):
                 standing_supply[_k] += int(_v)
         market_inv = (obs.get("market") or {}).get("inventory") or {}
         unlocked_shops = list((obs.get("town") or {}).get("unlocked_shops") or [])
-        # **Does the rest of today still cost more than the bank holds?** See `LATE_SELL_BIAS`.
+        # **Does the rest of today still cost more than the bank holds?**
         # Recomputed every turn, because the answer changes as the day's sales land: a morning that
         # opens short sells until it is funded and then stops, which is exactly the d6 shape on the
         # tape -- `WOOL 6` at h09, `WOOL 6` at h13, `BUY_LAND` at h13, and nothing after.
@@ -4989,15 +5014,14 @@ def make_agent(schedule, me=0, router=True, start_day=0):
             # fertilizer hold-back for tiles that will never be worked again.
             if LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR:
                 n = int(shed.get(prod, 0))
-            # **CAP_SELL_OFFER_SIZE / LATE_SELL_BIAS -- see the flags' own docstring above.** Both
-            # apply AFTER the last-day liquidation override, so neither can touch the one turn this
-            # file already puts off limits: stock has no terminal value on the last day, and every
-            # other cap in this loop already exempts it on that same principle.
+            # **CAP_SELL_OFFER_SIZE -- see the flag's own docstring above.** It applies AFTER the
+            # last-day liquidation override, so it cannot touch the one turn this file already puts
+            # off limits: stock has no terminal value on the last day, and every other cap in this
+            # loop already exempts it on that same principle.
             last_day_liquidating = LIQUIDATE_LAST_DAY and day >= last_day and hour >= LIQUIDATE_FROM_HOUR
-            # **Waiting for the evening price assumes the goods survive until evening.** The gate
-            # above holds every offer until h16 because a book that collapsed this morning has
-            # recovered by then -- shops drain every 4 steps, the town centre every 12. That is a
-            # statement about PRICE and it is correct while there is somewhere to put the crop.
+            # **Waiting for a later price assumes the goods survive until then.** The row's release
+            # below is a statement about PRICE and about the teacher's cash needs, and it is correct
+            # while there is somewhere to put the crop.
             #
             # A shed at `SHED_CAPACITY` is not holding for a better price, it is destroying stock:
             # `_drop_inventories_to_shed` discards the overflow at every dawn (`:878`), and HARVEST
@@ -5025,29 +5049,61 @@ def make_agent(schedule, me=0, router=True, start_day=0):
                 _carried += sum(int(v or 0) for k, v in (_inv or {}).items() if k in SELLABLE)
             shed_is_pressed = (day >= SHED_HEADROOM_FROM_DAY
                                and int(sum(shed.values())) + _carried >= SHED_TARGET)
-            if (LATE_SELL_BIAS and hour < LATE_SELL_FROM_HOUR and not last_day_liquidating
-                    and not unfunded
-                    and not (prod in NO_DRAIN_PRODUCTS
-                             and (day >= SELL_AT_ONCE_FROM_DAY
-                                  or day in SELL_AT_ONCE_DAYS))):
-                # A pressed shed may release its OVERFLOW before h16, and nothing beyond it.
-                #
-                # Letting the whole day's quota through instead measured **-$7,617** on melon and
-                # -$426 on strawberry (d29 154,039 -> 146,422), and the mechanism is in
-                # `reference/kaggriculture.py:728`: a SELL adds to `market["inventory"]`, price
-                # falls monotonically in it, and the only thing that lifts the book back is the
-                # drain -- 1-2 units per shop instance every 4 steps plus 1 per product per 24.
-                # That budget is small and fixed. Dumping the full holding at h2 spends all of it
-                # absorbing our own lot, so the h16 sale then lands on a book we already
-                # flattened: melon d20 banked +$1,546 and d21 sold $3,824 less.
-                #
-                # `release[prod]` is already the right size for this -- `:4253` fills it to
-                # `room_needed`, the overflow above `SHED_TARGET` only, taking the LARGEST holding
-                # first. In the jammed shed that is wheat (59 of 100 units, and at base 25 the
-                # cheapest thing in there), so the metering and the product choice both fall out
-                # of the existing sort. Milk and wool keep their h16 timing, which is where their
-                # price actually matters.
-                n = min(n, int(release[prod])) if shed_is_pressed else 0
+            # **THE ROW RELEASES THE SELL, NOT THE CLOCK.** Alex, 2026-08-26: *"sometimes the
+            # board is the truth sometimes the schedule"*. Which product, how much and **when** is
+            # the schedule's side of that line.
+            #
+            # `LATE_SELL_BIAS` / `LATE_SELL_FROM_HOUR = 16` held every offer to h16 from a module
+            # constant, so the hour on every row order was dead data. Across the three clone arms
+            # every one of 28 days carries sell orders and they cover all 24 hours; for
+            # `clone_open`, **260 of 591 sell orders fall before h16** -- 44% of the teacher's
+            # timing, unreachable.
+            #
+            # Measured d12 of `clone_open`, seed 123641874, handover d12. The dawn shed is HIS
+            # shed exactly, because d0-d11 is his tape replayed verbatim:
+            #
+            #     hour   our shed FERT   his shed FERT   row asks
+            #        0        15              15
+            #        1        15              15         SELL FERTILIZER 8
+            #        2        15               6         SELL FERTILIZER 8, SELL FERTILIZER 1
+            #        3        14               0         SELL FERTILIZER 3
+            #       16        20               0         (our first offer of the day)
+            #
+            # He clears it from stock already sitting there. Nothing had to be fetched, carried or
+            # dropped -- the day simply declined to sell. We banked $941 against his $4,178.
+            #
+            # **The measurement that defended h16 is a DIFFERENT arm and still stands.** It read
+            # "letting the whole day's quota through measured -$7,617 on melon", and that arm
+            # offered the entire day in one turn at h2: a SELL adds to `market["inventory"]`,
+            # price falls monotonically in it (`reference/kaggriculture.py:728`), and the only
+            # thing lifting the book is a small fixed drain, so a dump at h2 spends the whole
+            # day's drain absorbing our own lot. The row is not a dump. d12 meters 8, 9, 3 and 1
+            # over four hours and then posts nothing until h18 -- it is the metering that comment
+            # asks for, with the teacher's own sizes and times instead of ours.
+            #
+            # `_released` is CUMULATIVE and not decremented per turn, because re-offering the
+            # standing quota every turn is deliberate and two attempts to stop it lost money (see
+            # the note below). The row raises a ceiling through the day; the offer sits under it.
+            # **SELL entries only, and that restriction is the "target sheet, not a tape" rule.**
+            # `row["orders"]` is the recording's whole action stream; `_sell_by_hour` takes the
+            # product, the hour and the quantity from its SELL rows and nothing else -- no unit, no
+            # position, no HIRE, land or seed action can reach the agent through it.
+            #
+            # The first version of this read `row["orders"]` while `TAPE_ONLY` still stripped it, so
+            # `_released` was `None` on every turn of every day and the gate never fired once. The
+            # sells that moved earlier moved because the h16 hold was deleted, not because of this.
+            # `orders` now travels with the row and the restriction lives here, where it is testable.
+            _released = None
+            _by_hour = _sell_by_hour(row, day, state)
+            if _by_hour is not None:
+                _released = sum(q for h, q in _by_hour.get(prod, ()) if h <= hour)
+            if _released is not None and not last_day_liquidating and not unfunded:
+                # A pressed shed still releases its OVERFLOW on top, whatever the row says --
+                # `_drop_inventories_to_shed` discards above `shedCapacity` at dawn (`:878`), so
+                # holding to the row would destroy the stock rather than time it. `release[prod]`
+                # is already sized to `room_needed` at `:4253`, largest holding first.
+                _floor = int(release[prod]) if shed_is_pressed else 0
+                n = min(n, max(_released, _floor))
             # **Do not sell into a collapsed book.** `market_price` falls monotonically in inventory
             # (`kaggriculture.py:177`) and a SELL walks n units down that curve one at a time, so the
             # whole stack clears near what the LAST unit fetches. Measured over one season as the herd
@@ -5861,6 +5917,62 @@ def make_agent(schedule, me=0, router=True, start_day=0):
                 o[2], _done[key] = take, _done[key] + take
             _kept.append(o)
         orders = _kept
+
+        # **CARE IS A ROW NUMBER, NOT A ROUTER DECISION.** Alex, 2026-08-26: *"care 19 makes no
+        # sense - should not be given to the router"*.
+        #
+        # `animal_ops` offers at most one CARE per pen per day (`if not cell["cared_today"] and
+        # fed`), and there are 15 pens, so 15 is the ceiling the board allows. We emitted **19** on
+        # d12 against a row of 15: `underfoot()` cares any pen a hand crosses and cannot see that
+        # another unit already cared it this turn, because `cared_today` is only set when the
+        # environment processes the turn. Four turns spent on nothing.
+        #
+        # **PLANT IS A ROW NUMBER TOO.** Alex, 2026-08-26: *"if the schedule says don't plant
+        # or place that is intent ... so should not happen"*.
+        #
+        # `row["plants"]` is a list of crop names and is exactly what a PLANT op emits, so the two
+        # are the same quantity and the row caps it. d12 of `clone_open` asks `['WHEAT'] * 3` and
+        # the day planted FOUR. Capping `_replant` at `_refresh_pins` was not enough: `_live_ops`
+        # re-derives work at every stop, so an empty tile with seed in hand plants whether or not a
+        # pin asked for it, exactly the way a BUY leaked from five call sites before the cap moved
+        # to this exit.
+        #
+        # NOT capped here: PLACE. `row["places"]` holds ANIMAL names -- `d0 ['SHEEP'] * 4` -- and
+        # `reference/kaggriculture.py:377` only takes that branch for an animal on a matching pen.
+        # Our `PLACE-FERTILIZER-1` ops fall through to the shed-drop path at `:395`, which is a
+        # DROP of a named quantity and is work the sell row needs. Two different quantities share
+        # the label, so `places 3/0` is not a mismatch and a cap here would block deliveries.
+        _cap_plants = collections.Counter(_row.get("plants") or [])
+        if state.get("_plantcap_day") != day:
+            state["_plantcap_day"] = day
+            state["_planted_today"] = collections.Counter()
+        _pdone = state["_planted_today"]
+        for _i, _op in enumerate(acts):
+            if _op and _op[0] == "PLANT" and len(_op) > 1:
+                _crop = _op[1]
+                if _pdone[_crop] >= _cap_plants.get(_crop, 0):
+                    acts[_i] = ["PASS"]
+                else:
+                    _pdone[_crop] += 1
+
+        # Counted across the day, like the buy cap above, and reset when the day changes.
+        # **From the BOARD, not the row.** Alex, 2026-08-26: *"the care passed to router
+        # should be animals on board needing care and feed"*. The row says 15 because HIS
+        # board carried 15 pens; ours is the one being routed, so a herd of fourteen must cap
+        # at fourteen. The row stays the cross-check, never the source.
+        _row_cares = sum(1 for _r in tiles for _c in _r
+                         if isinstance(_c, dict) and _c.get("animal"))
+        if _row_cares > 0:
+            if state.get("_carecap_day") != day:
+                state["_carecap_day"], state["_cared_today"] = day, 0
+            _room = _row_cares - state["_cared_today"]
+            for _i, _op in enumerate(acts):
+                if _op and _op[0] == "CARE":
+                    if _room <= 0:
+                        acts[_i] = ["PASS"]
+                    else:
+                        _room -= 1
+                        state["_cared_today"] += 1
 
         return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
                 "market": _sells_first(

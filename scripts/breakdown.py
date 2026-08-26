@@ -231,7 +231,10 @@ RETIRED_TAPES = {
 #: exists precisely because "which plan do we play" was a string repeated across 27 files until it
 #: looked like a fact; this was the 28th, and it is the one the grid is read off.
 DEFAULT_TAPE = _PLAN.SHIPPED_PLAN.parent.name
-TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
+#: Re-exported from `kagg.plan`, which owns it. Strip a row with `_PLAN.thin(row)` rather than
+#: open-coding the comprehension -- that is what let the derived `sell_by_hour` key go missing
+#: from three of four call sites while the fourth was being measured.
+TAPE_ONLY = _PLAN.TAPE_ONLY
 CROPS = ("WHEAT", "STRAWBERRY", "MELON", "TOMATO", "CARROT")
 ANIMALS = ("COW", "SHEEP", "CHICKEN", "GOOSE", "PIG")
 PRODUCTS = ("WHEAT", "CARROT", "TOMATO", "STRAWBERRY", "MELON", "EGG", "MILK", "WOOL", "FERTILIZER")
@@ -657,7 +660,7 @@ def main():
 
     replay, schedule, team = TAPES[args.tape]
     sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
-    thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
+    thin = {d: _PLAN.thin(r) for d, r in sched.items()}
     opp = lambda: tape_policy(replay, team, 1)
 
     # **Play only as far as we print.** `--days 7` used to simulate two full 30-day seasons to

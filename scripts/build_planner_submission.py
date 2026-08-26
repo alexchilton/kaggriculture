@@ -185,7 +185,8 @@ PACKAGES = ("kagg", "kagg.economics", "kagg.search")
 #: Shipping 90976060 would put a planner tuned on one plan onto another -- the same
 #: indirection between the search space and the artifact this file already records twice.
 PLAN = _PLAN.SHIPPED_PLAN
-TAPE_ONLY = ("plant_tiles", "build_tiles", "land_turns", "orders")
+#: Re-exported from `kagg.plan`, which owns it. Use `_PLAN.thin(row)`, never the comprehension.
+TAPE_ONLY = _PLAN.TAPE_ONLY
 
 #: The raw replay the plan was distilled from. `--replay-days N` embeds its author's ACTUAL per-turn
 #: actions for days 0..N-1 and hands over to the planner on day N -- the shape `scripts/handover.py`
@@ -713,8 +714,7 @@ def build(replay_days=0, target=TARGET):
         sources[name] = text
 
     def _thin(path):
-        return {d: {k: v for k, v in row.items() if k not in TAPE_ONLY}
-                for d, row in json.loads(path.read_text()).items()}
+        return {d: _PLAN.thin(row) for d, row in json.loads(path.read_text()).items()}
 
     thin = _thin(PLAN)
     # **One schedule per arm, from the SAME recording as that arm's tape.** The planner reads
@@ -1142,7 +1142,7 @@ def reproduce(days=30, replay_days=0, verbose=True):
     # check below compares two different agents and can never pass -- which is exactly what a
     # hard-coded `TAPES["seb"]` did the moment `PLAN` moved to 90976060.
     sched = {int(k): v for k, v in _json.loads(PLAN.read_text()).items()}
-    thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
+    thin = {d: _PLAN.thin(r) for d, r in sched.items()}
     # **The repo side must be given the SAME opening as the bundle**, or a replay build compares two
     # deliberately different agents and the gate can never pass -- which is not a finding, it is the
     # harness measuring the change it was told to make. This mirrors the epilogue exactly: the live
@@ -1154,7 +1154,7 @@ def reproduce(days=30, replay_days=0, verbose=True):
     # **The repo side is built per ARM too, schedule and stop day together.** Comparing a bundle that
     # picks one of three schedules against a repo agent pinned to `PLAN` measures the difference the
     # harness itself introduced. Built lazily at the latch, exactly as the bundle does.
-    _repo_plans = ({a: {d: {k: v for k, v in r.items() if k not in TAPE_ONLY}
+    _repo_plans = ({a: {d: _PLAN.thin(r)
                         for d, r in _json.loads(sc.read_text()).items()}
                     for a, (_p, _t, _s, sc) in REPLAY_ARMS.items()} if replay_days else {})
     _repo_stop = ({a: min(s, replay_days)
