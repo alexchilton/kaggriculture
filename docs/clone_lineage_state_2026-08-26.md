@@ -981,3 +981,59 @@ It needs free tiles and hand-turns in d21-d26, which is the idle-hand census tha
 
     122W / 24L across the 146, mean margin +13,491.
     This is a SELECTED download set. It is NOT a win rate and must never be quoted as one.
+
+## Crop Dusta cannot be cloned: 145 distinct seasons out of 146
+
+    CARROT count only      51 distinct across 146 games
+    all 5 crop counts     145 distinct across 146 games
+    crops + herd          145 distinct across 146 games
+
+The single repeat is one episode present twice on disk. An md5 of the full 720-turn action sequence
+for his seat agrees exactly: **145 distinct full-season scripts.** Where they separate:
+
+    identical up to      distinct scripts
+      turn  24  (d1)                    3
+      turn  88  (d3h16)                20
+      turn 168  (d7)                  118
+      turn 242  (d10)                 143
+      turn 719  (d29)                 145
+
+He shares an OPENING -- three variants through d1, twenty through d3h16 -- and then plays a
+different season every time. **He is an adaptive agent, not an open-loop tape player.** The
+clone-lineage architecture cannot copy him: there is no tape library to replay. What is copyable is
+the RULE, carrots sized to the carrot sinks with the programme starting d21-d26, and that is a
+policy, not a recording.
+
+This is the opposite of the clone family, where 72 tapes are byte-identical to turn 88 and hold only
+four distinct strategies between them.
+
+## There is no slack for a carrot programme in the shipped tape
+
+`data/logs/idle_hands_late.log`, tape 98884730 on its own draw, seed 123641874. Free tiles are owned
+tiles holding nothing; a weed is not free. Idle hand-turns are slots emitting PASS or nothing.
+
+     day   free tiles at dawn   weeds   hand-slots   PASS   IDLE %
+      21                    6       1          296      9       3%
+      22                    3       5          274      6       2%
+      23                    4       2          252     12       5%
+      24                    3       4          296      7       2%
+      25                    3       0          252      6       2%
+      26                    3       0          340     10       3%
+      27                    1       0          296     17       6%
+      28                    0       0          274     16       6%
+      29                   18       0          198     15       8%
+
+    d21-d29: 98 idle hand-turns of 2,478 (4%)
+
+**Three to six free tiles and four percent idle hands.** A carrot cycle needs PLANT + WATER +
+HARVEST on a free tile. Crop Dusta plants up to 82 from d21; this tape has room for a handful and
+its crew is saturated.
+
+So the carrot programme **cannot be inserted into a tape**. Adding it means displacing existing
+work, which is a planner decision. This is the same wall as `add_land`: an insert with no seed, no
+routed hand and no free tile measures nothing.
+
+The finding still stands and is still the largest unexploited one: CARROT never sells below base
+(185-296% across eight draws), its book is the deepest in the game at `T = 450`, the d21 decision
+sees seven of the eight shop draws, and we plant 20 on every draw regardless. It is a planner task,
+not a tape task.
