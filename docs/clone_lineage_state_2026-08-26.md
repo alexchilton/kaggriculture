@@ -1241,3 +1241,49 @@ Current agent's carrot ladder, steeper than the pooled one:
 
 At one sink the new version plants 11.2 where the old planted 4.4. It got more aggressive on carrots
 and tripled its margin.
+
+## CORRECTION: the herd is not committed by the information, it is committed by the SCHEDULE
+
+Earlier in this file I concluded that the herd "must be committed on one shop draw" and that no latch
+could do better, because from either base the last turn at which a cow tape and a sheep tape are both
+reachable is d5h23. **That is true of the CLONE, and it is not a property of the game.**
+
+Crop Dusta, 61 current-version games (`data/logs/dusta_herd_timing.log`):
+
+     day   SHEEP    COW   GOOSE   total   cum %
+       0     122    183       0     305     33%
+       6     101    115      28     244     61%
+       8      95      7       4     106     73%
+       9      44     21       2      67     80%
+      10      58     17       5      80     89%
+      11      13     15       1      29     92%
+      12       4     20       9      33     96%
+      15      15      8       0      23     99%
+      16       4      1       1       6    100%
+      18-19    4      0       0       4    100%
+
+Our clone buys on d0, d4, d6, d7, d8 and d10 and is 100% done by d10. He is 33% done at d0, 89% by
+d10, and still buying at d19. Last-purchase day per game runs 6, 8, 9, 10, 11, 12, 13, 15, 16, 19.
+
+**And the herd is bought AFTER the demand is visible:**
+
+    SHEEP against YARN_STORE          COW against the first MILK sink
+      bought before it appeared  23%    before  47%
+      bought after  it appeared  61%    after   52%
+      it never appeared          16%    never    1%
+
+Sixty-one percent of his sheep are bought after he can see the yarn store. That is what makes the
++0.70 correlation causal rather than coincidental.
+
+    yarn arrives    games   mean SHEEP   mean COW   mean margin
+    d0-d6              19         13.5        5.1      +28,595
+    d7-d12              5         12.6        4.6       +5,149
+    d13+               14          5.0        6.6      +19,912
+    never              23          3.2        8.1      +20,973
+
+**The constraint was never that the information arrives late. It is that our tape has spent the
+money by d10.** He solves it by DEFERRING the purchase, not by predicting the draw.
+
+For e2500: 89% of his herd lands by d10, inside e2500's live window (d0-d11), so most of the rule is
+expressible there. The d15-d19 tail falls in the frozen d12-d23 block and is not reachable without
+unfreezing those days.
