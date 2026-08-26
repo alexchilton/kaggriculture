@@ -834,3 +834,97 @@ gain of **exactly $0** over always playing open-B.
 
 The headroom itself is $265 across 80 draws, so this pair is not where the value is. The d10
 strawberry branch is a different question and has not been tested.
+
+## The four splits, built and measured
+
+Alex: *"just build the 4 splits ... but just split the fucking 4th one on that criteria"*.
+`/tmp/four_splits.py`, results in `data/logs/four_splits.csv`.
+
+    latch  turn           test                          arm         agrees to
+      1     88  d3h16     YARN_STORE unlocked by d3     98859585    turn 88
+      2    153  d6h9      YARN_STORE unlocked by d6     98889289    turn 153
+      3    242  d10h2     opponent money > 650          98852727    turn 242
+      -    default                                      98884730    -
+
+Every arm is UjjwalPardeshi, so the arms are prefix-compatible by construction rather than by luck.
+
+### The d10 split is real, and it keys on the OPPONENT's bank
+
+First: it is a decision, not re-tried plants. Counted on the BOARD, not on the action stream --
+`PLANT` ops on d10 and the strawberry tiles standing before and after:
+
+    tape       PLANT ops d10   straw TILES d10h0   straw TILES d11h0   net new
+    98845865              11                  21                  32       +11
+    98852727              11                  21                  32       +11
+    98907591              11                  21                  32       +11
+    98834418               8                  21                  27        +6
+    ... all six straw-8 tapes identical ...
+
+**I claimed twice that this was re-tried plants. It is not.** 32 strawberry tiles against 27.
+
+Second: no shop signal separates the two groups -- `98907591` (plants 11) and `98834418` (plants 8)
+have identical STRAWBERRY 2 / MILK 2 draws at d9. Board state at d10h0 is identical too: 6
+strawberry seeds, 1 free tile, 0 weeds, 50 tiles, in all nine games. The only field that varies is
+money, and it does not order the decision.
+
+The opponent's bank does, perfectly and with no overlap:
+
+    tape       straw  OPPONENT           opp$ at d10   our$ at d10
+    98907591      11  fufufukakaka             2,192         1,495
+    98845865      11  GPTatoes                 1,270         1,701
+    98852727      11  Jiachen Li                 795           795
+    98914508       8  GPTatoes                   507         1,098
+    98836697       8  shinamonmon                507         1,098
+    98912171       8  shinamonmon                507         1,098
+    98834418       8  Ömer Faruk Yüce            507         1,098
+    98898462       8  Ömer Faruk Yüce            502         1,093
+    98884730       8  GPTatoes                   487         1,078
+
+`GPTatoes` appears in BOTH groups, so it is not opponent identity -- it is their cash.
+Threshold 650 is the midpoint of the 507-to-795 gap. **Three points on the winning side.**
+
+### Result, scored on WINS because the ladder is Elo
+
+    110 draws
+      policy                                wins    rate   mean margin
+      FOUR SPLITS (all Ujjwal)            49/110   44.5%          -121
+      shipped (3 players, 1 latch)        41/110   37.3%        -1,640
+      always 98884730 (straw-8)           37/110   33.6%        -6,135
+      always 98852727 (straw-11)          39/110   35.5%        -4,123
+
+      by draw class          n     FOUR    shipped
+      yarn3                 20     6/20      4/20
+      yarn6                 10     4/10      1/10
+      open                  80    39/80     36/80
+
+      differs from shipped on 38/110 draws
+        turns a LOSS into a WIN:  8
+        turns a WIN into a LOSS:  0
+
+    draw        cls              shipped                  four
+    98921350.j  yarn6   102,362/112,754      127,775/121,197   GAIN
+    98875614.j  yarn6    79,024/ 99,951       91,416/ 90,657   GAIN
+    98951020.j  yarn6    72,525/ 79,048       71,926/ 71,513   GAIN
+    98829909.j  yarn3   115,520/118,523      117,110/116,353   GAIN
+    98859585.j  yarn3    77,646/ 79,981       78,620/ 78,585   GAIN
+    98846100.j  open    134,412/135,627      138,519/132,092   GAIN
+    98882460.j  open     69,336/ 72,309       69,325/ 69,025   GAIN
+    98962237.j  open     66,933/ 67,875       67,586/ 66,215   GAIN
+
+On `98882460` our own bank FALLS $11 and the game flips from loss to win, because the opponent
+drops $3,284. Scoring on money hides that entirely.
+
+**IN-SAMPLE. Not yet held out.** The 650 threshold was read off nine of Ujjwal's games that are in
+this corpus, and the arm tapes' own draws are among the 110. This is the shape of the recorded
++40% in-sample against +12.8% held-out precedent. The absolute win rate is also not a ladder
+prediction: every opponent here is a recorded leaderboard seat.
+
+### Money is the wrong score and I used it all evening
+
+Alex, twice: *"dollar value doesnt matter"*, and CLAUDE.md already says so -- *"Select on win rate,
+not money. A $43k win and a $4k win score identically."*
+
+The measurement that shows why: switching between the two open tapes moves OUR bank by a median
+$1,694 and the OPPONENT's by a median $1,764, and **on 43 of 80 draws it moves them more than us**.
+Ten of the 24 result-flips between those two tapes are driven mainly by the opponent's bank moving,
+not ours. A bank-only comparison cannot see half the effect.
