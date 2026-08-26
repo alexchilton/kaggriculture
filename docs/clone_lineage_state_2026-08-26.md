@@ -509,3 +509,112 @@ capturing the only extra information that exists at the decision point.
 The wool>=2 signal that predicts a sheep win arrives on d9 or later. It is unreachable by any tape
 latch. Acting on it would require the planner to buy the animals rather than the tape -- which is
 the "optimise the artifact, not a proxy" question, not a tape question.
+
+## What each product actually FETCHES, and why the herd finding generalises
+
+`data/logs/what_each_crop_realises.log`, tape 98884730 replayed on 8 open-arm draws, seed 123641874.
+Units and cash are read by differencing the shed and the bank across the market phase, never by
+summing offers.
+
+    product      $/unit across 8 draws     % of base
+    CARROT             $52 - $103         185% - 296%
+    WHEAT              $28 -  $33         111% - 132%
+    MILK               $26 - $165          16% - 103%
+    STRAWBERRY         $32 - $144          27% - 115%
+    MELON              $95 - $238          38% -  95%
+    WOOL                $1 - $113           1% -  56%
+
+**CARROT never sells below base on any draw, and is insensitive to its own sink count** -- $84, $92,
+$77, $65, $103 per unit at 0, 1, 2, 3 and 4 sinks.
+`T = 450` is the deepest book in the game, and the price sits ABOVE base everywhere, which means the
+town drains more carrot than both players together supply.
+The tape makes 49 units all season.
+
+STRAWBERRY is the opposite and is the largest single exposure at 175 units:
+
+     sinks   n   mean $/unit   % of $120 base
+         2   1            32              27%
+         3   2            65              55%
+         4   1            45              38%
+         5   3           123             102%
+         6   1           138             115%
+
+Per plant -- 38 strawberry plants produce 175 units (4.6 each), 20 carrot plants produce 49 (2.5):
+
+    98845865  STRA 2 sinks    strawberry $147/plant    carrot $191/plant
+    98841506  STRA 6 sinks    strawberry $635/plant    carrot $258/plant
+
+Seed cost is $100 against $20.
+So substituting carrot for strawberry is right on strawberry-poor draws and badly wrong on
+strawberry-rich ones -- and STRAWBERRY is planted d2 to d11, before the sink count is known.
+
+### Why the swap lost, measured rather than argued
+
+`data/logs/why_the_swap_loses.log`. Not cadence, and only mildly production.
+
+    draw        arm         bank    MILK sold  $/unit   WOOL sold  $/unit
+    98818709 w0 baseline  109,940        158     165          96       5
+    98818709 w0 swap       46,689          0       -         192      12
+    98832334 w1 baseline  134,165        157     154          92      27
+    98832334 w1 swap       78,581          0       -         192      18
+    98850459 w2 baseline   69,024        157      46          92     113
+    98850459 w2 swap       88,725          0       -         192     132
+    98950829 w2 baseline   73,541        157      26          92     113
+    98950829 w2 swap       84,940          0       -         192      90
+
+    produce harvested off the tiles:  baseline 249-254 units, swap 192
+
+Sheep produce 23% fewer units.
+The price per unit moves by a factor of 33.
+The same 192 units of wool fetch $2,356 on a draw with no yarn store and $25,326 on one with two.
+
+**Cadence was NOT the mechanism, and my earlier claim that it was is withdrawn.**
+`HARVEST` takes every accumulated unit and zeroes the tile (`reference/kaggriculture.py:469-471`)
+and `max_held` is 6 for both species, so a stop can be 18 days late on sheep before a unit is lost.
+Every animal is placed in a d4-d10 window, so they all shift phase together.
+
+**The mirror case is the important one.** On 98950829 the BASELINE sold 157 units of milk at $26 --
+that draw drew zero milk sinks. The cow tape does to milk exactly what the sheep tape does to wool.
+Correcting the herd to the draw is worth $10k to $60k per season, against the $1,335 that choosing
+between 53 tapes buys.
+
+### The corrected species-swap number
+
+The first run rewrote only the 24 ops naming COW and left 131 naming MILK -- 11 `PLACE MILK` shed
+drops and 120 `SELL MILK` orders addressing a product the farm no longer produced.
+`PLACE` takes `item = action[1]` and `SELL` aborts when the shed holds none of `item`, so the wool
+was harvested into unit inventories and never reached the shed.
+**The -40,415 reported for that run is withdrawn: it measured a severed pipeline.**
+
+    arm                        ALL 27      wool >= 2 (n=3)   head-to-head
+    broken pipeline           -40,415  0/27    -9,661  0/3        0/81
+    product tokens rewritten  -25,573  2/27    +6,447  2/3        3/81
+
+Fixing the tokens was worth +$14,842. **The arm still loses and is REVERTED, no flag.**
+
+The wool signal survived a change of mechanism, which is the only reason it is still open:
+
+                            wool 0-1     wool >= 2
+    swap the whole TAPE      -12,874       +9,399   (3/4)
+    swap the SPECIES         -30,470       +6,447   (2/3)
+
+Two independent interventions, same sign flip at the same threshold, still n = 3-4.
+
+### The timing conflict, which is the actual blocker
+
+`SHOP_ADAPT_HERD = True` and `SHOP_ADAPT_FROM_DAY = 3` are LIVE in the shipped artifact, with
+`HERD_FLOOR_COW = 4` and `HERD_FLOOR_SHEEP = 1`. The float exists.
+Its own note already records the trap:
+
+> A first version used day 11 ... That reasoning was right about the evidence and wrong about the
+> decision, because it ignored what is left to decide: `split` is anchored on `state["bought"]`,
+> which never decreases. The schedule's rows all sit at day 10 or earlier, so by day 11 there was
+> almost nothing left to steer.
+
+The tape buys its cows on d4, d6, d6, d7, d8 and d10 -- **all 11 committed before the d11/d12
+handover.** Shop-weighted demand visible: 20% by d3, 39% by d6, 55% by d9, 68% by d12.
+The information matures one day after the last decision it could have changed.
+
+NOT YET VERIFIED: whether the tape's `BUY_ANIMAL` rows actually pass through `_herd_split`'s
+relabelling during the replayed days. The loop at `main_restB.py:12097` looks like they do. If they
+do not, the float is inert for the entire herd.
