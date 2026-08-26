@@ -36,11 +36,15 @@ Run: .venv/bin/python scripts/build_planner_submission.py
 """
 
 import json
-import kagg.plan as _PLAN
 import pathlib
 import sys
 
-sys.path.insert(0, ".")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+# **After the path insert, not before.** `python scripts/build_planner_submission.py` puts
+# `scripts/` on `sys.path[0]`, never the repo root, so a `kagg` import above this line raises
+# ModuleNotFoundError however correct the working directory is.
+import kagg.plan as _PLAN            # noqa: E402
 
 #: Dependency order, dotted name first. `schedule_agent` imports the three search modules; and
 #: `routines` imports `kagg.economics.production` at module scope, inside `_crops_fertilizer_helps`,
@@ -57,69 +61,12 @@ MODULES = (
     # offline visit orders `cover._apply_precomputed` seats. Without them the bundle imports fine and
     # then plays every day on the greedy, which is a silent 8-day regression rather than a crash.
     ("kagg.search.solved_days", "kagg/search/solved_days.py"),
-    # **The 100-tile routes, for the four-quadrant branch only.** Data, like `solved_days`, and
-    # loaded lazily by `q4_branch.install_the_fourth_quadrant` -- but it must be in the bundle or
-    # the branch raises `ModuleNotFoundError` on the 15% of games that arm it, which is a crash in
-    # a minority of games rather than an obvious one.
-    ("kagg.search.solved_days_q4", "kagg/search/solved_days_q4.py"),
-    # **The two STRAWBERRY solves, and the import check cannot see that they are needed.**
-    # `melon_branch.install` and `q4_branch.install` reach them through
-    # `importlib.import_module(self.SOLVE_FOR_STRAWBERRY)` -- a string, invisible to the AST walk
-    # in `_check_imports` -- and both catch `ImportError` and carry on with the MELON routes. So a
-    # bundle without these builds clean, passes every check, and plays the strawberry season on
-    # routes solved for a board with different crops on different tiles from d5, where
-    # `cover._apply_precomputed` keys a stop on `(tile, ops)` and the stops simply drop.
-    #
-    # That is the silent-regression shape this file's own docstring is about, one level deeper: not
-    # "the wrong agent shipped" but "the right agent shipped with a quarter of its plan missing".
-    #
-    # **Both are OUT of the bundle as of 2026-08-16, and the reason is measured, not cautious.**
-    # All four boards were re-solved that evening at 60s/day in day order, giving the strawberry
-    # boards their own routes for the first time (1,234 and 1,528 stops). Rematched over 97 real
-    # ladder games -- our live agent in our own seat, each opponent's RECORDED actions in theirs, on
-    # the game's own `info.seed` so the shop draw is fixed -- the fresh solve was WORSE:
-    #
-    #     current code + committed routes    66/97 wins
-    #     current code + the fresh solve     63/97 wins
-    #
-    # Same code, only the routes differing. A third measurement agreeing with two earlier ones (a
-    # -$4,600 season on seed 11, and a confounded 63 vs 71 before the boards were isolated). The
-    # files are kept out of the tree rather than shipped and hoped for; `melon_branch.install` and
-    # `q4_branch.install` already catch `ImportError` and fall through to the melon routes, which is
-    # what these 66/97 were measured with.
-    #
-    # This is NOT a verdict that a strawberry solve is worthless -- the arm demonstrably plays its
-    # late season on routes that cannot match, and that is a real defect. It is a verdict that THIS
-    # solve, at THIS budget, loses. Re-solving needs its own measurement before it ships.
-    #
-    # **BOTH ARE BACK IN as of 2026-08-17, on a fresh solve at 300s/day with two defects fixed that
-    # the 2026-08-16 solve had.** `OPENING_GEOMETRY` had six squares of the opening carrying the
-    # wrong crop, and `dump_day_jobs.py` was handing the solver the DAWN PREDICTION of each unit's
-    # start tile rather than the tile it woke on -- 22 of 205 unit-days across d12-d29 wrong, and the
-    # whole spawn ring rotated by one on d19. So the earlier negative was measured on routes solved
-    # for a board we no longer play, from start tiles that were wrong.
-    #
-    # What IS measured tonight, on the same 97 ladder games with the seeds fixed, is the melon half:
-    #
-    #     HEAD                                          66/97
-    #     + geometry, + start tiles, + melon q3 resolve  61/97
-    #
-    # Net -5, and NOT read as a regression: 15 of the 97 games changed result, 5 our way and 10
-    # against, on margins as thin as $92, $240, $313 and $583. Fifteen flips splitting 10/5 is 1.3
-    # standard deviations from even. It is churn, not signal.
-    #
-    # **The two strawberry tables themselves have no measurement.** They are shipped on Alex's
-    # explicit call, to get the night's work onto the ladder rather than hold it for a rematch. If
-    # the rating drops, these two lines are the first thing to pull -- `melon_branch.install` and
-    # `q4_branch.install` both catch `ImportError`, so removing them restores the melon fallback
-    # that the 66/97 was measured with.
-    ("kagg.search.solved_days_straw", "kagg/search/solved_days_straw.py"),
-    ("kagg.search.solved_days_straw_q4", "kagg/search/solved_days_straw_q4.py"),
+    # **The kawashigi branch modules and their solves are DELETED, 2026-08-26.** This block held
+    # `solved_days_q4`, `solved_days_straw` and `solved_days_straw_q4` -- 100-tile and strawberry
+    # route tables reached only by `melon_branch.install` / `q4_branch.install`, which replaced the
+    # arm's own schedule with an embedded kawashigi row set at runtime. With the branches gone
+    # nothing can load them and every day uses `solved_days` above.
     ("kagg.search.cover", "kagg/search/cover.py"),
-    # **Before both branch modules, which import `Branch` from it at module scope.** A leaf: it
-    # imports nothing from `kagg`. Its absence is what made this builder refuse to run at all --
-    # `q4_branch.py: imports ['kagg.search.branch'], which the bundle does not carry`.
-    ("kagg.search.branch", "kagg/search/branch.py"),
     # **`corner_the_book` IS bundled again as of 2026-08-25.** It was excluded earlier the same day
     # because the late-carrot swap had been cut from the agent -- `_sow_carrot_instead` capped the
     # PLANT rewrite and left the BUY_SEED rewrite uncapped, giving 546 seeds at the bell against 45
@@ -132,10 +79,8 @@ MODULES = (
     ("kagg.search.corner_the_book", "kagg/search/corner_the_book.py"),
     # **Before `schedule_agent`, which does `from . import melon_branch as _MB` at module scope.**
     # This is the d3 melon/strawberry decision; without it the bundle cannot import.
-    ("kagg.search.melon_branch", "kagg/search/melon_branch.py"),
     # **Before `schedule_agent`, which imports it at module scope.** Its rows are embedded in the
     # module itself: a submission has no `data/` directory to read them from.
-    ("kagg.search.q4_branch", "kagg/search/q4_branch.py"),
     # **After `cover`, and it is not optional.** `cover.plan` does `from . import crew as CREW` on
     # every call to pick the assignment routine, so a bundle without it imports fine, passes the
     # entry-point check, and then dies with `ImportError: cannot import name 'crew'` on the first

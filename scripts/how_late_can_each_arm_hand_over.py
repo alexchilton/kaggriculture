@@ -184,7 +184,7 @@ def main():
         """One full season on an injected shop draw. `play0` drives our seat; the tape drives theirs."""
         env = make("kaggriculture", configuration=dict(economy, seed=args.seed), debug=False)
         env.reset(2)
-        opp = B.tape_policy(path, team, 0)
+        opp = B.tape_policy(path, team, 1)   # 1 - seat: his REAL opponent
         for t in range(719):
             env.state[0].observation.town["unlocked_shops"] = list(shops(t))
             env.state[1].observation.town["unlocked_shops"] = list(shops(t))
