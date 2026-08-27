@@ -1375,3 +1375,86 @@ passes with zero slack. Worst turn time 3 ms.
 Arm usage across those 110: `open` 72 (35 wins), `yarn3` 20 (6), `yarn6` 10 (4), `rich` 8 (4). The
 opponent-money latch fires on only 8 of 80 open-class draws, so the part of the design rested on
 nine games and a hand-picked threshold is also the part contributing least.
+
+## Milan Leonard (rank 2, 3031.5): not a clone, not a tape, and he reads the OPPONENT on day one
+
+41 of his games, fetched 2026-08-27 into `data/seed_scripts/downloads_2026-08-27`.
+Found via `ListEpisodes({"submissionId": 55801896})` rather than by scraping.
+
+    identical to turn   distinct scripts
+        24  (d1h0)                    1     all 41 share the opening day
+        88  (d3h16)                   8
+       153  (d6h9)                   28
+       242  (d10h2)                  39
+       719  (d29h23)                 41     every season unique
+
+**41 distinct full seasons of 41 -- adaptive, like Crop Dusta, unlike the clone family.**
+And his crop signature is nowhere near ours: WHEAT 182-233 against the clone family's fixed 128-134,
+MELON pinned at 12, STRAWBERRY 36-38, CARROT 6-28, herd 4-9 sheep / 5-10 cow. Zero of his 41
+signatures match any of the four known clone signatures.
+
+### The latches, found from pairwise divergence rather than guessed cuts
+
+820 pairs, first turn at which each pair differs:
+
+       turn  = day/hour   pairs   share
+         30        d1h6     544   66.3%
+         97        d4h1      86   10.5%
+         31        d1h7      36    4.4%
+         52        d2h4      20    2.4%
+         90       d3h18      18    2.2%
+         50        d2h2      17    2.1%
+        120        d5h0      16    2.0%
+         98        d4h2      12    1.5%
+
+Those eight turns carry **91%** of all pair divergences.
+
+**d1h6 is before any shop exists** -- the first unlock is d3 -- so his main branch cannot be reading
+the town at all.
+
+### What the d1h6 branch reads: the opponent's bank
+
+Grouping his 41 games by the action taken at turn 30:
+
+    n=18   opp_money = 0            hands [PLACE FERT, WEST, PASS,  SOUTH]   BUY_PRODUCT WHEAT 3
+    n=13   opp_money = 2, 18, 61    hands [PLACE FERT, WEST, WEST,  SOUTH]   BUY_PRODUCT WHEAT 3
+    n=10   opp_money = 72, 109      hands [PLACE FERT, WEST, WEST,  SOUTH]   BUY_PRODUCT WHEAT 2
+
+    my_money    OVERLAPS      opp_money    SEPARATES CLEANLY
+    my_weeds    OVERLAPS      opp_hands    OVERLAPS
+    my_planted  OVERLAPS      opp_planted  OVERLAPS
+    my_hands    OVERLAPS      opp_weeds    OVERLAPS
+
+His own board is identical in all 41 at that turn -- 19 planted, 4 hands, 0 weeds, farmer at (3,3).
+The only thing that varies is what the opponent has done.
+
+**TWO CAVEATS, both real:**
+
+1. **Confounded with opponent identity.** The high-money group is only `Ryo Hasegawa` and `tetsuya`.
+   With 41 games, "reads the opponent's bank" and "these two opponents play a style he answers"
+   cannot be separated.
+2. **The action deltas are tiny** -- one wheat unit, one hand moving WEST instead of PASS. That reads
+   more like a REACTIVE CONTROLLER whose first visible disagreement lands at d1h6 because that is
+   when the opponent's play has moved the observable state, than like a discrete strategy latch. The
+   66% concentration argues for a branch; the size of the difference argues for continuous reaction.
+   Not settled by this data.
+
+**What is solid:** he is not a clone, not open-loop, and he conditions on the opponent from day one.
+Every clone we hold ignores the opponent entirely, and `submission/main_four_arm.py` does not look
+at the opponent until **d10h2** -- 212 turns later.
+
+### How his games were found, for repeating it
+
+`POST https://www.kaggle.com/api/i/competitions.EpisodeService/ListEpisodes` with
+`{"submissionId": <id>}` returns that submission's episode list, agents and rewards. Intersect those
+ids with the daily dataset's own file listing before downloading, because:
+
+- `GetEpisodeReplay` and `DownloadEpisode` do not exist (404); `GetEpisode` exists but rejected every
+  body tried.
+- **The daily datasets are a SAMPLE, not the full day** -- 687 episodes for 2026-08-26. Asking for an
+  id that is not in the sample is a 404 per request, which is the flooding to avoid.
+- Of Milan's 85 episodes: 41 were in the published sample and fetched, 28 were not sampled, and 16
+  finished after today's cutover and land in tomorrow's dataset.
+
+Crop Dusta's current submission ids, from the same agent records: **55714246** and **55714252**.
+He is rank 1 at 3107.0.
