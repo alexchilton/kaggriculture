@@ -1330,3 +1330,48 @@ The per-day animal table above is **summed across all 61 games**, not per game. 
 28 birds bought on d6 across the whole set, and `d0: 122 SHEEP` is about two per game. Alex misread
 it as one game buying 28 and the header was the reason. Say "summed over N games" whenever one of
 these is quoted.
+
+## HELD OUT: the four-arm build survives, 122/138 against 97/138
+
+`data/logs/four_arm_heldout.csv`. 138 draws from `leaders_2026-08-24` and `downloads_2026-08-19` --
+corpora used for nothing in this work. Every arm tape and the 650 threshold came from
+`daily_2026-08-26`, so none of these draws had a hand in choosing anything.
+
+The BUILT artifact (`submission/main_four_arm.py`) against the shipped three-arm structure, both
+driven the same way, each draw's own recorded opponent, seed 123641874:
+
+    policy                     wins    rate    mean margin
+    FOUR ARM (built)        122/138   88.4%        +13,063
+    shipped 3-arm            97/138   70.3%         +7,976
+
+    differs on 120/138 draws
+      turns a LOSS into a WIN: 25
+      turns a WIN into a LOSS:  0
+
+    draw class      n      four   shipped
+    yarn3          16     13/16     12/16
+    yarn6          16     14/16      4/16
+    open          106    95/106    81/106
+
+**Twenty-five losses turned into wins and none the other way**, the same strictly-dominant shape as
+in-sample. The winner's curse did not bite -- which is worth saying plainly, because this project's
+recorded precedent is +40% in-sample against +12.8% held out.
+
+**`yarn6` is where the gain lives: 4/16 -> 14/16.** That arm was `nao.kwmr`'s season; it is now
+UjjwalPardeshi's own d6 branch. The single largest effect in the build is simply using one player's
+own branches instead of three strangers' seasons.
+
+**The absolute rates are NOT comparable between the two sets and neither is a ladder prediction.**
+88% here against 44.5% in-sample is a difference in which games were downloaded, not in the agent.
+Every corpus here is a selected set. What is valid is the head-to-head: same draws, same opponents,
+only the policy changes. Both sets agree on direction and both show zero regressions.
+
+### The artifact reproduces the harness exactly
+
+Driven through its own `agent()` on the original 110 draws: 49/110, mean margin -121, per-class
+6/20, 4/10, 39/80 -- identical to the composed-policy harness in every cell. Build-time prefix gate
+passes with zero slack. Worst turn time 3 ms.
+
+Arm usage across those 110: `open` 72 (35 wins), `yarn3` 20 (6), `yarn6` 10 (4), `rich` 8 (4). The
+opponent-money latch fires on only 8 of 80 open-class draws, so the part of the design rested on
+nine games and a hand-picked threshold is also the part contributing least.
