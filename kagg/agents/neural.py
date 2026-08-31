@@ -33,16 +33,34 @@ from kagg.sim.tiles import CROP_INDEX
 # every signature: the vocabulary is a global property of a trained model, like a tokenizer, and it
 # must be byte-identical across labelling, fitting and play or every bundle index means something
 # different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
-_BUNDLE_SELLS = None
+#: Legality tables, keyed by vocabulary identity -- a process can hold more than one.
+_BUNDLE_SELLS = {}
 
 
-def _bundle_sells():
-    global _BUNDLE_SELLS
-    if _BUNDLE_SELLS is None:
-        from kagg.il import market_bundles as _MB
-        from kagg.rl import jax_policy as _PP
-        _BUNDLE_SELLS = _MB.valid_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
-    return _BUNDLE_SELLS
+def _bundle_sells(vocab):
+    """The legality table for `vocab` -- **the one the head is decoded against, not a fresh load.**
+
+    This took `load_vocab()` with no path, which is the 197-entry default file, while `make_agent`
+    resolved the checkpoint's own vocabulary for decoding and printed that it was doing so. Measured
+    2026-08-28 on the kawa clone (256 entries): index 1 was `SELL FERTILIZER` to the head and
+    `HIRE x10` to the mask, index 3 `SELL WHEAT` against `SELL FERTILIZER`, and so on for every
+    index. So `masks_for` tested whether some other basket was affordable and in stock, sent the
+    network's actual choice to `-inf`, and left EMPTY -- legal in every state -- as the argmax.
+
+    Invisible offline, because the loss and the agreement metric take labels and mask from the same
+    `bc._vocab()`. In play it cost the whole market: the head picks the exact right basket on 86.7%
+    of the teacher's traded turns at 75.8% mean confidence, and the agent fired 11 orders in 719
+    turns. `bc._bundle_sells` already documents this pairing; this is the copy that never got it.
+
+    Cached per vocabulary object, because a process can hold more than one -- the hybrid harness
+    plays a checkpoint's vocabulary against a teacher built on another.
+    """
+    from kagg.il import market_bundles as _MB
+    from kagg.rl import jax_policy as _PP
+    key = id(vocab)
+    if key not in _BUNDLE_SELLS:
+        _BUNDLE_SELLS[key] = _MB.valid_table(vocab, pad_to=_PP.N_BUNDLES)
+    return _BUNDLE_SELLS[key]
 
 
 CODE_OP = {v: k for k, v in OP_CODE.items()}
@@ -84,7 +102,41 @@ def _fire(probs, threshold):
     return np.where(p_act > threshold, bucket, 0)
 
 
-def decode_action(heads, n_units, vocab, seat=0):
+def _uncap_sells(market, shed):
+    """A SELL pinned at the top quantity class means "at least this much" -- read the real number.
+
+    `jax_policy.MAX_QTY = 64` and the head's class index IS the quantity (`jax_act.py:321`), so 63 is
+    the largest number it can name. Measured over カワシギ's four tapes, 2,576 market orders: the
+    teacher's largest legitimate SELL is **41**, there are ZERO orders anywhere between 42 and 69, and
+    the only four above the cap are the same action -- the day-29 wheat dump, `SELL WHEAT 70..72`.
+
+    So 63 is never a real label; emitting it is saturation and nothing else. The barn says what is
+    actually there, and `_do_market` sells what is there. Cost of not doing this, measured off-tape:
+    $1,930 on `91906088` -- its ONLY market divergence in 719 turns -- and $656 on `92498144`.
+
+    Raising MAX_QTY instead would widen three head outputs and force a retrain from scratch to buy
+    the same $2,586. This buys it with no weight change.
+
+    Only the top class is rewritten: a head asking for 41 with 200 in the barn means 41. And a
+    saturated order is left alone when the barn holds less, because `_commit_unit` fails a SELL
+    silently when the shed is short (`reference/kaggriculture.py:653`) -- asking for more than exists
+    is a no-op, not a bigger sale.
+    """
+    if not shed:
+        return market
+    cap = P.MAX_QTY - 1
+    out = []
+    for o in market:
+        if o and len(o) > 2 and o[0] == "SELL" and int(o[2]) == cap:
+            have = int(shed.get(o[1], 0) or 0)
+            if have > cap:
+                out.append([o[0], o[1], have])
+                continue
+        out.append(o)
+    return out
+
+
+def decode_action(heads, n_units, vocab, seat=0, shed=None):
     """Sampled head indices -> the environment's action dict.
 
     Only the first `n_units` slots are emitted: the environment counts *submitted* actions in its
@@ -121,6 +173,9 @@ def decode_action(heads, n_units, vocab, seat=0):
         np.asarray(heads["qty_buy_product"])[seat],
         np.asarray(heads["qty_buy_seed"])[seat],
         PRODUCTS, CROPS_ORDERED, ANIMALS_ORDERED)
+
+    # A SELL at the head's top class is saturation, not a quantity -- see `_uncap_sells`.
+    market = _uncap_sells(market, shed)
 
     # The environment accepts ten orders a turn and silently drops the rest, so the cut is made
     # here rather than left to chance about which ones survive.
@@ -225,13 +280,31 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
               "rebuilt since this checkpoint was fitted, every bundle index means something else."
               % (checkpoint, MB.DEFAULT_VOCAB))
 
+    # **The shop dates have to be watched; they are never stated.**
+    #
+    # `adapter.state_from_obs` dates every open shop day 0 unless it is handed a clock, and the
+    # difference only shows up in features that read the day as a date -- which is every shop-timing
+    # feature and the q4 latch ("was the yarn store open by day 5"). Training runs on `jax_sim`,
+    # which carries the true day, so without this the net trains on 3/6/9 and plays on 0.
+    #
+    # Held in a list because this closure serves the whole episode and `make_agent` is called once.
+    # The arena reuses one process across games, so a step that does not advance is a new episode
+    # and the memo must start again -- a clock carried over from the previous game dates this one's
+    # shops from the wrong season.
+    memo = [adapter.GameMemo(), -1]
+
     def agent(obs, config=None):
         me = obs["player"]
+        step = int(obs.get("step", 0) or 0)
+        if step <= memo[1]:
+            memo[0] = adapter.GameMemo()
+        memo[1] = step
+        memo[0].observe(obs, step)
         privates = [obs["private"] if p == me else adapter.agent_private_stub() for p in range(2)]
-        state = adapter.state_from_obs(obs, privates)
+        state = adapter.state_from_obs(obs, privates, memo=memo[0])
         tiles, units, glob = jax_obs.encode(state)
         heads, _value = model.apply(params, A._flat(tiles), A._flat(units), A._flat(glob))
-        masks = A.masks_for(state, _bundle_sells())
+        masks = A.masks_for(state, _bundle_sells(vocab))
 
         # **Conditioning comes first, and without it this function cannot run at all.**
         #
@@ -255,7 +328,8 @@ def make_agent(checkpoint=DEFAULT_CKPT, threshold=None):
 
         # `_flat` folded [batch, seat] into one axis, so our seat is row `me`.
         n_units = 1 + len(obs["farms"][me].get("hands", []))
-        return decode_action(picked, n_units, vocab, seat=me)
+        return decode_action(picked, n_units, vocab, seat=me,
+                             shed=(obs.get("private") or {}).get("shed"))
 
     return agent
 

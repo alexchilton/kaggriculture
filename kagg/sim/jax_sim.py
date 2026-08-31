@@ -111,6 +111,32 @@ NO_CROP = T.NO_CROP
 
 NEVER = np.int32(1 << 24)   # unlock day for a shop that never opens
 
+#: Days on which the opponent's summary is frozen into `State.opp_snapshot`.
+#:
+#: 3 and 5 are the days the shipped agent commits on -- `melon_branch.DECIDE_BY_DAY` is 3 and
+#: `q4_branch.DECIDE_BY_DAY` is 5. They are repeated here rather than imported because `kagg.sim`
+#: must not depend on `kagg.search`; `tests/test_the_snapshot_days_are_the_days_we_commit.py` pins
+#: the two together, so the duplication cannot drift in silence.
+#:
+#: **1 is here for the opponent's money, on Alex's read of `crop dusta`, who acts on it early.**
+#: Money is the one column that is always visible live, so a snapshot of it is only worth carrying
+#: for a day the board no longer describes -- and day 1 is before either of our own commits, which
+#: is exactly the window a live reading cannot reach later.
+SNAPSHOT_DAYS = (1, 3, 5)
+
+#: `[kind counts | crop counts | animal counts | money | n_units | n_land]` -- everything one seat
+#: can actually see of the other, on the day we commit.
+#:
+#: The first three blocks are the same 14 the live opponent block already carries, so a snapshot and
+#: a current reading are directly comparable: "they had 11 melon then and have 2 now" is a
+#: subtraction, not a learned alignment. `money`, the crew size and the quadrant count are added
+#: because they are visible in `farms[opp]` and cost nothing to carry.
+#:
+#: Deliberately NOT the shed or the seeds. A submission is handed `agent_private_stub()` for the
+#: opponent (`neural.py`), so those are not observable in a real game, and training on them would
+#: flatter every offline number and change nothing on the ladder.
+SNAPSHOT_WIDTH = 6 + N_CROPS + M.N_ANIMALS + 3     # `N_ANIMALS` is bound further down this file
+
 _I = jnp.int32
 _F = jnp.float64
 
@@ -238,6 +264,26 @@ class State(NamedTuple):
     unlock_day: jnp.ndarray       # [B, MAX_INSTANCES] -- day this slot opens, NEVER if never
     unlock_shop: jnp.ndarray      # [B, MAX_INSTANCES] -- which shop occupies the slot
     key: jnp.ndarray              # PRNG key, only consumed when weeds are enabled
+    # **What the opponent looked like on the days we commit, kept after the board stops saying.**
+    #
+    # The shipped agent latches "the opponent holds >= 9 MELON tiles" on day 3 and replays a
+    # different tape for the rest of the season (`melon_branch.py:215`). That count is read once and
+    # held; by day 20 the opponent has harvested and replanted, so a day-20 board cannot answer what
+    # the day-3 board said. The yarn-store latch needs no help -- it is recoverable from
+    # `unlock_day` -- but this one is genuinely gone.
+    #
+    # **The whole summary is latched, not just the melon count.** The melon threshold is what the
+    # *current* teacher happens to consult; the question a policy has to answer is broader, and the
+    # opponent's crop mix on the day we commit is the cheapest honest description of it we have.
+    # `jax_obs.py:11` already records that `contrarian`'s entire edge is reading the opponent's crop
+    # mix. Carrying one number would hard-code today's teacher into the observation.
+    #
+    # `[B, P, N_SNAPSHOT_DAYS, SNAPSHOT_WIDTH]`, from each seat's point of view, `NEVER` until the
+    # day arrives -- which is also how "not yet decided" is expressed. Tiles and money only: the
+    # opponent's shed and seeds are NOT observable in a real game, both paths feed
+    # `adapter.agent_private_stub()` for them, and training on them would flatter every offline
+    # number and nothing else.
+    opp_snapshot: jnp.ndarray     # [B, P, len(SNAPSHOT_DAYS), SNAPSHOT_WIDTH]
 
     @property
     def batch(self):
@@ -542,6 +588,8 @@ def reset(batch, starting_money=3000.0, unlock_schedule=None, seed=0, players=N_
         unlock_day=unlock_day,
         unlock_shop=unlock_shop,
         key=jax.random.PRNGKey(seed),
+        opp_snapshot=jnp.full((batch, players, len(SNAPSHOT_DAYS), SNAPSHOT_WIDTH),
+                              float(NEVER), dtype=jnp.float32),
     )
 
 
@@ -1380,6 +1428,39 @@ def _select_per_game(mask, a, b):
         lambda x, y: jnp.where(mask.reshape((-1,) + (1,) * (x.ndim - 1)), x, y), a, b)
 
 
+def seat_summary(tiles, farm):
+    """`[B, P, SNAPSHOT_WIDTH]` -- each seat's own position, in the layout a snapshot stores.
+
+    Kept next to `SNAPSHOT_WIDTH` and used by both the latch below and `jax_obs`, so the live
+    opponent block and the frozen one cannot end up in different orders. A snapshot whose columns
+    do not line up with the current reading is worse than no snapshot: the difference between them
+    is the quantity a policy would want, and it would be subtracting unrelated numbers.
+    """
+    kinds = jnp.stack([(tiles.kind == k).sum(axis=-1) for k in range(6)], axis=-1)
+    crops = jnp.stack([((tiles.kind == PLANT) & (tiles.crop == c)).sum(axis=-1)
+                       for c in range(N_CROPS)], axis=-1)
+    animals = jnp.stack([(tiles.animal == a).sum(axis=-1) for a in range(N_ANIMALS)], axis=-1)
+    return jnp.concatenate(
+        [kinds.astype(jnp.float32), crops.astype(jnp.float32), animals.astype(jnp.float32),
+         farm.money.astype(jnp.float32)[..., None],
+         farm.n_units.astype(jnp.float32)[..., None],
+         farm.n_land.astype(jnp.float32)[..., None]], axis=-1)
+
+
+def _latch_opponent(opp_snapshot, tiles, farm, day, step_index):
+    """Freeze each seat's view of the other on `SNAPSHOT_DAYS`, at hour 0, once.
+
+    Written only where the slot is still `NEVER`, so a game that resumes past a snapshot day keeps
+    whatever it was handed rather than back-filling it with a later board -- which would be the same
+    silent lie the day-0 shop stamp was.
+    """
+    seen = seat_summary(tiles, farm)[:, ::-1]                         # [B, P, W], opponent's side
+    at_hour_0 = (step_index % TURNS_PER_DAY) == 0                     # [B]
+    on_day = jnp.stack([(day == d) & at_hour_0 for d in SNAPSHOT_DAYS], axis=-1)   # [B, D]
+    take = on_day[:, None, :, None] & (opp_snapshot == NEVER)
+    return jnp.where(take, seen[:, :, None, :], opp_snapshot)
+
+
 @functools.partial(jax.jit, static_argnames=("weed_chance",))
 def step(state, actions, weed_chance=0.0):
     """Advance every game by one turn. The whole turn is one traced graph.
@@ -1435,12 +1516,20 @@ def step_accounted(state, actions, weed_chance=0.0):
     farm = _select_per_game(is_night, n_farm, farm)
     key = n_key
 
+    # Latched from the board as it stands at the START of the day, before the day's actions move it:
+    # `day` and `state.step_index` are the pre-increment values, and the agent's own branch reads the
+    # observation it is handed at hour 0. Taking it from the post-action board would snapshot a
+    # position the deciding agent never saw.
+    opp_snapshot = _latch_opponent(state.opp_snapshot, state.tiles, state.farm,
+                                   day, state.step_index)
+
     return state._replace(
         step_index=state.step_index + 1,
         tiles=tiles,
         farm=farm,
         inventory=inventory,
         key=key,
+        opp_snapshot=opp_snapshot,
     ), acct
 
 

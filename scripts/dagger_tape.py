@@ -237,6 +237,10 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
     env.reset(2)
     seat = game["seat"]
     teacher = TapeTeacher(seat)
+    # One clock per episode. An observation says which shops are open and never when they opened,
+    # so without this every open shop is dated day 0 and "was the yarn store up by day 5" -- the
+    # `q4_branch` latch this teacher itself consults -- is not a question the features can answer.
+    memo = AD.GameMemo()
     rows, stats, marks = [], collections.Counter(), {}
 
     for turn in range(horizon):
@@ -267,7 +271,8 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
         # turns of one of the four training tapes, and HARVEST was masked illegal all season because
         # `(day - planted_day)` went negative. 300 of 1585 HARVEST labels, unemittable and
         # zero-weighted. `tests/test_the_clock_is_right_when_we_are_seated_second.py`.
-        sim_state = AD.state_from_obs(obs, privates, step=turn)
+        memo.observe(obs, step=turn)
+        sim_state = AD.state_from_obs(obs, privates, step=turn, memo=memo)
         tiles, units, glob = _encode(sim_state)
         flat = (A._flat(tiles), A._flat(units), A._flat(glob))
         masks = A.masks_for(sim_state, bundle_ok)
@@ -351,7 +356,12 @@ def run_episode(game, params, model, vocab, bundle_ok, key, beta, horizon, rng):
             action = teacher_action
             stats["turns_teacher"] += 1
         else:
-            action = NEURAL.decode_action(sampled, n_units, vocab, seat=seat)
+            # The shed goes in so a SELL pinned at the head's top class is read back as the amount
+            # actually in the barn rather than truncated to 63 (`neural._uncap_sells`). Without it
+            # the ROLLOUT diverges from the teacher on a turn the net had right, and the student is
+            # then labelled on a state its own truncation created.
+            action = NEURAL.decode_action(sampled, n_units, vocab, seat=seat,
+                                          shed=(obs.get("private") or {}).get("shed"))
             stats["turns_student"] += 1
 
         rows.append(dict(obs=[np.asarray(x)[seat] for x in flat],
@@ -546,6 +556,24 @@ def main():
                          "only each tape's own recorded opponent")
     ap.add_argument("--seeds", type=int, default=1,
                     help="town draws per tape/opponent pair; 1 uses only the tape's recorded seed")
+    ap.add_argument("--planner-teacher", action="store_true",
+                    help="switch the teacher from REPLAYING カワシギ's recorded actions to PLANNING "
+                         "from the live board, by emptying `schedule_agent.REPLAY_OPENING_DAYS` for "
+                         "this process only. Nothing on disk changes.\n"
+                         "**Use it with --seeds > 1, and the two belong together.** The replay is "
+                         "keyed on turn index and never on the seed "
+                         "(`schedule_agent.py:3919, 4026`), so on a fresh town it sends a fixed "
+                         "tape into a board it does not describe -- which is what the four-seed "
+                         "restriction in this file's docstring was protecting against.\n"
+                         "Measured 2026-08-28, `data/logs/teacher_on_fresh_seeds.log`, seeds the "
+                         "agent had never played, 719 turns: replay ON banked $141,286 and "
+                         "$161,521; replay OFF banked $150,396 and $179,719. The teacher is not the "
+                         "ceiling on a fresh seed, and the planner is the better of the two.\n"
+                         "It also restores the property DAgger exists for: a planner re-reads the "
+                         "board every turn, so it can label a state the STUDENT damaged. The tape "
+                         "teacher is time-indexed and answers 'at turn t do X' there, which is a "
+                         "confident wrong label -- worse than no label. The student cloned under "
+                         "that regime memorised four trajectories and banks $300 on seed 9000.")
     ap.add_argument("--playout-debug", action="store_true",
                     help="report why a playout's per-day tape comparison was unavailable")
     ap.add_argument("--playout", type=int, default=1,
@@ -600,6 +628,14 @@ def main():
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
+    if args.planner_teacher:
+        # Rebound in memory for this process only; the shipped constant is untouched on disk.
+        SA.REPLAY_OPENING_DAYS = ()
+        print("teacher: PLANNER (REPLAY_OPENING_DAYS emptied for this process)", flush=True)
+        if args.seeds <= 1:
+            print("NOTE: --planner-teacher with --seeds 1 trains on the four recorded towns only, "
+                  "which is the configuration that produced a student banking $300 off-tape.",
+                  flush=True)
     games = tape_games()
     print("tapes: " + ", ".join("%s %s seat %d seed %d"
                                 % (g["key"], g["name"], g["seat"], g["cfg"]["seed"])

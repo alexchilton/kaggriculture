@@ -138,6 +138,10 @@ def _swap_seats(state):
     return state._replace(
         tiles=jax.tree_util.tree_map(flip, state.tiles),
         farm=jax.tree_util.tree_map(flip, state.farm),
+        # **The snapshot is seat-indexed too, so it swaps with them.** It holds each seat's view of
+        # the OTHER, so leaving it behind would hand the trainee the position it used to be in and
+        # call it the opponent's -- a wrong number that reads as a plausible one.
+        opp_snapshot=flip(state.opp_snapshot),
     )
 
 
@@ -164,6 +168,7 @@ def _stack(states):
         # split over two arrays and must never be stacked independently of each other.
         unlock_shop=cat("unlock_shop"),
         key=states[0].key,
+        opp_snapshot=cat("opp_snapshot"),
     )
 
 

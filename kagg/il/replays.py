@@ -319,8 +319,16 @@ def iter_turns(path, winners_only=True, min_bank=None, hide_opponent=True, seats
 
 
 def replay_summary(path):
-    """Final rewards and the winning seat, without walking every turn."""
+    """Final rewards, the winning seat, and who played each seat, without walking every turn.
+
+    `teams` is returned decoded. Kaggle writes its JSON with `ensure_ascii=True`, so `カワシギ` is
+    stored as `\\u30ab\\u30ef\\u30b7\\u30ae`; `json.loads` undoes that, and every caller must compare
+    against the DECODED name rather than grepping the raw text. The raw-text version of this check
+    reported `0 games` for him on 2026-08-27, which reads as an empty archive rather than a broken
+    filter.
+    """
     replay = json.loads(Path(path).read_text())
     rewards = [p.get("reward") or 0.0 for p in replay["steps"][-1]]
+    teams = [str(t or "") for t in ((replay.get("info") or {}).get("TeamNames") or [])]
     return {"path": str(path), "rewards": rewards, "winner": int(np.argmax(rewards)),
-            "turns": len(replay["steps"])}
+            "turns": len(replay["steps"]), "teams": teams}

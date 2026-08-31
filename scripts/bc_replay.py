@@ -78,6 +78,21 @@ def main():
                          "--max-bank 35000, 41 seats, median $24,066) is nearer the scripted "
                          "farmer's $30,292 and is reachable. Trades ceiling for reachability; safe "
                          "only because --init carries no KL anchor, so PPO can leave the clone.")
+    ap.add_argument("--team", default=None,
+                    help="clone ONE named player's seats instead of the richest on disk, e.g. "
+                         "--team カワシギ or --team 'crop dusta'. Case-insensitive, matched against "
+                         "the decoded TeamName. 'the best seats available' and 'this teacher's "
+                         "play' are different questions, and only the second can say whether kawa "
+                         "or Dusta is the better thing to imitate. Combines with --top and the "
+                         "bank band, which then apply within that teacher's seats.")
+    ap.add_argument("--vocab", default=None,
+                    help="bundle vocabulary to LABEL and MASK with. Default is "
+                         "market_bundles.DEFAULT_VOCAB, the 197-entry file built from 640 "
+                         "leaderboard games -- right for cloning the ladder, wrong for cloning one "
+                         "player. Measured 2026-08-28 over 40 カワシギ seats: it cannot express "
+                         "**14.5%%** of his traded turns (5,641 HIRE, 4,894 SELL), and every one is "
+                         "taught as 'place no orders' AND scored as a hit. Build the right one with "
+                         "scripts/build_recorded_player_bundle_vocab.py --team <name>.")
     ap.add_argument("--max-turns", type=int, default=None, help="cap turns per seat (for a smoke run)")
     ap.add_argument("--epochs", type=int, default=6)
     ap.add_argument("--batch", type=int, default=256)
@@ -100,6 +115,15 @@ def main():
     ap.add_argument("--tag", default="bcr")
     args = ap.parse_args()
 
+    # Before any row is built, so labels and masks come from the same file.
+    if args.vocab:
+        bc.set_vocab(args.vocab)
+    import json as _json
+    from kagg.il import market_bundles as _MB
+    _vp = args.vocab or _MB.DEFAULT_VOCAB
+    print(f"vocabulary: {_vp} -> {len(_json.loads(pathlib.Path(_vp).read_text()))} entries",
+          flush=True)
+
     run = RUN_DIR / f"{args.tag}-{time.strftime('%Y%m%d-%H%M%S')}"
     run.mkdir(parents=True, exist_ok=True)
     print(f"run dir: {run}", flush=True)
@@ -114,16 +138,33 @@ def main():
         if not paths:
             raise SystemExit("no replays in data/ -- run scripts/fetch_replays.py first")
         t0 = time.time()
-        ranked = bc.rank_seats(paths, min_bank=args.min_bank, max_bank=args.max_bank)
+        ranked = bc.rank_seats(paths, min_bank=args.min_bank, max_bank=args.max_bank,
+                               team=args.team)
+        if args.team and not ranked:
+            raise SystemExit(f"no seats for team {args.team!r} -- check the spelling against a "
+                             f"replay's info.TeamNames (they are stored JSON-escaped)")
         band = args.min_bank is not None or args.max_bank is not None
         chosen = ranked if band else ranked[: args.top]
         banks = [r.bank for r in chosen]
-        print(f"ranked {len(ranked)} seats across {len(paths)} replays in {time.time() - t0:.0f}s")
+        print(f"ranked {len(ranked)} seats"
+              f"{f' for {args.team}' if args.team else ''}"
+              f" across {len(paths)} replays in {time.time() - t0:.0f}s")
         print(f"cloning {len(chosen)} seats, ${min(banks):,.0f}-${max(banks):,.0f} "
               f"(median ${float(np.median(banks)):,.0f})", flush=True)
 
         rows = bc.build_rows(chosen, max_turns=args.max_turns, log_every=2000)
         print(f"built {len(rows['tiles']):,} rows in {time.time() - t0:.0f}s", flush=True)
+
+        # **Say how many of the teacher's trades the vocabulary could not express.** Each one is
+        # taught to the student as "place no orders" and then SCORED AS A HIT, so it is invisible in
+        # every loss and agreement number. `build_rows` used to drop this flag entirely, which is
+        # why the 14.5% on data/bc_rows_kawa.npz went unnoticed until it was measured separately.
+        _miss = rows.get("w_bundle_miss")
+        if _miss is not None:
+            n_miss = int(np.asarray(_miss).sum())
+            print(f"bundle misses: {n_miss:,} of {len(rows['tiles']):,} rows "
+                  f"({n_miss / max(1, len(rows['tiles'])):.2%}) could not be expressed by {_vp} "
+                  f"and were labelled DO NOTHING", flush=True)
         if args.cache:
             pathlib.Path(args.cache).parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(args.cache, **rows)
@@ -224,8 +265,17 @@ def main():
               flush=True)
 
         with (run / "latest.pkl").open("wb") as fh:
+            # **Embed the vocabulary these weights were fitted against.** `neural.make_agent` reads
+            # `ckpt["vocab"]` and falls back to `bundle_vocab.json` without it -- so a checkpoint
+            # trained on a 256-entry player vocabulary would play every bundle index through the
+            # 197-entry ladder file and emit a different order than the one it learned, all season,
+            # with nothing to read anywhere. The vocabulary is a property of the weights.
             pickle.dump({"params": jax.device_get(params), "update": -1, "best": None,
+                         "epoch": epoch,
                          "args": vars(args) | {"teacher": f"top-{args.top} replay seats"},
+                         "vocab": [[list(p) for p in bc._vocab().bundle(i)]
+                                   for i in range(bc._vocab().size)],
+                         "vocab_size": bc._vocab().size,
                          "widths": widths}, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
     print(f"\ndone in {time.time() - started:.0f}s. warm-start with:\n"

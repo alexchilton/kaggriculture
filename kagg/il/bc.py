@@ -51,6 +51,31 @@ from kagg.sim import jax_sim as J
 # must be byte-identical across labelling, fitting and play or every bundle index means something
 # different. `market_bundles.load_vocab` raises if it is missing rather than inventing one.
 _BUNDLE_SELLS = None
+#: Which vocabulary this process labels and masks with. `set_vocab` pins it before any row is built.
+#: Left None it is `market_bundles.DEFAULT_VOCAB` -- the 197-entry LEADERBOARD file, which is the
+#: right source for cloning the ladder and the wrong one for cloning a named player.
+_VOCAB_PATH = None
+_VOCAB = None
+
+
+def set_vocab(path):
+    """Pin the vocabulary for this process. Must run before any bundle is read.
+
+    Labelling and masking both go through `_vocab()` so they cannot disagree. Two disagreeing
+    vocabularies show up nowhere offline, because every index is still a valid index.
+    """
+    global _VOCAB_PATH, _VOCAB, _BUNDLE_SELLS
+    _VOCAB_PATH = path
+    _VOCAB = None
+    _BUNDLE_SELLS = None
+
+
+def _vocab():
+    global _VOCAB
+    if _VOCAB is None:
+        from kagg.il import market_bundles as _MB
+        _VOCAB = _MB.load_vocab() if _VOCAB_PATH is None else _MB.load_vocab(_VOCAB_PATH)
+    return _VOCAB
 
 
 def _bundle_sells():
@@ -58,7 +83,9 @@ def _bundle_sells():
     if _BUNDLE_SELLS is None:
         from kagg.il import market_bundles as _MB
         from kagg.rl import jax_policy as _PP
-        _BUNDLE_SELLS = _MB.valid_table(_MB.load_vocab(), pad_to=_PP.N_BUNDLES)
+        # `_vocab()`, not a second independent `load_vocab()`: the mask and the labels must be the
+        # same file or a bundle legal under one is a different basket under the other.
+        _BUNDLE_SELLS = _MB.valid_table(_vocab(), pad_to=_PP.N_BUNDLES)
     return _BUNDLE_SELLS
 
 
@@ -79,11 +106,23 @@ REPLAY_PATTERNS = ("[0-9]*.json", "episode-*-replay.json")
 # ---------------------------------------------------------------------------- seat selection
 
 def find_replays(root="data"):
-    """Every downloaded episode replay under `root`, deduplicated and sorted."""
+    """Every downloaded episode replay under `root`, deduplicated and sorted.
+
+    **Recursive, which it was not.** The patterns were globbed at the top level only, so this
+    returned 336 files while 2,814 replays sat one directory down in `data/seed_scripts/*/` --
+    including all 387 カワシギ games and all 66 Crop Dusta ones. The docstring already promised
+    "under `root`"; the code delivered "directly in `root`", and nothing reads as wrong in a log
+    that says "ranked 672 seats across 336 replays".
+
+    Widening it changes which seats a default `bc_replay.py --top 25` selects, because the pool it
+    ranks over is now the whole archive rather than the download folder. That is the intended
+    behaviour, not a side effect.
+    """
     root = Path(root)
     out = set()
     for pattern in REPLAY_PATTERNS:
         out.update(root.glob(pattern))
+        out.update(root.glob(f"**/{pattern}"))
     return sorted(out)
 
 @dataclass(frozen=True)
@@ -112,18 +151,25 @@ def _index(paths, cache=INDEX):
         st = p.stat()
         key = str(p)
         hit = known.get(key)
-        if hit and hit.get("size") == st.st_size and hit.get("mtime") == int(st.st_mtime):
+        # **A hit without `teams` is a MISS.** Entries written before the team filter existed carry
+        # only `rewards`, and treating a missing key as "not this team" would report zero seats for
+        # a teacher we hold 387 games of. Re-reading them once is the self-healing option.
+        if (hit and hit.get("size") == st.st_size and hit.get("mtime") == int(st.st_mtime)
+                and "teams" in hit):
             out[key] = hit
             continue
         try:
-            rewards = replays.replay_summary(p)["rewards"]
-        except (KeyError, IndexError, ValueError) as exc:
-            # A partially-written download rather than a replay. Say which file and carry on: the
-            # alternative is one bad file aborting a twenty-minute build.
+            summary = replays.replay_summary(p)
+        except (KeyError, IndexError, ValueError, TypeError) as exc:
+            # Not a replay: a partially-written download, a single-seat extract with no final
+            # rewards, or -- since the glob became recursive -- a JSON *list* of actions, where
+            # `replay["steps"]` raises TypeError rather than KeyError. Say which file and carry on;
+            # the alternative is one bad file aborting a forty-minute build, which it did.
             print(f"  skipping {p.name}: not a replay ({type(exc).__name__})")
             continue
         out[key] = {"size": st.st_size, "mtime": int(st.st_mtime),
-                    "rewards": [float(r or 0.0) for r in rewards]}
+                    "rewards": [float(r or 0.0) for r in summary["rewards"]],
+                    "teams": list(summary.get("teams") or [])}
         fresh += 1
 
     if cache and fresh:
@@ -132,8 +178,16 @@ def _index(paths, cache=INDEX):
     return out, fresh
 
 
-def rank_seats(paths, min_bank=None, cache=INDEX, max_bank=None):
+def rank_seats(paths, min_bank=None, cache=INDEX, max_bank=None, team=None):
     """Every seat in `paths`, richest first.
+
+    **`team` selects one named player's seats**, case-insensitively, and it selects the SEAT rather
+    than the replay -- a replay holds two players and cloning both would train on the opponent too.
+    Compared against the decoded name from `replay_summary`, never against the raw file text: Kaggle
+    escapes `カワシギ` to `\\u30ab\\u30ef\\u30b7\\u30ae`.
+
+    It exists because "richest seats on disk" and "this teacher's play" are different questions, and
+    only the second one can answer whether kawa or Dusta is the better thing to imitate.
 
     **Seats, not replays.** In 89197802 the *losing* seat still banked $106,091; discarding it
     because of who it happened to be drawn against throws away a teacher. Filtering by final bank is
@@ -152,11 +206,14 @@ def rank_seats(paths, min_bank=None, cache=INDEX, max_bank=None):
     thing `CLAUDE.md` forbids: a heuristic that becomes the policy.
     """
     index, _fresh = _index(paths, cache)
+    want = team.lower() if team else None
     out = [SeatRef(path, seat, bank)
            for path, entry in index.items()
            for seat, bank in enumerate(entry["rewards"])
            if (min_bank is None or bank >= min_bank)
-           and (max_bank is None or bank <= max_bank)]
+           and (max_bank is None or bank <= max_bank)
+           and (want is None
+                or want in (list(entry.get("teams") or [])[seat:seat + 1] or [""])[0].lower())]
     out.sort(key=lambda r: -r.bank)
     return out
 
@@ -186,11 +243,18 @@ def build_rows(refs, max_turns=None, log_every=0):
 
     for ref in refs:
         turns = 0
+        # One clock per REF: it walks a single game in order, which is exactly what the memo needs.
+        # An observation says which shops are open and never when they opened, so without this every
+        # open shop is dated day 0 here and 3/6/9 in `jax_sim` -- a train/deploy split in any feature
+        # that reads the day as a date. `obs["step"]` is None in some replays (`replays.py:244`), so
+        # fall back to the turn counter rather than to 0.
+        memo = adapter.GameMemo()
         for obs, privates, action, seat in replays.iter_turns(
                 ref.path, winners_only=False, seats={ref.seat}):
             if max_turns is not None and turns >= max_turns:
                 break
-            state = adapter.state_from_obs(obs, privates)
+            memo.observe(obs, step=int(obs.get("step") or turns))
+            state = adapter.state_from_obs(obs, privates, memo=memo)
             tiles, units, glob, masks = _features(state)
 
             cols["tiles"].append(np.asarray(tiles[seat], dtype=np.float32))
@@ -202,9 +266,21 @@ def build_rows(refs, max_turns=None, log_every=0):
             for h in SCORED_HEADS:
                 cols.setdefault(f"m_{h}", []).append(np.asarray(masks[h][seat], dtype=bool))
 
-            labels = replays.encode_action(action, J.MAX_UNITS)
+            # **Pass the vocabulary.** `encode_action`'s own docstring says so, and this call did
+            # not -- so it fell back to `MB.load_vocab()`, the 197-entry LEADERBOARD vocabulary,
+            # while the rows were being built to clone ONE player. Measured 2026-08-28 over 40
+            # カワシギ seats, 14,143 traded turns (`data/logs/bc_vocab_miss.log`): 2,045 of them,
+            # **14.5%**, are baskets that vocabulary does not hold -- 5,641 HIRE and 4,894 SELL
+            # orders. `Vocabulary.index` returns 0 for those, 0 means "place no orders", so the
+            # student was taught to do nothing on them and bundle agreement scored it a HIT.
+            labels = replays.encode_action(action, J.MAX_UNITS, vocab=_vocab())
             for h in SCORED_HEADS:
                 cols.setdefault(f"y_{h}", []).append(np.asarray(labels[h], dtype=np.int32))
+            # **Keep the miss flag.** `encode_action` returns `w_bundle_miss` precisely so a caller
+            # can count this, and this function used to drop it -- which is why the number above had
+            # never been taken for `data/bc_rows_kawa.npz`.
+            cols.setdefault("w_bundle_miss", []).append(
+                np.asarray(labels["w_bundle_miss"], dtype=np.float32))
             # **The quantity weights, or 78.9% of turns train the qty heads on nothing.** A quantity
             # is a decision only where the teacher's bundle asked for one; without these the loss
             # pulls every unselected product toward bucket 0 and the head collapses, after which the

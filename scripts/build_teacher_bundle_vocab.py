@@ -36,6 +36,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 from kagg.il import market_bundles as MB                    # noqa: E402
 from kagg.il.tape_teacher import TapeTeacher                # noqa: E402
 from kagg.rl import jax_policy as P                         # noqa: E402
+from kagg.search import schedule_agent as SA                # noqa: E402
 
 
 def _dagger():
@@ -46,12 +47,26 @@ def _dagger():
     return mod
 
 
-def collect(turns):
-    """Every bundle the four teachers emit, with its count, over a full season each."""
+def collect(turns, seeds=0, planner=False, rng_seed=0):
+    """Every bundle the teachers emit, with its count, over a full season each.
+
+    **`seeds` and `planner` must match the DAgger run this vocabulary is for.** A vocabulary is a
+    sample of one teacher's market behaviour on one distribution of towns; sample the wrong one and
+    `Vocabulary.index` silently returns EMPTY for anything it did not see. Measured 2026-08-28 on
+    the box: the 149-entry vocabulary built here from the four RECORDED towns with the tape teacher
+    could not express **361 turns** of the PLANNER teacher on fresh towns, the opening among them --
+    `turn0 bundle 0/4`. That is the same failure as
+    `docs/the_vocabulary_labels_the_opening_as_nothing_2026-08-22.md`, which cost a whole run.
+    """
     from kaggle_environments import make
 
+    if planner:
+        SA.REPLAY_OPENING_DAYS = ()
+        print("teacher: PLANNER (REPLAY_OPENING_DAYS emptied for this process)", flush=True)
+
     DT = _dagger()
-    specs = DT.episode_specs(DT.tape_games(), DT.opponent_pool(0), 0, np.random.default_rng(0))
+    specs = DT.episode_specs(DT.tape_games(), DT.opponent_pool(0), seeds,
+                             np.random.default_rng(rng_seed))
     seen = collections.Counter()
     for game in specs:
         env = make("kaggriculture", configuration=game["cfg"], debug=False)
@@ -83,11 +98,20 @@ def main():
     ap.add_argument("--turns", type=int, default=719)
     ap.add_argument("--max-size", type=int, default=None,
                     help="defaults to jax_policy.N_BUNDLES -- the head cannot express more")
+    ap.add_argument("--seeds", type=int, default=0,
+                    help="extra town draws per game, as in dagger_tape.py. MUST match the run this "
+                         "vocabulary is built for: a bundle the teacher only plays on a fresh town "
+                         "is invisible to a vocabulary sampled from the recorded four.")
+    ap.add_argument("--planner-teacher", action="store_true",
+                    help="sample the PLANNER rather than the tape replay, to match "
+                         "`dagger_tape.py --planner-teacher`. Measured 2026-08-28: mixing the two "
+                         "left 361 planner turns inexpressible, including every opening.")
     args = ap.parse_args()
 
     max_size = args.max_size or P.N_BUNDLES
-    print("collecting from the four tape teachers, %d turns each" % args.turns, flush=True)
-    seen = collect(args.turns)
+    print("collecting from the tape teachers, %d turns each, %d extra seeds, planner=%s"
+          % (args.turns, args.seeds, args.planner_teacher), flush=True)
+    seen = collect(args.turns, seeds=args.seeds, planner=args.planner_teacher)
 
     # Most frequent first, so a truncation drops the rarest -- but a truncation here is a defect,
     # not a trade-off, and the check below refuses rather than reporting a percentage.

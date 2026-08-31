@@ -104,9 +104,107 @@ def _shop_slots(obs):
     return [index[n] for n in names[: J.MAX_INSTANCES]]
 
 
-def _unlock_days(obs):
+def _seat_summary_from_obs(obs):
+    """`[1, P, SNAPSHOT_WIDTH]` -- each seat's own position, from the dict observation.
+
+    **Must produce the same columns in the same order as `jax_sim.seat_summary`**, which builds it
+    from `Tiles`/`Farm` arrays on the training path. Two implementations of one layout is exactly the
+    kind of pair that drifts, so `test_the_two_ways_a_board_becomes_a_snapshot_agree` compares them
+    on a real board. The alternative -- routing this through `state_from_obs` -- is circular, since
+    the snapshot is one of the things `state_from_obs` has to produce.
+    """
+    # **Counted off `_tile_arrays`, not off the cell dicts.** A second parser here was wrong within
+    # the hour: a locked tile is the STRING "LOCKED" and an empty one is `None`, so filtering to
+    # dicts dropped both and the EMPTY and LOCKED columns disagreed with `jax_sim.seat_summary`.
+    # `_tile_arrays` is the one place that knows the observation's three cell encodings.
+    kinds = [EMPTY, LOCKED, WEED, PLANT, COOP, PASTURE]
+    farms = (obs or {}).get("farms") or []
+    out = np.zeros((1, 2, J.SNAPSHOT_WIDTH), dtype=np.float32)
+    for p in range(2):
+        farm = farms[p] if p < len(farms) else {}
+        f = _tile_arrays(farm.get("tiles") or [], 0)
+        kind, crop, animal = f["kind"], f["crop"], f["animal"]
+        for i, k in enumerate(kinds):
+            out[0, p, i] = int((kind == k).sum())
+        for ci in range(len(CROP_INDEX)):
+            out[0, p, len(kinds) + ci] = int(((kind == PLANT) & (crop == ci)).sum())
+        for a in range(J.N_ANIMALS):
+            out[0, p, len(kinds) + len(CROP_INDEX) + a] = int((animal == a).sum())
+        tail = len(kinds) + len(CROP_INDEX) + J.N_ANIMALS
+        out[0, p, tail] = float(farm.get("money") or 0)
+        out[0, p, tail + 1] = 1.0 + len(farm.get("hands") or [])
+        out[0, p, tail + 2] = float(len(farm.get("unlocked_quadrants", ["NW"])) - 1)
+    return out
+
+
+class GameMemo:
+    """What an observation stops saying, remembered across the turns of one game.
+
+    Two things live here, and they are the same problem: a turn's observation describes the board
+    *now*, and both the shop dates and the opponent's position on the days we commit are facts about
+    a board that has since moved on. An agent sees every turn of its own game, so it can watch.
+
+    Held together in one object because every caller needs both and a second memo would be a second
+    thing to forget to pass.
+
+    **An observation says which shops are open. It never says when they opened.** `jax_sim` carries
+    the true day in `unlock_day` (3, 6, 9 ... -- the town opens one slot at the end of every third
+    day, `kaggriculture.py:886`), and the adapter used to stamp 0 on everything it found open. That
+    is correct for the drain, which only ever asks `unlock_day <= day`, and wrong as a date: through
+    the adapter a slot that opened on day 12 is indistinguishable from one that opened on day 3.
+
+    `unlocked_shops` is append-only, so an agent that sees every turn of its own game can recover the
+    dates by watching: the first turn a slot exists is the day that slot opened.
+
+    Keyed on the slot POSITION, not the shop name. 1.32.6 draws with replacement, so one shop can
+    hold two slots that opened days apart, and `_drain` treats them as independent consumers.
+
+    A clock that joins mid-game dates everything it finds already open from the turn it started.
+    That is unknowable from the observation and no worse than the 0 it replaces -- `curriculum.py`
+    resumes from recorded boards and overwrites the whole schedule for exactly this reason.
+    """
+
+    def __init__(self):
+        self._first_seen = {}
+        self._snapshot = np.full((1, 2, len(J.SNAPSHOT_DAYS), J.SNAPSHOT_WIDTH),
+                                 float(J.NEVER), dtype=np.float32)
+
+    def observe(self, obs, step):
+        """Record this turn. Returns self, so it can be chained onto a call."""
+        day = int(step) // J.TURNS_PER_DAY
+        for slot in range(len(_shop_slots(obs))):
+            self._first_seen.setdefault(slot, day)
+
+        # Hour 0 only, and only into a slot still holding NEVER -- the same rule
+        # `jax_sim._latch_opponent` follows, so a game that joins late keeps the gap rather than
+        # back-filling it from a board the deciding agent never saw.
+        if step % J.TURNS_PER_DAY == 0 and day in J.SNAPSHOT_DAYS:
+            d = J.SNAPSHOT_DAYS.index(day)
+            if np.all(self._snapshot[0, :, d] == float(J.NEVER)):
+                self._snapshot[0, :, d] = _seat_summary_from_obs(obs)[0, ::-1]
+        return self
+
+    def unlock_days(self):
+        """`[1, MAX_INSTANCES]` of unlock days, `NEVER` for a slot not yet seen."""
+        import jax.numpy as jnp
+
+        days = np.full((1, J.MAX_INSTANCES), J.NEVER, dtype=np.int32)
+        for slot, day in self._first_seen.items():
+            days[0, slot] = day
+        return jnp.asarray(days, dtype=J._I)
+
+    def opp_snapshot(self):
+        """`[1, P, len(SNAPSHOT_DAYS), SNAPSHOT_WIDTH]`, each seat's view of the other."""
+        import jax.numpy as jnp
+
+        return jnp.asarray(self._snapshot, dtype=jnp.float32)
+
+
+def _unlock_days(obs, memo=None):
     import jax.numpy as jnp
 
+    if memo is not None:
+        return memo.unlock_days()
     slots = _shop_slots(obs)
     days = np.full((1, J.MAX_INSTANCES), J.NEVER, dtype=np.int32)
     days[0, : len(slots)] = 0
@@ -122,7 +220,7 @@ def _unlock_shops(obs):
     return jnp.asarray(ids, dtype=J._I)
 
 
-def state_from_obs(obs, privates, step=None):
+def state_from_obs(obs, privates, step=None, memo=None):
     """Build a batch-of-one `jax_sim.State` from one turn's observation.
 
     `obs` is the shared observation (`farms`, `market`, `step`); `privates` is a two-element list of
@@ -147,6 +245,12 @@ def state_from_obs(obs, privates, step=None):
     A caller that knows which turn it is on should say so; it overrides the observation. Callers
     that pass nothing keep the old behaviour. `curriculum.py:114` reached the same conclusion
     independently and worked around it locally with `_with_step_index`.
+
+    **`shop_clock` is the same argument for the shop schedule.** An observation says which shops are
+    open and never when they opened, so without one every open slot is dated day 0 -- fine for the
+    drain, and unusable for anything that reads the day as a date. Any caller that walks a game turn
+    by turn should keep a `ShopClock` and pass it; see that class for why the observation alone
+    cannot answer this.
     """
     import jax.numpy as jnp
 
@@ -165,7 +269,21 @@ def state_from_obs(obs, privates, step=None):
     seeds = np.zeros((1, 2, len(CROP_INDEX)), dtype=np.int32)
     shed = np.zeros((1, 2, len(ITEMS)), dtype=np.int32)
     carried = np.zeros((1, 2, J.MAX_UNITS, len(ITEMS)), dtype=np.int32)
+    # **Dead slots are parked on the SPAWN tile, matching `jax_sim.reset` -- not left at (0, 0).**
+    #
+    # `live` is 0 for these either way, so nothing legal changes. But the transformer attends over
+    # all 24 unit tokens, and 23 of them differing on x, y and on_shed between training and play is
+    # a real observation mismatch: measured 2026-08-28, the LIVE farmer's op came out 1 through
+    # `jax_sim` and 17 through this path on the same board.
+    #
+    # Fixed HERE rather than by zeroing those columns in `jax_obs`, which is what was tried first.
+    # Zeroing changes the MEANING of three features every checkpoint was fitted on, and
+    # `migrate_params` cannot repair that -- it pads new columns, it does not re-fit moved ones. The
+    # run that followed put movement at exactly 0.000 over 35,817 labels. See the note in
+    # `jax_obs.encode`'s unit block.
     unit_pos = np.zeros((1, 2, J.MAX_UNITS, 2), dtype=np.int32)
+    unit_pos[..., 0] = int(J.SPAWN_X)
+    unit_pos[..., 1] = int(J.SPAWN_Y)
     n_units = np.ones((1, 2), dtype=np.int32)
 
     for p in range(2):
@@ -221,9 +339,14 @@ def state_from_obs(obs, privates, step=None):
         # builds features for the current turn and is never stepped. `unlocked_shops` may name the
         # same shop twice and each instance drains independently, so slots are filled in order
         # rather than deduplicated.
-        unlock_day=_unlock_days(obs),
+        unlock_day=_unlock_days(obs, memo),
         unlock_shop=_unlock_shops(obs),
         key=__import__("jax").random.PRNGKey(0),
+        # All-NEVER without a memo, which is the honest answer: a single observation cannot say what
+        # the opponent held on day 3. `jax_obs` reads NEVER as "not decided" and emits zeros, so a
+        # caller that does not watch the game gets no snapshot rather than a wrong one.
+        opp_snapshot=(memo.opp_snapshot() if memo is not None else jnp.full(
+            (1, 2, len(J.SNAPSHOT_DAYS), J.SNAPSHOT_WIDTH), float(J.NEVER), dtype=jnp.float32)),
     )
 
 

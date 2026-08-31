@@ -28,7 +28,11 @@ planned ops died with them.
 
 import collections
 
-from kagg.rl import jax_policy as P
+# **`jax_policy` is imported LOCALLY, at the two sites that need it, and that is load-bearing.**
+# Only two integers are read from it -- `MAX_QTY` and `N_BUNDLES` -- but the import pulls flax, and
+# this module is on the play path of a net-bearing submission (`kagg/agents/numpy_neural.py`). The
+# competition runtime has never had jax or flax, so a module-level import here makes the bundle
+# decoder unshippable for the sake of two numbers. `load_vocab` already did it this way.
 from kagg.sim import farm as F
 from kagg.sim import market as M
 from kagg.sim.game import (
@@ -336,6 +340,7 @@ def slot_tables(vocab, pad_to=None):
     no head supplies it: HIRE and BUY_LAND are atomic, and the animal count lives in the bundle.
     """
     n = int(pad_to or vocab.size)
+    from kagg.rl import jax_policy as P            # local: see the note at the top of the file
     width = P.MAX_QTY - 1
     ones_p = [width] * M.N_PRODUCTS
     ones_c = [width] * F.N_CROPS
@@ -417,6 +422,7 @@ def clamp_qty(n):
     indices under jit without raising -- so an unclamped label would train the head toward a class
     that exists and decode to something else entirely, with nothing to read anywhere.
     """
+    from kagg.rl import jax_policy as P            # local: see the note at the top of the file
     return int(max(0, min(int(n), P.MAX_QTY - 1)))
 
 
@@ -505,6 +511,15 @@ def load_vocab(path=DEFAULT_VOCAB, max_size=None):
             "artifact, not a constant, and guessing one silently re-indexes every market decision."
             % p)
     raw = json.loads(p.read_text())
+    # **Index 0 means DO NOTHING.** `Vocabulary.index` returns 0 for any basket it does not hold,
+    # so a file with a real basket at entry 0 breaks in both directions at once: every unexpressible
+    # teacher turn is labelled as that basket, and every genuinely silent turn is too -- then the
+    # student plays it. `from_bundles` pins EMPTY; a file loaded here bypasses that, so check it.
+    if raw and raw[0]:
+        raise ValueError(
+            "vocabulary at %s has %r at index 0. Index 0 means 'place no orders' everywhere it is "
+            "read, so this file teaches that basket on every silent turn and plays it back. Put "
+            "the empty bundle first." % (p, raw[0]))
     n = int(max_size or _P.N_BUNDLES)
     if len(raw) > n:
         raise ValueError("vocabulary at %s has %d bundles against a %d-wide head: %d bundles could "

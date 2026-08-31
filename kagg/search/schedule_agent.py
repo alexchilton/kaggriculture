@@ -4053,6 +4053,57 @@ def _replay_opening(days, tape=None, team=None):
     return out
 
 
+#: **Sell the shed once a day, hold the herd's wheat, release it at the end.**
+#:
+#: Measured 2026-08-28, 3 seeds, 719 turns, idle opponent, `REPLAY_OPENING_DAYS = ()`:
+#:
+#:     planner's own market                        150,396
+#:     sell-all EVERY turn, keep 20 wheat           74,180
+#:     sell-all at h16 only, keep 20 wheat         145,629
+#:     sell-all at h16, reserve released from d26  147,368
+#:
+#: **The cadence is the lever, not the basket.** The same goods sold once a day instead of every
+#: turn is worth +$71,449: selling every turn walks our own price down, the mechanism that took WOOL
+#: from $239 to $11 on 57 units. The terminal release is +$1,739, because past the last yield the
+#: wheat cannot become milk or wool, only cash.
+#:
+#: **This still loses to the planner's own sell logic** (147,368 against 150,396, on all three
+#: seeds) and is shipped on Alex's instruction to put it on the ladder and see. The idle opponent
+#: makes every figure here uncontested, and a sell-cadence rule is exactly what changes when someone
+#: else sells into the same book.
+SELL_HOUR = 16
+SELL_KEEP_WHEAT = 20
+SELL_RELEASE_FROM_DAY = 26
+
+
+def _sell_the_shed_once_a_day(agent, me=0):
+    """Strip the agent's own SELLs and offer the shed once a day instead.
+
+    Everything else it asked for -- hires, land, seed, feed buys -- passes through untouched. That
+    is not cosmetic: replacing the whole market list deletes the economy and banks exactly the
+    $3,000 start on every seed, because nothing is ever planted.
+    """
+    def wrapped(obs, config=None):
+        act = agent(obs, config)
+        day = int(obs.get("day", 0) or 0)
+        hour = int(obs.get("hour", 0) or 0)
+        keep = 0 if day >= SELL_RELEASE_FROM_DAY else SELL_KEEP_WHEAT
+        others = [o for o in (act.get("market") or []) if not (o and o[0] == "SELL")]
+        mine = []
+        if hour == SELL_HOUR:
+            shed = dict((obs.get("private") or {}).get("shed") or {})
+            for item, n in sorted(shed.items()):
+                n = int(n or 0)
+                if item == "WHEAT":
+                    n = max(0, n - keep)
+                if n > 0:
+                    mine.append(["SELL", item, n])
+        act["market"] = (mine + others)[:MAX_MARKET_ORDERS]
+        return act
+
+    return wrapped
+
+
 def make_agent(schedule, me=0, router=True):
     """`agent(obs, config) -> action`.
 
@@ -5930,7 +5981,7 @@ def make_agent(schedule, me=0, router=True):
         return wrapped
 
     if not REPLAY_OPENING_DAYS:
-        return _with_late_carrot(agent)
+        return _sell_the_shed_once_a_day(_with_late_carrot(agent), me)
 
     # **The tape supplies the unit actions and the SELL cadence. The buying stays ours.** The planner
     # is still driven on every replayed turn and its unit answer thrown away, so its pins, pen
@@ -6160,4 +6211,6 @@ def make_agent(schedule, me=0, router=True):
 
         return {"farmer": acts[0], "hands": acts[1:], "market": orders}
 
+    # NOT wrapped: the tape supplies its own SELL cadence (see the note at the replay
+    # branch above) and substituting ours there has never been measured.
     return _with_late_carrot(replayed)
