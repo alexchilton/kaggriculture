@@ -1,0 +1,7 @@
+kaggle-environments>=1.32.7
+numpy
+
+# Training only -- the shipped submission is pure numpy and needs none of this.
+# jax
+# flax
+# optax
