@@ -7,15 +7,46 @@ Two-player farming sim, 720 turns, most money in the bank wins.
 
 ## Status
 
-**2026-08-08.** What ships is a closed-loop schedule agent: a per-day schedule of counts, a
-covering day planner (`kagg/search/cover.py`), and an executor that reads `obs` every turn rather
-than predicting state. HEAD on seed 11 with weeds off banks **$120,424 against the reference tape's
-$116,635** over the full 30 days, with zero animals lost — but the *contested* head-to-head still
-loses both seatings, so that is not a ladder result. See `docs/REGISTER.md`.
+**2026-08-31, and this is where the work stopped.**
 
-The RL track is parked; the reason is in `docs/what_kind_of_problem_this_is.md`.
+What ships is a **tape replayer**, not a planner. `REPLAY_OPENING_DAYS = tuple(range(30))`
+(`kagg/search/schedule_agent.py:3919`) replays a recorded human player's actions for all 30 days,
+choosing between four recordings on two closed-loop bits — whether the opponent holds 9+ melon
+tiles at day 3, and whether the yarn store is open by day 5. The planner
+(`kagg/search/cover.py`) still runs every turn, and its answer is discarded.
+
+Measured against 24 recorded ladder opponents, both seatings, 576 games, replicated on two seed
+ranges:
+
+| arm | win rate | mean ours | mean theirs |
+|---|---|---|---|
+| tape (`range:30`, ships) | **95.5%** | 99,288 | 65,988 |
+| planner (`range:0`) | 82.3% | 97,881 | 76,374 |
+
+It wins by **suppressing the opponent**, not by earning more: our own money moves +$1,407 between
+arms while theirs drops −$10,386. That is why an idle-opponent measurement inverts the answer —
+and it did, reading the planner $15,483 *ahead*. Never evaluate this agent against an idle or
+non-selling opponent.
 
 **Leaderboard scoring is Elo, starting at 600.** Winning matters; margin does not.
+
+### The learned track is closed
+
+Behaviour cloning of the tape agent reproduces it exactly *with the teacher driving* — 1.0000
+unit-op agreement on 64 towns across all four latch arms, and 8 of 13 unseen towns exact
+op-for-op through day 11. Driving itself under sampling it banks a median **$16**.
+
+The gap is not confidence (geometric-mean p(teacher action) is 0.99958); it is distribution shift.
+DAgger cannot close it, because the teacher is time-indexed `TAPE[key][step]` and answers "at turn
+t do X" for a board the student is no longer standing on. PPO cannot start from it, because at
+update 0 — before any gradient step — the sampled policy already banks $16.
+
+Read `docs/fable_after_the_bc_ceiling_2026-08-31.md` for the decision and
+`docs/tape_arm_and_first_tape_sweep_2026-08-31.md` for the measurements behind it.
+
+The numpy port (`kagg/rl/numpy_obs.py`, `numpy_act.py`, `kagg/agents/numpy_neural.py`) is finished
+and pinned exact against the jax path, so a net *can* ship with no jax or flax. Nothing currently
+needs it.
 
 ## Start here
 
