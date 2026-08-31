@@ -109,13 +109,28 @@ def main():
     ap.add_argument("--workers", type=int, default=14)
     args = ap.parse_args()
 
-    values = [float(v) if "." in v else int(v) for v in args.values.split(",") if v.strip()]
+    # `range:N` -> `tuple(range(N))`, so a flag whose value is a day tuple can be swept.
+    # `REPLAY_OPENING_DAYS` is the one that matters: `schedule_agent.py:5983` only tests it for
+    # truthiness, but `:6013` passes it to `_replay_opening`, so an int 30 raises there. The two
+    # arms are `range:0` (the planner reads the live board) and `range:30` (kawa's recorded actions
+    # for the whole season, which is what ships).
+    def _value(v):
+        v = v.strip()
+        if v.startswith("range:"):
+            return tuple(range(int(v.split(":", 1)[1])))
+        return float(v) if "." in v else int(v)
+
+    def _label(v):
+        return "range:%d" % len(v) if isinstance(v, tuple) else v
+
+    values = [_value(v) for v in args.values.split(",") if v.strip()]
     seeds = list(range(args.first_seed, args.first_seed + args.seeds))
     field = _opponents(args.opponents, args.min_money)
     jobs = [(args.flag, v, s, f, sw, args.module)
             for v in values for s in seeds for f, _t, _m in field for sw in (False, True)]
 
-    print(f"{args.flag} {values} against {len(field)} recorded ladder opponents")
+    print(f"{args.flag} {[_label(v) for v in values]} against {len(field)} "
+          f"recorded ladder opponents")
     print(f"seeds {seeds[0]}-{seeds[-1]}, both seatings, weeds at the env default = {len(jobs)} games")
     print(f"field: {', '.join(t for _f, t, _m in field[:8])}"
           f"{' ...' if len(field) > 8 else ''}\n")
@@ -130,20 +145,20 @@ def main():
         per[value].append((mine, theirs))
         per_opp[(value, opp)].append((mine, theirs))
 
-    print(f"  {'value':>6} {'games':>6} {'win':>7} {'draw':>6} {'mean ours':>11} "
+    print(f"  {'value':>8} {'games':>6} {'win':>7} {'draw':>6} {'mean ours':>11} "
           f"{'mean theirs':>12} {'mean margin':>12}")
     for v in values:
         rs = per[v]
         w = sum(1 for m, t in rs if m > t)
         d = sum(1 for m, t in rs if m == t)
-        print(f"  {v:>6} {len(rs):>6} {w / len(rs):>6.1%} {d / len(rs):>5.1%} "
+        print(f"  {_label(v)!s:>8} {len(rs):>6} {w / len(rs):>6.1%} {d / len(rs):>5.1%} "
               f"{statistics.mean(m for m, _ in rs):>11,.0f} "
               f"{statistics.mean(t for _, t in rs):>12,.0f} "
               f"{statistics.mean(m - t for m, t in rs):>12,.0f}")
 
     names = {f: t for f, t, _m in field}
     print(f"\n  win rate per opponent")
-    print(f"  {'opponent':<26}" + "".join(f"{v:>10}" for v in values))
+    print(f"  {'opponent':<26}" + "".join(f"{_label(v)!s:>10}" for v in values))
     for f, t, _m in field:
         cells = []
         for v in values:

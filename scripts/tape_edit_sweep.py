@@ -317,6 +317,14 @@ def edited_openings(edits):
     `edits` must be a tuple of tuples so it can be cached; an arm is asked for hundreds of times
     across a grid and the answer never changes.
     """
+    # **An `Arm` is not a tuple of edits, and iterating one yields its FIELDS.**
+    # `season` passes the `Arm` straight in, so `for e in edits` walked
+    # `("control", (), (), ())` and `()[0]` raised IndexError -- on the control arm, which means
+    # every arm. Normalise here rather than at the call site: this is the function that documents
+    # `edits` as "a tuple of tuples", so it is the one that should enforce it.
+    if isinstance(edits, Arm):
+        edits = tuple(edits.opening) + tuple(edits.wrappers)
+
     # A "retape" edit re-points a LATCH KEY at a different recording before any op edit runs.
     # A "retape" edit re-points a latch key either at another KEY's opening or at a FILE.
     remap = {e[1]: e[2] for e in edits if e[0] == "retape"}
@@ -466,6 +474,7 @@ def season(edits, seed, opponent, weeds, base_tape, stop_day=None):
             a = SA.make_agent(thin, 0, router=True)
         finally:
             SA.EMBEDDED_OPENINGS = saved
+        a = _apply_wrappers(a, edits)
         a = E.surplus_sells(a, products) if products else a
         return lambda o, t: a(o)
 
@@ -495,6 +504,46 @@ def season(edits, seed, opponent, weeds, base_tape, stop_day=None):
     return last["money"], theirs[0], crops, ops
 
 
+def _apply_wrappers(agent, edits):
+    """Wrap `agent` with the arm's runtime wrappers, outermost-last.
+
+    **This was missing entirely.** `Arm.wrappers` was declared, populated by `arm()` and stored,
+    and then nothing ever read it: `edited_openings` skips every wrapper op with `continue`
+    (`:355`), and `season.mine()` applied only `surplus_sells`. The class docstring names a
+    `build_agent` that "decided which runtime wrappers it got" and no such function exists in this
+    file. So every wrapper-only arm -- all `herd_*`, `cow_*`, `sheep_*`, `cowshift_*`, `topup_*`,
+    `cond_carrot_*`, `x_cow` -- ran as a byte-identical copy of the control and would have reported
+    a measured null.
+
+    The operators themselves were never missing; they are in `kagg/search/tape_edit.py`. Only the
+    wiring between the arm table and them was gone.
+
+    An unknown wrapper raises. A sweep that silently ignores an arm it does not understand is the
+    failure this whole function exists to undo.
+    """
+    if isinstance(edits, Arm):
+        edits = tuple(edits.wrappers)
+    for e in edits:
+        kind = e[0]
+        if kind == "topup":
+            _, days, hour, prods = e
+            agent = E.top_up_at_hour(agent, prods, hour, from_day=min(days))
+        elif kind == "herd":
+            _, mode, day = e
+            agent = E.herd_species(agent, mode, decide_day=day, me=0)
+        elif kind == "herdshift":
+            _, delta, from_day = e
+            agent = E.herd_shift(agent, delta, from_day=from_day, me=0)
+        elif kind == "condcarrot":
+            _, drain_min, opp_max = e
+            agent = E.carrot_when_it_pays(agent, drain_min=drain_min, opp_tiles_max=opp_max, me=0)
+        elif kind in ("swap", "sellhour", "addland", "retape"):
+            continue                       # static opening edits; applied in `edited_openings`
+        else:
+            raise ValueError("unknown wrapper %r" % (e,))
+    return agent
+
+
 def _job(spec):
     """One (opponent, arm, seed) season. Top level so `multiprocessing` can pickle it."""
     opp_name, opp, arm_name, edits, seed, weeds, base_tape, days = spec
@@ -515,6 +564,10 @@ def main():
     ap.add_argument("--base-tape", default="kawashigi")
     ap.add_argument("--days", type=int, default=None, help="stop early; default is the full season")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
+    ap.add_argument("--out", default=None,
+                    help="CSV written one row per finished season, flushed immediately. Without "
+                         "it a killed sweep prints nothing at all -- 29,568 planned seasons once "
+                         "produced 0 rows here for exactly that reason.")
     args = ap.parse_args()
 
     pool = load_pool()
@@ -540,12 +593,29 @@ def main():
     jobs = [(o, opponent_spec(o, pool), n, all_arms[n], s, args.weeds, args.base_tape, args.days)
             for o in opps for n in names for s in args.seeds]
 
+    # The header goes down BEFORE the pool starts, and every row is flushed as it lands. A sweep
+    # that writes at the end is a sweep that returns nothing when it is killed.
+    csv = None
+    if args.out:
+        path = pathlib.Path(args.out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        csv = open(path, "w", buffering=1)
+        csv.write("opponent,arm,seed,money,theirs,margin,weed,plant\n")
+        print("rows       %s (flushed per season)" % path, flush=True)
+
     got, t0 = {}, time.time()
     with multiprocessing.Pool(args.jobs) as mp:
         for k, (o, n, s, money, theirs, weed, plant) in enumerate(mp.imap_unordered(_job, jobs), 1):
             got[(o, n, s)] = (money, theirs, weed, plant)
+            if csv is not None:
+                csv.write("%s,%s,%d,%.0f,%.0f,%.0f,%d,%d\n"
+                          % (o, n, s, money, theirs, money - theirs, weed, plant))
+                csv.flush()
+                os.fsync(csv.fileno())
             if k % 25 == 0 or k == len(jobs):
                 print("  %4d/%d   %5.0fs" % (k, len(jobs), time.time() - t0), flush=True)
+    if csv is not None:
+        csv.close()
 
     # **Scored on MARGIN, not on money.** Measured 2026-08-21: the tomato arm is +$4,846 on our own
     # bank and -$5,546 on `ours - theirs`, because planting less wheat leaves the wheat book thinner
