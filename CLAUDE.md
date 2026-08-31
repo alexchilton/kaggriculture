@@ -208,7 +208,6 @@ All of it is either MET or CLOSED. Three things still bind:
   which our own sims did not have — `kagg/sim/market.py` died on `KeyError: 'hinge'` and
   `kagg/sim/jax_sim.py` would have priced all three at flat base **in silence**.
   Any baseline measured before 2026-08-15 describes a different game. See
-  `docs/balance_change_eggs_tomatoes_carrots_2026-08-15.md` and
   `tests/test_the_market_curve_matches_the_reference.py`, which pins our curve to `reference/`.
 - **5 submissions per day.** Always test locally in the arena before submitting.
 - Credentials are at `~/.kaggle/kaggle.json`. Never print or commit them.

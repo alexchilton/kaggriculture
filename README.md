@@ -63,10 +63,7 @@ Then, in this order:
 | `docs/REGISTER.md` | The live open/closed list |
 | `docs/experiment_log.md` | **Every experiment, its score, and what it taught** |
 | `docs/economics_q5_findings.md` | **Measured** economics: yields, drain, allocation, selling |
-| `docs/the_field.md` | What the opponents actually do, measured from replays |
-| `docs/what_kind_of_problem_this_is.md` | The problem class, and what each clause rules out |
 | `docs/rl_feasibility.md` | The RL track: what it measured, and why it is parked |
-| `docs/throughput_measurements.md` | **Measured** env throughput |
 
 `reference/` holds the competition docs and the **full environment source**.
 `reference/kaggriculture.py` is ground truth for every rule question — read it rather than
@@ -84,7 +81,6 @@ guessing, and trust it over the README where they disagree.
    the earlier 1163 figure was a dev-Mac rate and is 2.4x optimistic.
    10B env steps, which is what competitive runs in the comparable previous competition used,
    would take **27 days**. The vectorized sim is required, not optional.
-   See `docs/throughput_measurements.md`.
 
 ## Layout
 
