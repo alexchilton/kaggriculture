@@ -90,10 +90,15 @@ kagg/search/      the shipping agent: cover.py (day planner), schedule_agent.py 
 kagg/arena/       match running, and the opponent pool -- the measurement tools
 kagg/economics/   offline market and production models, parity-tested
 kagg/agents/      hand-written agents, used as sparring partners and pool members
-kagg/rl/          the parked RL track
+kagg/il/          imitation: the tape teacher, replay loading, and the market-bundle
+                  vocabulary that turns nine correlated order heads into one categorical
+kagg/rl/          the policy (flax transformer, 965,711 params), its observation encoder
+                  and action masks -- AND an exact numpy reimplementation of all three,
+                  so a trained net can ship in one file with no jax and no flax
 kagg/sim/         batched simulator (numpy + JAX), 30-200x, end-to-end parity exact
-scripts/          benchmarks, analyses, probes, submission builders
-submission/       generated; build with scripts/build_planner_submission.py
+scripts/          benchmarks, analyses, probes, submission builders. Each is named as the
+                  question it answers, and holds the answer in its module docstring
+submission/       generated, and not tracked -- see submission/README.md
 docs/             findings and decisions -- docs/README.md is the index
 reference/        competition docs and the full env source (ground truth)
 data/             git-ignored scratch for replays, runs, checkpoints, logs
