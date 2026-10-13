@@ -12,12 +12,22 @@ They do NOT carry across PLANS: the previous generation was solved against the v
 skipped. That stale quarter was still worth +$20,365 against no precomputation at all, which is the
 measure of how much the geometry alone is worth and why regenerating was worth doing.
 
-Regenerated 2026-08-19 by `scripts/resolve_days.py`, IN DAY ORDER: each solved day changes the next
+Regenerated 2026-09-11 by `scripts/resolve_days.py`, IN DAY ORDER: each solved day changes the next
 day's board, so every fixture is dumped with all earlier routes already installed. Re-run that
 script rather than editing this file or dumping a fixture by hand.
 """
 
 SOLVED_DAYS = {
+    7: {
+        0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((2, 3), ('WATER',)), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 3), ('HARVEST',))],
+        1: [((5, 4), ('BUILD',)), ((5, 3), ('BUILD',)), ((4, 2), ('BUILD',)), ((4, 2), ('PLACE', 'FEED', 'CARE')), ((4, 1), ('FEED', 'CARE', 'COLLECT_FERTILIZER'))],
+        2: [((4, 3), ('WATER',)), ((3, 2), ('WATER',)), ((3, 1), ('WATER',)), ((3, 0), ('WATER',)), ((2, 0), ('WATER',)), ((2, 1), ('WATER',)), ((1, 1), ('WATER',)), ((0, 1), ('WATER',)), ((0, 3), ('WATER',)), ((0, 4), ('WATER',))],
+        3: [],
+        4: [((1, 4), ('PLACE', 'FEED', 'CARE')), ((1, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((1, 2), ('WATER',)), ((1, 0), ('WATER',)), ((0, 0), ('WATER', 'HARVEST', 'PLANT', 'WATER'))],
+        5: [((6, 4), ('BUILD',)), ((7, 4), ('BUILD',)), ((6, 3), ('BUILD',)), ((7, 2), ('PLANT', 'WATER')), ((6, 1), ('PLANT', 'WATER'))],
+        6: [],
+        7: [],
+    },
     12: {
         0: [((4, 4), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((4, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST')), ((5, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((6, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((7, 3), ('WATER',)), ((9, 3), ('WATER', 'HARVEST'))],
         1: [((5, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((4, 2), ('FEED', 'CARE', 'COLLECT_FERTILIZER')), ((3, 2), ('WATER',)), ((3, 3), ('FEED', 'CARE', 'COLLECT_FERTILIZER', 'HARVEST'))],

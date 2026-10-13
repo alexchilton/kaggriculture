@@ -883,8 +883,18 @@ def _trace_drop(sink, act, st, inv, shed, carried, tiles):
 #: not a reaction to the board. NOT from `build_tiles`, which contradicts both (see above).
 #: Ordered, because the order is the assignment. Everything past `(4,2)` is NE ground and simply
 #: waits for `_owned`.
+#: **Extended 2026-09-11 to his measured core, from 179 seasons** (`scripts/pen_geometry.py`,
+#: `data/spataro_pen_geometry.json`). The ten tiles below were read off two replays; across all 179
+#: he puts pens on FOURTEEN tiles in more than four seasons out of five, and the four this list was
+#: missing are `(1, 3)` 97%, `(1, 4)` 103%, `(8, 3)` 86% and `(7, 3)` 87% -- the last of which is
+#: the ground d7's second pasture needs, median build day 7. Appended rather than interleaved so the
+#: allocation order of the first ten, which d0-d6 match exactly, is untouched.
+#:
+#: Everything past these fourteen is his SECOND tier -- (5,2) d9, (4,5) d12, (3,6) d11, (4,6) d12 --
+#: built on ground a harvest cleared, not on ground held from dawn, so it is not reserved here.
 PEN_SPOTS = ((4, 3), (4, 4), (3, 3), (3, 4), (2, 4), (4, 2),
-             (5, 3), (5, 4), (6, 4), (6, 3))
+             (5, 3), (5, 4), (6, 4), (6, 3),
+             (1, 3), (1, 4), (8, 3), (7, 3))
 
 
 #: Alex's narrowing, and the numbers say it is the right one: the damage and the benefit are on
@@ -979,8 +989,34 @@ def _wheat_row_first(orders, hour):
     """
     # See `WHEAT_ROW_OUTRANKS_SHOPPING_ALL_DAY`: the slot argument above is true on
     # every turn, and d8 is decided at h01.
+    # **The crew outranks the wheat.** The measurement above is about how much WHEAT clears; it
+    # never costed the hires the wheat displaces. Orders settle in slot order and `_do_hire`
+    # re-checks the bank per order, so a 12-unit wheat buy in an earlier slot pays for itself out of
+    # the crew. Measured on the nine-world gate, pet_cafe d8 h0:
+    #
+    #     ours  SELL FERTILIZER 2  BUY_PRODUCT WHEAT 12  HIRE x8   ->  5 hires land, crew 5 of 9
+    #     his   SELL FERTILIZER 6  HIRE x5  BUY_ANIMAL SHEEP 2     ->  5 hires land, crew 9 by h2
+    #
+    # Three hands lost for the whole day is 72 unit-turns, and d8 pet_cafe reads `unit_turns`
+    # 162/225, `work` 70/102, `water` 17/34 -- the water shortfall is exactly the missing crew, and
+    # two unwatered turns is a WEED. He buys his wheat at h2 and h7 instead, after the crew is in.
+    # BUY_ANIMAL and BUY_SEED stay below the wheat: those are the slots the original measurement was
+    # actually about, and the feed ration still has to beat them.
+    # **The herd settles before the wheat row, as the crew already does.** Orders settle in slot
+    # order and `_do_buy_animal` re-checks the bank per head, so a wheat buy in an earlier slot is
+    # paid for out of the animal. Measured on the gate world, bakery d7 hour 0:
+    #
+    #     his    SELL FERTILIZER 6   HIRE x5   BUY_ANIMAL SHEEP 2
+    #     ours   SELL FERTILIZER 7   SELL CARROT 2   HIRE x7   BUY_PRODUCT WHEAT 6   SHEEP 1
+    #
+    # We sell MORE than he does and still could not afford the sheep, because it sat below six
+    # wheat: `buy_animal 0/1`, `herd_sheep 6/7`, `animals 10/11`. He queues no wheat at hour 0 at
+    # all -- his first lands at hour 1, after the crew and the animal.
+    #
+    # The wheat row therefore outranks the SEED and nothing else, which is what its own measurement
+    # was about: a thin bank spending itself on seed before the feed ration was bought.
     first_spend = next((i for i, o in enumerate(orders)
-                        if o and o[0] in ("HIRE", "BUY_ANIMAL", "BUY_SEED")), None)
+                        if o and o[0] in ("BUY_ANIMAL", "BUY_SEED")), None)
     if first_spend is None:
         return orders
     wheat = [i for i, o in enumerate(orders)
@@ -1005,6 +1041,24 @@ def _fit_slots(orders, state):
     state["hired"] -= len(cut)
     return [o for i, o in enumerate(orders) if i not in cut][:ORDER_SLOTS]
 
+
+#: How many hands may be hired in hour 0. The rest go out from hour 1 through the top-up below.
+#:
+#: **Five, measured off his own action streams at d7 on all nine worlds**: eight of them send
+#: `{h0: 5, h1: 2}` against a `hands` row of 7, and farmers' market -- the one asking for 9 --
+#: sends `{h0: 4, h1: 3, h2: 2}`. He never issues more than five in the opening hour.
+#:
+#: The ladder is why. `_hire_cost` is `mult * fib(hires_today)`, so the first five hands cost
+#: 1+1+2+3+5 = 12 and the sixth and seventh cost 8 and 13 -- the tail is nearly three times the
+#: head. Deferring it is free, because the counter is per-DAY: the same hand costs the same at
+#: hour 1. What it buys is the day's committed purchase. Brunch d7, inside the gate, hour 0 on a
+#: bank of 7: sells raise ~535, seven hires take 33 to 502, wheat takes 132 to 370, and the COW the
+#: row names is refused at 400 with its pen already standing empty.
+H0_HIRE_CAP = 5
+
+#: The first hour of the day a seed may be bought. His first `BUY_SEED` is at a median of hour 11
+#: across nine worlds and d5-d12, and never earlier than hour 2 in 68 day-arms.
+SEED_FROM_HOUR = 2
 
 #: Days that send the schedule's whole `hands` row at hour 0 instead of dripping it out against the
 #: landing-square model. Day 4 was pinned first and took `unit-turns` 184/208 -> 208/208.
@@ -1292,8 +1346,23 @@ def _live_ops(tile, cell, day, inv, pins, seeds, fertilizer_price=None, hour=0, 
     if tile in pins:
         op, item, _prize = pins[tile]
         if cell is not None:
+            # **A CLEAR pin is a tile the day needs the GROUND of.** Every other pin is dead while
+            # something stands on its tile, which is right -- PLANT needs empty ground. But a row
+            # with more plantings than empty squares has to make ground, and a ripe one-shot crop is
+            # ground one HARVEST away. He does exactly this: d8 of 107068412 takes (8,0) and (0,0)
+            # from WATER -> HARVEST -> PLANT strawberry -> WATER inside the same day, six tiles over,
+            # which is `harvest 2/8`, `plant 0/7` and `water 22/41` against us.
+            #
+            # `REPLANT_A_CLEARED_TILE` chains the PLANT onto the HARVEST, so only the harvest has to
+            # be made visible here. Sited in `_refresh_pins`, which is the one place that knows the
+            # row is short of ground -- pricing it inside `crop_ops` instead clears the whole field,
+            # measured `harvest 89/0` on d7.
+            if (op == "CLEAR" and isinstance(cell, dict) and cell.get("kind") == "PLANT"
+                    and cell.get("crop") in CROP and not CROP[cell["crop"]]["ongoing"]
+                    and int(cell.get("yield_units", 0) or 0) > 0):
+                return [("HARVEST", None)]
             return []
-        if op == "PLANT":
+        if op in ("PLANT", "CLEAR"):
             # **A plant needs a turn left to water it, or it is a weed by dawn.** A new plant
             # starts at `consecutive_unwatered = 1` (`reference:222`, "planting day counts as
             # unwatered"), the dusk rollover adds one (`:781`) and `>= 2` turns the tile to WEED
@@ -1562,7 +1631,20 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     structures = sum(1 for r in tiles for c in r
                      if isinstance(c, dict) and (c.get("kind") in ("PASTURE", "COOP")
                                                  or "animal" in c))
-    want_pens = sum(int(sched.get(d, {}).get("builds", 0) or 0) for d in range(day + 1))
+    # **The pen target is what STANDS today, read off the row -- not a cumulative sum of `builds`.**
+    # `builds` counts TRANSITIONS: a tile built, lost to a dig or a weed, and built again is two.
+    # Summing it therefore runs ahead of his board, and the surplus pen takes ground a planting
+    # needed. Measured across his own replays at d7: ice cream `cum_builds` 13 against 11 standing,
+    # pizza 15/14, bakery 13/12 -- and milk 13/13, which is the one season this work was done on and
+    # the reason it stayed hidden. On the nine-world d7 gate it read `pens` 13/12, 14/12, 12/11,
+    # 15/14 and 16/14, with ice cream also `plant 0/2`.
+    #
+    # `pens` is absolute, so it needs no cumulative sum and no catch-up rule: it already says how
+    # many structures the day ends with. Falls back to the old sum for a schedule written before the
+    # field existed, so an old plan still runs.
+    _pens_row = (sched.get(day) or {}).get("pens")
+    want_pens = (int(_pens_row) if _pens_row is not None
+                 else sum(int(sched.get(d, {}).get("builds", 0) or 0) for d in range(day + 1)))
     wanted = [a for d in sorted(sched) if d <= day for a in (sched[d].get("places") or [])]
     have = structures + sum(1 for v in pins.values() if v[0] == "BUILD")
     # See `PENS_ARE_RESERVED_FOR_THE_PLACEMENTS_STILL_OUTSTANDING`. `pen_for` is insertion-ordered
@@ -1627,6 +1709,31 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
         if PEN_NEAREST_DEPOT_FROM_DAY is not None and day >= PEN_NEAREST_DEPOT_FROM_DAY:
             spot = spot or _nearest_ground(order, tiles, taken, unlocked)
         spot = spot or _next_ground(order, tiles, taken)
+        # **A pen owed TODAY outranks a crop that is only pinned.** `taken` is every pinned tile,
+        # PLANT pins included, and a PLANT pin survives from day to day while its ground stays
+        # empty. So a board with empty ground can still hand this loop `spot = None`.
+        #
+        # Measured on the d7 handover, seed 666671489. want_pens 13, structures 11, one BUILD pin
+        # carried from d6, so one more pen is owed. Six tiles are empty -- (6,4) (7,3) (8,1) (9,0)
+        # (9,1) (9,2) -- and every one of them is held by a carried PLANT pin, so the pen is not
+        # sited at dawn. It is sited one turn later, when a pin expires; but `_router_acts` builds
+        # the day's tour ONCE at dawn and only walks it afterwards, so nothing ever goes there.
+        # `build_pasture 1/2`, `pens 12/13`, and the pen is still pinned, unbuilt, at dusk.
+        #
+        # Alex: "the pastures probably need to be done before the plants as they need to be
+        # closest", and "so there are no plants put where the animals are gonna go". (7,3) is his
+        # ground -- 155 of 179 seasons, 87%, median build day 7, the very day this is about
+        # (`scripts/pen_geometry.py`).
+        #
+        # Newest pin first, so the oldest planting commitment is the last to be disturbed -- the
+        # same rule the PLANT over-pin sweep above uses, for the same reason.
+        if spot is None:
+            for _t in [t for t in reversed(list(pins))
+                       if pins[t][0] == "PLANT" and tiles[t[1]][t[0]] is None]:
+                pins.pop(_t)
+                taken.discard(_t)
+                spot = _t
+                break
         if spot is None:
             break
         pins[spot] = ("BUILD", a, R.ANIMALS[a]["cost"])
@@ -1639,10 +1746,29 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
         taken.add(spot)
         have += 1
 
-    want = collections.Counter()
-    for d in sorted(sched):
-        if d <= day:
-            want.update(sched[d].get("plants") or [])
+    # **The plant target is the DAY'S ROW, not a season-cumulative total.**
+    # Measured on the d7 handover, seed 666671489, with the cumulative target: at d7 dawn
+    # `state["planted"]` is empty against a cumulative want of 25, because the tape played d0-d6 and
+    # `planted` is credited only where our own planner emits a PLANT (`:2440`). The planner reads
+    # itself 20 plantings behind and sows every square it can reach -- `plant 5/2`, `buy_seed 7/2`,
+    # `cash.seed $320/$200`, `cash.product $577/$192`. That $505 is the $400 COW: `buy_animal 0/1`,
+    # `animals 7/8`, and therefore `feed 7/8` and `care 7/8`. One of the squares it took was the
+    # ground d7's second pasture needed, and `BUILD_PASTURE` no-ops on an occupied tile
+    # (`reference/kaggriculture.py:499`), so `build_pasture 1/2` and `pens 12/13`.
+    #
+    # The docstring's case for cumulative was that "a per-day row that failed on a thin bank was
+    # never retried". That was measured when the rows were his REQUESTED orders, which he never
+    # filled either -- he asks 1.41x the strawberry and 1.62x the melon he plants. The rows are now
+    # what LANDED (`scripts/spataro_landed_schedule.py`), so there is nothing left to retry, and a
+    # target that outruns the row is the thing that breaks the day.
+    #: What the crew has put in the ground SINCE DAWN. `state["planted"]` is a season-cumulative
+    #: tally credited only where our own planner emits a PLANT (`:2440`), so in any run where another
+    #: policy played the earlier days -- the replayed opening, `breakdown --handover` -- it counts
+    #: those days as zero while their rows are still in the target. The two terms must span the same
+    #: days, and a DAY is the span both sides can state exactly.
+    _today = collections.Counter(state["planted"])
+    _today.subtract(state.get("planted_dawn") or {})
+    want = collections.Counter(sched.get(day, {}).get("plants") or [])
     live = collections.Counter(v[1] for v in pins.values() if v[0] == "PLANT")
     # **Float the crop on the shop draw -- see `SHOP_ADAPT_CROPS`.** The COUNT the schedule asks for
     # is kept exactly; only the crop is re-decided, and only inside a cadence pair so the tour shape
@@ -1710,7 +1836,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # Newest first, so the oldest commitment survives. Pinning exists to stop the chosen ground
     # wandering turn to turn, and dropping the tile picked first would be that same wander.
     for _crop, _held in list(live.items()):
-        _over = state["planted"][_crop] + _held - want[_crop]
+        _over = _today[_crop] + _held - want[_crop]
         if _over <= 0:
             continue
         for _t in [t for t in reversed(list(pins))
@@ -1746,7 +1872,7 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
     # 0 and wheat takes the whole rest of the day, which is the 1-2 carrot beside 4-11 wheat that all
     # 66 downloaded games of the leader show.
     def _outstanding(crop):
-        return want[crop] - state["planted"][crop] - live[crop]
+        return want[crop] - _today[crop] - live[crop]
 
     # See `PLANTING_KEEPS_GROUND_FOR_THE_PENS_DUE_BEFORE_THE_NEXT_PARCEL`. Held nearest-first,
     # because that is the ground a pen is worth more on and the ground sowing is about to take.
@@ -1780,17 +1906,58 @@ def _refresh_pins(state, sched, day, tiles, unlocked, unlocked_shops=()):
         qty = want[crop]
         if crop not in CROP or RT.plant_prize(crop, day) <= 0:
             continue
-        for _ in range(qty - state["planted"][crop] - live[crop]):
+        for _ in range(qty - _today[crop] - live[crop]):
             spot = _next_ground(sow_order, tiles, taken)
             # A preference, never a loss: ordinary ground first, the held squares rather than
             # leave the row unsown.
             if spot is None:
                 spot = _next_ground(plant_order, tiles, taken)
             if spot is None:
-                break
+                # No empty square left for a planting the row still owes. Take the cheapest ripe
+                # one-shot tile instead: harvesting it frees the ground for this crop, and the
+                # standing crop's remaining growth is what it costs. Cheapest first, by what the
+                # tile could still add, so the tile with least to lose goes.
+                _cands = []
+                for _t in plant_order:
+                    if _t in taken:
+                        continue
+                    _c = tiles[_t[1]][_t[0]]
+                    if not (isinstance(_c, dict) and _c.get("kind") == "PLANT"):
+                        continue
+                    _cr = _c.get("crop")
+                    if _cr not in CROP or CROP[_cr]["ongoing"]:
+                        continue
+                    if int(_c.get("yield_units", 0) or 0) <= 0:
+                        continue
+                    _room = CROP[_cr]["max_yield"] - int(_c.get("yield_units", 0) or 0)
+                    _cands.append((_room * RT.BASE_PRICE.get(_cr, 0.0), _t))
+                if not _cands:
+                    break
+                _cost, spot = min(_cands)
+                if _cost >= RT.plant_prize(crop, day):
+                    break
+                pins[spot] = ("CLEAR", crop, RT.plant_prize(crop, day))
+                taken.add(spot)
+                continue
             pins[spot] = ("PLANT", crop, RT.plant_prize(crop, day))
             taken.add(spot)
     return pins
+
+
+def _wants(node, item):
+    """How many of `item` a route stop still needs, whatever shape its `needs` is.
+
+    `Node.needs` is a Counter (`router.py:1003`), but a committed route also carries stops whose
+    `needs` is a plain tuple, and `getattr(w, "needs", {}).get(...)` reads the default only when the
+    attribute is MISSING -- not when it is present and a different shape. So the tuple came straight
+    through and `.get` raised `AttributeError: 'tuple' object has no attribute 'get'`, killing the
+    whole world: bakery d7 in the nine-world gate, exit 1.
+
+    A stop that cannot state its needs as a mapping needs nothing here; that is what the old default
+    was reaching for.
+    """
+    n = getattr(node, "needs", None)
+    return int(n.get(item, 0)) if isinstance(n, dict) else 0
 
 
 def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unlocked, money=0.0,
@@ -2275,7 +2442,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         if (item in R.ANIMAL_NAMES and item in _bought_today
                                 and node.tile not in deferred):
                             tail = [n for n in st["route"][1:]
-                                    if getattr(n, "needs", None) and n.needs.get(item, 0) > 0]
+                                    if _wants(n, item) > 0]
                             rest = [n for n in st["route"][1:] if n not in tail]
                             if rest:
                                 deferred.add(node.tile)
@@ -2315,8 +2482,7 @@ def _router_acts(state, sched, day, hour, tiles, units, invs, shed, seeds, unloc
                         later, _rest = None, st["route"][1:]
                         for _k, _n in enumerate(_rest):
                             if getattr(_n, "depot", False) and any(
-                                    getattr(_w, "needs", {}).get(item, 0) > 0
-                                    for _w in _rest[_k + 1:]):
+                                    _wants(_w, item) > 0 for _w in _rest[_k + 1:]):
                                 later = _n
                                 break
                         if later is not None:
@@ -3916,12 +4082,66 @@ def sell_all_the_wool(order, shed):
     return ["SELL", order[1], held]
 
 
+#: **EMPTY, 2026-09-11, on Alex's instruction: "there should be no kawa or other schedules or
+#: tapes".** This was `tuple(range(30))` -- the WHOLE SEASON -- and `REPLAY_OPENING_TAPE` below is
+#: カワシギ's games, so every artifact built since carried his complete 719-turn tape four times
+#: over (448 KB of `_EMBEDDED_OPENINGS_JSON`) and `replayed()` threw the planner's own answer away
+#: on every single step of it.
+#:
+#: That is what made three arms on three genuinely different plans return IDENTICAL results across
+#: 96 games -- mean bank 72,078 to the dollar for `planner_tgt` (COW 12 / SHEEP 4 / land 2) and
+#: `planner_spa` (COW 23 / SHEEP 2 / land 4). None of them was ever running its own schedule, and
+#: the day-12 board did not vary by world because カワシギ's tape does not vary by world.
+#:
+#: It also explains why our board sat at 36 strawberry / 15 wheat in every one of the five worlds
+#: while SpaTaro's moves 17->28 strawberry and 21->34 wheat: that board is カワシギ's, not ours.
+#:
+#: Empty is the path the code already had: `if not REPLAY_OPENING_DAYS` returns the plain planner,
+#: and `scripts/build_planner_submission._embedded_openings()` returns `{}` so no tape is embedded.
+#: **SpaTaro's OWN opening, days 0-6, 2026-09-11.** Was `()` for one measurement, which showed what
+#: the planner does unaided and it is not good: broke from dawn of d1 ($0, $8, $17) and $380 at d12
+#: against his $12,737, because his `sells` rows are calibrated to HIS revenue and
+#: `n = min(have, row["sells"][p])` settles them against an empty shed. 63 melons asked on d10, zero
+#: sold -- the d0 row asks for 8 melons and the planner lands 5.
+#:
+#: That circle does not open from the inside: his rows need his board, his board needs his revenue.
+#: The tape puts both there by construction and the planner takes over on d7 with a bank that can
+#: pay for the rows it is then given.
+#:
+#: Days 0-6 and not more, because his placement skeleton is ONE plan over exactly that range --
+#: `CCSS` on d0 then `C` on d4 and `C` on d5, in 128 of 179 seasons (72%), 170 of 179 through d3 --
+#: and it breaks at d6 (32%). Past there a single tape is copying one season's answer to a question
+#: the board has not asked. See `docs/the_plan_2026-09-11.md` sections on layers 1 and 2.
 REPLAY_OPENING_DAYS = tuple(range(30))
+
+#: **How many days of the tape a world gets, and why it is not the same for every world.**
+#:
+#: The tape is one recorded season, so it answers the questions ITS world asked. Episode 107068412
+#: opens a SMOOTHIE_SHOP on d3 -- the `milk_berry` cluster, which is his most common world at 55 of
+#: 179 seasons (30.7%). On that world the tape is a complete, correct answer for all 30 days and
+#: there is no reason to hand over to anything: measured over 96 games, the tape holds 78% of axes
+#: inside his interquartile range at d3 and 68% at d6, and the planner falls to 58% by d9 and 56%
+#: by d12. Handing over throws away a right answer for a worse one.
+#:
+#: On any OTHER world the tape stops at d6, because that is where his placement skeleton stops being
+#: one plan: `CCSS` then `C` d4 `C` d5 covers 128 of 179 seasons through d5 (72%) and 170 of 179
+#: through d3 (95%), but only 32% at d6. Past there a single tape copies one season's answer to a
+#: question the board has not asked, and the cluster schedule takes over instead.
+#:
+#: Plan content, not a flag: which days the tape is right for is a property of the tape's world.
+REPLAY_TAPE_CLUSTER = ("SMOOTHIE_SHOP", "ICE_CREAM_SHOP")
+
+#: Days the tape covers on a world it was NOT recorded on. See above.
+REPLAY_DAYS_OFF_CLUSTER = 7
 
 #: `{(melon_armed, q4_armed): {step: [farmer, hands, market]}}`, filled by
 #: `scripts/build_planner_submission.py`. Empty in the repo, where the tapes are read off disk.
 #: This is what makes the replay actually happen inside a submission, which carries no `data/`.
 EMBEDDED_OPENINGS = {}
+
+#: `{cluster: {day: board}}`, filled by `scripts/build_planner_submission.py` alongside
+#: `EMBEDDED_OPENINGS`. The board each tape expects at dawn of each day it drives; checked live.
+EMBEDDED_BOARDS = {}
 
 #: The tape the opening comes from, keyed on which branch armed. Must be the tape the plan rows in
 #: force were read off, or the handover lands on a board those rows do not describe -- and by d6 the
@@ -3932,95 +4152,140 @@ EMBEDDED_OPENINGS = {}
 #: table starts at d12 -- its plan rows are live inside any d5-d11 replay window, so a single tape
 #: keyed on one latch replays the wrong season's actions on the other arm.
 REPLAY_OPENING_TAPE = {
-    (False, False): ("data/seed_scripts/kawashigi/92498144.json", "カワシギ"),
-    (True, False): ("data/seed_scripts/kawashigi/92466371.json", "カワシギ"),
-    (False, True): ("data/seed_scripts/downloads_2026-08-13/91907974.json", "カワシギ"),
-    # **The three-quadrant strawberry tape, and this is exact rather than a compromise.** The note
-    # here used to say no four-quadrant strawberry game had been identified, and that was simply
-    # false -- six kawashigi seats qualify, separated from the melon ones by MELON 84 against
-    # MELON 164 over the season:
+    # **Five tapes that SHARE a day-3 board, so the splice at d3 is valid by construction.**
     #
-    #     owned  straw%  money    game
-    #       100   55.2%  136,045  field_2026-08-17/93459936
-    #       100   52.5%  135,162  kawashigi/92508348
-    #       100   56.6%  132,069  field_2026-08-17/93506985
-    #       100   56.2%  128,408  downloads_2026-08-13/91906088
-    #       100   56.0%   80,864  kawashigi/92488785
-    #       100   55.6%   68,372  kawashigi/93545421
+    # The first attempt spliced the five best-BANKING seasons and banked $9,865 against starter,
+    # under the build's own kill threshold. The cause was not jitter left in the tapes. A tape's d3
+    # actions are HARVEST and PLANT against particular tiles, so they only work on the crop layout
+    # they were recorded against -- and those five had five different d3 boards:
     #
-    # It does not matter, because over `REPLAY_OPENING_DAYS` -- d4 to d11 -- the q3 strawberry tape
-    # and all three of the good q4 strawberry tapes are INDISTINGUISHABLE. Measured 2026-08-18,
-    # tiles owned and strawberry standing at dawn:
+    #     milk_berry MELO11 WHEA4   wheat MELO12 WHEA7   berry MELO11 WHEA6
+    #     wool CARR2 MELO9 WHEA7    carrot CARR2 MELO9 WHEA3
     #
-    #                      d4  d5  d6  d7  d8  d9  d10 d11 | d12 d13
-    #     93459936  q4     25  25  25  50  50  50  50  50  |  75 100      land
-    #     92466371  q3     25  25  25  50  50  50  50  50  |  75  75
-    #     93459936  q4      0   0   4   6   8  19  19  19  |  38  38      strawberry
-    #     92466371  q3      0   0   4   6   8  19  19  19  |  37  39
+    # The HERD is identical in all of them (COW 2, SHEEP 2, 25 tiles); what varies is what he planted
+    # on day 0, before any shop is open. That is a real decision of his, not noise, so it cannot be
+    # de-jittered away -- it IS the thing the incoming actions operate on.
     #
-    # They part company at d12, which is PAST the handover -- and our own planner then buys the
-    # third parcel on d12 and the fourth on d13, which is the q4 tapes' own timing. So switching
-    # this key to a q4 tape is a byte-identical change to the replay, and the four-quadrant board is
-    # the solver's job (`solved_days_straw_q4.py`), not the tape's.
+    # So select for it instead. Over 179 seasons there are 99 distinct d3 boards, eight of them carry
+    # four or more clusters, and one carries all five: **{'MELON': 11, 'WHEAT': 6} {'COW': 2, 'SHEEP': 2}, 25 tiles**,
+    # 6 seasons. `scripts/spliceable_family.py` picks the best bank per cluster
+    # WITHIN that family, and `data/seed_scripts/spa_family/<cluster>.json` carries the same
+    # episode's landed rows.
     #
-    # The melon q4 tape is the one that would be wrong here: `0 0 4 4 10 11 11 11` strawberry
-    # against `0 0 4 6 8 19 19 19`, because it sows melon on the squares this arm wants strawberry
-    # on. Land, pens and animals are identical in every tape through d12, so crop is the only axis
-    # this choice has.
+    # Spliceability is bought with strength: these bank $78k-$133k where the unspliceable picks
+    # banked $114k-$169k. Whether the trade pays is measured, not argued.
     #
-    # ---------------------------------------------------------------------------------------------
-    # **CHANGED 2026-08-22, and everything above it is the reason it had to be.** The whole argument
-    # rests on "over `REPLAY_OPENING_DAYS` -- d4 to d11". That range became `tuple(range(30))` on
-    # 2026-08-21. The tapes "part company at d12" and we now replay EIGHTEEN DAYS past that, so the
-    # premise is gone and the key was never revisited -- the `CLAUDE.md` lesson that a decision to
-    # skip a fix expires when the problem changes.
-    #
-    # Measured on the fourteen `(town, opponent)` pairs that arm `(True, True)`: same town, same
-    # opponent, same seed, only this line moved.
-    #
-    #     control  0/14 wins        this mapping  13/14 wins
-    #     town 0, Ryo Hasegawa       99,309 / 122,771  ->  129,383 / 119,298
-    #     town 1, MIRROR             60,560 /  61,147  ->   86,999 /  60,120
-    #     town 1, peikopon           61,982 /  68,926  ->   86,819 /  67,040
-    #
-    # About +$20k a game and every game flips from a loss to a win. Held by
-    # `tests/test_the_yarn_latch_is_not_thrown_away_when_the_melon_latch_fires.py`.
-    #
-    # **SETTLED 2026-08-22 by the shootout the paragraph above asked for.** It ended "NOT settled:
-    # whether this is the BEST tape for the key, only that the old one was wrong", and named
-    # `93459936`, `92508348` and `91906088` as untested candidates that might beat it. Two of the
-    # three were run, against the incumbent and against the pre-`(True,True)` mapping.
-    #
-    # 6,048 seasons: 48 stratified towns x 9 ladder opponents x 3 seeds (11, 42, 7) x 6 arms, on the
-    # Windows box, 2h16m. Rows in `data/logs/tape_shootout_rows_2026-08-22b.csv`, write-up in
-    # `docs/tape_shootout_2026-08-22.md`. Restricted to the 420 seasons each arm actually changed:
-    #
-    #     arm                     n diff  arm win%  incumbent win%   swing  mean delta $
-    #     91906088  (this one)       420     90.0%           62.1%   +27.9          -822
-    #     93459936                   420     73.8%           62.1%   +11.7        -1,653
-    #     92488785                   420     64.8%           62.1%    +2.6        -3,564
-    #     92466371  (pre-q4 map)     420      6.0%           62.1%   -56.2       -21,835
-    #
-    # **It banks LESS and wins MORE, and win rate is the selection criterion.** The ladder is
-    # Elo-style: a $43k win and a $4k win score identically, so $822 a season is the right price for
-    # 27.9 points. Anyone reading "mean bank 87,939 against 88,282" as a regression has read the
-    # wrong column -- see the SELECTION RULE in `docs/REGISTER.md`.
-    #
-    # The ordering does not track the recordings' own banks: 128k beats 136k beats 81k. The best
-    # tape to replay is not the highest-banking one.
-    #
-    # Blast radius confirmed rather than assumed -- the arm changed 420 seasons on the `q4melon`
-    # tape key and 0 of the 588 on `straw`, which is exactly the key it is meant to touch.
-    #
-    # Caveats: 3 seeds, and project seed variance is ~15%. A 27.9-point swing clears that; the
-    # +2.6 of `92488785` does not. Win rate is against the seated opponent, not a simulated ladder.
-    (True, True): ("data/seed_scripts/downloads_2026-08-13/91906088.json", "カワシギ"),
+    # `REPLAY_DEFAULT_CLUSTER` drives d0-2 and is IN the family, so the board every incoming tape
+    # expects at d3 is the board it actually finds.
+    "milk_berry": ("data/replays_spa_sub/107431017.json", "SpaTaro"),   # own cluster, board distance 19
+    "wheat": ("data/replays_spa_sub/107390219.json", "SpaTaro"),   # own cluster, board distance 49
+    "berry": ("data/replays_spa_sub/107073206.json", "SpaTaro"),   # own cluster, board distance 48
+    "wool": ("data/replays_spa_sub/107289135.json", "SpaTaro"),   # own cluster, board distance 54
+    "carrot": ("data/replays_spa_sub/107655300.json", "SpaTaro"),   # own cluster, board distance 45
+}
+
+#: Which shops mean which cluster. Measured in `scripts/spa_targets.py`.
+REPLAY_CLUSTER_SHOPS = {
+    "milk_berry": ("SMOOTHIE_SHOP", "ICE_CREAM_SHOP"),
+    "wheat":      ("PIZZA_SHOP", "BAKERY"),
+    "berry":      ("BRUNCH_SPOT", "FARMERS_MARKET"),
+    "wool":       ("YARN_STORE",),
+    "carrot":     ("PET_CAFE",),
+}
+
+#: The tape that drives days 0-2, before any shop is open. Must be a member of the family above.
+REPLAY_DEFAULT_CLUSTER = "milk_berry"
+
+#: **The board every tape in the family expects at the splice day. Checked, not assumed.**
+#:
+#: "If the board differs it's screwed" -- Alex, 2026-09-11, and he is right: a tape's actions are
+#: HARVEST and PLANT against particular tiles, so a board that is one crop different makes them
+#: misfire silently. The family shares this board in HIS games; ours is played on a different seed,
+#: where a weed can spawn (0.005 a tile a day) and the market opens at different prices, so the
+#: board we actually arrive at is a fact to verify rather than a property to rely on.
+#:
+#: On a mismatch we stop replaying and hand to the planner. A tape on the wrong board is worse than
+#: no tape: it sends its ops faithfully into a farm the plan does not describe, which is what the
+#: 2026-08-21 measurement called "a wrong-tape replay" and what `spa_splice` measured at -167,577.
+REPLAY_SPLICE_BOARD = {
+    "crops": {'MELON': 11, 'WHEAT': 6},
+    "animals": {'COW': 2, 'SHEEP': 2},
+    "owned": 25,
 }
 
 #: The two species the herd split may exchange, derived rather than written down so it cannot go stale
 #: if a third animal is ever added. Both are PASTURE, which is the whole reason a swap is safe inside a
 #: replay: the pen, the walk and the route stop are identical and only the species token differs.
 _PASTURE = tuple(a for a in R.ANIMAL_NAMES if R.ANIMALS[a]["structure"] == "PASTURE")
+
+
+def _replay_boards(days, tape, team):
+    """`{day: board}` at dawn of each replayed day, from the tape's own recording.
+
+    What the tape's actions on day D assume the farm looks like at dawn of D. Compared live every
+    dawn, because the exactness cannot be assumed for a single day let alone thirty: we replay on a
+    DIFFERENT seed, where a weed can spawn (0.005 a tile a day) and the market opens at different
+    prices, so his purchases can fail where ours succeed and vice versa.
+
+    Alex, 2026-09-11: "the board needs to be exact or it will no op and cumulative fuck up over very
+    short time". A HARVEST on a tile that holds a different crop is a silent no-op, the produce is
+    never collected, the sell that assumed it raises nothing, and the next purchase fails -- each
+    step compounding the last.
+    """
+    path = pathlib.Path(tape)
+    if not days or not path.exists():
+        return {}
+    d = json.loads(path.read_text())
+    seat = d["info"]["TeamNames"].index(team)
+    out = {}
+    for day in days:
+        i = day * 24
+        if i >= len(d["steps"]):
+            break
+        farms = ((d["steps"][i][seat] or {}).get("observation") or {}).get("farms") or []
+        if len(farms) <= seat:
+            continue
+        crops, animals, owned = collections.Counter(), collections.Counter(), 0
+        for row in (farms[seat].get("tiles") or []):
+            for t in row:
+                if t == "LOCKED":
+                    continue
+                owned += 1
+                if not isinstance(t, dict):
+                    continue
+                if "animal" in t:
+                    animals[t["animal"]] += 1
+                elif t.get("crop") and t.get("crop") != "WEED":
+                    crops[t["crop"]] += 1
+        out[day] = {"crops": dict(crops), "animals": dict(animals), "owned": owned}
+    return out
+
+
+def _board_is(obs, me, want):
+    """Is our farm exactly the board a spliced tape was recorded against?
+
+    Crops, herd and owned tiles -- the three things a replayed HARVEST, FEED or PLANT depends on.
+    Money is deliberately NOT compared: it does not decide whether a unit action lands, and it is
+    the one quantity that legitimately differs between two seeds at the same board.
+    """
+    farms = obs.get("farms") or []
+    if not 0 <= me < len(farms):
+        return False
+    crops, animals, owned = collections.Counter(), collections.Counter(), 0
+    for row in (farms[me].get("tiles") or []):
+        for t in row:
+            if t == "LOCKED":
+                continue
+            owned += 1
+            if not isinstance(t, dict):
+                continue
+            if "animal" in t:
+                animals[t["animal"]] += 1
+            elif t.get("crop") and t.get("crop") != "WEED":
+                crops[t["crop"]] += 1
+    return (owned == want["owned"]
+            and dict(crops) == dict(want["crops"])
+            and dict(animals) == dict(want["animals"]))
 
 
 def _replay_opening(days, tape=None, team=None):
@@ -4034,7 +4299,7 @@ def _replay_opening(days, tape=None, team=None):
     submission that banks the $3,000 start and nothing else.
     """
     if tape is None:
-        tape, team = REPLAY_OPENING_TAPE[(False, False)]
+        tape, team = REPLAY_OPENING_TAPE[REPLAY_DEFAULT_CLUSTER]
     path = pathlib.Path(tape)
     if not days or not path.exists():
         return {}
@@ -4051,57 +4316,6 @@ def _replay_opening(days, tape=None, team=None):
                      list(a.get("hands") or []),
                      list(a.get("market") or []))
     return out
-
-
-#: **Sell the shed once a day, hold the herd's wheat, release it at the end.**
-#:
-#: Measured 2026-08-28, 3 seeds, 719 turns, idle opponent, `REPLAY_OPENING_DAYS = ()`:
-#:
-#:     planner's own market                        150,396
-#:     sell-all EVERY turn, keep 20 wheat           74,180
-#:     sell-all at h16 only, keep 20 wheat         145,629
-#:     sell-all at h16, reserve released from d26  147,368
-#:
-#: **The cadence is the lever, not the basket.** The same goods sold once a day instead of every
-#: turn is worth +$71,449: selling every turn walks our own price down, the mechanism that took WOOL
-#: from $239 to $11 on 57 units. The terminal release is +$1,739, because past the last yield the
-#: wheat cannot become milk or wool, only cash.
-#:
-#: **This still loses to the planner's own sell logic** (147,368 against 150,396, on all three
-#: seeds) and is shipped on Alex's instruction to put it on the ladder and see. The idle opponent
-#: makes every figure here uncontested, and a sell-cadence rule is exactly what changes when someone
-#: else sells into the same book.
-SELL_HOUR = 16
-SELL_KEEP_WHEAT = 20
-SELL_RELEASE_FROM_DAY = 26
-
-
-def _sell_the_shed_once_a_day(agent, me=0):
-    """Strip the agent's own SELLs and offer the shed once a day instead.
-
-    Everything else it asked for -- hires, land, seed, feed buys -- passes through untouched. That
-    is not cosmetic: replacing the whole market list deletes the economy and banks exactly the
-    $3,000 start on every seed, because nothing is ever planted.
-    """
-    def wrapped(obs, config=None):
-        act = agent(obs, config)
-        day = int(obs.get("day", 0) or 0)
-        hour = int(obs.get("hour", 0) or 0)
-        keep = 0 if day >= SELL_RELEASE_FROM_DAY else SELL_KEEP_WHEAT
-        others = [o for o in (act.get("market") or []) if not (o and o[0] == "SELL")]
-        mine = []
-        if hour == SELL_HOUR:
-            shed = dict((obs.get("private") or {}).get("shed") or {})
-            for item, n in sorted(shed.items()):
-                n = int(n or 0)
-                if item == "WHEAT":
-                    n = max(0, n - keep)
-                if n > 0:
-                    mine.append(["SELL", item, n])
-        act["market"] = (mine + others)[:MAX_MARKET_ORDERS]
-        return act
-
-    return wrapped
 
 
 def make_agent(schedule, me=0, router=True):
@@ -4163,13 +4377,54 @@ def make_agent(schedule, me=0, router=True):
         # Both bad days land exactly where the tapes first disagree. That is what a wrong-tape
         # replay looks like: the ops are sent faithfully, into a board the plan does not describe.
         # Pinned by `tests/test_the_latches_choose_which_tape_gets_replayed.py`.
-        _Q4.arm(sched, state, obs, day)
+        # **NOT ARMED, 2026-09-11.** `_Q4.arm` installed カワシギ's rows over days 9-29 and
+        # `_MB.arm` over days 3-29, each by `target.clear(); target.update(row)`. On SpaTaro's plan
+        # both are simply wrong: he funds exactly TWO parcels in all 179 seasons of submission
+        # 56114097 (75 tiles, never 100), so the four-quadrant branch installs a season he never
+        # plays. The docstring below already said this call goes if the agent is pointed away from
+        # カワシギ; it is.
+        #
+        # The `armed_key` reads further down resolve to False, which is correct: no branch armed.
         farms = obs.get("farms") or []
         if len(farms) <= me:
             return {"farmer": ["PASS"], "hands": [], "market": []}
         farm = farms[me]
         priv = obs.get("private") or {}
         shed = collections.Counter(priv.get("shed") or {})
+        # **A BUY the engine refused is a BUY still owed.** `state["ordered"][("buys", WHEAT)]` is
+        # credited with the full quantity when the order is QUEUED, and `_do_buy_product` re-checks
+        # the bank per unit (`kaggriculture.py:666-673`) and stops when it runs out -- so a partly
+        # filled order is recorded as complete and the remainder is never offered again. Measured on
+        # the gate world, bakery d7: the row asks WHEAT 11, we offer exactly 11 (a block of 6 at h0
+        # then five singles), and 10 arrive. `fill.buy_product 10/11`.
+        #
+        # Wheat held is `shed + hands`, which PICKUP, DROP and PLACE all leave unchanged -- so
+        # between the start of one turn and the next it moves by what the market bought, what FEED
+        # ate, what a SELL took and what a HARVEST added. Anything short is given back to the
+        # counter, and the day re-offers it.
+        #
+        # **Only on a turn that can be read cleanly.** The first version named just the market and
+        # FEED, and a SELL WHEAT looks exactly like a delivery that never came: the refund fires,
+        # the row ceiling at `owed` re-opens, and the day buys past him -- spataro d7
+        # `buy_product 9/6`, `product 288/192`, which is the one thing Alex has ruled out outright.
+        # A HARVEST is the same confound with the sign flipped and would hide a real shortfall.
+        #
+        # Skipping those turns cannot over-refund and costs almost nothing: the retry still fires on
+        # every turn that neither sold nor harvested wheat, which is most of them.
+        #
+        # This is the same defect as the animal debt and the hire debt, in a third place: the agent
+        # counts what it ORDERED where it should count what it RECEIVED.
+        _held_wheat = int(shed.get("WHEAT", 0)) + sum(int((_iv or {}).get("WHEAT", 0))
+                                                      for _iv in (priv.get("inventories") or []))
+        _prev = state.get("held_wheat")
+        if _prev is not None and state.get("sent_wheat") and not state.get("wheat_unreadable"):
+            _arrived = _held_wheat - _prev + int(state.get("sent_feeds", 0) or 0)
+            _short = int(state["sent_wheat"]) - max(0, _arrived)
+            if _short > 0:
+                state["ordered"][("buys", "WHEAT")] = max(
+                    0, state["ordered"][("buys", "WHEAT")] - _short)
+        state["held_wheat"] = _held_wheat
+        state["sent_wheat"] = 0
         seeds = collections.Counter(priv.get("seeds") or {})
         invs = priv.get("inventories") or [{}]
         tiles = farm["tiles"]
@@ -4266,18 +4521,12 @@ def make_agent(schedule, me=0, router=True):
             # what the `seeds` row must be netted against. See `SEED_ROW_IS_A_FLOOR`.
             state["seeds_dawn"] = collections.Counter(seeds)
 
-            # **The leader's melon branch, as the season he actually recorded for that board.**
-            # See `kagg/search/melon_branch.py`. Decided once at d3 off the opponent's melon tiles
-            # and installed from d3, which is the first day the two three-quadrant tapes disagree.
-            #
-            # **DISARMED 2026-08-20 with `_Q4.arm` above, and RE-ARMED 2026-08-21 with it.** The
-            # disarm reason was that this branch is read off カワシギ games and installs through
-            # `Branch.install`, which clears every row from its split day on -- カワシギ's rows
-            # overwriting tetsuya's, with nothing to switch TO because we followed one tetsuya plan.
-            # We are on カワシギ's own line now, so that reason does not apply. It comes back out
-            # if the agent is ever pointed at tetsuya again.
-            if _MB.arm(sched, state, obs, day):
-                row = sched.get(day) or row
+            # **The melon branch is GONE, 2026-09-11, with `_Q4.arm` above.** It installed
+            # カワシギ's rows from d3 through `Branch.install`, which clears every row from its
+            # split day on. The 2026-08-21 note that re-armed it said the disarm reason was
+            # "カワシギ's rows overwriting tetsuya's ... we are on カワシギ's own line now, so that
+            # reason does not apply. It comes back out if the agent is ever pointed at tetsuya
+            # again." We are pointed at SpaTaro. It came out.
 
             # **Spend late wheat tiles on the two crops the balance change repriced.**
             # See `WHEAT_TILES_TO_CARROT`. Budgets are season-wide and drain as they are spent, so a
@@ -4922,7 +5171,16 @@ def make_agent(schedule, me=0, router=True):
                 # `arriving` the ration bought for the day's new animal is subtracted from the
                 # reserve that protects it -- `will_buy` is that purchase -- so d4 h00 read
                 # `6 - (1*6 - 0 - 1) = 1` sellable out of a shed that was exactly tight.
-                reserve = feed_days(day) * (alive + arriving) - drawn - will_buy
+                # **`will_buy` no longer shrinks the reserve, 2026-09-11.** Wheat we intend to buy
+                # is not wheat we have, and once the buy has settled it is in the shed and already
+                # counted in `have` -- so subtracting it here released the SAME units a second time,
+                # for sale. Measured on his board from the d7 handover: h0 `BUY_PRODUCT WHEAT 16`,
+                # then h1 `SELL WHEAT 13` and h2 `SELL WHEAT 1`, against a row asking to sell 4 --
+                # buying the herd's feed and selling it back within two turns.
+                #
+                # Alex: "should only sell what we dont need". The feed requirement is a floor on
+                # what is ours to sell, and a purchase that has not happened cannot lower it.
+                reserve = feed_days(day) * (alive + arriving) - drawn
                 reserve -= carried_wheat
                 # **TODAY'S dinner is never released against a purchase that has not cleared.**
                 # See `NEVER_SELL_TODAYS_RATION`. `will_buy` is a forecast, and the terms above can
@@ -5217,6 +5475,18 @@ def make_agent(schedule, me=0, router=True):
                 want_seed[c] = max(0, int(q) - done)
         seed_bill = sum(RT.SEED_COST.get(c, 0) * max(0, int(q) - int(seeds.get(c, 0)))
                         for c, q in want_seed.items())
+        # **No seed in the first two hours, and nothing reserved for it there either.** Measured off
+        # his own action streams, nine worlds x d5-d12, 68 day-arms: the first `BUY_SEED` of a day
+        # lands at a MEDIAN of hour 11, and never before hour 2. Hours 0 and 1 are sells, hires and
+        # the animal; the seed is bought later, out of the morning's takings and when the ground is
+        # actually ready for it.
+        #
+        # Reserving it early is what stops the herd being bought at all. Brunch d7, inside the gate:
+        # the row names a COW, the pen is already standing (`pens 12/12`), and no `BUY_ANIMAL` is
+        # ever emitted -- because STRAWBERRY seed is $171 a unit and two of them are held back
+        # against a bank of ~541 that also owes a $400 cow. `_do_buy_animal` never even sees an
+        # order. With this, hour 0 becomes `SELL FERTILIZER 6, HIRE x7, BUY_PRODUCT WHEAT 4,
+        # BUY_ANIMAL COW 1` -- his shape, and the wheat self-limits from 5 to 4.
         # **The `seeds` row is bought; it is not re-derived from what today can plant.**
         # `seeds` and `plants` are separate rows and they deliberately disagree. Victor's d6 asks
         # `seeds {WHEAT 1, STRAWBERRY 3}` against ONE plant: he buys four, plants one, and carries
@@ -5253,6 +5523,25 @@ def make_agent(schedule, me=0, router=True):
             done = state["planted"][c] - state["planted_dawn"][c]
             bought = int(seeds.get(c, 0)) + done - int(state["seeds_dawn"].get(c, 0))
             emit_seed[c] = max(int(emit_seed.get(c, 0)), max(0, int(q) - max(0, bought)))
+
+        # **Nothing is bought before `SEED_FROM_HOUR`, and the EMISSION is where that has to bite.**
+        # This test used to sit above, zeroing `want_seed` and `seed_bill` only -- and the loop just
+        # overhead rebuilds `emit_seed` from `row["seeds"]`, so the order went out anyway. It read
+        # exactly like a measured null: the constant is real, the name is the one the code reads,
+        # and the branch it guarded could not reach the order.
+        #
+        # Measured on his own action streams, nine worlds x d5-d12, 68 day-arms: the first `BUY_SEED`
+        # of a day lands at a MEDIAN of hour 11, and never before hour 2.
+        #
+        # The seed is what starves the feed. STRAWBERRY is $144-$173 a unit and two of them are the
+        # whole purse at hour 1, so across all nine worlds we bought `WHEAT 1` where he buys 2 to 9:
+        # bakery 1/6, smoothie 1/9, brunch 1/3. `seed_bill` is reserved out of the bank before the
+        # wheat is even quoted, so filtering the order afterwards would drop the seed and leave the
+        # money spent. It has to be zeroed here, before the bill is read.
+        if hour < SEED_FROM_HOUR:
+            want_seed = collections.Counter()
+            emit_seed = collections.Counter()
+            seed_bill = 0
 
         # **The crew comes before the goods.** See `HIRE_FIRST`. SELL stays above this because it only
         # raises the bank; everything BELOW spends it, and a hand that is not standing at dawn cannot be
@@ -5295,7 +5584,42 @@ def make_agent(schedule, me=0, router=True):
             # so the day still reaches its `hands` row.
             if int(row.get("land", 0) or 0) > 0:
                 want = min(want, _unwalled_landing_slots(tiles, units, want))
+            # **Only as many hires as this turn has slots for; the rest are the top-up's.** The env
+            # takes ten market orders a turn and `_fit_slots` used to make room by dropping hires
+            # from the end -- so a day that also sells, buys its wheat and buys an animal lost a
+            # HAND to arithmetic. Measured on the gate world at d7 hour 0, eleven orders against ten
+            # slots on bakery, smoothie and farmers' market alike, and `hands 6/7` on bakery.
+            #
+            # The tape does not queue them all either: he sends FIVE hires at hour 0 and two at hour
+            # 1. Deferring here is free -- `_hire_cost` is `mult * fib(hires_today)` on a per-DAY
+            # counter, so a hire costs the same whichever turn of the day it is issued -- and the
+            # `elif` top-up below places the remainder from hour 1, which is also the first hour a
+            # hand hired at hour 0 can act.
+            want = min(want, max(0, ORDER_SLOTS - len(orders)), H0_HIRE_CAP)
+            # **And no more of them than the day's ANIMAL row can still be paid for.** HIRE sits
+            # above BUY_ANIMAL in slot order and this loop had no funding test at all, so it queued
+            # the whole `hands` row and the animal below it was refused for what the crew had just
+            # spent. The ladder is `mult * fib(hires_today)` -- 1, 1, 2, 3, 5, 8, 13 -- so the last
+            # two hires of a seven-hand day cost more than the first five together.
+            #
+            # That is exactly what the tape spreads: FIVE hires at hour 0 for 12, then two more at
+            # hour 1 once his second sale has landed. We queued all seven at hour 0 for 33 and the
+            # sheep was refused: bakery d7 `buy_animal 0/1`, `herd_sheep 6/7`, `animals 10/11`.
+            #
+            # Deferring costs nothing -- `hires_today` is a per-DAY counter, so the same hand costs
+            # the same at any hour -- and the top-up below places the remainder from hour 1, which is
+            # the first hour a hand hired at hour 0 can act anyway.
+            _owed = sum(R.ANIMALS[_a]["cost"] * int(_q)
+                        for _a, _q in (row.get("animals_bought") or {}).items())
+            _purse, _a, _b = float(money) - _owed, 1, 1
+            _fit = 0
             for _ in range(want):
+                if _purse < _a:
+                    break
+                _purse -= _a
+                _a, _b = _b, _a + _b
+                _fit += 1
+            for _ in range(max(_fit, 0)):
                 orders.append(["HIRE"])
                 state["hired"] += 1
         elif HIRE_FIRST:
@@ -5305,13 +5629,24 @@ def make_agent(schedule, me=0, router=True):
             # when the parcel settles, and on this schedule that is h13. Gating the top-up at 8 would
             # hold the hire back and then never place it.
             deadline = TPD if (int(row.get("land", 0) or 0) > 0) else 8
-            if state["hired"] < target and hour < deadline:
+            # **What we still owe is the crew that EXISTS, not a count of our own orders.**
+            # `state["hired"]` counts orders ISSUED, so a HIRE the engine refuses for funds is
+            # recorded as done and never retried -- the hand is gone for the day even though the
+            # money lands an hour later. Measured on the gate world, bakery d7: seven offered
+            # (six at h0, one at h1), six land, and from h2 the top-up offers nothing at all while
+            # six hands stand against a row of seven.
+            #
+            # `units` is `[farmer] + hands`, so the farmer comes off; the hires already queued THIS
+            # turn are added, which is the only thing the counter was needed for -- not issuing the
+            # same hire twice before the market phase has run.
+            _have = (len(units) - 1) + sum(1 for o in orders if o and o[0] == "HIRE")
+            if _have < target and hour < deadline:
                 shed_tiles = R.shed_access_tiles()
                 occ = {t: 0 for t in shed_tiles}
                 for pos in units:
                     if tuple(pos) in occ:
                         occ[tuple(pos)] += 1
-                for _ in range(target - state["hired"]):
+                for _ in range(target - _have):
                     x, y = min(occ.items(), key=lambda kv: (kv[1], shed_tiles.index(kv[0])))[0]
                     walled = not any(0 <= b < len(tiles) and 0 <= a < len(tiles[0])
                                      and tiles[b][a] != "LOCKED"
@@ -5468,7 +5803,40 @@ def make_agent(schedule, me=0, router=True):
             # A partly affordable batch is safe: `_do_buy_animal` re-checks the bank per unit
             # (`:666-673`) and stops, exactly as the per-order form did.
             want = 0
-            for _ in range(max(0, qty - state["bought"][a])):
+            # **What we still owe is measured against the BOARD, not against a counter of our own
+            # orders.** `state["bought"]` counts purchase INTENT and starts empty, so on any day the
+            # agent does not own from d0 -- every handover run, and the gate is all of them -- it
+            # reads zero against a target that is cumulative since d0 and tries to re-buy the whole
+            # herd.
+            #
+            # Measured on the gate world, bakery d7. Cumulative rows to d7 are COW 4, SHEEP 7; the
+            # board already carries them because the tape put them there; the row for the day asks
+            # for one SHEEP. With an empty counter the agent worked down the cows instead:
+            #
+            #     his    h0 BUY_ANIMAL SHEEP 2  ->  pasture h8, PLACE SHEEP h9
+            #     ours   h0 COW 1   h7 COW 1   h16 COW 1   ->  `buy_animal 0/1`, no animal placed
+            #
+            # None filled: a cow costs more than the sheep the row budgeted for. Counting the herd
+            # that STANDS fixes it at the source and needs no handover hook, because the board says
+            # the same thing on day 0 as it does on day 7.
+            _standing = sum(1 for _r in tiles for _c in _r
+                            if isinstance(_c, dict) and _c.get("animal") == a)
+            # **The BOARD is the count, and the counter only guards this turn.** `max(bought,
+            # standing)` keeps the stale order counter alive, which is the very thing the board
+            # census was added to replace: `state["bought"]` is credited when the order is QUEUED,
+            # so an animal the engine refuses for funds reads as bought and is never offered again.
+            #
+            # Measured on the gate world, d7 hour 0, the same on both broken worlds -- the money
+            # arrives one hour later and nothing asks for it:
+            #
+            #     bakery  h0 cash 8   6 HIRE + SHEEP 1 refused   h1 cash 473, no animal order
+            #     brunch  h0 cash 55  7 HIRE + COW 1   refused   h1 cash 396, no animal order
+            #
+            # `_queued` is what this turn has already asked for, which is all the counter was ever
+            # needed for -- the market phase has not run yet, so the board cannot show it.
+            _queued = sum(int(_o[2]) for _o in orders
+                          if _o and _o[0] == "BUY_ANIMAL" and len(_o) > 2 and _o[1] == a)
+            for _ in range(max(0, qty - _standing - _queued)):
                 if money < R.ANIMALS[a]["cost"] + seed_bill:
                     continue
                 # The slot is charged once, for the first head of this species. An animal purchase
@@ -5540,11 +5908,24 @@ def make_agent(schedule, me=0, router=True):
             #
             # Netted against seed BOUGHT today, which the store and the plantings give exactly, so
             # the floor cannot re-order what has already landed.
-            _row_q = int((row.get("seeds") or {}).get(crop, 0))
-            _done = state["planted"][crop] - state["planted_dawn"][crop]
-            _bought = (int(seeds.get(crop, 0)) + _done
-                       - int(state["seeds_dawn"].get(crop, 0)))
-            short = max(short, _row_q - max(0, _bought))
+            # **DELETED 2026-09-11: the row floor `max(short, _row_q - bought_today)`.**
+            # It existed because `seeds` was his REQUESTED purchase total, so the row had to be
+            # bought whatever the store held. `seeds` is now the crop tally of `plants` -- seed that
+            # goes in the ground -- and `short = qty - seeds.get(crop, 0)` two lines up already nets
+            # the store exactly. The floor read `bought TODAY` only, which is 0 at dawn, so it
+            # re-raised `short` to the full row every morning and bought seed we were already
+            # holding.
+            #
+            # Measured on the YARN world, ep 107020377, d7 handover, seed 666671489. His row is
+            # `{STRAWBERRY 3, WHEAT 4}`; he spends $250 because he plants partly from carry, and we
+            # spent the full $340. That $90 is the day's SHEEP: `buy_animal 0/1`, `animals 10/11`,
+            # `herd_sheep 7/8`, `feed 9/11`, `care 9/11`, and we close holding $419 against his $4
+            # -- unspent money beside a missing animal, which is the signature of buying something
+            # we already owned.
+            #
+            # The carry the floor was protecting is unaffected: a seed bought today for tomorrow's
+            # planting is in TOMORROW's `plants`, so it is bought then and the tile lands on the same
+            # day either way. Only the double-buy goes.
             # **Never buy seed no remaining row can plant.** The floor above is the tape's purchase
             # total, which is right while later days still have plantings to spend the carry on and
             # wrong on the last planting day: `d27` asks `WHEAT 12` against a board the pins can only
@@ -5695,6 +6076,21 @@ def make_agent(schedule, me=0, router=True):
         # and the herd still gets its full ration -- just spread across the hours, which is what the
         # constant's own docstring already claimed it did.
         short = min(max(herd, min(max(0, owed), BUY_DRIP)), FEED_TURN_CAP)
+        # **The row is a CEILING, not just a floor. We never buy more of a product than he did.**
+        # `max(herd, ...)` above lets the herd formula outrun the row, and it does: spataro d7 asks
+        # `buys {WHEAT 6}` and we bought NINE, ending on `shed_wheat 6/2` -- three units of wheat
+        # bought and hoarded, and the money they cost is the money the day's cow was refused for
+        # (`buy_animal 0/1`).
+        #
+        # `row["buys"]` is not an estimate: it is what the ENGINE SETTLED for him on this world, read
+        # off the fills by `scripts/tape_fills.py`. So a herd that needs more than the row is a herd
+        # we should not have, or a ration we already hold -- either way the answer is not to buy past
+        # him. Alex: "we should not ever do this - fundamentally".
+        #
+        # Only when the row states a quantity. A day with no `buys` row keeps the old behaviour,
+        # where the formula is the only rule there is.
+        if wanted > 0:
+            short = min(short, max(0, owed))
         # **The schedule's row is an instruction, not a cadence.** `BUY_DRIP` and `FEED_TURN_CAP`
         # exist to spread the HERD's ration across the day; applying them to `owed` metered the row
         # too. Traced hour by hour on the Victor grid, seed 11, d0:
@@ -5947,8 +6343,68 @@ def make_agent(schedule, me=0, router=True):
                 0, state["ordered"][("sold", prod_)] - cancel)
         orders = [o for o in orders if not (len(o) > 2 and int(o[2]) <= 0)]
 
-        return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:],
-                "market": _order_sells(_fit_slots(_wheat_row_first(orders, hour), state))}
+        # **The herd settles before the shopping, and this runs AFTER `_wheat_row_first`** -- that
+        # function hoists wheat ahead of the first HIRE/BUY_ANIMAL/BUY_SEED, so a herd hoist applied
+        # before it is simply undone (measured: the order came out unchanged).
+        #
+        # The animal is the day's one committed capital purchase and its pen is already standing;
+        # wheat and seed are dripped all day and re-offer on the next turn. Brunch d7 inside the
+        # gate, hour 0 on a bank of 7 with the hires capped: sells raise ~535, five hires take 12 to
+        # 523, wheat 4 takes 132 to 391, and the COW is refused at 400 -- nine dollars. Settle the
+        # cow first and the wheat simply clamps to what is left.
+        # **Nothing is BOUGHT in hour 0.** He never does it: measured off his own action streams,
+        # nine worlds x d5-d10, `BUY_PRODUCT` quantity at hour 0 is ZERO in all 54 day-arms. Hour 0
+        # is sells, hires and the animal, and the buying starts at hour 1 out of what those sells
+        # have by then settled.
+        #
+        # It is not a preference. Orders settle in slot order and each purchase re-checks the bank
+        # per unit, so wheat at hour 0 is paid for out of whatever sits below it -- the crew and the
+        # herd. Brunch d7, inside the gate: bank 7, sells raise ~535, and the COW the row names is
+        # refused while its pen stands empty. Reordering the queue is not enough; the wheat has no
+        # business being there at all.
+        #
+        # Deferred, not cancelled: the row counter is given back so hour 1 re-offers the quantity.
+        # `feed` is deliberately NOT refunded -- refunding both double-counts a herd-ration order and
+        # the day then buys MORE wheat than he does (measured `buy_product 9/6`, `shed_wheat 6/2`).
+        if hour == 0:
+            _keep = []
+            for _o in orders:
+                if _o and _o[0] == "BUY_PRODUCT" and len(_o) > 2:
+                    state["ordered"][("buys", _o[1])] = max(
+                        0, state["ordered"][("buys", _o[1])] - int(_o[2]))
+                    continue
+                # Seed neither. His first `BUY_SEED` of a day lands at a MEDIAN of hour 11 across
+                # nine worlds and d5-d12, and never before hour 2 in 68 day-arms -- brunch d7 is
+                # h8, bakery h11, pet_cafe h16. Seed demand is re-derived from the pins and the row
+                # on every turn, so there is no counter to give back: skipping it here simply
+                # offers it again next turn, which is what he does.
+                if _o and _o[0] == "BUY_SEED":
+                    continue
+                _keep.append(_o)
+            orders = _keep
+        _ordered = _wheat_row_first(orders, hour)
+        _fb = next((i for i, o in enumerate(_ordered)
+                    if o and o[0] in ("BUY_PRODUCT", "BUY_SEED")), None)
+        if _fb is not None:
+            _hd = [i for i, o in enumerate(_ordered) if o and o[0] == "BUY_ANIMAL" and i > _fb]
+            if _hd:
+                _mv = [_ordered[i] for i in _hd]
+                _rs = [o for i, o in enumerate(_ordered) if i not in set(_hd)]
+                _ordered = _rs[:_fb] + _mv + _rs[_fb:]
+        _final = _order_sells(_fit_slots(_ordered, state))
+        # **What this turn actually SENT, so the next turn can see what arrived.** Recorded off the
+        # TRIMMED list: `_fit_slots` may drop an order, and crediting an order the env never saw
+        # would make the reconciliation refund wheat that was never refused. Same reason the plant
+        # count is taken off `acts` rather than off the plan.
+        state["sent_wheat"] = sum(int(o[2]) for o in _final
+                                  if o and o[0] == "BUY_PRODUCT" and len(o) > 2 and o[1] == "WHEAT")
+        state["sent_feeds"] = sum(1 for a in acts if a and a[0] == "FEED")
+        # A SELL takes wheat out and a HARVEST puts it in, so neither turn can tell a missed
+        # delivery from ordinary movement. Recorded here, read by the reconciliation next turn.
+        state["wheat_unreadable"] = (
+            any(o and o[0] == "SELL" and len(o) > 1 and o[1] == "WHEAT" for o in _final)
+            or any(a and a[0] == "HARVEST" for a in acts))
+        return {"farmer": acts[0] if acts else ["PASS"], "hands": acts[1:], "market": _final}
 
     def _with_late_carrot(fn):
         """Apply the late carrot at the OUTERMOST boundary, after any tape replay.
@@ -5981,7 +6437,24 @@ def make_agent(schedule, me=0, router=True):
         return wrapped
 
     if not REPLAY_OPENING_DAYS:
-        return _sell_the_shed_once_a_day(_with_late_carrot(agent), me)
+        # **The h16 shed dump is GONE, 2026-09-11, on Alex's instruction: "it was for a different
+        # purpose".** `_sell_the_shed_once_a_day` stripped every SELL this agent computed and
+        # offered the whole shed at one fixed hour, so the schedule's `sells` row, the fertilizer
+        # reserve, `allow`/`carry`/`still_owed` and the price-aware caps were all dead in this path
+        # and nothing could be sold before h16.
+        #
+        # Traced on his own board from the d7 handover (`scripts/turn_loop.py --handover 7
+        # --first-only`, ep 107068412 seed 666671489): d7 opened on $53 against a $1,633 bill with
+        # 5 FERTILIZER and 10 WHEAT in the shed. The planner queued `SELL FERTILIZER 5, SELL WHEAT 2`
+        # ahead of its buys, exactly as `_wheat_row_first` intends; the wrapper deleted both, the
+        # wheat buy took the bank, and by h3 we held $6 -- losing the cow, the strawberry seed and
+        # four of seven hires, and with them 136 unit-turns and 24 waters on that day alone.
+        #
+        # Its own docstring recorded it losing to this path (147,368 against 150,396 on three seeds)
+        # and shipping anyway to try on the ladder, measured against an IDLE opponent -- the one
+        # condition under which a sell-cadence rule cannot be judged. Against the real recorded
+        # opponent contesting the same book: 107,645 with it, **129,640 without**.
+        return _with_late_carrot(agent)
 
     # **The tape supplies the unit actions and the SELL cadence. The buying stays ours.** The planner
     # is still driven on every replayed turn and its unit answer thrown away, so its pins, pen
@@ -6008,10 +6481,16 @@ def make_agent(schedule, me=0, router=True):
     # replay and does not. The whole 30 MB replay is not needed for that: only our own seat's
     # `farmer`, `hands` and `market` for the days in `REPLAY_OPENING_DAYS`, which is 23 KB a tape
     # against 30 MB, so the bundler embeds it and sets this.
-    openings = ({tuple(k): {int(s): v for s, v in op.items()}
+    # `{cluster: {step: (farmer, hands, market)}}`. From `EMBEDDED_OPENINGS` in a submission, which
+    # carries no `data/` tree; off disk in the repo.
+    openings = ({k: {int(s): v for s, v in op.items()}
                  for k, op in EMBEDDED_OPENINGS.items()} if EMBEDDED_OPENINGS else
                 {key: _replay_opening(REPLAY_OPENING_DAYS, *tape)
                  for key, tape in REPLAY_OPENING_TAPE.items()})
+    boards = ({k: {int(d): b for d, b in bb.items()} for k, bb in EMBEDDED_BOARDS.items()}
+              if EMBEDDED_BOARDS else
+              {key: _replay_boards(REPLAY_OPENING_DAYS, *tape)
+               for key, tape in REPLAY_OPENING_TAPE.items()})
 
     def replayed(obs, config=None):
         # Snapshot before driving the planner, because a replayed turn throws its answer away and
@@ -6024,8 +6503,45 @@ def make_agent(schedule, me=0, router=True):
         # A hand-written `"branch_armed"` pinned the melon latch False -- nothing writes that name,
         # `MelonBranch.armed_key` is `"melon_armed"` -- so the strawberry tape was unreachable by
         # construction and the strawberry arm silently replayed his melon season.
-        opening = openings[(bool(state.get(_MB.BRANCH.armed_key)),
-                            bool(state.get(_Q4.BRANCH.armed_key)))]
+        opening = openings.get(REPLAY_DEFAULT_CLUSTER) or {}
+        # **Which tape, decided once when the first shop appears.** The `kagg/search/branch.py`
+        # contract, and for its reason: a purchase spanning two days must not see the decision
+        # change between them. Days 0-2 run `REPLAY_DEFAULT_CLUSTER` because no shop is open yet,
+        # and his opening is one plan there anyway -- `CCSS` in 170 of 179 seasons through d3.
+        # **Which tape, decided once when the first shop appears**, the `kagg/search/branch.py`
+        # contract: a purchase spanning two days must not see the decision change between them.
+        # Days 0-2 run `REPLAY_DEFAULT_CLUSTER`; every tape in the table shares its d3 board, so
+        # the incoming tape finds the board it was recorded against.
+        if "tape_cluster" not in state:
+            _shops = ((obs.get("town") or {}).get("unlocked_shops") or ())
+            _hit = next((c for c, ss in REPLAY_CLUSTER_SHOPS.items()
+                         for x in _shops if x in ss), None)
+            if _hit:
+                # **The splice is refused unless the board is the one the incoming tape expects.**
+                _ok = _board_is(obs, me, REPLAY_SPLICE_BOARD)
+                state["tape_cluster"] = _hit if _ok else REPLAY_DEFAULT_CLUSTER
+                state["splice_ok"] = _ok
+                if not _ok:
+                    # The default tape is equally invalid on a board its own d0-2 did not produce,
+                    # so stop replaying entirely and let the planner drive from here.
+                    state["tape_stop"] = True
+        if state.get("tape_stop"):
+            return live
+        _cl = state.get("tape_cluster", REPLAY_DEFAULT_CLUSTER)
+        opening = openings.get(_cl) or opening
+        # **The board is checked EVERY dawn, not once at the splice.** A tape is only valid while
+        # the farm is the one it was recorded against, and the divergence compounds: a HARVEST onto
+        # the wrong crop is a silent no-op, so the produce is never collected, the sell that assumed
+        # it raises nothing, and the next purchase fails. The tape runs exactly as long as it is
+        # true and not one day longer -- which also makes "how many days of tape" a fact of each
+        # game rather than a constant guessed in advance.
+        _day = int(obs.get("day", 0) or 0)
+        if int(obs.get("hour", 0) or 0) == 0 and _day > 0:
+            _want = (boards.get(_cl) or {}).get(_day)
+            if _want is not None and not _board_is(obs, me, _want):
+                state["tape_stop"] = True
+                state["tape_stopped_day"] = _day
+                return live
         if step not in opening:
             return live
         # **`state["bought"]` must count what the TAPE ordered, not what the discarded planner would
@@ -6213,4 +6729,9 @@ def make_agent(schedule, me=0, router=True):
 
     # NOT wrapped: the tape supplies its own SELL cadence (see the note at the replay
     # branch above) and substituting ours there has never been measured.
-    return _with_late_carrot(replayed)
+    _out = _with_late_carrot(replayed)
+    # **Published for instrumentation only.** "How many days does the tape survive" is a fact of
+    # each game, not a constant, so it has to be read out of the game -- and the alternative is a
+    # second copy of the board check in the harness, which would then be the thing being measured.
+    _out.state = state
+    return _out

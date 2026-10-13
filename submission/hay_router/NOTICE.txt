@@ -1,0 +1,34 @@
+E184 Sale Window, modified September 10, 2026 by Dmitrii Gluzdov.
+Parent: prvsiyan, Kaggriculture Frontier | The Moon Counts Melons, public v37.
+https://www.kaggle.com/code/prvsiyan/kaggriculture-frontier-the-moon-counts-melons
+Original 13 production tapes: yhay81, Shop Router 0909.
+https://www.kaggle.com/code/yhay81/shop-router-0909
+Sale timing and shed projection credit: aurax7, Reactive Router.
+https://www.kaggle.com/code/aurax7/kaggriculture-reactive-router
+Parent terminal collection credits Dmitrii Gluzdov's Seven-Turn Rescue.
+All original in-source author notices are retained. Apache License 2.0.
+
+Changes by Dmitrii Gluzdov: sale reservations across two or three known future
+own actions; per-due-step debt avoids counting an advanced sale twice; stock
+projection runs after all worker repairs; queue, consumer, capacity and
+route-boundary guards. Routes, feed and crop-investment logic remain inherited.
+Packaging: inline route JSON restored as actions.json, complete license moved
+from comments to LICENSE.txt; executable source remains readable, uncompressed.
+
+Further changes, September 10, 2026:
+actions.json holds 13 action tapes recovered from 109 public competition replays
+of yhay81's own ladder submission, clustered by turn-level distance. They are
+that author's current play, not the 13 tapes published in Shop Router 0909, and
+they replace them one for one. The world -> tape map is that author's own,
+recovered from which tape each shop pair was observed to run.
+Three consequent edits to the inherited router, and nothing else:
+  - the forced switch to tape index 2 at step 648 is removed. It is correct for
+    the published set, where index 2 is a shared continuation. The recovered
+    tapes are identical on turns 0..143 and all 13 diverge afterwards, endings
+    included, so splicing one world's last 71 turns onto the others would submit
+    sales against inventory those tapes never built.
+  - the late expansion layer previews the replayed tape rather than index 2, to
+    stay consistent with the above.
+  - the terminal rescue no longer requires tape index 2; its own preconditions,
+    which check the remaining tape for purchases, builds and planting, gate it.
+No sale-window, repair, expansion or market logic is altered.

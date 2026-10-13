@@ -1,0 +1,18 @@
+{
+  "archive": "/Users/alexchilton/DataspellProjects/kaggriculture/submission/e182/submission.tar.gz",
+  "archive_bytes": 5192098,
+  "archive_sha256": "f0a5ef344d4a195e1a3ec9c66f8856709c75cb611461b7bb71a3143b3faed3cb",
+  "archive_sha256_matches_published": true,
+  "bundle": "e182",
+  "member_sha256": {
+    "LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "NOTICE.txt": "6435ca240eea352abffd2cbf19b446b311e372f552a07865cab1b8bb547b1230",
+    "actions.json": "17d503f2fd20d59f9c0f14024d1e74a8add8bb9b5561d4d908b45deecb5495ef",
+    "main.py": "495bfa4825c9e58638e804aeeb62a9537826f6d4d869222815e1bbeefd84d3dc",
+    "policy.py": "e239501d1224ba3d198aef11bc6b1b40637fbac335db7ca07205175d992f9b12",
+    "router_parent.py": "d6d74997dc5b483db63d8e39cafa1afeec0f366824e75107e109123f111e866b",
+    "settings.json": "e2756d366c88e627da6711f20ae708613d6a7cf5805410c6af4326dfc7a7417e",
+    "terminal_planner.py": "a9d7a6d29e1fb313852dc0121d43f16544771ed12775afaf3a0480e9ab713dce",
+    "unit_model.py": "c03e8c5cd10466c229ee0a44dece9a3943c10bff135d96a7822ffe75d6922724"
+  }
+}

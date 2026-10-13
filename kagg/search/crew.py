@@ -172,48 +172,7 @@ def _class(job):
     return "other"
 
 
-def serpentine(tiles, shed):
-    """Order tiles as a boustrophedon sweep, starting from the row nearest the shed.
-
-    Rows are walked alternately left-to-right and right-to-left, so consecutive tiles in the
-    ordering are adjacent on the board and a contiguous SLICE of the ordering is a contiguous WALK.
-    That is the whole property the caller needs: it can then cut the list anywhere and each piece is
-    still a sensible route.
-
-    Sorting by raw `(y, x)` instead would make every row change a full-width jump back, which is
-    exactly the walk the sweep exists to avoid.
-    """
-    sy = shed[1] if shed else 0
-    rows = collections.defaultdict(list)
-    for t in tiles:
-        rows[t[1]].append(t)
-    out = []
-    for i, y in enumerate(sorted(rows, key=lambda y: abs(y - sy))):
-        out.extend(sorted(rows[y], key=lambda t: t[0], reverse=bool(i % 2)))
-    return out
-
-
-def _split(ordered, k, weight):
-    """Cut `ordered` into `k` contiguous runs of roughly equal weight.
-
-    Contiguous is the point. Round-robin or nearest-unit assignment over the same tiles produces
-    interleaved routes -- every hand crossing every other hand's block -- which is the thing being
-    replaced.
-    """
-    if k <= 0 or not ordered:
-        return []
-    total = sum(weight(t) for t in ordered)
-    target = total / k
-    runs, cur, acc = [], [], 0.0
-    for t in ordered:
-        cur.append(t)
-        acc += weight(t)
-        if acc >= target and len(runs) < k - 1:
-            runs.append(cur)
-            cur, acc = [], 0.0
-    if cur:
-        runs.append(cur)
-    return runs
+from .movement import serpentine, split as _split  # noqa: E402  (see movement.py)
 
 
 def _fits(unit_pos, seq, held, depots, budget, wanted, rush, due=None):

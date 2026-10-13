@@ -81,6 +81,33 @@ def load_agent_module(name):
     return module
 
 TAPES = {
+    # **SpaTaro, rank 1 (3130.8), episode 107068412 of submission 56114097 -- $157,032.**
+    # His best bank among the 58 of 179 seasons that run his MAJORITY d0-d5 placement skeleton
+    # (`CCSS` on d0 then `C` d4 `C` d5, 128 of 179 through d5). The schedule beside it is the SAME
+    # episode's LANDED rows, which is the only pairing that means anything: the tape's d0-6 put a
+    # board down and the rows from d7 have to be the rows that board was built for.
+    "spataro": ("data/replays_spa_sub/107068412.json",
+                "data/seed_scripts/spataro/schedule.json", "SpaTaro"),
+    # **A SECOND world and a second tape, to test whether the d7 fixes generalise.** His YARN_STORE
+    # branch: the wool cluster instead of milk_berry, and the `SSS` d3-d5 placement skeleton instead
+    # of the majority `CCSSCC`. Same extraction pipeline -- landed rows, `seeds` from `plants`,
+    # `buys`/`sells` from engine fills -- so a difference here is the planner, not the data.
+    "spa_bakery": ("data/replays_spa_sub/107028825.json",
+                 "data/seed_scripts/spa_bakery/schedule.json", "SpaTaro"),   # BAKERY
+    "spa_brunch": ("data/replays_spa_sub/107073206.json",
+                 "data/seed_scripts/spa_brunch/schedule.json", "SpaTaro"),   # BRUNCH_SPOT
+    "spa_fmarket": ("data/replays_spa_sub/107024103.json",
+                  "data/seed_scripts/spa_fmarket/schedule.json", "SpaTaro"),   # FARMERS_MARKET
+    "spa_icecream": ("data/replays_spa_sub/107673950.json",
+                   "data/seed_scripts/spa_icecream/schedule.json", "SpaTaro"),   # ICE_CREAM_SHOP
+    "spa_pet_cafe": ("data/replays_spa_sub/107029774.json",
+                   "data/seed_scripts/spa_pet_cafe/schedule.json", "SpaTaro"),   # PET_CAFE
+    "spa_pizza": ("data/replays_spa_sub/107454405.json",
+                "data/seed_scripts/spa_pizza/schedule.json", "SpaTaro"),   # PIZZA_SHOP
+    "spa_smoothie": ("data/replays_spa_sub/107722209.json",
+                   "data/seed_scripts/spa_smoothie/schedule.json", "SpaTaro"),   # SMOOTHIE_SHOP
+    "spa_yarn": ("data/replays_spa_sub/107020377.json",
+               "data/seed_scripts/spa_yarn/schedule.json", "SpaTaro"),   # YARN_STORE
     # **The rebase target, 2026-08-11, and the plan we ship.** Victor @ Tufa Labs is #2 on the
     # ladder at 3,149.8 and is a fixed script -- 97-99% of turns identical across seven games on
     # both seats, with byte-identical season SELL totals -- so the plan reads off one tape without
@@ -598,7 +625,11 @@ def main():
         schedule_agent.REPLAY_OPENING_DAYS = tuple(range(args.replay_days))
 
     replay, schedule, team = TAPES[args.tape]
-    sched = {int(k): v for k, v in json.loads(pathlib.Path(schedule).read_text()).items()}
+    # **Through the guard, never straight off disk.** See `scripts/schedule_guard.py`: his recorded
+    # `seeds` and `buys` are OFFERS the engine drops, and obeying them spends the day's animal.
+    from scripts.schedule_guard import load as _load_schedule, same_season as _same_season
+    sched = {int(k): v for k, v in _load_schedule(schedule).items()}
+    _same_season(schedule, replay)
     thin = {d: {k: v for k, v in r.items() if k not in TAPE_ONLY} for d, r in sched.items()}
     opp = lambda: tape_policy(replay, team, 1)
 

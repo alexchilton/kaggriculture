@@ -63,6 +63,8 @@ project had acted on.
 import collections
 
 from . import routines as R
+from . import husbandry as H
+from . import watering as W
 
 TPD = R.TURNS_PER_DAY
 SHED = tuple(R.shed_access_tiles())
@@ -441,105 +443,39 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
     out = []
 
     if not info["ongoing"]:
-        in_window = (info["max_day"] + 1) // 2 <= age <= info["max_day"]
+        in_window = W.one_shot_window(age, info["max_day"])
         # A one-shot water inside the window IS the yield: one unit, two if fertilized. So a melon
         # water is worth $250 -- the single highest-value op available -- and a melon water outside
         # the window is worth nothing at all.
+        # See `kagg/search/watering.py`. The FERTILIZE decision comes first because WATER reads
+        # `fertilized_until_day` at the moment it runs, and the filling HARVEST is chained onto the
+        # water that completes the tile.
         if in_window and room > 0:
-            # Worth fertilizing only if the remaining window cannot fill the tile on plain waters.
-            # **Clipped to the season, not just to the window.** A tile whose window runs past the
-            # last day is credited with waters nobody will ever give it, and the FERTILIZER it
-            # spends is a PRODUCT that could have been sold instead. `_crop_remaining` and the
-            # window pricer below already clip this way; these two gates did not.
-            waters_left = min(info["max_day"] - age + 1, R.SEASON_DAYS - day)
-            if (not fertilized and have_fertilizer and waters_left < room
-                    and day < FERTILIZE_UNTIL_DAY
-                    and cell.get("fertilized_until_day", -1) < day):
-                gain = min(room, waters_left * 2) - min(room, waters_left)
-                if gain * price > fert_price:
-                    out.append(("FERTILIZE", "FERTILIZER", gain * price))
-                    fertilized = True
-            if not cell["watered_today"]:
-                # **A tile can be inside its window AND on the brink of weeding on the same day, and
-                # this branch used to price only the first of those.** An in-window water is worth the
-                # unit it adds; a water on a tile at `consecutive_unwatered >= 1` is worth the whole
-                # tile, because tomorrow there is no tile. Wheat sown on d26 hits both on d28 -- age
-                # reaches `first` exactly as the second dry night falls -- and at one unit (~$25) it
-                # lost every auction: 3 weeds on d28, 4 on d29, and seven of d29's turns spent
-                # DIGging them. Held to d26+ purely for scope; the mispricing is not late-specific.
-                unit = price * (2 if fertilized else 1)
-                if day >= LATE_TRUNCATED_PLANT_DAY and cell["consecutive_unwatered"] >= 1:
-                    unit = max(unit, _crop_remaining(cell, day))
-                out.append(("WATER", None, unit))
-                # **The LAST water is not worth one unit, it is worth the tile.** See
-                # `FILLING_WATER`. It takes `room` to 0, which is exactly the condition
-                # `_one_shot_is_finished` waits for, so the HARVEST becomes legal on the next turn
-                # with the unit already standing here. Offering it on the same node prices the visit
-                # at what it actually banks and lets `_live_ops` emit WATER then HARVEST back to
-                # back, which is what the crew already does -- just seven hours too late.
-                # **TRIED and MEASURED WORSE: price this at `held`, not `held + gain`.** It is the
-                # strictly correct marginal -- the WATER above already carries the unit it adds, so
-                # the full tile bills that unit twice, $1,750 for a stop that banks $1,500 -- and it
-                # is what every other HARVEST is priced at. On seed 11 day 10 it gave back the whole
-                # gain: money -1,548 -> -3,082 and `sh:melon` 0 -> +6, i.e. baseline. The $250 is
-                # what breaks a TIE: an immature melon's survival water is `_crop_remaining`, also
-                # exactly $1,500, and at $1,500 each the filling water no longer outranks it.
-                # `test_a_filling_water_outranks_survival_water_on_a_tile_that_cannot_yield_yet`
-                # goes red on precisely that. Certain money today and contingent value tomorrow are
-                # not the same $1,500, and this node is the only place the difference is expressible.
-                gain = 2 if fertilized else 1
-                if age >= info["first"] and gain >= room:
-                    out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
-        elif (not cell["watered_today"] and cell["consecutive_unwatered"] >= 1
-              and not upkeep_buys_nothing(day)):
-            # The last-day gate: this water buys the tile surviving TONIGHT's rollover, and after
-            # d29's rollover there is no tile to have saved. Same switch as FEED/CARE.
-            # Outside the window water buys nothing but survival, and it is only needed on the day
-            # the tile would otherwise weed. This is the every-SECOND-day rule, derived:
-            # `consecutive_unwatered` starts at 1 on the planting day and weeds the tile at 2, so a
-            # tile watered yesterday is safe tonight and only the ones at 1 are on the brink.
-            #
-            # It is NOT mandatory, though the loss is real and permanent. Promoting it into the
-            # mandatory pass alongside fourteen pens was measured over twelve seeds at **-$2,804**:
-            # harvests recovered 296 -> 318 and feeding fell straight back, 321 -> 301, because a pass
-            # that contains everything cannot triage.
-            #
-            # **This gate was widened to `>= 0` and then narrowed back, and the widening was an
-            # error of attribution.** The justification was a table of waters per live plant tile
-            # showing "the tape" watering ~1.06 every day against our alternating 0.06/1.00, with
-            # day 1 at 18 waters to our 1. That table is real, and it is the OLD LEADER's tape.
-            # Measured on the same harness the same day, seed 11, waters ours/tape:
-            #
-            #     oldleader   d0 16/17   d1 17/18   d2 18/19   d3 18/19      waters daily
-            #     seb         d0 17/17   d1 17/0    d2 17/17   d3 17/14      waters alternate days
-            #
-            # The two tapes genuinely differ here, and Seb -- the stronger tape, and the one we are
-            # matching -- reaches dawn on day 2 with all 17 tiles sitting at `consecutive_unwatered
-            # = 1` and takes **zero weeds** through day 7 doing it. Watering the other 17 tiles on
-            # day 1 is 17 work turns and ~31 walk turns for nothing at all.
-            out.append(("WATER", None, _crop_remaining(cell, day)))
-        elif (tile is not None and not cell["watered_today"]
-              and (tile[0] + tile[1] + day) % 2 == 0
-              and not upkeep_buys_nothing(day)):
-            # Same last-day gate as the survival water above: the alternation only exists to keep
-            # `consecutive_unwatered` below 2 across days, and there is no next day.
-            # **Half the safe tiles, alternating -- which is what the leader actually does.**
-            #
-            # Measured off カワシギ's own d3, seed 11: his board at dawn is 19 tiles, every one at
-            # `consecutive_unwatered = 0`, all planted d0 -- 7 WHEAT and 12 MELON -- and he emits
-            # **14** waters. We emitted 7, exactly the wheat, because wheat at age 3 is inside
-            # `in_window` ((4+1)//2 = 2 <= 3 <= 4) and melon at age 3 is far from its own 6..12.
-            # His extra seven are melon: he is not watering all twelve, he waters about half and
-            # takes the rest tomorrow.
-            #
-            # Parity on `(x + y + day)` is that alternation with no state to carry. It flips every
-            # day, so a tile skipped today is offered tomorrow and `consecutive_unwatered` can never
-            # reach the 2 that weeds it (`reference/kaggriculture.py:770`).
-            #
-            # **Not `TOP_UP_SAFE_TILES`, which is the same slot and the wrong shape.** That flag
-            # offers EVERY safe tile from a fixed day, which put d3 at 19 against his 14 and d5 at
-            # 20 against his 13 -- overshooting the tape rather than matching it.
-            out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
+            _prize, fertilized = W.fertilize_one_shot(
+                room=room, age=age, max_day=info["max_day"], season_days=R.SEASON_DAYS, day=day,
+                price=price, fert_price=fert_price, fertilized=fertilized,
+                have_fertilizer=have_fertilizer,
+                fertilized_until_day=cell.get("fertilized_until_day", -1),
+                fertilize_until_day=FERTILIZE_UNTIL_DAY)
+            if _prize is not None:
+                out.append(("FERTILIZE", "FERTILIZER", _prize))
+        _kind, _prize = W.one_shot_water(
+            in_window=(in_window and room > 0), watered_today=cell["watered_today"],
+            consecutive_unwatered=cell["consecutive_unwatered"], day=day, price=price,
+            fertilized=fertilized, remaining=_crop_remaining(cell, day),
+            late_truncated_plant_day=LATE_TRUNCATED_PLANT_DAY,
+            upkeep_pointless=upkeep_buys_nothing(day), top_up_discount=TOP_UP_DISCOUNT)
+        if _kind == W.Water.TOPS_UP and tile is None:
+            _kind = W.Water.NONE                  # the old branch required a tile to discount on
+        if _kind != W.Water.NONE:
+            out.append(("WATER", None, _prize))
+        if _kind == W.Water.FILLS:
+            # **The LAST water is not worth one unit, it is worth the tile.** It takes `room` to 0,
+            # which is what `_one_shot_is_finished` waits for, so the HARVEST becomes legal on the
+            # next turn with the unit already standing here.
+            gain = 2 if fertilized else 1
+            if age >= info["first"] and gain >= room:
+                out.append(("HARVEST", None, min(info["max_yield"], held + gain) * price))
     else:
         # An ongoing crop produces at dawn regardless of water. Water is survival, plus the
         # fertilizer bonus on a production day. Watering it on any other day is pure walk.
@@ -556,54 +492,25 @@ def crop_ops(cell, day, have_fertilizer, fertilizer_price=None, tile=None):
         # that was three turns off u9 and three off u13, and the tiles their tours could no longer
         # reach -- (8,0) and (9,0) -- weeded. Order in `out` matters for the same reason it does
         # above: WATER reads `fertilized_until_day` at the moment it runs.
+        # See `kagg/search/watering.py`. FERTILIZE is decided and appended BEFORE the water is
+        # priced, because the water clause reads `fertilized`: testing it the other way round
+        # shipped the stop as `('FERTILIZE',)` alone and `_live_ops`, re-reading the cell after the
+        # FERTILIZE had run, spent a turn on a water nobody budgeted.
         if (produces_tomorrow and not fertilized and have_fertilizer and room > 1
                 and day < FERTILIZE_UNTIL_DAY
                 and price > fert_price):
             out.append(("FERTILIZE", "FERTILIZER", price))
             fertilized = True
-        if not cell["watered_today"]:
-            if cell["consecutive_unwatered"] >= 1:
-                # **TRIED and MEASURED AS AN EXACT NULL 2026-08-17: gate this with
-                # `upkeep_buys_nothing(day)`, as the one-shot survival water above already is.** The
-                # grid came back byte-identical and `water d29 14/11` did not move, which means this
-                # branch does not fire on d29 at all. d29's fourteen waters are the one-shot
-                # in-window fills higher up in this function -- each one paired with a HARVEST on
-                # the same stop, filling the tile so it can be taken the same turn -- and those are
-                # earning their turn, not wasting it.
-                out.append(("WATER", None, _crop_remaining(cell, day)))
-            elif produces_tomorrow and room > 0 and (fertilized or day >= FERTILIZE_UNTIL_DAY):
-                # **Past `FERTILIZE_UNTIL_DAY` this branch is the ONLY water a safe tile can be
-                # offered.** A tile watered yesterday has `consecutive_unwatered == 0`, so the
-                # survival branch above never fires for it, and `fertilized` is False by construction
-                # once fertilizing stops. Measured: twelve wheat planted d26 took their planting-day
-                # water and then nothing -- 3 weeds by d28, 4 by d29, and seven of d29's turns spent
-                # DIGging our own dead tiles.
-                out.append(("WATER", None, price))
-            elif (tile is not None and (tile[0] + tile[1] + day) % 2 == 0
-                  and not upkeep_buys_nothing(day)):
-                # **The same parity alternation the one-shot branch above already ships.** Without
-                # it an ongoing crop has three gates and all three are shut for its first nine days:
-                # `produces_tomorrow` needs `age + 1 >= info["first"]`, which is 10 for STRAWBERRY,
-                # and `TOP_UP_SAFE_TILES` was a measured-off flag. So a strawberry could only ever be
-                # offered water on the day `consecutive_unwatered >= 1` and tonight's rollover weeds
-                # it -- no margin, and a safe tile returns `[]` so `build_nodes` emits no node at all
-                # and `cover` cannot choose to visit it early.
-                #
-                # NOT `TOP_UP_SAFE_TILES`, which held this slot and measured $79,905 -> $63,645:
-                # that offered EVERY safe tile from a fixed day and doubled the load. Parity offers
-                # HALF and flips daily, so no tile is skipped twice running.
-                #
-                # **The parity term was in this comment and NOT in the condition until 2026-08-18**,
-                # so this branch was `TOP_UP_SAFE_TILES` in all but name -- every safe ongoing tile
-                # offered water every day, the exact shape that flag measured worse. Water does not
-                # grow an ongoing crop: `_daily_refresh_crops` advances `yield_units` off the
-                # calendar alone and reads `was_watered` only to weed the tile at
-                # `consecutive_unwatered >= 2` and to gate the fertilizer doubling
-                # (`reference/kaggriculture.py:783,799`). Measured strawberry arm, own seed
-                # 70683142, every water classified by its tile's dawn state: d12 55 waters against
-                # his 32 with **17** on safe tiles on their off-parity day, d13 61 against 43 with
-                # **21**. See `tests/test_a_safe_ongoing_tile_is_watered_on_alternate_days.py`.
-                out.append(("WATER", None, _crop_remaining(cell, day) / TOP_UP_DISCOUNT))
+        _kind, _prize = W.ongoing_water(
+            watered_today=cell["watered_today"],
+            consecutive_unwatered=cell["consecutive_unwatered"],
+            produces_tomorrow=produces_tomorrow, room=room, fertilized=fertilized, day=day,
+            price=price, remaining=_crop_remaining(cell, day),
+            fertilize_until_day=FERTILIZE_UNTIL_DAY,
+            upkeep_pointless=upkeep_buys_nothing(day), top_up_discount=TOP_UP_DISCOUNT,
+            alternates=(tile is not None and (tile[0] + tile[1] + day) % 2 == 0))
+        if _kind != W.Water.NONE:
+            out.append(("WATER", None, _prize))
 
     if held > 0 and age >= info["first"] and (info["ongoing"]
                                               or _one_shot_is_finished(info, age, room, day)):
@@ -996,98 +903,39 @@ def upkeep_buys_nothing(day):
 
 
 def animal_ops(cell, day, have_wheat):
-    """`[(op, item, prize)]` for a stocked pen. FEED is mandatory the day after a missed feed."""
+    """`[(op, item, prize)]` for a stocked pen. The rules live in `kagg/search/husbandry.py`.
+
+    Order matters: CARE is offered only on a pen this same call has decided to FEED, and the
+    FERTILIZE-then-WATER ordering has the same shape one function up. `will_be_fed` stays here --
+    it is the caller's cycle question, and it reads module state this module owns.
+    """
     a = ANIMALS[cell["animal"]]
     price = BASE_PRICE[a["product"]]
-    out = []
-    fed = cell["fed_today"]
     if upkeep_buys_nothing(day):
-        # Collect what is already there; buy nothing that pays out tomorrow.
-        if cell.get("fertilizer_available"):
-            out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
-        if cell.get("yield_units", 0) > 0:
-            # **On the last day a standing harvest is the only thing that can still become money.**
-            # FEED and CARE are already gone above; what is left on a pen at the close is discarded
-            # at a rollover that scores nothing. So this is worth the whole tile, not its units, and
-            # it has to outrank the walk to it.
-            #
-            # **Judged on the kawashigi grid this reads as an exact null, and that grid is the wrong
-            # harness for it.** Seed 11 on 75 tiles ends with 0 units standing, so no price can win
-            # work already done. Across 30 real ladder games we end holding **22.8 units in the
-            # field per game against the opponents' 3.0** -- WHEAT 519, COW 99, CARROT 34 over the
-            # corpus -- and four losses are narrower than what we left in the ground
-            # (`93839424 -158` with 22 standing, `93826137 -623` with 24). Measure this with
-            # `scripts/rematch_the_losses.py`, which pins each game's own seed, never on one grid.
-            out.append(("HARVEST", None, CRITICAL + cell["yield_units"] * price))
-        return out
-    if not fed and have_wheat:
-        hungry = cell.get("consecutive_unfed", 0) >= 1
-        # **A feed buys two things, and on most nights it buys neither.** From
-        # `_daily_refresh_animals` (`kaggriculture.py:795-820`):
-        #
-        #     if days_since_first >= 0 and days_since_first % a["interval"] == 0:
-        #         base = 1
-        #         bonus = tile.pop("pending_care_bonus", 0) if tile["fed_today"] else 0
-        #         tile["yield_units"] = min(a["max_held"], tile["yield_units"] + base + bonus)
-        #
-        # `base = 1` lands whether or not the animal was fed. Production never reads `fed_today`.
-        # So a FEED resets `consecutive_unfed`, and on a production night it releases
-        # `pending_care_bonus` -- and on any other night it buys nothing at all.
-        #
-        # The comment that stood here said the opposite -- "skipping it forfeits the day's
-        # production AND the care bonus" -- and that false half is what made every feed MANDATORY.
-        # The +0.452 correlation with money is real and is not evidence for feeding daily; it is
-        # evidence for keeping animals alive, which the hungry branch below already does.
-        #
-        # The tape feeds on a cycle and uses the whole of the one-day slack: seventeen pens on d7
-        # and THREE feeds, four feeds on d5 against seven pens. The intervals agree -- a COW
-        # produces every second night and a SHEEP every third -- so a daily feed on a cow is wasted
-        # on at least half the nights by construction.
-        # **Producing, not "tonight".** The first cut of this asked whether the pen yields TONIGHT
-        # and fed only then. It measured d16 money $9,975 -> $4,814, and the reason is the care
-        # chain: `CARE` is offered only on a pen that is fed (below), and `pending_care_bonus` is
-        # banked only on a night that is BOTH fed and cared. Feed nightly and a production night
-        # pays `base 1 + bonus 1`; feed only on the payout night and it pays 1. Same turns per unit
-        # of product, half the product.
-        #
-        # So the waste is not the daily feed. It is the daily feed of an animal that has not STARTED
-        # producing: a COW placed on d0 first yields on d8 (`first_yield_day 8`), so eight days of
-        # feeding it buy nothing but its survival, which one feed in two also buys.
-        #
-        # That is what the tape does, and it is why d7 looks the way it does -- he goes from 7 pens
-        # to 17 that day and feeds THREE. The twelve he has just placed are years from a yield in
-        # game terms; the three that are producing get fed. By d9 he is feeding 11 of 17 and by d10,
-        # 12 of 18, as the rest come on line.
-        if will_be_fed(cell, day):
-            # A hungry pen is one missed day from the animal escaping outright
-            # (`reference/kaggriculture.py:804`), which is irreversible: the structure survives, the
-            # animal does not, and nothing on the board buys it back the same day. See `CRITICAL`.
-            floor = CRITICAL if hungry else MANDATORY
-            prize = floor + price + ((a["cost"] + _animal_remaining(cell, day)) if hungry else 0)
-            out.append(("FEED", "WHEAT", prize))
-            fed = True
-    if not cell["cared_today"] and fed:
-        # `pending_care_bonus` is only consumed on a day the animal is ALSO fed, so an uncared or
-        # unfed pen banks nothing. One care = one extra unit of product on the next production day.
-        out.append(("CARE", None, price))
-    if cell.get("fertilizer_available"):
-        out.append(("COLLECT_FERTILIZER", None, BASE_PRICE["FERTILIZER"]))
-    if cell.get("yield_units", 0) > 0:
-        prize = cell["yield_units"] * price
-        # **d28 is the last day this produce banks itself for free.** `_drop_inventories_to_shed`
-        # runs inside `_end_of_day`, so a load carried at dusk reaches the shed at no turn cost and
-        # is sellable all through d29. On d29 that same drop lands AFTER the final `_process_market`
-        # (`kaggriculture.py:942` then `:946`), so milk left standing on a pen tomorrow is produce
-        # that can never be money.
-        #
-        # A crop already reaches CRITICAL through `_last_safe_age` -- it has a filling window that
-        # closes. A pen has no such window, so nothing ever promotes it, and the grid shows 48 idle
-        # unit-turns on d28 with the field still holding. This is the pen's version of the same
-        # deadline, and it is d28 ONLY: d29's own harvest is priced by the `upkeep_buys_nothing`
-        # branch at the top of this function.
-        if day is not None and day == R.SEASON_DAYS - 2:
-            prize += CRITICAL
-        out.append(("HARVEST", None, prize))
+        return [(k if k != H.Pen.COLLECT else "COLLECT_FERTILIZER", None, p)
+                for k, p in H.last_day(fertilizer_available=cell.get("fertilizer_available"),
+                                       yield_units=cell.get("yield_units", 0), price=price,
+                                       fertilizer_price=BASE_PRICE["FERTILIZER"],
+                                       critical=CRITICAL)]
+    out = []
+    _kind, _prize, fed = H.feed(
+        fed_today=cell["fed_today"], have_wheat=have_wheat,
+        consecutive_unfed=cell.get("consecutive_unfed", 0),
+        on_cycle=will_be_fed(cell, day), price=price, animal_cost=a["cost"],
+        remaining=_animal_remaining(cell, day), critical=CRITICAL, mandatory=MANDATORY)
+    if _kind != H.Pen.NONE:
+        out.append(("FEED", "WHEAT", _prize))
+    _kind, _prize = H.care(cared_today=cell["cared_today"], fed=fed, price=price)
+    if _kind != H.Pen.NONE:
+        out.append(("CARE", None, _prize))
+    _kind, _prize = H.collect(fertilizer_available=cell.get("fertilizer_available"),
+                              fertilizer_price=BASE_PRICE["FERTILIZER"])
+    if _kind != H.Pen.NONE:
+        out.append(("COLLECT_FERTILIZER", None, _prize))
+    _kind, _prize = H.harvest(yield_units=cell.get("yield_units", 0), price=price, day=day,
+                              last_free_bank_day=R.SEASON_DAYS - 2, critical=CRITICAL)
+    if _kind != H.Pen.NONE:
+        out.append(("HARVEST", None, _prize))
     return out
 
 

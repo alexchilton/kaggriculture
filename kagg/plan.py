@@ -38,6 +38,13 @@ SHIPPED_PLAN = REPO / "data/seed_scripts/kawashigi/schedule.json"
 PLANS = {
     "kawashigi": REPO / "data/seed_scripts/kawashigi/schedule.json",
     "victor": REPO / "data/seed_scripts/victor/schedule.json",
+    #: SpaTaro, rank 1 (3130.8). Episode 107068412 of submission 56114097, $157,032 -- his best
+    #: bank among the 58 of 179 seasons that run his MAJORITY opening skeleton (COW COW SHEEP
+    #: SHEEP placed on d0, COW on d4, COW on d5; that sequence is 128 of 179 seasons through d5,
+    #: 170 of 179 through d3, and falls to 32% on d6). Picking his single best season instead
+    #: would have taken 107020377 at $169,037 off a skeleton he plays in a minority of games.
+    #: Extracted by `scripts/spataro_plan_rows.py`; see `data/seed_scripts/spataro/meta.json`.
+    "spataro": REPO / "data/seed_scripts/spataro/schedule.json",
 }
 
 #: Keys a schedule row carries that describe what the RECORDING did rather than what the agent

@@ -42,6 +42,10 @@ import math
 
 from . import routines as R
 
+#: Last day of a season, 0-indexed. Local rather than imported from `schedule_agent`, which imports
+#: THIS module -- the other direction would be a cycle.
+LAST_DAY = 29
+
 TPD = R.TURNS_PER_DAY
 WORK_TURNS = TPD - 1                    # turn 0 of a day is the market order
 SPAWN = tuple(R.SPAWN)
@@ -142,6 +146,34 @@ def _tasks_for_day(farm, day, plant_orders, build_orders, fertilize, replant=Non
             continue
         ops = ["FEED", "CARE", "COLLECT_FERTILIZER"]
         age = day - pen["placed"]
+        # **Stop feeding an animal that cannot yield again before the season ends.**
+        #
+        # `_daily_refresh_animals` credits a yield for `next_day = day + 1`
+        # (`reference/kaggriculture.py:805`), so a FEED on day D can only ever produce the unit
+        # credited on D+1, and there is no day after `LAST_DAY`. A pen whose next production day
+        # falls past the end is therefore fed for nothing, at 1 WHEAT per animal per day, and the
+        # wheat is the same wheat the field wants.
+        #
+        # This is what SpaTaro does, and it is the whole of his "cull": over 179 seasons of
+        # submission 56114097 his escapes are 216 on d27 and 472 on d28 against 26-71 a day before
+        # that, his sheep herd PEAKS at d27 (p50), and ZERO of the 179 seasons dip mid-season and
+        # rebuild. He is not culling into a crashed market; he stops paying for an animal at the
+        # point it can no longer pay him. `DIG` cannot remove a placed animal and it cannot be sold,
+        # so letting it starve costs nothing.
+        #
+        # HARVEST is deliberately left in below: the escape replaces the whole tile
+        # (`farm["tiles"][y][x] = {"kind": ...}`), so any `yield_units` still standing are lost with
+        # it, and the two days before the animal goes are exactly when they must be collected.
+        _a = R.ANIMALS.get(pen["animal"]) or {}
+        _first, _every = int(_a.get("first_yield_day", 0)), max(1, int(_a.get("interval", 1)))
+        _next = None
+        for _y in range(day + 1, LAST_DAY + 1):
+            _since = _y - pen["placed"] - _first
+            if _since >= 0 and _since % _every == 0:
+                _next = _y
+                break
+        if _next is None:
+            ops = ["COLLECT_FERTILIZER"]
         # Every third day, not every second. An animal accumulates produce up to `max_held` and a
         # HARVEST takes the lot, so visiting more often does not collect more -- it collects the same
         # units in smaller pieces and pays a turn each time. Counted against his tape, a two-day

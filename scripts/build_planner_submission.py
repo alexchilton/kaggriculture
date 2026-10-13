@@ -252,8 +252,10 @@ _SA = _install()
 # it replays d4-d11 and does not. Only our own seat's `farmer`/`hands`/`market` for those days is
 # needed, 23 KB a tape against a 30 MB replay file. JSON has no tuple keys, so the latch pair is
 # stored as a two-element list and turned back into a tuple here.
-_SA.EMBEDDED_OPENINGS = {tuple(json.loads(_k)): _v
-                         for _k, _v in json.loads(_EMBEDDED_OPENINGS_JSON).items()}
+# Keyed by CLUSTER NAME, a plain string. It was the `(melon_armed, q4_armed)` latch pair as JSON
+# until 2026-09-11; both latches were deleted and the tape is chosen by the world now.
+_SA.EMBEDDED_OPENINGS = json.loads(_EMBEDDED_OPENINGS_JSON)
+_SA.EMBEDDED_BOARDS = json.loads(_EMBEDDED_BOARDS_JSON)
 _AGENTS = {}
 
 
@@ -298,6 +300,64 @@ def agent(obs, config=None):
         return {"farmer": list(farmer), "hands": [list(h) for h in hands[:owned]],
                 "market": [list(o) for o in market]}
     return live
+'''
+
+#: Appended to the epilogue when `--clusters` is given. Kept OUT of the default build so an
+#: artifact without cluster schedules carries no dead routing code at all -- the NO FLAGS rule.
+#:
+#: **Rows are cleared and refilled IN PLACE**, the `kagg/search/branch.py` contract:
+#: `make_agent` shallow-copies the outer dict and shares every row object with this module, and
+#: reads them live every turn, so `_SCHEDULE[day] = new_row` rebinds a key nobody reads and looks
+#: exactly like a working router. That is the byte-identical null this project keeps re-learning.
+#:
+#: **Decided once, at the first observation that shows a shop, and never revisited.** A trigger
+#: re-read between two days of one purchase can answer differently and buy half of each.
+CLUSTER_EPILOGUE = '''
+
+_CLUSTERS = json.loads(_CLUSTERS_JSON)
+_CLUSTER_OF = {_shop: _name for _name, _d in _CLUSTERS.items() for _shop in _d["shops"]}
+_ROUTED = {}
+
+
+def _route(obs, me):
+    """Install the cluster's rows from `split_day` on, once, when the first shop is known."""
+    if _ROUTED.get(me):
+        return
+    shops = ((obs.get("town") or {}).get("unlocked_shops") or ())
+    name = next((_CLUSTER_OF[s] for s in shops if s in _CLUSTER_OF), None)
+    if name is None:
+        return
+    _ROUTED[me] = name
+    rows = _CLUSTERS[name]["rows"]
+    # **Both key types, and this is not defensive coding.** `_SCHEDULE = json.loads(_PLAN_JSON)` has
+    # STRING keys; `make_agent` builds its own `{int(k): v}` view but shares the row objects, which is
+    # what makes an in-place install work at all. Looking up `int(day)` here found nothing on every
+    # day, so the router cleared and refilled NOTHING and the artifact played the default plan in
+    # silence -- the byte-identical null `kagg/search/branch.py` is written to prevent. Caught by
+    # `reproduce()`: bundle $101,868 against repo modules $90,435.
+    _installed = 0
+    for _day, _row in rows.items():
+        _target = _SCHEDULE.get(_day)
+        if _target is None:
+            _target = _SCHEDULE.get(int(_day))
+        if _target is None:
+            continue
+        _target.clear()
+        _target.update(_row)
+        _installed += 1
+    # A route that installs nothing is a router that is not there. Loud, because the whole point of
+    # this block is that its failure is otherwise invisible.
+    if not _installed:
+        raise RuntimeError("cluster %r matched but installed no rows" % (name,))
+
+
+def agent(obs, config=None):
+    """Entry point with the cluster router in front. MUST be the last callable in the file."""
+    me = int(obs.get("player", 0) or 0)
+    if int(obs.get("day", 0) or 0) == 0 and int(obs.get("hour", 0) or 0) == 0:
+        _ROUTED.pop(me, None)
+    _route(obs, me)
+    return _agent_unrouted(obs, config)
 '''
 
 
@@ -389,13 +449,64 @@ def _embedded_openings():
     for key, (tape, team) in sa.REPLAY_OPENING_TAPE.items():
         op = sa._replay_opening(days, tape, team)
         if not op:
-            raise SystemExit(f"tape {tape} for latch {key} produced no opening; refusing to ship a "
-                             f"bundle whose replay would silently do nothing")
-        out[json.dumps([bool(key[0]), bool(key[1])])] = {str(s): list(v) for s, v in op.items()}
+            raise SystemExit(f"tape {tape} for cluster {key!r} produced no opening; refusing to "
+                             f"ship a bundle whose replay would silently do nothing")
+        # **Keyed by CLUSTER now, a plain string.** It used to be the `(melon_armed, q4_armed)`
+        # latch pair encoded as JSON; both latches were deleted on 2026-09-11 and the tape is
+        # chosen by the world instead.
+        out[str(key)] = {str(s): list(v) for s, v in op.items()}
     return out
 
 
-def build(replay_days=0, target=TARGET):
+def _embedded_boards():
+    """`{cluster: {day: board}}` -- what each tape expects at dawn of each day it drives.
+
+    Checked live every dawn; the tape stops the moment the farm stops matching. A submission carries
+    no `data/` tree, so without this the check reads `{}`, finds nothing to compare, and the tape
+    runs on regardless -- which is the failure the check exists to prevent, shipped silently.
+    """
+    import importlib
+    sa = importlib.import_module("kagg.search.schedule_agent")
+    days = tuple(getattr(sa, "REPLAY_OPENING_DAYS", ()) or ())
+    if not days:
+        return {}
+    out = {}
+    for key, (tape, team) in sa.REPLAY_OPENING_TAPE.items():
+        b = sa._replay_boards(days, tape, team)
+        if not b:
+            raise SystemExit(f"tape {tape} for cluster {key!r} produced no boards; refusing to ship "
+                             f"a bundle whose board check would silently pass on everything")
+        out[str(key)] = {str(d): v for d, v in b.items()}
+    return out
+
+
+def _cluster_blob(directory):
+    """`{cluster: {"shops": [...], "rows": {day: row}}}` from a directory of schedules.
+
+    The shop list per cluster comes from `scripts/spa_targets.py`, the single definition of which
+    shops share a demand profile; importing it rather than restating it here is what stops the
+    router and the model that generated the rows from drifting apart.
+    """
+    from scripts.spa_targets import CLUSTERS
+
+    out = {}
+    for name, shops in CLUSTERS.items():
+        path = pathlib.Path(directory) / f"{name}.json"
+        if not path.exists():
+            raise SystemExit(f"--clusters {directory}: no {name}.json for cluster {name!r}")
+        rows = json.loads(path.read_text())
+        thin = {d: {k: v for k, v in row.items() if k not in TAPE_ONLY}
+                for d, row in rows.items()}
+        out[name] = {"shops": list(shops), "rows": thin}
+    # Every shop must map to exactly one cluster, or a world routes nowhere and plays the default
+    # plan in silence -- the failure mode this whole file exists to make loud.
+    seen = [s for c in out.values() for s in c["shops"]]
+    if len(seen) != len(set(seen)):
+        raise SystemExit(f"a shop appears in two clusters: {sorted(seen)}")
+    return out
+
+
+def build(replay_days=0, target=TARGET, clusters=None):
     sources = {}
     for name, path in MODULES:
         text = pathlib.Path(path).read_text()
@@ -429,7 +540,17 @@ def build(replay_days=0, target=TARGET):
     # The tape days the bundled agent will replay, extracted from the recordings on disk. Empty when
     # `REPLAY_OPENING_DAYS` is empty, which is the no-replay variant.
     out.append(f"_EMBEDDED_OPENINGS_JSON = r'''{json.dumps(_embedded_openings())}'''\n")
-    out.append(EPILOGUE)
+    out.append(f"_EMBEDDED_BOARDS_JSON = r'''{json.dumps(_embedded_boards())}'''\n")
+    if clusters:
+        blob = _cluster_blob(clusters)
+        out.append(f"_CLUSTERS_JSON = r'''{json.dumps(blob)}'''\n")
+        # The stock entry point is renamed so the routed one can wrap it AND still be the last
+        # callable in the file -- `get_last_callable` takes the last one, not one called `agent`.
+        out.append(EPILOGUE.replace("def agent(obs, config=None):",
+                                    "def _agent_unrouted(obs, config=None):", 1))
+        out.append(CLUSTER_EPILOGUE)
+    else:
+        out.append(EPILOGUE)
     text = "".join(out)
 
     _assert_verbatim(text, sources, thin)
@@ -702,7 +823,8 @@ def plays_a_real_game(seed=700):
     return ok, status, reward, final[1]["reward"]
 
 
-def beats_the_repo_agent(seeds=(4001, 4002, 4003, 4004, 4005, 4006), floor=0.40):
+def beats_the_repo_agent(seeds=(4001, 4002, 4003, 4004, 4005, 4006), floor=0.40,
+                         clusters=None):
     """The real quality gate: the BUILT FILE against the repo's current agent, both seats.
 
     `starter` cannot rank anything -- it sells almost nothing, so the market is never contested and
@@ -733,10 +855,33 @@ def beats_the_repo_agent(seeds=(4001, 4002, 4003, 4004, 4005, 4006), floor=0.40)
         "_DROP = ('plant_tiles', 'build_tiles', 'land_turns', 'orders')\n"
         "_T = {d: {k: v for k, v in r.items() if k not in _DROP} for d, r in _S.items()}\n"
         "_A = {}\n"
+        # **The opponent must ROUTE exactly as the bundle does.** This gate asserts the two are the
+        # SAME agent, so an unrouted opponent turns a packaging check into an accidental A/B of
+        # routing-versus-not, and reports the difference as a packaging fault. It first showed as
+        # `spa_deep` W4 D0 L8 (33.3%); `spa_full` had already passed at W6 D0 L6 with the same
+        # defect, because 50% cleared the floor. Zero draws between two supposedly identical agents
+        # was the tell in both.
+        f"_CL = json.loads({json.dumps(json.dumps(_cluster_blob(clusters) if clusters else {}))})\n"
+        "_OF = {s: n for n, d in _CL.items() for s in d['shops']}\n"
+        "_R = {}\n"
+        "def _route(obs, me):\n"
+        "    if me in _R or not _CL:\n"
+        "        return\n"
+        "    shops = ((obs.get('town') or {}).get('unlocked_shops') or ())\n"
+        "    name = next((_OF[x] for x in shops if x in _OF), None)\n"
+        "    if name is None:\n"
+        "        return\n"
+        "    _R[me] = name\n"
+        "    for day, row in _CL[name]['rows'].items():\n"
+        "        t = _T.get(int(day))\n"
+        "        if t is None:\n"
+        "            continue\n"
+        "        t.clear(); t.update(row)\n"
         "def agent(obs, config=None):\n"
         "    me = obs['player']\n"
         "    if me not in _A:\n"
         "        _A[me] = make_agent(_T, me, router=True)\n"
+        "    _route(obs, me)\n"
         "    return _A[me](obs)\n"
     )
     try:
@@ -765,7 +910,7 @@ def beats_the_repo_agent(seeds=(4001, 4002, 4003, 4004, 4005, 4006), floor=0.40)
         opponent.unlink(missing_ok=True)
 
 
-def reproduce(days=30, replay_days=0, verbose=True):
+def reproduce(days=30, replay_days=0, verbose=True, clusters=None):
     """Play the BUILT FILE, and the repo modules, through one identical harness.
 
     The point is the word *built*. Every season number in `docs/` was produced by importing
@@ -804,7 +949,37 @@ def reproduce(days=30, replay_days=0, verbose=True):
                                **({"start_day": replay_days} if replay_days else {}))
     opening = _opening(replay_days) if replay_days else []
 
+    # **The repo side must ROUTE the same way the bundle does**, or the equality gate compares a
+    # routed agent against an unrouted one and can never pass -- which is not a finding, it is the
+    # harness measuring the change it was told to make. Same shape as the replay-opening mirror
+    # above. `thin` is the dict `make_agent` shares rows with, so the install is in place.
+    _blob = _cluster_blob(clusters) if clusters else {}
+    _cluster_of = {shop: name for name, d in _blob.items() for shop in d["shops"]}
+    _routed = {}
+
+    def _repo_route(obs):
+        if _routed or not _blob:
+            return
+        shops = ((obs.get("town") or {}).get("unlocked_shops") or ())
+        name = next((_cluster_of[x] for x in shops if x in _cluster_of), None)
+        if name is None:
+            return
+        _routed["name"] = name
+        installed = 0
+        for day, row in _blob[name]["rows"].items():
+            target = thin.get(day)
+            if target is None:
+                target = thin.get(int(day))
+            if target is None:
+                continue
+            target.clear()
+            target.update(row)
+            installed += 1
+        if not installed:
+            raise RuntimeError(f"repo mirror: cluster {name!r} installed no rows")
+
     def repo_play(obs):
+        _repo_route(obs)
         live = repo_agent(obs)
         step = int(obs.get("step", 0) or 0)
         if step < len(opening):
@@ -868,11 +1043,26 @@ if __name__ == "__main__":
     _ap.add_argument("--out", default=str(TARGET),
                      help="where to write, so both artifacts can exist side by side")
     _ap.add_argument("--days", type=int, default=30, help="days for the reproduce check")
+    _ap.add_argument("--clusters", default=None,
+                     help="a directory of <cluster>.json schedules (scripts/targets_to_schedule.py). "
+                          "Embeds them all and routes on the first unlocked shop at its split day. "
+                          "Without this the build carries no routing code at all.")
+    _ap.add_argument("--schedule", default=None,
+                     help="a name in kagg.plan.PLANS, or a path to a schedule.json, to build "
+                          "instead of SHIPPED_PLAN. `build()` and `reproduce()` both read the "
+                          "module-level PLAN, so rebinding it here keeps the artifact and the "
+                          "equality gate on the same plan -- which is the whole point of the gate.")
     _args = _ap.parse_args()
 
     # Rebound so `standalone()`, `plays_a_real_game()` and `reproduce()` verify the file that was
     # just built rather than whatever is at the default path. They all read TARGET at call time.
     TARGET = pathlib.Path(_args.out)
+    if _args.schedule:
+        PLAN = _PLAN.PLANS.get(_args.schedule) or pathlib.Path(_args.schedule)
+        if not PLAN.exists():
+            sys.exit(f"--schedule {_args.schedule!r} is neither a key of kagg.plan.PLANS "
+                     f"{sorted(_PLAN.PLANS)} nor a file on disk")
+        print(f"schedule: {PLAN}")
     # **Refuse to ship a dev instrument that RAISES.** `crew.STRICT_FEASIBILITY` turns a day the
     # planner cannot fully cover into an `InfeasibleDay` exception. That is the right behaviour on a
     # workstation, where an uncovered day should stop the run and be looked at, and it is fatal on
@@ -894,7 +1084,9 @@ if __name__ == "__main__":
         if "start_day" not in _agent_src.read_text().split("def make_agent", 1)[-1].split(")", 1)[0]:
             sys.exit(f"--replay-days {_args.replay_days} was asked for, but {_agent_src} has no "
                      f"`start_day` on make_agent. Bundle a module that does, or build with 0.")
-    path = build(replay_days=_args.replay_days, target=TARGET)
+    path = build(replay_days=_args.replay_days, target=TARGET, clusters=_args.clusters)
+    if _args.clusters:
+        print(f"clusters: {_args.clusters}, routed on the first unlocked shop")
     if _args.replay_days:
         print(f"opening: {_args.replay_days} days ({_args.replay_days * 24} turns) replayed from "
               f"{REPLAY.name} seat {REPLAY_SEAT}, planner from day {_args.replay_days}")
@@ -914,7 +1106,7 @@ if __name__ == "__main__":
               file=sys.stderr)
         sys.exit(1)
 
-    ok, rate, detail = beats_the_repo_agent()
+    ok, rate, detail = beats_the_repo_agent(clusters=_args.clusters)
     print(f"vs the repo agent, both seats: {detail}, win rate {100 * rate:.1f}%")
     if not ok:
         print(f"BUILD FAILED: the bundle wins only {100 * rate:.1f}% against the repo's own agent. "
@@ -922,7 +1114,8 @@ if __name__ == "__main__":
               file=sys.stderr)
         sys.exit(1)
 
-    ok, ours, tape, overage = reproduce(days=_args.days, replay_days=_args.replay_days)
+    ok, ours, tape, overage = reproduce(days=_args.days, replay_days=_args.replay_days,
+                                        clusters=_args.clusters)
     if not ok:
         print("BUILD FAILED: the bundle does not reproduce the measured season", file=sys.stderr)
         sys.exit(1)

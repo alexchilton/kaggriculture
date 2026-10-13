@@ -1,0 +1,470 @@
+"""Contrarian: a compact, opponent-reading farm that picks its crop from the opponent's board.
+
+Deliberately self-contained -- no `kagg` imports -- so this file can be loaded by the arena from
+a path, by `kaggle_environments`, or submitted as-is.
+
+**Why this agent exists.** `kagg/arena/pool.py` advertises eight competing strategies, but every
+member is `heuristic.make_agent()` with different dials: same tile ordering, same hiring curve,
+same job priorities, same sell cadence. The pool therefore tests robustness to *crop mix* and
+nothing else, while `docs/experiment_log.md` section 7 records that the opponents which actually
+beat us on the ladder differed in **how** they played. This agent shares no code and no decision
+rule with the heuristic. Four things about it are structurally different, and each comes from a
+measurement already in this repo or in the environment source.
+
+1. **It reads the opponent's board and changes crop because of it.** `docs/competition_brief.md`
+   records that both farms are fully visible -- tiles, crop, `planted_day` -- and only sheds are
+   private. Nothing in the pool uses that. Melon is winner-take-all: `MARKET_PARAMS["MELON"]` has
+   `above_func="sq"`, and only **158 units** fit above `I0` before the price is on the floor
+   (measured). Two committed players cannot both be paid for it, and `experiment_log.md` section
+   5 records `melon_heavy` as the one matchup the heuristic never solved (30% win rate). So this
+   agent takes melon while the opponent leaves it alone and switches to strawberry once they do
+   not. Strawberry is the opposite market: `economics_q5_findings.md` measures it as needing
+   **89 tiles to saturate town demand**, i.e. physically uncontestable, and a real ladder opponent
+   beat us with it at $310/unit.
+
+2. **It farms a compact disc around the shed and buys land for access, not for area.**
+   `competition_brief.md` calls routing "a first-class cost"; `economics_q5_findings.md` closes by
+   naming routing the highest-value unknown; CLAUDE.md records that cows lost despite winning on
+   per-tile revenue *because* of routing. Tiles are taken in order of Manhattan distance to the
+   nearest shed-access tile and capped, so buying one quadrant mostly buys a second shed-access
+   tile and shorter walks rather than more land. The replay where an opponent won $24,984 to
+   $18,997 on 25 tiles against our 50 is the same lesson from the other side.
+
+3. **It waters before it harvests on the last day of the window.** `_apply_unit_action`'s WATER
+   branch grants yield only while `window_start <= age <= max_yield_day`, and HARVEST on a
+   non-ongoing crop clears the tile. Harvesting first on day `max_yield_day` therefore throws that
+   day's unit away. The heuristic checks HARVEST before WATER.
+
+4. **Its sell floor is set by the shape of each market's curve, not by a global calendar.** The
+   heuristic's `hold_days` stops *all* selling for a fixed window. Measured from
+   `kg.market_price`, the two curves point opposite ways:
+
+   | | units above I0 before the floor | price at 400 deficit |
+   |---|---|---|
+   | melon | 158 | $303 against a $250 base |
+   | strawberry | **62** | **$288 against a $120 base** |
+
+   Melon's scarcity curve is `log`, so holding it earns at most 250 -> 303 while its money is in
+   the glut region; melon is therefore dumped down to 0.55 of base, as the heuristic's own tuning
+   found. Strawberry's scarcity curve is `sqrt` and its glut curve is `linear` with only 62 units
+   of headroom, so it is *held* above 1.85 of base and drips out as town drain lifts the price.
+   Same code path, opposite behaviour, chosen from the market parameters rather than a date.
+
+**Deliberate omissions.** No animals (measured net negative in `experiment_log.md` section 5, and
+the routing fix they need is a different agent again), no fertilizer, no carrot.
+"""
+
+SHED_CAP = 100
+
+# Copied from `reference/kaggriculture.py` rather than imported, so this file stays submittable.
+BASE_PRICE = {
+    "WHEAT": 25, "CARROT": 35, "TOMATO": 60, "STRAWBERRY": 120, "MELON": 250,
+    "EGG": 50, "MILK": 160, "WOOL": 200, "FERTILIZER": 100,
+}
+
+CROPS = {
+    "WHEAT":      {"seed": 10, "first_yield_day": 2,  "max_yield_day": 4,  "ongoing": False},
+    "CARROT":     {"seed": 20, "first_yield_day": 2,  "max_yield_day": 3,  "ongoing": False},
+    "TOMATO":     {"seed": 50, "first_yield_day": 8,  "max_yield_day": 8,  "ongoing": True},
+    "STRAWBERRY": {"seed": 100, "first_yield_day": 10, "max_yield_day": 10, "ongoing": True},
+    "MELON":      {"seed": 80, "first_yield_day": 10, "max_yield_day": 12, "ongoing": False},
+}
+
+PREMIUM_CROPS = ("MELON", "STRAWBERRY", "TOMATO")
+LAND_PRICES = [1000, 2000, 4000]
+
+PARAMS = {
+    # Farm only the tiles closest to the shed. 34 against the board's 100 is the "concentrated
+    # farm" position: a ladder opponent beat us $24,984 to $18,997 on 25 tiles against our 50.
+    "max_tiles": 34,
+    # Hands are cheap up to about eight -- fib(0..7) sums to $54/day, ~$1.6k a season -- and a
+    # compact farm needs fewer of them because each unit walks less per job.
+    "max_hands": 8,
+    "tiles_per_hand": 5,
+    # Drop often: SELL draws from the shed, not from a unit's hands, so cargo in hand is cargo
+    # that cannot be sold. Trips are short on a compact farm.
+    "carry_before_drop": 10,
+    # Wheat's cycle is exactly `max_yield_day` = 4 days, so a mod-4 phase makes a tile replant on
+    # the day it is harvested and spreads the harvest evenly. Keyed on coordinates, not on list
+    # position, so unlocking a quadrant cannot shift a tile's phase.
+    "phase_mod": 4,
+    "filler_crop": "WHEAT",
+    # Tiles committed to the premium crop once it is chosen. Melon's 24 is the commitment the
+    # heuristic's own sweep found best (25 tiles, $43.6k) and matches the ~300 units the melon
+    # market absorbs before the floor; strawberry's 18 is bounded by seed capital and shed room,
+    # not by saturation, since 89 tiles would be needed to saturate it.
+    "premium_tiles": {"MELON": 24, "STRAWBERRY": 18},
+    # Melon is judged contested at this many opponent melon tiles.
+    #
+    # An earlier version also treated an above-I0 melon market inventory as evidence of a rival
+    # melon farmer. That was wrong, and measurably expensive. Melon's `max_yield_day` is 12, so
+    # neither player can put a melon on the market before day 12, while the last melon planting
+    # that can still ripen goes in around day 17. Inside the window where the decision is live,
+    # an above-I0 melon inventory is therefore *always our own sales*, and the rule was making
+    # the agent abandon melon because it had successfully sold melon. Measured over 192 games
+    # against the eight-member pool: same 92.2% win rate either way, mean bank $39,885 with the
+    # inventory clause against $45,769 without it.
+    "melon_opp_tiles": 5,
+    # Never spend the last of the bank on premium seed: a strawberry tile pays nothing for ten
+    # days, and the heuristic's own docstring blames exactly this for its strawberry failure.
+    "premium_reserve": 900,
+    "premium_seed_batch": 6,
+    # Sell floor as a multiple of base price, chosen from the measured shape of each market.
+    # Above 1.0 means "hold and let town drain lift it"; below 1.0 means "this good's money is in
+    # the glut region, keep selling". See the module docstring for the measurements.
+    "sell_floor_frac": {"MELON": 0.55, "STRAWBERRY": 1.85, "TOMATO": 1.55, "CARROT": 0.70},
+    "default_floor_frac": 0.80,
+    # Shed is 100 items and the overflow is destroyed on DROP and again overnight. Past these
+    # fractions the floors are ignored, because a bad price beats a destroyed crop.
+    "shed_pressure": 0.70,
+    "shed_panic": 0.88,
+    # Front-running. If the opponent is about to bring this many units of something we are
+    # holding to market within `front_run_lead` days, sell now: price is a ladder over cumulative
+    # inventory and the first seller takes the top of it.
+    "front_run_units": 18,
+    "front_run_lead": 2,
+    # Land is bought for shed access, not for area: one extra quadrant doubles the tiles the
+    # compact set can choose from and adds a second shed-access tile. Further quadrants add
+    # neither, because `max_tiles` caps the farm well below what two quadrants already offer.
+    "max_extra_quadrants": 1,
+    "land_slack": 1.6,
+    "productive_gate": 0.6,
+    "endgame_day": 27,
+    # `_new_plant` sets `consecutive_unwatered` to 1, so a tile planted and not watered the same
+    # day is a weed by morning. Stop planting in time for a watering turn.
+    "plant_cutoff_hour": 20,
+}
+
+
+def _shed_tiles(size):
+    half = size // 2
+    return [(half - 1, half - 1), (half, half - 1), (half - 1, half), (half, half)]
+
+
+def _step_toward(pos, target):
+    (x, y), (tx, ty) = pos, target
+    dx, dy = tx - x, ty - y
+    if abs(dx) >= abs(dy):
+        return "EAST" if dx > 0 else "WEST"
+    return "SOUTH" if dy > 0 else "NORTH"
+
+
+def _shed_distance(pos, shed):
+    return min(abs(pos[0] - t[0]) + abs(pos[1] - t[1]) for t in shed)
+
+
+def _is_plant(tile):
+    return isinstance(tile, dict) and tile.get("kind") == "PLANT"
+
+
+def _farm_tiles(farm, size, max_tiles):
+    """The tiles we work: the nearest `max_tiles` to the shed, plus anything already growing.
+
+    This is the routing decision. The heuristic scans rows and takes a prefix, which spreads its
+    farm across the whole quadrant; taking the nearest tiles instead keeps every cargo trip short.
+
+    The "plus anything already growing" clause is not cosmetic. Buying a quadrant unlocks tiles
+    *closer* to the shed than ones we are already farming, so a plain nearest-N set silently drops
+    live crops out of the work list and they die of thirst two days later. Measured: buying NE
+    dropped ten planted tiles, and ten weeds appeared on the board two days after the purchase.
+    """
+    shed = _shed_tiles(size)
+    ranked = []
+    for y in range(size):
+        for x in range(size):
+            if farm["tiles"][y][x] != "LOCKED":
+                ranked.append((_shed_distance((x, y), shed), y, x))
+    ranked.sort()
+
+    tiles = [(x, y) for _, y, x in ranked[:max_tiles]]
+    tiles += [(x, y) for _, y, x in ranked[max_tiles:] if _is_plant(farm["tiles"][y][x])]
+    return tiles
+
+
+def _opponent_crops(opp):
+    """Tiles the opponent currently has planted, per crop.
+
+    Only the board is readable -- their shed is private -- so this counts standing production,
+    which is what will reach the market next.
+    """
+    counts = {}
+    if not opp:
+        return counts
+    for row in opp["tiles"]:
+        for tile in row:
+            if _is_plant(tile):
+                counts[tile["crop"]] = counts.get(tile["crop"], 0) + 1
+    return counts
+
+
+def _opponent_incoming(opp, day, lead):
+    """Units of each product the opponent can bring to market within `lead` days."""
+    incoming = {}
+    if not opp:
+        return incoming
+    for row in opp["tiles"]:
+        for tile in row:
+            if not _is_plant(tile):
+                continue
+            spec = CROPS.get(tile["crop"])
+            if not spec:
+                continue
+            age = day - tile.get("planted_day", day)
+            if spec["ongoing"]:
+                units = tile.get("yield_units", 0) if age + lead >= spec["first_yield_day"] else 0
+            else:
+                units = 6 if age + lead >= spec["max_yield_day"] else 0
+            if units:
+                incoming[tile["crop"]] = incoming.get(tile["crop"], 0) + units
+    return incoming
+
+
+def _premium_crop(opp_counts, p):
+    """Melon while the opponent leaves it alone, strawberry once they do not.
+
+    Melon's glut curve is `sq`: 158 units above `I0` and the price is on the floor. Two committed
+    players cannot both be paid for it, so this is a genuine either/or rather than a weighting.
+
+    Read off the opponent's board every turn rather than latched, so the opening is mixed: their
+    board is empty on day 0, melon goes in, and the plan moves to strawberry as their commitment
+    becomes visible. Measured to be worth more than either fixed choice -- see the module
+    docstring.
+    """
+    return "STRAWBERRY" if opp_counts.get("MELON", 0) >= p["melon_opp_tiles"] else "MELON"
+
+
+def _crop_plan(tiles, board, premium, p):
+    """Decide a crop for every empty tile, farthest from the shed first for the premium crop.
+
+    Wheat is the crop with cargo: harvested every four days, and every harvest is a walk to the
+    shed. The premium crop is watered daily and harvested once or twice in its life. So the crop
+    that walks gets the short walk.
+
+    The premium budget counts crops already in the ground rather than list positions, so the plan
+    is stable when the tile set changes underneath it.
+    """
+    budget = p["premium_tiles"].get(premium, 0)
+    for (x, y) in tiles:
+        tile = board[y][x]
+        if _is_plant(tile) and tile["crop"] in PREMIUM_CROPS:
+            budget -= 1
+
+    plan = {}
+    for (x, y) in reversed(tiles):          # farthest from the shed first
+        if board[y][x] is not None:
+            continue
+        if budget > 0:
+            plan[(x, y)] = premium
+            budget -= 1
+        else:
+            plan[(x, y)] = p["filler_crop"]
+    return plan
+
+
+def _tile_job(tile, day, watered_first):
+    """What this tile needs, or None. `None` tile means "empty, ready to plant".
+
+    WATER outranks HARVEST inside the watering window, which is the reverse of the heuristic and
+    is worth a unit per cycle: `_apply_unit_action` grants the watering bonus while
+    `window_start <= age <= max_yield_day`, and HARVEST on a non-ongoing crop clears the tile.
+    """
+    if tile is None:
+        return "PLANT"
+    if not isinstance(tile, dict):
+        return None
+    kind = tile.get("kind")
+    if kind == "WEED":
+        return "DIG"
+    if kind != "PLANT":
+        return None
+
+    spec = CROPS[tile["crop"]]
+    age = day - tile["planted_day"]
+    units = tile.get("yield_units", 0)
+    watered = tile.get("watered_today")
+
+    if spec["ongoing"]:
+        if units > 0 and age >= spec["first_yield_day"]:
+            return "HARVEST"
+        return None if watered else "WATER"
+
+    if watered_first and not watered and age <= spec["max_yield_day"]:
+        return "WATER"
+    if units > 0 and age >= spec["max_yield_day"]:
+        return "HARVEST"
+    return None if watered else "WATER"
+
+
+def _sell_orders(shed, prices, opp_incoming, day, p):
+    """Per-product floors, set by market curve shape rather than by a global calendar."""
+    held = sum(shed.values())
+    pressed = held >= SHED_CAP * p["shed_pressure"]
+    panic = held >= SHED_CAP * p["shed_panic"]
+    endgame = day >= p["endgame_day"]
+
+    orders = []
+    for item, n in sorted(shed.items(), key=lambda kv: (-kv[1], kv[0])):
+        if n <= 0 or item not in BASE_PRICE:
+            continue
+        if endgame or panic:
+            orders.append(["SELL", item, n])
+            continue
+        frac = p["sell_floor_frac"].get(item, p["default_floor_frac"])
+        # Front-run: the opponent is about to glut this good, and the price ladder pays whoever
+        # sells into the shallow end of it first.
+        crowded = opp_incoming.get(item, 0) >= p["front_run_units"]
+        if prices.get(item, 0) >= frac * BASE_PRICE[item] or crowded or pressed:
+            orders.append(["SELL", item, n])
+    return orders
+
+
+def _play(obs, p):
+    farms = obs.get("farms") or []
+    me = obs.get("player", 0)
+    if not farms or me >= len(farms):
+        return {"farmer": ["PASS"], "hands": [], "market": []}
+
+    farm = farms[me]
+    board = farm["tiles"]
+    size = len(board)
+    opp = farms[1 - me] if len(farms) > 1 else None
+    day = obs.get("day", 0)
+    hour = obs.get("hour", 0)
+    private = obs.get("private", {}) or {}
+    shed = private.get("shed", {}) or {}
+    seeds = private.get("seeds", {}) or {}
+    inventories = private.get("inventories", [{}]) or [{}]
+    money = farm["money"]
+    market = obs.get("market", {}) or {}
+    prices = market.get("prices", {}) or {}
+
+    tiles = _farm_tiles(farm, size, p["max_tiles"])
+    shed_tiles = _shed_tiles(size)
+    unlocked = len(farm.get("unlocked_quadrants", ["NW"]))
+
+    premium = _premium_crop(_opponent_crops(opp), p)
+    plan = _crop_plan(tiles, board, premium, p)
+    incoming = _opponent_incoming(opp, day, p["front_run_lead"])
+    can_plant = hour <= p["plant_cutoff_hour"]
+
+    # ---- what every tile wants ------------------------------------------------------------
+    # Built before the market orders, because seed demand is read off it.
+    jobs = {}
+    want_crop = {}
+    for (x, y) in tiles:
+        tile = board[y][x]
+        crop = plan.get((x, y), p["filler_crop"])
+        job = _tile_job(tile, day, watered_first=True)
+        if job == "PLANT":
+            # Premium goes in as early as it can; wheat is phased on its own four-day cycle so
+            # the harvest spreads. Phase is keyed on coordinates so unlocking cannot shift it.
+            phased = crop != p["filler_crop"] or (x + 2 * y) % p["phase_mod"] == day % p["phase_mod"]
+            if not (can_plant and phased):
+                continue
+            if seeds.get(crop, 0) <= 0:
+                want_crop[(x, y)] = crop      # remembered only so seed demand can be counted
+                continue
+        if job:
+            jobs[(x, y)] = job
+            want_crop[(x, y)] = crop
+
+    # ---- market orders --------------------------------------------------------------------
+    orders = []
+
+    # Hands are cleared every night, so the crew is rebuilt each morning. Sized to the work on a
+    # compact farm rather than to the board: ~34 tiles is ~50 jobs a day against 24 actions per
+    # unit, so seven units is ample and fib() keeps that under $30 a day.
+    if hour == 0:
+        target = min(p["max_hands"], max(3, -(-len(tiles) // p["tiles_per_hand"])))
+        for _ in range(max(0, min(6, target - len(farm.get("hands", []))))):
+            orders.append(["HIRE"])
+
+    orders.extend(_sell_orders(shed, prices, incoming, day, p))
+
+    due = {}
+    for pos, crop in want_crop.items():
+        if board[pos[1]][pos[0]] is None:
+            due[crop] = due.get(crop, 0) + 1
+    for crop, want_n in sorted(due.items()):
+        want = max(0, want_n - seeds.get(crop, 0))
+        if not want:
+            continue
+        cost = CROPS[crop]["seed"]
+        if crop == p["filler_crop"]:
+            if money > cost * want * 2:
+                orders.append(["BUY_SEED", crop, want])
+        else:
+            want = min(want, p["premium_seed_batch"])
+            if money - cost * want >= p["premium_reserve"]:
+                orders.append(["BUY_SEED", crop, want])
+
+    planted = sum(1 for (x, y) in tiles if _is_plant(board[y][x]))
+    extra = unlocked - 1
+    if (extra < min(p["max_extra_quadrants"], len(LAND_PRICES))
+            and money >= LAND_PRICES[extra] * p["land_slack"]
+            and planted / max(1, len(tiles)) > p["productive_gate"]):
+        orders.append(["BUY_LAND"])
+
+    # maxMarketOrdersPerTurn is 10 and the extras are silently dropped.
+    orders = orders[:10]
+
+    # ---- unit assignment ------------------------------------------------------------------
+    positions = [tuple(farm["farmer"])] + [tuple(h) for h in farm.get("hands", [])]
+
+    actions = []
+    claimed = set()
+    planned = {}
+    for unit_idx, pos in enumerate(positions):
+        carried = inventories[unit_idx] if unit_idx < len(inventories) else {}
+        carrying = sum(carried.values())
+
+        if carrying >= p["carry_before_drop"]:
+            if pos in shed_tiles:
+                actions.append(["DROP"])
+            else:
+                nearest = min(shed_tiles, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
+                actions.append([_step_toward(pos, nearest)])
+            continue
+
+        idle = ["DROP"] if carrying and pos in shed_tiles else ["PASS"]
+        candidates = [t for t in jobs if t not in claimed]
+        if not candidates:
+            actions.append(idle)
+            continue
+
+        target = min(candidates, key=lambda t: abs(t[0] - pos[0]) + abs(t[1] - pos[1]))
+        op = jobs[target]
+
+        # PLANT is validated atomically per crop: if requests exceed the seeds held, every PLANT
+        # for that crop is dropped. So never ask for more than we hold.
+        crop = want_crop.get(target)
+        if op == "PLANT" and planned.get(crop, 0) >= seeds.get(crop, 0):
+            actions.append(idle)
+            continue
+
+        claimed.add(target)
+        if pos == target:
+            if op == "PLANT":
+                actions.append(["PLANT", crop])
+                planned[crop] = planned.get(crop, 0) + 1
+            else:
+                actions.append([op])
+        else:
+            actions.append([_step_toward(pos, target)])
+
+    return {"farmer": actions[0], "hands": actions[1:], "market": orders}
+
+
+def make_agent(overrides=None):
+    """An agent closure bound to its own parameters, so variants can play each other."""
+    params = PARAMS if not overrides else {**PARAMS, **overrides}
+
+    def _agent(obs, config=None):
+        return _play(obs, params)
+
+    return _agent
+
+
+def agent(obs, config=None):
+    """Module-level entry point, as `kaggle_environments` and the Kaggle runtime expect."""
+    return _play(obs, PARAMS)

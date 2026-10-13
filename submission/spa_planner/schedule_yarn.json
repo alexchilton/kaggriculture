@@ -1,0 +1,1027 @@
+{
+ "0": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "CARROT",
+   "MELON",
+   "MELON",
+   "MELON",
+   "MELON",
+   "MELON",
+   "MELON",
+   "MELON",
+   "MELON"
+  ],
+  "animals_bought": {
+   "COW": 2,
+   "SHEEP": 2
+  },
+  "builds": 4,
+  "places": [],
+  "hires": 6,
+  "hands": 6,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 7,
+   "CARROT": 4,
+   "MELON": 11
+  },
+  "buys": {
+   "WHEAT": 21
+  },
+  "sells": {
+   "WHEAT": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "1": {
+  "plants": [
+   "MELON"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 6,
+  "hands": 6,
+  "land": 0,
+  "seeds": {
+   "MELON": 2
+  },
+  "buys": {
+   "WHEAT": 14
+  },
+  "sells": {
+   "WHEAT": 9
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "2": {
+  "plants": [
+   "MELON"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 6,
+  "hands": 6,
+  "land": 0,
+  "seeds": {
+   "MELON": 3
+  },
+  "buys": {
+   "WHEAT": 12
+  },
+  "sells": {
+   "WHEAT": 4,
+   "FERTILIZER": 4
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "3": {
+  "plants": [
+   "MELON"
+  ],
+  "animals_bought": {
+   "COW": 1
+  },
+  "builds": 2,
+  "places": [],
+  "hires": 6,
+  "hands": 6,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 1
+  },
+  "buys": {
+   "WHEAT": 7
+  },
+  "sells": {
+   "WHEAT": 11,
+   "FERTILIZER": 4
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "4": {
+  "plants": [],
+  "animals_bought": {
+   "SHEEP": 2
+  },
+  "builds": 1,
+  "places": [],
+  "hires": 6,
+  "hands": 6,
+  "land": 0,
+  "seeds": {},
+  "buys": {
+   "WHEAT": 11
+  },
+  "sells": {
+   "WHEAT": 7,
+   "CARROT": 2,
+   "FERTILIZER": 4
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "5": {
+  "plants": [],
+  "animals_bought": {
+   "SHEEP": 2
+  },
+  "builds": 0,
+  "places": [],
+  "hires": 6,
+  "hands": 6,
+  "land": 1,
+  "seeds": {},
+  "buys": {
+   "WHEAT": 15
+  },
+  "sells": {
+   "WHEAT": 5,
+   "CARROT": 2,
+   "FERTILIZER": 5
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "6": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY"
+  ],
+  "animals_bought": {
+   "SHEEP": 4
+  },
+  "builds": 4,
+  "places": [],
+  "hires": 8,
+  "hands": 8,
+  "land": 1,
+  "seeds": {
+   "WHEAT": 3,
+   "STRAWBERRY": 7
+  },
+  "buys": {
+   "WHEAT": 20
+  },
+  "sells": {
+   "WHEAT": 9,
+   "WOOL": 14,
+   "FERTILIZER": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "7": {
+  "plants": [
+   "WHEAT",
+   "STRAWBERRY"
+  ],
+  "animals_bought": {
+   "SHEEP": 4
+  },
+  "builds": 3,
+  "places": [],
+  "hires": 7,
+  "hands": 7,
+  "land": 0,
+  "seeds": {
+   "STRAWBERRY": 4
+  },
+  "buys": {
+   "WHEAT": 17
+  },
+  "sells": {
+   "WHEAT": 7,
+   "FERTILIZER": 11
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "8": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY"
+  ],
+  "animals_bought": {
+   "SHEEP": 4
+  },
+  "builds": 1,
+  "places": [],
+  "hires": 9,
+  "hands": 9,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 3,
+   "STRAWBERRY": 6
+  },
+  "buys": {
+   "WHEAT": 22
+  },
+  "sells": {
+   "WHEAT": 2,
+   "MILK": 12,
+   "FERTILIZER": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "9": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY"
+  ],
+  "animals_bought": {
+   "SHEEP": 4
+  },
+  "builds": 1,
+  "places": [],
+  "hires": 10,
+  "hands": 9,
+  "land": 1,
+  "seeds": {
+   "WHEAT": 7,
+   "STRAWBERRY": 4
+  },
+  "buys": {
+   "WHEAT": 24
+  },
+  "sells": {
+   "WHEAT": 8,
+   "WOOL": 12,
+   "FERTILIZER": 11
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "10": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "STRAWBERRY",
+   "STRAWBERRY"
+  ],
+  "animals_bought": {
+   "SHEEP": 2
+  },
+  "builds": 2,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 11,
+   "STRAWBERRY": 2
+  },
+  "buys": {
+   "WHEAT": 31
+  },
+  "sells": {
+   "WHEAT": 6,
+   "MELON": 47,
+   "MILK": 6,
+   "FERTILIZER": 13
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "11": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 2,
+  "places": [],
+  "hires": 10,
+  "hands": 10,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 12
+  },
+  "buys": {
+   "WHEAT": 17
+  },
+  "sells": {
+   "WHEAT": 6,
+   "MELON": 18,
+   "FERTILIZER": 14
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "12": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "STRAWBERRY",
+   "STRAWBERRY",
+   "STRAWBERRY"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 7,
+   "STRAWBERRY": 3
+  },
+  "buys": {
+   "WHEAT": 21
+  },
+  "sells": {
+   "WHEAT": 11,
+   "MELON": 6,
+   "MILK": 7,
+   "WOOL": 21,
+   "FERTILIZER": 18
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "13": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 10,
+  "hands": 10,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 7
+  },
+  "buys": {
+   "WHEAT": 13
+  },
+  "sells": {
+   "WHEAT": 9,
+   "MELON": 6,
+   "WOOL": 10,
+   "FERTILIZER": 16
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "14": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 7
+  },
+  "buys": {
+   "WHEAT": 16
+  },
+  "sells": {
+   "WHEAT": 26,
+   "MILK": 8,
+   "WOOL": 18,
+   "FERTILIZER": 16
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "15": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 6
+  },
+  "buys": {
+   "WHEAT": 16
+  },
+  "sells": {
+   "WHEAT": 28,
+   "MILK": 3,
+   "WOOL": 32,
+   "FERTILIZER": 14
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "16": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 6
+  },
+  "buys": {
+   "WHEAT": 16
+  },
+  "sells": {
+   "WHEAT": 37,
+   "STRAWBERRY": 6,
+   "MILK": 7,
+   "WOOL": 12,
+   "FERTILIZER": 11
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "17": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 7
+  },
+  "buys": {
+   "WHEAT": 14
+  },
+  "sells": {
+   "WHEAT": 28,
+   "STRAWBERRY": 8,
+   "MILK": 3,
+   "WOOL": 14,
+   "FERTILIZER": 10
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "18": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 12,
+  "hands": 12,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 6
+  },
+  "buys": {
+   "WHEAT": 14
+  },
+  "sells": {
+   "WHEAT": 35,
+   "STRAWBERRY": 20,
+   "MILK": 7,
+   "WOOL": 19,
+   "FERTILIZER": 11
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "19": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 9
+  },
+  "buys": {
+   "WHEAT": 15
+  },
+  "sells": {
+   "WHEAT": 33,
+   "STRAWBERRY": 14,
+   "MILK": 5,
+   "WOOL": 15,
+   "FERTILIZER": 8
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "20": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 12,
+  "hands": 12,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 5
+  },
+  "buys": {
+   "WHEAT": 16
+  },
+  "sells": {
+   "WHEAT": 42,
+   "STRAWBERRY": 30,
+   "MILK": 7,
+   "WOOL": 10,
+   "FERTILIZER": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "21": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 8
+  },
+  "buys": {
+   "WHEAT": 14
+  },
+  "sells": {
+   "WHEAT": 30,
+   "STRAWBERRY": 18,
+   "MILK": 4,
+   "WOOL": 12,
+   "FERTILIZER": 5
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "22": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 6
+  },
+  "buys": {
+   "WHEAT": 14
+  },
+  "sells": {
+   "WHEAT": 40,
+   "STRAWBERRY": 31,
+   "MILK": 10,
+   "WOOL": 10,
+   "FERTILIZER": 8
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "23": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "CARROT",
+   "CARROT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 10,
+   "CARROT": 4
+  },
+  "buys": {
+   "WHEAT": 11
+  },
+  "sells": {
+   "WHEAT": 37,
+   "STRAWBERRY": 16,
+   "MILK": 6,
+   "WOOL": 11,
+   "FERTILIZER": 8
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "24": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "CARROT",
+   "CARROT",
+   "CARROT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 11,
+  "hands": 11,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 8,
+   "CARROT": 4
+  },
+  "buys": {
+   "WHEAT": 6
+  },
+  "sells": {
+   "WHEAT": 40,
+   "STRAWBERRY": 18,
+   "MILK": 9,
+   "WOOL": 10,
+   "FERTILIZER": 8
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "25": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "CARROT",
+   "CARROT",
+   "CARROT",
+   "CARROT",
+   "CARROT",
+   "CARROT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 10,
+  "hands": 10,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 10,
+   "CARROT": 5
+  },
+  "buys": {
+   "WHEAT": 10
+  },
+  "sells": {
+   "WHEAT": 39,
+   "STRAWBERRY": 12,
+   "MILK": 6,
+   "WOOL": 10,
+   "FERTILIZER": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "26": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "CARROT",
+   "CARROT",
+   "CARROT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 10,
+  "hands": 10,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 6,
+   "CARROT": 3
+  },
+  "buys": {
+   "WHEAT": 9
+  },
+  "sells": {
+   "WHEAT": 45,
+   "STRAWBERRY": 9,
+   "MILK": 10,
+   "WOOL": 9,
+   "FERTILIZER": 7
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "27": {
+  "plants": [
+   "WHEAT",
+   "WHEAT",
+   "WHEAT",
+   "CARROT"
+  ],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 10,
+  "hands": 10,
+  "land": 0,
+  "seeds": {
+   "WHEAT": 4
+  },
+  "buys": {
+   "WHEAT": 14
+  },
+  "sells": {
+   "WHEAT": 62,
+   "CARROT": 17,
+   "STRAWBERRY": 10,
+   "MILK": 4,
+   "WOOL": 12,
+   "FERTILIZER": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "28": {
+  "plants": [],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 9,
+  "hands": 9,
+  "land": 0,
+  "seeds": {},
+  "buys": {
+   "WHEAT": 8
+  },
+  "sells": {
+   "WHEAT": 72,
+   "CARROT": 36,
+   "STRAWBERRY": 6,
+   "MILK": 11,
+   "WOOL": 9,
+   "FERTILIZER": 6
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ },
+ "29": {
+  "plants": [],
+  "animals_bought": {},
+  "builds": 0,
+  "places": [],
+  "hires": 8,
+  "hands": 8,
+  "land": 0,
+  "seeds": {},
+  "buys": {
+   "WHEAT": 3
+  },
+  "sells": {
+   "WHEAT": 59,
+   "CARROT": 24,
+   "STRAWBERRY": 4,
+   "MILK": 5,
+   "WOOL": 10,
+   "FERTILIZER": 8
+  },
+  "money_dawn": null,
+  "plant_tiles": [],
+  "build_tiles": [],
+  "land_turns": [],
+  "orders": []
+ }
+}

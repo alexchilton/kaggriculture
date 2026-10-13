@@ -1,0 +1,12 @@
+{
+  "archive": "/Users/alexchilton/DataspellProjects/kaggriculture/submission/shop0909/submission.tar.gz",
+  "archive_bytes": 5130653,
+  "archive_sha256": "414968a66658f781fe127fcee1d8b290eade9c4e858b0d056a35bcf6fb479b37",
+  "archive_sha256_matches_published": false,
+  "bundle": "shop0909",
+  "member_sha256": {
+    "LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "actions.json": "17d503f2fd20d59f9c0f14024d1e74a8add8bb9b5561d4d908b45deecb5495ef",
+    "main.py": "d6d74997dc5b483db63d8e39cafa1afeec0f366824e75107e109123f111e866b"
+  }
+}
